@@ -1,0 +1,6 @@
+node_modules/
+skill/scripts/codex-bridge.mjs
+skill/prompts/
+skill/schemas/
+skill/templates/
+*.log
