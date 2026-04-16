@@ -1,0 +1,400 @@
+# src/lib/AGENTS.md
+
+Library modules that the CLI handlers in `src/codex-bridge.mjs` compose into the bridge behavior. This file is the deepest technical reference in the repo: per-module contracts, protocol invariants, and the "must-not-regress" list derived from the upstream Codex app-server spec and test suite.
+
+> Root rules (build workflow, env vars, `workspaceRoot` vs `cwd`) live in `/AGENTS.md`. Don't restate them here.
+
+## Module map (19 files)
+
+| File | One-sentence role | Cluster |
+|---|---|---|
+| `app-server-protocol.d.ts` | JSDoc-consumable type shims for the upstream JSON-RPC contract. | Protocol |
+| `app-server.mjs` | Low-level JSON-RPC client: spawn-or-connect, framing, request/notification dispatch. | Protocol |
+| `codex.mjs` | High-level turn/review orchestration; state-machine capture of streaming notifications. | Protocol |
+| `broker-endpoint.mjs` | Parse/create broker endpoint URIs (`unix:/path` or `pipe:name`). | Broker |
+| `broker-lifecycle.mjs` | Spawn, wait-for-ready, and tear down the shared broker session. | Broker |
+| `state.mjs` | Per-workspace job registry + config store (`state.json` + `jobs/*.json`). | State |
+| `session-log.mjs` | Append-only writers for `.events`, `.ndjson`, `.diff`, `.plan.md`, `.review.json`. | State |
+| `pending-requests.mjs` | File-based IPC for `requestUserInput` across worker and `respond` CLI. | State |
+| `tracked-jobs.mjs` | Job-record factories, progress reporter, `runTrackedJob` wrapper. | State |
+| `job-control.mjs` | Read-side job queries: snapshots, enrichment, phase inference for `status`/`result`/`cancel`. | State |
+| `config.mjs` | Load `skill/config.yaml`, `buildCollaborationMode`, `buildSandboxPolicy`, `COMPLETION_CHECK_SCHEMA`. | Config |
+| `prompts.mjs` | `loadPromptTemplate` + `interpolateTemplate` for `{{UPPERCASE}}` placeholder substitution. | Config |
+| `render.mjs` | Markdown renderers for every CLI output (review, task, status, cancel, setup). | Render |
+| `fs.mjs` | `readJsonFile`/`writeJsonFile`, `isProbablyText`, `readStdinIfPiped`. | Utility |
+| `process.mjs` | `runCommand`, `binaryAvailable`, `terminateProcessTree` (cross-platform). | Utility |
+| `git.mjs` | Git repo validation, review target resolution, diff context collection. | Utility |
+| `workspace.mjs` | Tiny wrapper: git repo root or cwd fallback. | Utility |
+| `args.mjs` | Shell-aware CLI argument parser used by all handlers. | Utility |
+| `auto-pipeline.mjs` | Silent post-execution pipeline: diff → review → fix → completion check. | Orchestration |
+
+---
+
+## Protocol cluster
+
+These three modules are the ground truth for how `codex-bridge` talks to the Codex app-server. Everything they do is constrained by the upstream spec at `codex-rs/app-server/README.md` and enforced by tests at `codex-rs/app-server/tests/suite/v2/*`.
+
+### `app-server.mjs`
+
+**Exports**: `CodexAppServerClient` (with static `connect(cwd, options)`), `BROKER_ENDPOINT_ENV`, `BROKER_BUSY_RPC_CODE`.
+
+**Transport**: dual. `CodexAppServerClient.connect(cwd, { disableBroker })` either:
+1. Connects to an existing broker socket via `net.createConnection({ path })` when `CODEX_COMPANION_APP_SERVER_ENDPOINT` is set and the endpoint is alive.
+2. Otherwise `spawn("codex", ["app-server"], { cwd, env })` and talks over stdio. On Windows, spawned with `shell: true` to survive cmd.exe wrapping.
+
+**Framing**: newline-delimited JSON (NDJSON) on both transports. Line buffer is `this.lineBuffer`; lines are split on `\n` and JSON-parsed. Matches upstream wire format for stdio transport.
+
+**Identity** (lines 22-38):
+```js
+DEFAULT_CLIENT_INFO = { title: "Codex Bridge", name: "codex_bridge", version: "1.0.0" };
+DEFAULT_CAPABILITIES = {
+  experimentalApi: true,
+  optOutNotificationMethods: [
+    "item/agentMessage/delta",
+    "item/reasoning/summaryTextDelta",
+    "item/reasoning/summaryPartAdded",
+    "item/reasoning/textDelta"
+  ]
+};
+```
+
+**Load-bearing details**:
+- `DEFAULT_CLIENT_INFO.name = "codex_bridge"` is echoed by the upstream server as the HTTP `originator` header on every `/v1/responses` call (upstream test: `initialize.rs::turn_start_sends_originator_header`). ASCII only; no CR/LF/colons.
+- Delta opt-outs reduce chatter; `item/completed` is still the authoritative event for every item (upstream invariant: deltas are advisory).
+- `experimentalApi: true` is required for `item/tool/requestUserInput`, `item/plan/delta`, `collaborationMode/list`, and other experimental methods we use.
+
+**ID allocation**: monotonic `this.nextId++` (line 88). Never reused across requests. Pending map is `Map<id, {resolve, reject}>`.
+
+**Notification handler**: `setNotificationHandler(fn)` — single handler, called with each parsed notification. Callers in `codex.mjs` demultiplex by `method`.
+
+**Server-request handling**: `onServerRequest` callback receives `{ id, method, params, _client }`. The caller must either call `_client.sendMessage({ id, result })` or `_client.sendMessage({ id, error })`. If neither happens, the upstream server's pending-requests map leaks. Our `runBridgeTask` wires this to the disk-IPC protocol in `pending-requests.mjs`.
+
+**Close semantics**: `close()` sends shutdown (if broker), closes the socket, 50 ms grace, then `terminateProcessTree` the spawned child. Rust reference client uses 5 s; we're tighter because we control both ends and don't need to drain WS close frames.
+
+### `codex.mjs` — the turn captor
+
+**Exports**: `runAppServerTurn`, `runAppServerReview`, `withAppServer`, `interruptAppServerTurn`, `findLatestTaskThread`, `getCodexAuthStatus`, `getCodexAvailability`, `getSessionRuntimeStatus`, `parseStructuredOutput`, `readOutputSchema`, `buildPersistentTaskThreadName`, `DEFAULT_CONTINUE_PROMPT`.
+
+**The turn state machine** (`captureTurn`, lines ~380-620): this is the heart of the module. It subscribes to the notification stream from `app-server.mjs`, demultiplexes by thread/turn id, and resolves a single `TurnCaptureState` when the turn is "done".
+
+**TurnCaptureState fields that matter** (typedef at lines 9-35):
+- `threadIds: Set<string>` — every thread seen during the turn (root + subagents). A notification for an unregistered thread is buffered until its `threadId` is known.
+- `rootThreadId` — the originally-requested thread; this is what handlers resume from.
+- `turnId` — the id of the root turn. Echoed verbatim by the server; we don't allocate it.
+- `pendingCollaborations: Set<string>` — collaboration tool calls (subagent spawns) tracked by `item.id`.
+- `activeSubagentTurns: Set<string>` — non-root threads currently running; turn is not "done" until this drains.
+- `finalAnswerSeen: boolean` — set when an `item/completed` with `type: "agentMessage"` arrives on the root thread.
+- `completionTimer` — 250 ms grace timer that fires when `finalAnswerSeen && activeSubagentTurns.size === 0`. Resolves the turn after drain.
+
+**Why the 250 ms grace**: the upstream server sometimes emits the root `agentMessage` completion before the trailing `turn/completed` for a recently finished subagent. Without the grace period, we'd close the stream too early and miss a final `item/fileChange` update. Do not remove or shorten this without verifying against `codex-rs/app-server/tests/suite/v2/turn_start.rs`.
+
+**Idle timeout**: `setInterval` every `Math.min(5000, idleTimeoutMs)` ms checks that events are still arriving. Default 120 s. Expiring calls `onIdleTimeout` and fails the turn. Matches our need to cut hung turns; upstream has no equivalent — we add it because network stalls are user-visible.
+
+**Turn timeout**: caller-supplied `turnTimeoutMs` (5 min for plan, 10 min for default; 15 min pipeline total). Enforced via `Promise.race` with a reject.
+
+**Interrupt**: `interruptAppServerTurn(cwd, { threadId, turnId })` calls `turn/interrupt` on a fresh broker connection (**not** reusing the streaming one, which is busy). Response is `{}` — the turn isn't actually done until a `turn/completed` arrives with `status: "interrupted"`. The caller must still drain the active capture; we don't short-circuit.
+
+**Upstream test invariants enforced by `captureTurn`**:
+1. `serverRequest/resolved` must arrive **before** `turn/completed` for any outstanding server request. We record resolutions in the state machine and use them to clear `pendingCollaborations`.
+2. `item/completed` is authoritative; deltas are not. `finalAnswerSeen` is only set on `item/completed`, never on an `agentMessage/delta`.
+3. Detached review introduces a new `reviewThreadId` via `thread/started`. We register it in `threadIds` on the fly and do not confuse it with `thread/status/changed`.
+4. Plan item id is `"{turn.id}-plan"`. We don't mint this; we read it from `item.id` and trust the server.
+
+### `app-server-protocol.d.ts`
+
+JSDoc-only. Re-exports narrowed types from the upstream-generated bindings. Omits `persistExtendedHistory` (lines 45-46) because that's an internal server concern.
+
+**Regenerate via**: `codex app-server generate-ts --experimental --out <dir>` in a scratch directory, then diff against this file. Anything the upstream added that we don't use can stay omitted; anything we use must be present.
+
+---
+
+## Protocol invariants our code must preserve
+
+Derived from `codex-rs/app-server/README.md`, `codex-rs/app-server-protocol/src/protocol/common.rs`, `codex-rs/app-server/src/error_code.rs`, and the `codex-rs/app-server/tests/suite/v2/*` test fixtures.
+
+### Handshake
+
+1. **`initialize` is the first request on every connection.** Wait for the response before sending anything else. A second `initialize` returns `"Already initialized"`; anything before it returns `"Not initialized"`.
+2. **Send the `initialized` notification after the `initialize` response.** Our client does this automatically in `AppServerClientBase`.
+3. **`ClientInfo.name` is an HTTP header value.** ASCII, no CR/LF/colons. Upstream test `initialize.rs::initialize_rejects_invalid_client_name` returns `-32600` with the exact message `"Invalid clientInfo.name: '<name>'. Must be a valid HTTP header value."`
+4. **`optOutNotificationMethods` is exact-match on method strings.** No wildcards; unknowns are accepted and silently ignored.
+
+### Wire format
+
+5. **Omit `"jsonrpc":"2.0"`.** Explicit in the upstream README. Parsers that require it will break.
+6. **NDJSON on stdio.** Newline-delimited, one JSON object per line. Our `lineBuffer` approach is correct.
+7. **`thread.name: null` must be present in `thread/start` params**, not omitted. Upstream test asserts strict serialization.
+
+### Turn ordering
+
+8. **`item/started` → zero or more deltas → `item/completed`** for every item. Never treat a delta as terminal state.
+9. **`turn/started` → item events → `turn/completed`** for every turn. `turn/completed.status ∈ { completed, failed, interrupted }`.
+10. **`serverRequest/resolved` MUST precede `turn/completed`** when a server request was outstanding. Tested in `request_user_input.rs` and `request_permissions.rs`. Our state machine upholds this by not resolving `captureTurn` until all pending collaborations clear.
+11. **Turn-level `outputSchema` is per-turn.** Unset on the next turn removes `text.format` from the upstream Responses body. Don't cache at thread level.
+
+### Interrupt and steer
+
+12. **`turn/interrupt` is async.** The `{}` response means "request accepted"; wait for `turn/completed` with `status: "interrupted"` before reconciling state.
+13. **Interrupt implicitly resolves pending approvals.** `serverRequest/resolved` fires for each outstanding approval with the original `request_id` before the interrupted `turn/completed`.
+14. **`turn/steer` needs an active, steerable turn.** Review turns and manual-compact turns reject with `-32600` and emit analytics `rejection_reason: "no_active_turn"`. Steer returns `{turn_id}` equal to the active turn id; it does NOT create a new turn.
+15. **`turn/steer` rejects turn-level overrides.** Only `input` is accepted.
+
+### Review
+
+16. **`delivery: "inline"` reuses the current thread** (`review_thread_id == thread_id`). **`delivery: "detached"` creates a new thread** introduced by `thread/started` (never preceded by `thread/status/changed` for that id). Our state machine registers the new id in `threadIds` on arrival.
+17. **Review findings ship inside `ThreadItem::ExitedReviewMode.review`** as plain text, not a separate message field.
+
+### Error codes (`error_code.rs`)
+
+| Code | Constant | Meaning | Retry? |
+|---|---|---|---|
+| `-32600` | `INVALID_REQUEST_ERROR_CODE` | Malformed request, steer on inactive turn, invalid client name. | No |
+| `-32602` | `INVALID_PARAMS_ERROR_CODE` | Bad params. Oversized input carries `data.{input_error_code, max_chars, actual_chars}`. | No |
+| `-32603` | `INTERNAL_ERROR_CODE` | Server-side bug. | No |
+| `-32001` | `OVERLOADED_ERROR_CODE` (`BROKER_BUSY_RPC_CODE`) | Busy / queue full. **Retry with exponential backoff + jitter.** | Yes |
+| `"input_too_large"` | `INPUT_TOO_LARGE_ERROR_CODE` | String constant, not numeric. Surfaces in `data.input_error_code`. | No |
+
+`codexErrorInfo` on `turn/completed.turn.error` — variants: `ContextWindowExceeded`, `UsageLimitExceeded`, `HttpConnectionFailed`, `ResponseStreamConnectionFailed`, `ResponseStreamDisconnected`, `ResponseTooManyFailedAttempts`, `ActiveTurnNotSteerable { turnKind }`, `BadRequest`, `Unauthorized`, `SandboxError`, `InternalServerError`, `Other`. Our renderer inspects these; new variants should be added to `render.mjs` too.
+
+### Sandbox policy (upstream camelCase)
+
+| Our JS | Upstream type name |
+|---|---|
+| `{ type: "readOnly" }` | `SandboxPolicy::ReadOnly` |
+| `{ type: "workspaceWrite" }` | `SandboxPolicy::WorkspaceWrite { writableRoots, networkAccess }` |
+| n/a | `SandboxPolicy::DangerFullAccess` |
+| n/a | `SandboxPolicy::ExternalSandbox { networkAccess }` |
+
+We do not use `dangerFullAccess` or `externalSandbox`. Adding them requires UX for the elevated trust prompt — upstream silently persists `trust_level="trusted"` in `~/.codex/config.toml` when a workspace is trusted via elevated sandbox (tested in `thread_start.rs::thread_start_with_elevated_sandbox_*`).
+
+### Notifications in the `ServerNotification` enum (from `protocol/common.rs`)
+
+Thread-scoped: `thread/started`, `thread/status/changed`, `thread/archived`, `thread/unarchived`, `thread/closed`, `thread/name/updated`, `thread/tokenUsage/updated`, `thread/compacted`.
+
+Turn-scoped: `turn/started`, `turn/completed`, `turn/diff/updated`, `turn/plan/updated`.
+
+Item lifecycle (always on): `item/started`, `item/completed`.
+
+Item-specific streaming (opt-outable): `item/agentMessage/delta`, `item/plan/delta`, `item/reasoning/summaryTextDelta`, `item/reasoning/summaryPartAdded`, `item/reasoning/textDelta`, `item/commandExecution/outputDelta`, `item/commandExecution/terminalInteraction`, `item/fileChange/outputDelta`, `item/mcpToolCall/progress`, `rawResponseItem/completed`.
+
+Ancillary: `error`, `serverRequest/resolved`, `model/rerouted`, `hook/started`, `hook/completed`, `deprecationNotice`, `configWarning`.
+
+Unstable (shape may change): `item/autoApprovalReview/started`, `item/autoApprovalReview/completed`. Do **not** persist these in our own schemas.
+
+### Server-initiated requests (`ServerRequest` enum)
+
+| Method | Params | How we handle it |
+|---|---|---|
+| `item/tool/requestUserInput` | `{ threadId, turnId, itemId, questions }` (experimental) | `pending-requests.mjs` disk-IPC → `respond` CLI writes answer. |
+| `command/exec/requestApproval` | `{ threadId, turnId, itemId, command, ... }` | Currently not explicitly supported in UI; relies on Codex's own approval policy. |
+| `file/change/requestApproval` | `{ threadId, turnId, itemId, changes, ... }` | Same. |
+| `permissions/requestApproval` | `{ threadId, turnId, itemId, reason, permissions }` | Same. |
+| `chatgpt/auth/tokensRefresh` | n/a | Upstream auto-rejects in in-process clients with `-32000`; our stdio client shouldn't see it. |
+
+If we ever need to auto-reject, use `-32601 Method not found` or `-32001 Busy`, matching the reference client's behavior.
+
+---
+
+## Broker cluster
+
+### `broker-endpoint.mjs`
+
+Pure string parsing. `createBrokerEndpoint(sessionDir)` returns `"unix:/path"` on POSIX or `"pipe:name"` on Windows. `parseBrokerEndpoint(endpoint)` returns `{ kind: "unix" | "pipe", path }`. Pipe names are sanitized to `[A-Za-z0-9._-]`.
+
+### `broker-lifecycle.mjs`
+
+`ensureBrokerSession(cwd)` is the idempotent entry point every client takes:
+1. Read `broker.json` from the state dir.
+2. If an endpoint exists and responds within 150 ms, reuse it.
+3. Otherwise tear down any stale session, create a fresh temp dir, spawn `node src/app-server-broker.mjs serve --endpoint <new>`, poll for readiness up to a timeout, write a new `broker.json`.
+4. Return `{ endpoint, pidFile, logFile }`.
+
+**Spawn is detached + unref'd** (`detached: true`, `unref()`) so Node's CLI process can exit while the broker keeps running. Log goes to a file descriptor (`stdio: ['ignore', logFd, logFd]`) — never to our stdout.
+
+**Teardown is best-effort**. Missing files and stale PIDs are silently ignored. Never make teardown throw.
+
+**Ready poll**: 50 ms interval. `[unverified]` why 50 ms specifically — matches a perceived "felt-fast" threshold; changing it trades startup latency against wasted syscalls.
+
+---
+
+## State cluster
+
+### `state.mjs`
+
+**State root**: `$CLAUDE_PLUGIN_DATA/state/<slug>-<hash>/` where `<slug>` is the workspace basename and `<hash>` is the first 16 hex chars of `sha256(realpath(workspaceRoot))`. The `realpathSync.native` call is load-bearing — it stabilizes the hash across symlinked checkouts so two worktrees of the same repo share state.
+
+Fallback root: `os.tmpdir()/codex-companion/` when `CLAUDE_PLUGIN_DATA` isn't set.
+
+**Files**:
+- `state.json` — canonical. `{ version: 1, config: {...}, jobs: [{id, status, ...}, ...] }`.
+- `jobs/{jobId}.json` — detailed per-job payload (request, logFile path, threadId, turnId, phase, progress, errors).
+
+**Invariants**:
+- `MAX_JOBS = 50`. Oldest job files are deleted when pruned from `state.jobs`. Never bypass `saveState`.
+- Job index (`state.json`) and detail files (`jobs/*.json`) are **dual-written** by `tracked-jobs.mjs`. Writes happen in the order `writeJobFile` → `upsertJob` so that the fast index never references a missing detail file.
+
+### `session-log.mjs`
+
+**Session artifacts per thread** in `$session_dir` (default `~/.codex-bridge/sessions`):
+
+| File | Purpose | Writer |
+|---|---|---|
+| `{threadId}.ndjson` | Full structured log (`{ts, tag, method, threadId, data}` per line). | `logNdjson` via `appendFileSync`. |
+| `{threadId}.events` | Human-readable tagged log: `[PLAN]`, `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[QUESTION]`, `[CONFIRMED]`, `[PIPELINE:*]`, `[REVIEW]`. | `logEvent` via `appendFileSync`. |
+| `{threadId}.diff` | `git diff HEAD` snapshot. | `captureGitDiff` — one shot, 10 s timeout. |
+| `{threadId}.plan.md` | Full plan text when plan mode produces one. | `writePlan`. |
+| `{threadId}.review.json` | Adversarial review JSON when pipeline review runs. | `writeReview`. |
+
+**Append-only rule**: `appendFileSync` is the only writer. Never add async writers to `.events` or `.ndjson` — lines will interleave.
+
+**Event format helpers** (`formatDoneEvent`, `formatErrorEvent`, `formatIncompleteEvent`, `formatQuestionEvent`, `formatPlanEvent`, `formatConfirmedEvent`, `formatPipelineEvent`, `formatPhaseEvent`, `formatReviewEvent`) each return a formatted string block. Changing any format requires syncing `skill/references/notification-format.md` AND the Gherkin scenarios in `test-gherkin/04-notifications-and-events.feature`.
+
+### `pending-requests.mjs`
+
+Disk-IPC. One `{threadId}.pending.json` file at a time per thread; `writeResponseFile` creates `{threadId}.response.json`; `waitForResponse` polls at 500 ms intervals with a 5-minute default timeout. The worker process holding the RPC connection is the sole writer of `.pending.json`; the `respond` CLI is the sole writer of `.response.json`. Consumed-on-read: the response file is deleted after being read.
+
+### `tracked-jobs.mjs`
+
+`runTrackedJob(job, runner, { logFile })` wraps a runner with:
+- queued → running → (completed | failed) transitions.
+- Progress updater (`createJobProgressUpdater`) that de-duplicates `{phase, threadId, turnId}` changes so we don't thrash state.json.
+- Dual-write to `jobs/{id}.json` and `state.jobs`.
+- Error capture (caught exceptions set `errorMessage` and status `failed`).
+
+`createProgressReporter({ stderr, logFile, onEvent })` is the object passed as `onProgress` into `runAppServerTurn`. Anything it receives gets mirrored to the job log file, the state update, and optionally stderr for interactive use.
+
+`SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID"` is attached to every new job record. `job-control.mjs` filters by it so `/codex:status` only shows the current Claude session's jobs.
+
+### `job-control.mjs`
+
+Read-side. `buildStatusSnapshot(cwd, { all })` returns the sorted, enriched job list; `buildSingleJobSnapshot(cwd, reference)` resolves a job by id or the keyword `latest`. Enrichment adds `kindLabel`, `progressPreview` (tail of log), `elapsed`, `duration`. `inferLegacyJobPhase` parses log lines for keywords (`"starting codex"`, `"running command:"`) to back-fill `phase` when the job wasn't tagged explicitly.
+
+`resolveCancelableJob` refuses jobs already in a terminal state (`completed|failed|cancelled`) — cancel is idempotent only in the sense that a completed job stays completed.
+
+---
+
+## Config / template cluster
+
+### `config.mjs`
+
+`DEFAULT_CONFIG` (lines 6-21):
+```js
+{
+  mode: "plan",
+  model: "gpt-5.4",
+  effort: "high",
+  auto_review: true,
+  post_task_prompt: "Review your own work critically:\n1. Is this task 100% complete?\n2. Are there any edge cases you missed?\n3. Did you run all relevant tests?\nList any unfinished items.",
+  allow_questions: true,
+  session_dir: "~/.codex-bridge/sessions",
+  prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
+}
+```
+
+**Plan mode forces effort `xhigh`** in `buildCollaborationMode("plan", ...)`. `buildSandboxPolicy("plan")` returns `{ type: "readOnly" }`.
+
+`COMPLETION_CHECK_SCHEMA` requires `{complete, missing_items, summary}`. Used by `auto-pipeline.mjs` as the `outputSchema` of the final completion turn.
+
+### `prompts.mjs`
+
+`interpolateTemplate(template, vars)` replaces `{{UPPERCASE_KEY}}` with `vars[KEY]` or empty string. No escaping, no validation that all placeholders are provided — missing keys silently become `""`. When adding a new placeholder to a prompt, grep for every `interpolateTemplate` call to ensure callers pass the new key.
+
+---
+
+## Render cluster
+
+### `render.mjs`
+
+Pure formatting. Review findings are sorted `critical → high → medium → low`. Review JSON is validated against the expected shape (see `src/schemas/AGENTS.md`); parse errors render a fallback error section with the raw output included.
+
+`renderSetupReport`, `renderStatusReport`, `renderCancelReport`, `renderJobStatusReport`, `renderTaskResult`, `renderStoredJobResult`, `renderReviewResult`, `renderNativeReviewResult` — each returns a complete markdown string. Handlers pick json vs. rendered via `outputCommandResult(payload, rendered, options.json)`.
+
+Updating an event tag's displayed form (e.g., adding a field to `[DONE]`) requires changes to the format helper in `session-log.mjs`, the Gherkin scenarios, and the reference docs — not just this file.
+
+---
+
+## Utility cluster
+
+### `fs.mjs`
+
+`readStdinIfPiped()` only reads when `!process.stdin.isTTY`. This avoids blocking on interactive terminals. `isProbablyText` scans the first 4096 bytes for null bytes.
+
+### `process.mjs`
+
+`runCommand(cmd, args, opts)` never throws; `runCommandChecked` throws on non-zero exit. `terminateProcessTree(pid)` uses `taskkill /T /F` on Windows, `kill(-pid, SIGTERM)` (process group) on POSIX; both fall through to `process.kill(pid)` if the group approach fails. `ESRCH` is always tolerated.
+
+### `git.mjs`
+
+`collectReviewContext(cwd, target)` sizes git output and downgrades to summary-only if the inline diff exceeds `maxInlineDiffBytes`. Default branch detection tries `main`, `master`, `trunk` in that order. Untracked files are inlined when `isProbablyText && size < 24 KB`.
+
+Every git spawn has a 10 s timeout. Long operations return empty stdout; callers treat as "no content" rather than failing.
+
+### `workspace.mjs`
+
+One-liner: returns the git repo root if inside a repo, otherwise cwd. Used for state hashing so that CLI invocations from subdirectories of a repo all map to the same state dir.
+
+### `args.mjs`
+
+Shell-aware token splitter (`splitRawArgumentString`) handles single/double quotes and backslash escapes. `parseArgs(argv, spec)` supports `valueOptions`, `booleanOptions`, `aliasMap`, and `--` stop-parsing. No dependency on a third-party argparser.
+
+---
+
+## Orchestration cluster
+
+### `auto-pipeline.mjs`
+
+Runs silently after execute-mode turns. Stages:
+1. **diff** — `captureGitDiff`.
+2. **review** (if `config.auto_review`) — `runAppServerReview({ target: { type: "uncommittedChanges" } })`. On fixable findings, proceeds to fix.
+3. **fix** (if structured findings present) — new turn with a synthesized prompt from the findings. Uses `execute-instructions.md`. Never applied to native-reviewer output (which is plain text, no findings structure).
+4. **check** (if `config.post_task_prompt`) — final turn with `COMPLETION_CHECK_SCHEMA` as output schema. Produces `{complete, missing_items, summary}` → maps to `[DONE]` or `[INCOMPLETE]`.
+
+Timeouts: `PIPELINE_TIMEOUT_MS = 15 min` total, `STAGE_TIMEOUT_MS = 5 min` per stage, enforced via `withTimeout(promise, ms, stageLabel)`. Timeouts throw `PipelineTimeoutError(completedStages)`; the caller logs an `[ERROR]` with a list of what completed before the stall.
+
+`withTimeout` is exported because `runBridgeTask` uses it for the plan-mode/default-mode turn itself.
+
+---
+
+## Invariants for anyone editing `src/lib/`
+
+1. **Never rename `DEFAULT_CLIENT_INFO.name`.** It's the upstream `originator` header.
+2. **Never change the wire framing from NDJSON.** Both ends expect newline-delimited JSON on stdio.
+3. **Never add async writers to `.events` or `.ndjson`.** Append ordering is our only consistency guarantee.
+4. **Never bypass `saveState`.** Job list pruning deletes orphaned detail files — manual writes will leak disk.
+5. **Never cache `outputSchema` at thread level.** It's per-turn upstream.
+6. **Never treat `turn/interrupt`'s `{}` as "turn done".** Wait for `turn/completed { status: "interrupted" }`.
+7. **Never emit a client-originated `turn/completed`.** Only the upstream server does; the bridge reads it.
+8. **Never persist `item/autoApprovalReview/*` fields** — upstream marks them unstable.
+9. **Never call `saveJobFile` without also calling `upsertJob`** (or vice versa). Dual-write is the contract.
+10. **Never delete `session-log`'s `appendFileSync` fallbacks**: logging failures are swallowed on purpose so they don't kill the running task.
+11. **Never change `realpathSync.native` to `realpathSync`** in `state.mjs`. The `.native` variant is stable across edge cases on macOS APFS.
+12. **Never drop `-32001` handling.** Retry with backoff; don't surface it as a user error.
+13. **Never set `experimentalApi: false`** without first removing every experimental method call (`collaborationMode/list`, `item/tool/requestUserInput`, `item/plan/delta`).
+14. **Never steer a review turn or a manual-compact turn.** Upstream rejects with `-32600`; we should pre-empt.
+15. **Never terminate a spawned Codex process with `SIGKILL` before the 50 ms grace.** On POSIX, give it a SIGTERM first so upstream can flush its own state.
+
+---
+
+## Where this cluster diverges from the upstream Rust reference client
+
+The reference client (`codex-rs/app-server-client`) is an `enum { InProcess, Remote }` over `tokio_tungstenite`. Our JS client targets stdio only (plus our own unix-socket broker). Differences that agents should know:
+
+| Aspect | Rust reference | Our JS |
+|---|---|---|
+| Transport abstraction | Enum sum type; no trait | Single class, transport chosen at connect time |
+| JSON serialization in-process | Skipped (typed channels) | N/A — we don't embed the server |
+| Event queue | Bounded `mpsc`, surfaces `Lagged { skipped }` | Unbounded — **drift risk**, document |
+| Per-request timeout | None built-in | We layer turn/idle timeouts at the captor |
+| Retry on `-32001` | None built-in; caller implements | Same; callers (auto-pipeline) don't currently retry |
+| Shutdown timeout | 5 s | 50 ms (we own the process) |
+| Connect timeout | 10 s | Broker: 50 ms poll × N; direct spawn: immediate |
+| Initialize timeout | 10 s | None explicit |
+| Server-request auto-reject on queue full | `-32001` | Not implemented — we rely on unbounded buffering |
+
+If upstream publishes the client as a crate and we start consuming it via a shim, the translation table above becomes the porting spec.
+
+## Unknowns
+
+- The numeric value of `DEFAULT_IN_PROCESS_CHANNEL_CAPACITY` in the Rust crate (re-exported but not defined there). Doesn't affect us while we're stdio-only.
+- Full `thread/resume` replay semantics when reconnecting mid-turn — upstream README is silent; test coverage in `thread_resume.rs` is the best source, and even that was summarized (not fully verbatim) during discovery.
+- Whether `item/reasoning/*` deltas have a guaranteed order vs. the matching `item/completed`. Our state machine doesn't rely on an order, so this is tolerated.

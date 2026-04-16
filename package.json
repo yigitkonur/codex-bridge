@@ -1,0 +1,19 @@
+{
+  "name": "codex-bridge",
+  "version": "1.0.0",
+  "description": "Claude Code skill that orchestrates Codex via Monitor tool notifications",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "dev": "node src/codex-bridge.mjs"
+  },
+  "author": "Yigit Konur",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "js-yaml": "^4.1.0"
+  }
+}
