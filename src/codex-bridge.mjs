@@ -219,6 +219,14 @@ const COMMANDS = Object.freeze({
     summary: "Get the full result of a completed job. Omit job-id for the latest in this session.",
     examples: ["codex-bridge result task-abc --json"]
   },
+  wait: {
+    synopsis: "wait <job-id-or-thread-id> [--timeout-ms <ms>] [--json]",
+    summary: "Block until the target job's events file emits [DONE], [ERROR], or [INCOMPLETE].",
+    examples: [
+      "codex-bridge wait task-abc --timeout-ms 600000 --json",
+      "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
+    ]
+  },
   cancel: {
     synopsis: "cancel [job-id] [--json]",
     summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
@@ -1518,6 +1526,147 @@ function handleResult(argv) {
   });
 }
 
+function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    let offset = 0;
+    let watcher = null;
+    let pollTimer = null;
+    let timer = null;
+
+    const finish = (payload) => {
+      if (resolved) return;
+      resolved = true;
+      if (watcher) {
+        try { watcher.close(); } catch { /* noop */ }
+      }
+      if (pollTimer) clearInterval(pollTimer);
+      if (timer) clearTimeout(timer);
+      resolve(payload);
+    };
+
+    const scan = () => {
+      try {
+        const data = fs.readFileSync(eventsPath, "utf8");
+        if (data.length < offset) offset = 0; // truncated / rotated
+        const tail = data.slice(offset);
+        offset = data.length;
+        for (const line of tail.split("\n")) {
+          const m = pattern.exec(line);
+          if (m) {
+            finish({ timedOut: false, tag: m[1], line });
+            return;
+          }
+        }
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+      }
+    };
+
+    const attachWatcher = () => {
+      try {
+        watcher = fs.watch(eventsPath, { persistent: false }, scan);
+        // Catch the case where lines landed between existence check and watch attach.
+        scan();
+      } catch (e) {
+        if (e.code === "ENOENT") {
+          if (!pollTimer) {
+            pollTimer = setInterval(() => {
+              if (fs.existsSync(eventsPath)) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                attachWatcher();
+              }
+            }, 500);
+          }
+        } else {
+          throw e;
+        }
+      }
+    };
+
+    if (fs.existsSync(eventsPath)) {
+      scan();
+      if (!resolved) attachWatcher();
+    } else {
+      pollTimer = setInterval(() => {
+        if (fs.existsSync(eventsPath)) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          attachWatcher();
+        }
+      }, 500);
+    }
+
+    timer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
+  });
+}
+
+async function handleWait(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms"],
+    booleanOptions: ["json"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const reference = positionals[0] ?? "";
+  if (!reference) {
+    throw usageError("wait requires <job-id-or-thread-id>");
+  }
+
+  let job;
+  try {
+    job = resolveResultJob(cwd, reference).job;
+  } catch (err) {
+    if (err?.code === "JOB_NOT_FINISHED") {
+      job = buildSingleJobSnapshot(cwd, reference).job;
+    } else {
+      throw err;
+    }
+  }
+  if (!job?.threadId) {
+    throw notFoundError(
+      `Job ${job?.id ?? reference} has no thread id yet.`,
+      "JOB_HAS_NO_THREAD"
+    );
+  }
+
+  const config = getBridgeConfig();
+  const sessionDir = resolveSessionDir(config.session_dir);
+  const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
+  const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
+  const TERMINAL = /\[(DONE|ERROR|INCOMPLETE)\]/;
+
+  const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
+  if (result.timedOut) {
+    throw new CliError(
+      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1000)}s.`,
+      {
+        class: "timeout",
+        code: "WAIT_TIMEOUT",
+        retryable: true,
+        suggestion: "Run `status <job-id>` to inspect live state."
+      }
+    );
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  emitSuccess(
+    "wait",
+    {
+      jobId: job.id,
+      threadId: job.threadId,
+      terminalTag: result.tag,
+      lastEventLine: result.line,
+      eventsPath,
+      elapsedMs
+    },
+    `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1000)}s\n`,
+    { json: options.json, startedAt }
+  );
+}
+
 function handleTaskResumeCandidate(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
@@ -1954,6 +2103,7 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   summary: handleSummary,
   status: handleStatus,
   result: handleResult,
+  wait: handleWait,
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel
 });
