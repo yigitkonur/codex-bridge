@@ -37,6 +37,7 @@
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
+import { CliError } from "./cli-errors.mjs";
 import { binaryAvailable } from "./process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
@@ -981,7 +982,12 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
 export async function runAppServerReview(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `codex-bridge setup`.");
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
   }
 
   return withAppServer(cwd, async (client) => {
@@ -1037,7 +1043,12 @@ export async function runAppServerReview(cwd, options = {}) {
 export async function runAppServerTurn(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `codex-bridge setup`.");
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
   }
 
   return withAppServer(cwd, async (client) => {
@@ -1073,7 +1084,11 @@ export async function runAppServerTurn(cwd, options = {}) {
 
     const prompt = options.prompt?.trim() || options.defaultPrompt || "";
     if (!prompt) {
-      throw new Error("A prompt is required for this Codex run.");
+      throw new CliError("A prompt is required for this Codex run.", {
+        class: "validation",
+        code: "MISSING_PROMPT",
+        retryable: false
+      });
     }
 
     const turnParams = {
@@ -1149,7 +1164,12 @@ export async function runAppServerTurn(cwd, options = {}) {
 export async function findLatestTaskThread(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `codex-bridge setup`.");
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
   }
 
   return withAppServer(cwd, async (client) => {

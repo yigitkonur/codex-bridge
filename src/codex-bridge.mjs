@@ -950,11 +950,32 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
 
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
+    return readPromptFileOrThrow(path.resolve(cwd, options["prompt-file"]));
   }
 
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
+}
+
+function readPromptFileOrThrow(absPath) {
+  try {
+    return fs.readFileSync(absPath, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
+    }
+    if (err?.code === "EACCES" || err?.code === "EPERM") {
+      throw new CliError(`Cannot read prompt file (permission denied): ${absPath}`, {
+        class: "auth",
+        code: "PROMPT_FILE_PERMISSION",
+        retryable: false
+      });
+    }
+    if (err?.code === "EISDIR") {
+      throw validationError(`Prompt file path is a directory: ${absPath}`, "PROMPT_FILE_IS_DIRECTORY");
+    }
+    throw err;
+  }
 }
 
 function requireTaskRequest(prompt, resumeLast) {
@@ -1597,8 +1618,7 @@ async function handleCancel(argv) {
 
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    const p = path.resolve(cwd, options["prompt-file"]);
-    return fs.readFileSync(p, "utf8");
+    return readPromptFileOrThrow(path.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
     const candidate = path.resolve(cwd, positionals[0]);

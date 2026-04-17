@@ -58,9 +58,11 @@ const CODEX_ERROR_INFO = Object.freeze({
     suggestion: "Retry once; if it persists, check network connectivity to OpenAI."
   },
   ResponseTooManyFailedAttempts: {
-    class: "dependency_failed",
+    // Not a retryable transient — upstream already exhausted its own retries.
+    // Class as `internal` so exit code (1) matches `retryable:false`.
+    class: "internal",
     retryable: false,
-    suggestion: "Read the session log and try a different approach."
+    suggestion: "Read the session log and try a different approach — retrying will fail the same way."
   },
   Unauthorized: {
     class: "auth",

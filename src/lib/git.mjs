@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { CliError } from "./cli-errors.mjs";
 import { isProbablyText } from "./fs.mjs";
 import { formatCommandFailure, runCommand, runCommandChecked } from "./process.mjs";
 
@@ -78,10 +79,20 @@ export function ensureGitRepository(cwd) {
   const result = git(cwd, ["rev-parse", "--show-toplevel"]);
   const errorCode = result.error && "code" in result.error ? result.error.code : null;
   if (errorCode === "ENOENT") {
-    throw new Error("git is not installed. Install Git and retry.");
+    throw new CliError("git is not installed. Install Git and retry.", {
+      class: "dependency_failed",
+      code: "GIT_NOT_INSTALLED",
+      retryable: false,
+      suggestion: "Install Git (e.g. `brew install git` or your distro's package) and retry."
+    });
   }
   if (result.status !== 0) {
-    throw new Error("This command must run inside a Git repository.");
+    throw new CliError("This command must run inside a Git repository.", {
+      class: "validation",
+      code: "NOT_A_GIT_REPO",
+      retryable: false,
+      suggestion: "Run from within a Git working tree, or pass --cwd to point at one."
+    });
   }
   return result.stdout.trim();
 }
@@ -111,7 +122,12 @@ export function detectDefaultBranch(cwd) {
     }
   }
 
-  throw new Error("Unable to detect the repository default branch. Pass --base <ref> or use --scope working-tree.");
+  throw new CliError("Unable to detect the repository default branch.", {
+    class: "not_found",
+    code: "DEFAULT_BRANCH_NOT_FOUND",
+    retryable: false,
+    suggestion: "Pass `--base <ref>` explicitly, or use `--scope working-tree`."
+  });
 }
 
 export function getCurrentBranch(cwd) {
@@ -157,8 +173,14 @@ export function resolveReviewTarget(cwd, options = {}) {
   }
 
   if (!supportedScopes.has(requestedScope)) {
-    throw new Error(
-      `Unsupported review scope "${requestedScope}". Use one of: auto, working-tree, branch, or pass --base <ref>.`
+    throw new CliError(
+      `Unsupported review scope "${requestedScope}".`,
+      {
+        class: "validation",
+        code: "INVALID_SCOPE",
+        retryable: false,
+        suggestion: "Use one of: auto, working-tree, branch, or pass --base <ref>."
+      }
     );
   }
 
