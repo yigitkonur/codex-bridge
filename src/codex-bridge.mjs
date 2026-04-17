@@ -227,6 +227,14 @@ const COMMANDS = Object.freeze({
       "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
     ]
   },
+  events: {
+    synopsis: "events <job-id-or-thread-id> [--follow] [--filter <tags>] [--timeout-ms <ms>] [--json]",
+    summary: "Stream the target's events file; optional tag filter and follow mode. Lines go to stdout; --json adds a trailing envelope (both with and without --follow).",
+    examples: [
+      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE",
+      "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --filter PIPELINE,DONE,ERROR --timeout-ms 600000"
+    ]
+  },
   cancel: {
     synopsis: "cancel [job-id] [--json]",
     summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
@@ -1667,6 +1675,198 @@ async function handleWait(argv) {
   );
 }
 
+async function handleEvents(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "filter"],
+    booleanOptions: ["json", "follow"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const reference = positionals[0] ?? "";
+  if (!reference) {
+    throw usageError("events requires <job-id-or-thread-id>");
+  }
+
+  let job;
+  try {
+    job = resolveResultJob(cwd, reference).job;
+  } catch (err) {
+    if (err?.code === "JOB_NOT_FINISHED") {
+      job = buildSingleJobSnapshot(cwd, reference).job;
+    } else {
+      throw err;
+    }
+  }
+  if (!job?.threadId) {
+    throw notFoundError(
+      `Job ${job?.id ?? reference} has no thread id yet.`,
+      "JOB_HAS_NO_THREAD"
+    );
+  }
+
+  const config = getBridgeConfig();
+  const sessionDir = resolveSessionDir(config.session_dir);
+  const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
+
+  const filter = options.filter
+    ? new Set(
+        options.filter
+          .split(",")
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean)
+      )
+    : null;
+  const tagOf = (line) => {
+    // Match the leading bracketed tag. Tags use uppercase for the head but may
+    // carry a lowercase subtype after ":" (e.g. "[PIPELINE:review]"), so the
+    // inner class must permit lowercase too — filter scoping is head-only.
+    const m = /^\[([A-Za-z:]+)\]/.exec(line);
+    return m ? m[1].split(":")[0].toUpperCase() : null;
+  };
+  const passes = (line) => {
+    if (!filter) return true;
+    const tag = tagOf(line);
+    return tag != null && filter.has(tag);
+  };
+
+  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+
+  // Dump existing content (filtered). Track whether a terminal tag is already
+  // present so --follow can short-circuit on already-completed events files.
+  let initial = "";
+  let alreadyTerminal = false;
+  if (fs.existsSync(eventsPath)) {
+    initial = fs.readFileSync(eventsPath, "utf8");
+    for (const line of initial.split("\n")) {
+      if (!line) continue;
+      if (passes(line)) process.stdout.write(line + "\n");
+      if (TERMINAL.test(line)) alreadyTerminal = true;
+    }
+  }
+
+  const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
+
+  if (!options.follow || alreadyTerminal) {
+    emitSuccess(
+      "events",
+      {
+        jobId: job.id,
+        threadId: job.threadId,
+        eventsPath,
+        followed: Boolean(options.follow),
+        filter: options.filter ?? null
+      },
+      "",
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+
+  // Tail mode — follow appends until a terminal tag or the timeout.
+  let timedOut = false;
+  await new Promise((resolve) => {
+    let offset = initial.length;
+    let watcher = null;
+    let pollTimer = null;
+    let timer = null;
+    let done = false;
+
+    const finish = (reason) => {
+      if (done) return;
+      done = true;
+      if (reason === "timeout") timedOut = true;
+      if (watcher) watcher.close();
+      if (pollTimer) clearInterval(pollTimer);
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+
+    const scanAppended = () => {
+      let data;
+      try {
+        data = fs.readFileSync(eventsPath, "utf8");
+      } catch (e) {
+        if (e.code === "ENOENT") return;
+        throw e;
+      }
+      if (data.length < offset) offset = 0;
+      const tail = data.slice(offset);
+      offset = data.length;
+      const lines = tail.split("\n");
+      // The last element is either "" (trailing newline) or a partial line.
+      // Including partial lines would duplicate on the next scan; skip the
+      // final element to defer partials until a newline arrives.
+      for (let i = 0; i < lines.length - 1; i++) {
+        const line = lines[i];
+        if (!line) continue;
+        if (passes(line)) process.stdout.write(line + "\n");
+        if (TERMINAL.test(line)) return finish("terminal");
+      }
+    };
+
+    const attachWatcher = () => {
+      try {
+        watcher = fs.watch(eventsPath, { persistent: false }, scanAppended);
+        scanAppended();
+      } catch (e) {
+        if (e.code === "ENOENT") {
+          if (!pollTimer)
+            pollTimer = setInterval(() => {
+              if (fs.existsSync(eventsPath)) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                attachWatcher();
+              }
+            }, 500);
+        } else {
+          throw e;
+        }
+      }
+    };
+
+    if (fs.existsSync(eventsPath)) {
+      attachWatcher();
+    } else {
+      pollTimer = setInterval(() => {
+        if (fs.existsSync(eventsPath)) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          attachWatcher();
+        }
+      }, 500);
+    }
+
+    timer = setTimeout(() => finish("timeout"), timeoutMs);
+  });
+
+  if (timedOut && !options.json) {
+    throw new CliError(
+      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1000)}s.`,
+      {
+        class: "timeout",
+        code: "WAIT_TIMEOUT",
+        retryable: true,
+        suggestion: "Run `status <job-id>` to inspect live state."
+      }
+    );
+  }
+
+  emitSuccess(
+    "events",
+    {
+      jobId: job.id,
+      threadId: job.threadId,
+      eventsPath,
+      followed: true,
+      filter: options.filter ?? null,
+      timedOut
+    },
+    "",
+    { json: options.json, startedAt }
+  );
+}
+
 function handleTaskResumeCandidate(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
@@ -2104,6 +2304,7 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   status: handleStatus,
   result: handleResult,
   wait: handleWait,
+  events: handleEvents,
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel
 });
