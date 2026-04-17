@@ -1329,10 +1329,11 @@ async function runBridgeTask(request) {
       errorCode,
       message: errorMessage,
       phase: isPlanMode ? "plan" : "execution",
+      origin: "turn",
       scriptPath: SCRIPT_PATH,
       jobId: request.jobId ?? null,
     }));
-    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage });
+    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin: "turn" });
     setPhase("error", {
       command: `node ${SCRIPT_PATH} send ${result.threadId} "<revised prompt>"`,
       description: "Retry with an adjusted prompt, or cancel and start fresh."

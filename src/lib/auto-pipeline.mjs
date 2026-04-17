@@ -249,10 +249,13 @@ export async function runAutoPipeline(options) {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
 
+    const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
+    const origin = `pipeline:${lastStage}`;
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
       phase: `pipeline (completed: ${completedStages.join(", ")})`,
+      origin,
       scriptPath,
       jobId,
     }));
@@ -261,6 +264,7 @@ export async function runAutoPipeline(options) {
       completedStages,
       duration,
       error: errorMessage,
+      origin,
     });
 
     return {

@@ -154,10 +154,11 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
   return lines.join("\n");
 }
 
-export function formatErrorEvent(session, { errorCode, message, phase, scriptPath, jobId = null }) {
+export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", scriptPath, jobId = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
+    `  origin: ${origin}`,
     `  phase: ${phase || "unknown"}`,
     "  actions:",
     `    retry: node ${scriptPath} send ${session.threadId} "<revised prompt>"`,
