@@ -1651,6 +1651,11 @@ async function handleSend(argv) {
     aliasMap: { m: "mode" }
   });
 
+  const VALID_MODES = new Set(["plan", "default"]);
+  if (options.mode != null && !VALID_MODES.has(options.mode)) {
+    throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
+  }
+
   const startedAt = Date.now();
   const rawThreadId = positionals[0];
   if (!rawThreadId) {
