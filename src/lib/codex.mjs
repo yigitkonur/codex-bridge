@@ -31,7 +31,8 @@
  *   messages: Array<{ lifecycle: string, phase: string | null, text: string }>,
  *   fileChanges: ThreadItem[],
  *   commandExecutions: ThreadItem[],
- *   onProgress: ProgressReporter | null
+ *   onProgress: ProgressReporter | null,
+ *   onItemCompleted: ((item: ThreadItem, context: { threadId: string | null }) => void) | null
  * }} TurnCaptureState
  */
 import { readJsonFile } from "./fs.mjs";
@@ -329,7 +330,8 @@ function createTurnCaptureState(threadId, options = {}) {
     messages: [],
     fileChanges: [],
     commandExecutions: [],
-    onProgress: options.onProgress ?? null
+    onProgress: options.onProgress ?? null,
+    onItemCompleted: typeof options.onItemCompleted === "function" ? options.onItemCompleted : null
   };
 }
 
@@ -545,6 +547,14 @@ function applyTurnNotification(state, message) {
       {
         const update = describeCompletedItem(state, message.params.item);
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+      }
+      if (typeof state.onItemCompleted === "function") {
+        try {
+          state.onItemCompleted(message.params.item, { threadId: message.params.threadId ?? null });
+        } catch (err) {
+          // User callback must never kill the captor.
+          emitProgress(state.onProgress, `onItemCompleted threw: ${err?.message ?? err}`, null);
+        }
       }
       break;
     case "error": {
@@ -1128,7 +1138,8 @@ export async function runAppServerTurn(cwd, options = {}) {
       {
         onProgress: options.onProgress,
         idleTimeoutMs: options.idleTimeoutMs ?? null,
-        onIdleTimeout: options.onIdleTimeout ?? null
+        onIdleTimeout: options.onIdleTimeout ?? null,
+        onItemCompleted: options.onItemCompleted ?? null
       }
     );
 

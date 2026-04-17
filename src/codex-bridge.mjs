@@ -176,6 +176,69 @@ function buildMonitorHint({ eventsPath, jobId, threadId }) {
   };
 }
 
+// Extracts a small, retrospective-replay-friendly text preview from an
+// `item/completed` payload. Keep the slices tight — NDJSON is a transcript
+// replay store, not a verbatim mirror of the wire protocol.
+function extractItemText(item) {
+  if (!item || typeof item !== "object") return null;
+  switch (item.type) {
+    case "agentMessage":
+      return typeof item.text === "string" ? item.text.slice(0, 500) : null;
+    case "commandExecution":
+      return typeof item.command === "string" ? item.command.slice(0, 200) : null;
+    case "fileChange": {
+      // item.changes[] carries per-path details; summarize first change.
+      const changes = Array.isArray(item.changes) ? item.changes : [];
+      if (changes.length === 0) {
+        return typeof item.path === "string" ? item.path : null;
+      }
+      const first = changes[0] ?? {};
+      const kind = first.kind ?? first.change ?? first.op ?? "";
+      const path = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path}`.trim();
+      if (!summary) return null;
+      const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
+      return `${summary}${suffix}`.slice(0, 200);
+    }
+    case "plan":
+      if (typeof item.title === "string" && item.title.trim()) {
+        return item.title.slice(0, 200);
+      }
+      if (typeof item.text === "string") {
+        const firstLine = item.text.split("\n").find((line) => line.trim()) ?? "";
+        return firstLine ? firstLine.slice(0, 200) : null;
+      }
+      return null;
+    case "reasoning":
+      // Reasoning summaries are arrays of blocks; pick the first textual one.
+      if (typeof item.summary === "string") {
+        return item.summary.slice(0, 200);
+      }
+      if (Array.isArray(item.summary)) {
+        for (const section of item.summary) {
+          if (typeof section === "string" && section.trim()) {
+            return section.slice(0, 200);
+          }
+          if (section && typeof section === "object" && typeof section.text === "string" && section.text.trim()) {
+            return section.text.slice(0, 200);
+          }
+        }
+      }
+      return null;
+    case "mcpToolCall":
+      if (item.server || item.tool) {
+        return `${item.server ?? ""}/${item.tool ?? ""}`.slice(0, 200);
+      }
+      return null;
+    case "commandExecutionOutput":
+    case "webSearch":
+      if (typeof item.query === "string") return item.query.slice(0, 200);
+      return null;
+    default:
+      return null;
+  }
+}
+
 // Single source of truth for subcommand synopses. Every entry must match the
 // actual `booleanOptions` / `valueOptions` list in its handler; treat this
 // table as the CLI contract and update it in the same commit as any flag move.
@@ -1234,6 +1297,19 @@ async function runBridgeTask(request) {
         promptLength: info.promptLength,
         promptPreview: info.promptPreview
       });
+    },
+    onItemCompleted: (item, { threadId }) => {
+      // Persist a minimal record per completed item so `summary` can replay
+      // a per-turn transcript. Slices are intentionally tight; see
+      // `references/ndjson-guide.md`.
+      const effectiveThreadId = threadId ?? null;
+      if (!effectiveThreadId) return;
+      const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
+      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
+        itemId: item?.id ?? null,
+        itemType: item?.type ?? null,
+        text: extractItemText(item)
+      });
     }
   };
 
@@ -2113,6 +2189,16 @@ async function handleSend(argv) {
         hasOutputSchema: Boolean(info.turnParams.outputSchema),
         promptLength: info.promptLength,
         promptPreview: info.promptPreview
+      });
+    },
+    onItemCompleted: (item, { threadId: itemThreadId }) => {
+      const effectiveThreadId = itemThreadId ?? null;
+      if (!effectiveThreadId) return;
+      const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
+      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
+        itemId: item?.id ?? null,
+        itemType: item?.type ?? null,
+        text: extractItemText(item)
       });
     }
   };
