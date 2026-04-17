@@ -4,27 +4,30 @@
 
 ## Scope
 
-NDJSON captures a curated slice of the run — **not every wire-level notification.** `item/started` / `item/completed` / `item/delta` / `thread/started` / `turn/started` are **not** persisted. Per-item history (assistant messages, tool calls, reasoning, deltas) lives in the `.events` stream and in the `summary` command's output. NDJSON is for retrospective queries on turn outcomes, questions, pipeline stages, steers, and errors.
+NDJSON captures a curated slice of the run — **not every wire-level notification.** Per-item deltas (`item/agentMessage/delta`, `item/reasoning/*Delta`, etc.) and the bare `thread/started` / `turn/started` events are not persisted. Finalized `item/completed` events **are** persisted (as `ITEM_COMPLETED`), with a truncated `text` field sufficient for transcript replay. NDJSON is for retrospective queries on turn outcomes, per-item completions, questions, pipeline stages, steers, and errors.
 
 ## Persisted tags
 
 | Tag | When | Typical `data` fields | Writer |
 |-----|------|------------------------|--------|
 | `TURN_PARAMS` | Start of every Codex turn | `model`, `effort`, `collaborationMode`, `sandboxPolicy`, `hasOutputSchema`, `promptLength`, `promptPreview` | `src/codex-bridge.mjs::onTurnStart` |
-| `TURN_COMPLETED` | End of every Codex turn | `turnId`, `status` (0/non-zero), `planDetected`, `touchedFiles` | `src/codex-bridge.mjs` (line ~1227) |
+| `TURN_COMPLETED` | End of every Codex turn | `turnId`, `status` (0/non-zero), `planDetected`, `touchedFiles` | `src/codex-bridge.mjs` |
+| `ITEM_COMPLETED` | Every finalized item on the root thread | `itemId`, `itemType` (`agentMessage` \| `commandExecution` \| `fileChange` \| `plan` \| `reasoning` \| …), `text` (agentMessage ≤ 500 chars; commandExecution ≤ 200; fileChange = `"<op> <path>"`; plan = title / first line; otherwise `null`) | `runBridgeTask::onItemCompleted`, `handleSend::onItemCompleted` |
 | `QUESTION` | `item/tool/requestUserInput` arrived | `requestId`, `questions` | `runBridgeTask::onServerRequest` |
 | `CONFIRMED` | A pending question was answered via `respond` | `requestId` | `runBridgeTask::onServerRequest` |
 | `QUESTION_TIMEOUT` | Question timed out (default 5 min); empty answer was sent | `requestId` | `runBridgeTask::onServerRequest` |
 | `SERVER_RESPONSE` | `respond` CLI delivered a payload | `requestId`, `payload` | `handleRespond` |
 | `STEER` | `steer` CLI sent mid-turn guidance | `turnId`, `prompt` (120-char preview) | `handleSteer` |
-| `ERROR` | Turn failed with a Codex-reported error (`will_retry: false`) | `errorCode`, `message` | `src/codex-bridge.mjs` (line ~1257) |
+| `ERROR` | Turn failed with a Codex-reported error (`will_retry: false`) | `errorCode`, `message`, `origin` (`turn` or `pipeline:<stage>`) | `src/codex-bridge.mjs` |
 | `PIPELINE_STAGE` | Auto-pipeline entered a stage | `stage` ∈ `{diff, review, fix, check}`, optionally `findingCount` | `src/lib/auto-pipeline.mjs` |
-| `PIPELINE_COMPLETE` | Auto-pipeline finished cleanly | `completedStages`, `duration` | `src/lib/auto-pipeline.mjs` |
-| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `duration`, `error`, optional `stage` | `src/lib/auto-pipeline.mjs` |
+| `PIPELINE_COMPLETE` | Auto-pipeline finished cleanly | `completedStages`, `duration`, `complete` | `src/lib/auto-pipeline.mjs` |
+| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `duration`, `error`, `origin` (`pipeline:<stage>`) | `src/lib/auto-pipeline.mjs` |
 
-Tags not listed above (`THREAD_STARTED`, `TURN_STARTED`, `ITEM_STARTED`, `ITEM_COMPLETED`, `PLAN`, `REVIEW_START`, `REVIEW_END`, `DIFF`, `TIMEOUT`, `NOTIFICATION`) are **not** written by the current bridge. Don't grep for them.
+`ITEM_COMPLETED` is emitted for `task` and `send` turns. The `runAppServerReview` path (standalone `review` / `adversarial-review`) does **not** emit it — review output goes to stdout and the rendered markdown instead.
 
-In practice, a completed non-interactive task often has only `TURN_PARAMS` + `TURN_COMPLETED` + `PIPELINE_STAGE*` + `PIPELINE_COMPLETE` (or `PIPELINE_ERROR`). Questions, steers, and errors are optional.
+Tags not listed above (`THREAD_STARTED`, `TURN_STARTED`, `ITEM_STARTED`, `PLAN`, `REVIEW_START`, `REVIEW_END`, `DIFF`, `TIMEOUT`, `NOTIFICATION`) are **not** written by the current bridge. Don't grep for them.
+
+In practice, a completed non-interactive task often has `TURN_PARAMS` + several `ITEM_COMPLETED` + `TURN_COMPLETED` + `PIPELINE_STAGE*` + `PIPELINE_COMPLETE` (or `PIPELINE_ERROR`). Questions, steers, and errors are optional.
 
 ## File layout
 
@@ -64,6 +67,15 @@ jq 'select(.tag == "QUESTION" or .tag == "CONFIRMED" or .tag == "QUESTION_TIMEOU
 
 # Errors (only written when will_retry is false)
 jq 'select(.tag == "ERROR")' < session.ndjson
+
+# Rebuild an assistant-text transcript (replay-friendly)
+jq -r 'select(.tag == "ITEM_COMPLETED" and .data.itemType == "agentMessage") | "\(.ts[11:19]) \(.data.text)"' < session.ndjson
+
+# Every shell command Codex ran
+jq -r 'select(.tag == "ITEM_COMPLETED" and .data.itemType == "commandExecution") | "\(.ts[11:19]) $ \(.data.text)"' < session.ndjson
+
+# Branch errors by origin (pipeline sub-stage vs main turn)
+jq 'select(.tag == "ERROR" or .tag == "PIPELINE_ERROR") | {tag, origin: .data.origin, error: (.data.error // .data.message)}' < session.ndjson
 ```
 
 ## For detailed per-turn history

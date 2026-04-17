@@ -14,6 +14,13 @@ Codex-bridge maps every failure to a semantic exit code and a structured error e
 | 7 | `rate_limit` / `timeout` / `network` / `dependency_failed` | **Depends** | `rate_limit` / `timeout` / `network`: retry with backoff. `dependency_failed`: inspect `error.code` and `error.retryable` — some variants (e.g. `CODEX_UNAVAILABLE`, `GIT_NOT_INSTALLED`) are not retryable. |
 | 1 | `internal` | Maybe | Crash / uncategorized. Escalate. |
 
+### CLI-boundary codes introduced in the current build
+
+- `INVALID_THREAD_ID` — validation, exit 6. `send`/`steer` rejected a non-UUID thread id. Suggestion points at the canonical UUID v7 shape (`019d9a86-1c8a-7f41-8032-6c76bbe730a1`); no `thr_` prefix.
+- `WAIT_TIMEOUT` — timeout, exit 7. `wait` exceeded `--timeout-ms` with no terminal tag. `retryable: true` — agents may re-dispatch after checking `status <id>`.
+- `REVIEW_EMPTY_DIFF` — validation, exit 6. `review --scope working-tree` (or `--scope auto` resolving there) against a clean tree and index. No billed Codex turn is spent; make a change and retry.
+- `UNKNOWN_SUBCOMMAND` — usage, exit 2. Typo at the subcommand slot. The envelope is emitted even without `--json`; agents should fall back to `help --json` to enumerate valid subcommands.
+
 ## Codex `codexErrorInfo` → Exit Code
 
 Task or review Codex turns may fail with a typed error from Codex itself. The bridge translates:
@@ -88,4 +95,4 @@ Codex app-server process exited unexpectedly.
 | Auto-pipeline total | 15 minutes (`PIPELINE_TIMEOUT_MS = 900_000`) |
 | No-event idle | 2 minutes (`idleTimeoutMs = 120_000`, per-turn) |
 
-A timeout fires a `ClientTimeout` error to the events file as `[ERROR] {threadId} failed | ClientTimeout`. The message payload uses milliseconds (e.g. `auto-review exceeded 300000ms`); don't match on `"300s"` or `"5m"`.
+A timeout fires a `ClientTimeout` error to the events file as `[ERROR] {threadId} failed | ClientTimeout`. The rendered message uses seconds/minutes (`Xs` under 60 s, `Xm` for whole minutes, `XmYYs` for mixed — e.g. `auto-review exceeded 5m`, `auto-fix exceeded 7m30s`). The underlying `TimeoutError` instance preserves the raw `timeoutMs` integer as a field — machine consumers should read `.timeoutMs` rather than parse the string. Every `[ERROR]` block also carries an `origin:` line (`turn` or `pipeline:<stage>`); pipeline-origin timeouts may coexist with a success envelope whose `phase: "incomplete"`.

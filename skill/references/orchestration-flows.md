@@ -27,6 +27,19 @@ For failures, read `error.code` and `error.class` from the error envelope, then 
 
 Sync is **not** the right choice when Codex may ask a question via `requestUserInput` — the worker blocks waiting for a separate `respond` process, which only exists in the async flow. Use Monitor for anything interactive.
 
+### Skipping the plan turn
+
+Pass `--mode default` on `task` to bypass the plan phase entirely and start executing directly. Combine with `--write` for `workspaceWrite`:
+
+```
+task --mode default --write "Trivial typo fix"
+  → Execution turn (no plan turn)
+  → [PIPELINE:review] → [PIPELINE:check]
+  → [DONE] notification
+```
+
+Foreground-only. `task --background --mode default` stores the override in the job record but the detached worker still uses `config.mode` — prefer the foreground path when you need the override to take effect, or set `config.mode: "default"` in `config.yaml` before launching background tasks.
+
 ## Simple Task (no questions)
 
 ```
@@ -78,6 +91,35 @@ task --write "prompt"
   → You decide: send follow-up OR start new task
 ```
 
+If the pipeline timed out rather than the completion check coming back negative, expect an `[ERROR]` with `origin: pipeline:<stage>` *and* a success envelope carrying `phase: "incomplete"` + `result.pipeline.error`. The task turn itself may have succeeded — read the envelope before retrying.
+
+## Following events with the built-in stream
+
+Use when you want to tail progress without hand-rolling `tail -f`. Steers tooling toward the CLI-native path.
+
+```
+task --background --write "prompt"      → jobId + result.monitor hint
+  → events <jobId> --follow \
+           --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION \
+           --timeout-ms 600000          → line-stream of tagged events
+  → self-terminates on terminal tag
+  → result <jobId> --json               → full rendered result + stored job record
+```
+
+The `result.monitor.tool_hint` object in the launch payload has the exact shape the `Monitor` tool expects — paste it directly.
+
+## Waiting without streaming
+
+When the agent only needs the terminal signal and doesn't care about intermediate tags:
+
+```
+task --background --write "prompt"      → jobId
+  → wait <jobId> --timeout-ms 600000 --json   → {terminalTag, elapsedMs, …}
+  → result <jobId> --json                     → optional: full result envelope
+```
+
+Exit 7 `WAIT_TIMEOUT` on deadline. Cheapest blocking primitive.
+
 ## Standalone Review
 
 ```
@@ -117,7 +159,7 @@ task --write "prompt"
   → Review the diff, send follow-ups if needed
 ```
 
-This is not a failure — it means Codex decided the task was clear enough to execute directly. The diff and session files are still valid.
+This is not a failure — it means Codex decided the task was clear enough to execute directly. The diff and session files are still valid. Passing `--mode default` on the foreground path bypasses the plan/no-plan ambiguity entirely by short-circuiting the plan turn.
 
 ## Codex Asks Questions via Text (not requestUserInput)
 

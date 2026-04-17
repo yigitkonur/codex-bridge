@@ -62,7 +62,7 @@ A synchronous `task --json` call returns the same lifecycle outcome as a single 
 
 **Important:** Codex has its own internal skills that may override plan mode behavior. It may skip planning and go directly to execution, or ask questions via text instead of the `requestUserInput` tool. If `[PLAN]` never arrives and `[DONE]` appears instead, Codex executed without planning — review the diff and send follow-ups as needed.
 
-**Timeout:** The bridge has a 120 s idle watchdog — if no app-server events arrive for that long, an `[ERROR] … | ClientTimeout` is written and Monitor self-terminates. If Monitor is silent and `status <job-id>` shows `running` for more than ~2 minutes, the task is stuck. `cancel <job-id>` recovers. (`status`/`result`/`cancel` resolve **job** ids, not thread ids; `send`/`steer` take thread ids. Run `status` with no argument to see the latest job id.)
+**Timeout:** The bridge has a 120 s idle watchdog — if no app-server events arrive for that long, an `[ERROR] … | ClientTimeout` is written and Monitor self-terminates. If Monitor is silent and `status <id>` shows `running` for more than ~2 minutes, the task is stuck. `cancel <id>` recovers. (`status`/`result`/`cancel` accept either a job id or the thread UUID; `send`/`steer` take thread ids. Run `status` with no argument to see the latest job id.)
 
 **Heads up — `[ERROR]` is ambiguous:** the events-file `[ERROR]` fires for *any* turn-level failure, including an auto-pipeline sub-stage timeout, while the sync `task --json` envelope for the same run can still report `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` populated. Monitor self-terminates either way; treat `[ERROR]` as "something broke, read the pipeline field before retrying".
 
@@ -75,7 +75,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --prompt-file pro
 
 The positional form takes **text**, not a path; use `--prompt-file` to load from disk.
 
-**`--write` is not enough to enable file writing on the first turn.** With the default `mode: plan`, the task runs against a `readOnly` sandbox and `--write` has no effect until a `send <thread-id> --mode default …` approves the plan. To go straight to execution, set `mode: "default"` in `config.yaml` first — `task` itself has no `--mode` flag.
+**`--write` is not enough to enable file writing on the first turn.** With the default `mode: plan`, the task runs against a `readOnly` sandbox and `--write` has no effect until a `send <thread-id> --mode default …` approves the plan. To go straight to execution, pass `--mode default` on the `task` invocation — the flag overrides `config.mode` for that single run. Foreground only: `task --background --mode default` stores the override in the job record but the detached worker still reads `config.mode`. Config remains the session-wide default.
 
 The task starts in plan mode by default. Output includes:
 - Thread ID — UUID v7, e.g. `019d9a86-1c8a-7f41-8032-6c76bbe730a1` (not `thr_abc…`; do not pattern-match on a prefix)
@@ -100,12 +100,20 @@ test -f "$EVENTS_FILE" && echo "ready"
 # Step 4: Set up Monitor (self-terminating on [DONE]/[ERROR]/[INCOMPLETE])
 ```
 
-Monitor command pattern:
+Monitor command pattern (two equivalent variants — prefer the first):
 ```bash
+# Preferred: CLI-native, handles file rotation, prefix-aware filter,
+# self-terminates on any terminal tag (even if already written).
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs events "$JOB_ID" \
+  --follow --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION --timeout-ms 600000
+
+# Fallback shell form.
 tail -f "$EVENTS_FILE" | while IFS= read -r line; do echo "$line"; case "$line" in *"[DONE]"*|*"[ERROR]"*|*"[INCOMPLETE]"*) break ;; esac; done
 ```
 
-Use `timeout_ms: 600000` (10 min) as a safety net. If Monitor times out with no terminal tag, the task is likely stuck — run `status <job-id>` to check (or bare `status` to list the session's jobs), then `cancel <job-id>` if needed. `status`, `result`, and `cancel` resolve **job ids** (e.g. `task-mo2n0i8z-cbefzo`), not thread ids.
+Every `task --json` launch payload now returns `result.monitor` — paste `result.monitor.command` directly into a shell, or use `result.monitor.tool_hint` (keys: `description`, `command`, `timeout_ms`, `persistent`) as the argument object for the Claude Code `Monitor` tool.
+
+Use `timeout_ms: 600000` (10 min) as a safety net. If Monitor times out with no terminal tag, the task is likely stuck — run `status <id>` to check (or bare `status` to list the session's jobs), then `cancel <id>` if needed. `status`, `result`, and `cancel` accept **either** a job id (e.g. `task-mo2n0i8z-cbefzo`) or the thread UUID — both resolve to the same job. `send` and `steer` take thread ids.
 
 ## Responding to Events
 
@@ -137,7 +145,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs send <thread-id> "Use dark the
 The notification includes file change summary, diff path, and action commands. You can:
 - Run a standalone review: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs review`
 - Send a follow-up: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs send <thread-id> "also add tests"`
-- Read the full result: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs result <job-id>` (job id is embedded in the `[DONE]` action line; `result` does not resolve thread ids)
+- Read the full result: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs result <job-id-or-thread-id>` (the `[DONE]` action line prints the job id; `result` also accepts the thread UUID directly).
 
 ### [INCOMPLETE] — Completion check found gaps
 
@@ -148,7 +156,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs send <thread-id> "Complete the
 
 ### [ERROR] — Something failed
 
-The notification includes the error type and recovery suggestions.
+The notification includes the error type and recovery suggestions. Each `[ERROR]` block now carries an `origin:` line — `origin: turn` for main-turn failures, `origin: pipeline:<stage>` for auto-pipeline sub-stage failures (review / fix / check). Use it to branch: pipeline-origin errors can coexist with a success envelope whose `result.phase: "incomplete"` and `result.pipeline.error` set, so read the sync envelope before retrying.
 
 ## Standalone Review
 
@@ -164,6 +172,19 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs adversarial-review "focus on S
 ```bash
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs steer <thread-id> <turn-id> "Focus on auth first"
 ```
+
+### Blocking on terminal tags
+```bash
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs wait <job-id-or-thread-id> --timeout-ms 600000 --json
+```
+Blocks on `.events` via `fs.watch`; returns `{jobId, threadId, terminalTag, lastEventLine, elapsedMs, eventsPath}`. Exits 7 `WAIT_TIMEOUT` on deadline. Prefer this over `status --wait` when you only need the terminal signal (no intermediate streaming).
+
+### Streaming events with filters
+```bash
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs events <job-id-or-thread-id> --follow \
+  --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION --timeout-ms 600000
+```
+Dumps `.events` then follows appends. Tag filter is prefix-aware (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, …). `--follow` self-terminates on any terminal tag (even if already present in the initial dump). Without `--follow`, the command dumps once and exits.
 
 ### Retrospective analysis
 ```bash
@@ -195,7 +216,7 @@ See [references/config-reference.md](references/config-reference.md) for full do
 Each task can produce up to four artifacts in `~/.codex-bridge/sessions/` (or `config.session_dir`):
 
 - `{threadId}.events` — Monitor tails this. Tags actually emitted today: `[DONE]` `[ERROR]` `[INCOMPLETE]` `[PLAN]` `[QUESTION]` `[CONFIRMED]` `[PIPELINE:diff|review|fix|check]`.
-- `{threadId}.ndjson` — Curated retrospective log (turn params, turn completion, questions, confirmations, steers, errors, pipeline stages). Not every wire notification is logged.
+- `{threadId}.ndjson` — Curated retrospective log: turn params, turn completion, per-item completions (`ITEM_COMPLETED` — assistant messages, tool calls, file changes, plans), questions, confirmations, steers, errors, and pipeline stages. Not every wire notification is logged.
 - `{threadId}.diff` — `git diff HEAD` snapshot captured by the pipeline.
 - `{threadId}.plan.md` — Written only when Codex emits a structured `item/completed` with `type: "plan"`. When Codex's internal skills route around formal planning, this file is absent.
 

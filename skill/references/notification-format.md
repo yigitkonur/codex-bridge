@@ -18,12 +18,15 @@ Every notification has three parts: **Status** (what happened), **Evidence** (da
     detail: node {scriptPath} result {jobId}
 ```
 
-`send`/`steer` take **thread** ids. `result`/`cancel`/`status` take **job** ids. The `jobId` embedded in the action line points at the specific tracked job this event was written for — use it verbatim instead of the thread id.
+`send`/`steer` take **thread** ids. `result`/`cancel`/`status` accept **either** a job id or the thread UUID; the `jobId` embedded in the action line is deterministic and job-specific — use it verbatim when available.
+
+Every `task --json` launch also returns `result.monitor.{command, shell_fallback, terminal_tags, timeout_ms, tool_hint}` — a ready-to-paste `events --follow` invocation plus a `tool_hint` object shaped for the Claude Code `Monitor` tool. Prefer it over hand-rolling `tail -f`.
 
 ### [ERROR]
 ```
 [ERROR] {threadId} failed | {errorCode}
   {errorMessage}
+  origin: {origin}
   phase: {currentPhase}
   actions:
     retry: node {scriptPath} send {threadId} "<revised prompt>"
@@ -33,7 +36,9 @@ Every notification has three parts: **Status** (what happened), **Evidence** (da
 
 `{errorCode}` is the raw Codex `codexErrorInfo` variant (e.g. `ClientTimeout`, `ResponseTooManyFailedAttempts`, `ActiveTurnNotSteerable`, `Unauthorized`) — not a shortened alias. Exit codes follow the mapping in `error-recovery.md`.
 
-`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 300000ms` with `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — so read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared.
+`{origin}` is `turn` for main-turn failures and `pipeline:<stage>` (where `<stage>` is the last completed pipeline stage — `diff`, `review`, `fix`, or `check`) for auto-pipeline sub-stage failures. The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) also carry `data.origin` with the same values.
+
+`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:review` + `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` in tooling.
 
 ### [INCOMPLETE]
 ```

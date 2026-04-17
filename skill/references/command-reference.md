@@ -53,6 +53,15 @@ Progress lines (`[codex] …`) always go to **stderr**; stdout is reserved for t
 
 `error.class` maps 1:1 to exit code (see table above). `error.code` is a stable SCREAMING_SNAKE_CASE token you can switch on. `ok` is a single universal branch key across every subcommand.
 
+Every CLI-boundary error returns this envelope, including **unknown subcommands** (routed through `error.code: "UNKNOWN_SUBCOMMAND"`, class `usage`, exit 2) and **unknown flags** (`USAGE_ERROR`, exit 2). An agent can parse stdout as JSON on any failure path when `--json` is requested, or detect the same `USAGE_ERROR` anywhere in argv (`--json`, `-j`) on the unknown-subcommand branch.
+
+Codes introduced in the current build:
+
+- `INVALID_THREAD_ID` (validation, 6) — `send`/`steer` rejected a non-UUID thread id before any Codex call.
+- `WAIT_TIMEOUT` (timeout, 7) — `wait` exceeded `--timeout-ms` without a terminal tag.
+- `REVIEW_EMPTY_DIFF` (validation, 6) — `review --scope working-tree` (or `--scope auto` resolving there) on a clean tree + index.
+- `UNKNOWN_SUBCOMMAND` (usage, 2) — typo at the subcommand slot.
+
 ### Codex turn failures
 
 When a task or review Codex turn fails, the exit code is mapped from Codex's own error taxonomy:
@@ -88,14 +97,16 @@ A failed `task --json` **does not** return a success envelope with `phase=error`
 Start a new Codex task. Default: plan mode, read-only sandbox, foreground.
 
 ```
-codex-bridge task [--write] [--effort <level>] [-m <model>] [--prompt-file <path>]
-                  [--resume | --resume-last] [--fresh] [--background] [--json] [prompt or file.md]
+codex-bridge task [--write] [--effort <level>] [--mode <plan|default>] [-m <model>]
+                  [--prompt-file <path>] [--resume | --resume-last] [--fresh]
+                  [--background] [--json] [prompt or file.md]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--write` | Enable file writing (workspace-write sandbox) |
+| `--write` | Enable file writing (workspace-write sandbox when the turn is in default mode) |
 | `--effort <level>` | Reasoning effort: none, minimal, low, medium, high, xhigh |
+| `--mode <plan\|default>` | Override `config.mode` for this single run. Rejected with `USAGE_ERROR` (exit 2) for any other value. |
 | `-m, --model <name>` | Upstream model; `spark` resolves to `gpt-5.3-codex-spark` |
 | `--prompt-file <path>` | Read prompt from file instead of argv/stdin |
 | `--resume`, `--resume-last` | Continue the latest tracked thread for this session |
@@ -104,7 +115,9 @@ codex-bridge task [--write] [--effort <level>] [-m <model>] [--prompt-file <path
 
 Plan mode always forces `effort: xhigh`. Empty prompts fail fast with exit 6 — no billed Codex turn.
 
-**`task` has no `--mode` flag.** The default `mode: plan` from `config.yaml` is the only lever for starting in plan mode; to go straight to execution, set `codex_bridge.mode: "default"` in `config.yaml` first. Otherwise the first turn runs in plan mode with a `readOnly` sandbox and `--write` has no effect until a subsequent `send … --mode default` approves the plan.
+`--mode default` + `--write` on the **foreground path** skips the plan turn and runs execution directly under the `workspaceWrite` sandbox. On the **background path** (`--background`), the override is stored in the job record but the detached worker still reads `config.mode`; use `--mode` only on foreground launches.
+
+Every `task` launch success envelope includes `result.monitor = { command, shell_fallback, terminal_tags, timeout_ms, tool_hint }`. `result.monitor.command` is a ready-to-paste `node <scriptPath> events <jobId> --follow --filter …` invocation; `result.monitor.tool_hint` is the argument object for the `Monitor` tool (`description`, `command`, `timeout_ms`, `persistent`).
 
 Thread IDs returned by `task` are UUID v7 strings (e.g. `019d9a86-1c8a-7f41-8032-6c76bbe730a1`). There is no `thr_` prefix; do not build regexes that assume one.
 
@@ -124,6 +137,8 @@ codex-bridge send <thread-id> [--mode <plan|default>] [--effort <level>] [--json
 Plan approval: `send <thread-id> --mode default "Implement the plan."`
 Plan revision: `send <thread-id> "Revise step 2: ..."`
 
+`send` validates `--mode` (must be `plan` or `default`; else exit 2 `USAGE_ERROR`) and the thread-id shape (must be a UUID v7 / 8-4-4-4-12 hex; else exit 6 `INVALID_THREAD_ID`) before any Codex call.
+
 ## steer
 
 Send mid-turn guidance to an active Codex turn.
@@ -132,7 +147,7 @@ Send mid-turn guidance to an active Codex turn.
 codex-bridge steer <thread-id> <turn-id> [prompt or file.md]
 ```
 
-Cannot steer review or compaction turns (app-server rejects with -32600).
+Cannot steer review or compaction turns (app-server rejects with -32600). Thread-id is pre-validated (UUID v7); malformed ids exit 6 `INVALID_THREAD_ID`.
 
 ## respond
 
@@ -151,7 +166,7 @@ codex-bridge respond <request-id> --json-payload '{"answers":{"q1":{"answers":["
 
 ## review
 
-Run a standalone code review using Codex's built-in reviewer. **This runs a billed Codex turn** (not a local diff probe); expect 30–180 s and tokens proportional to the diff size. No-op short-circuit when the diff is empty is not implemented — check `git diff --quiet` first if you want to avoid a wasted review.
+Run a standalone code review using Codex's built-in reviewer. **This runs a billed Codex turn** (not a local diff probe); expect 30–180 s and tokens proportional to the diff size.
 
 ```
 codex-bridge review [--scope <auto|working-tree|branch>] [--base <ref>] [-m <model>] [--json]
@@ -163,6 +178,8 @@ codex-bridge review [--scope <auto|working-tree|branch>] [--base <ref>] [-m <mod
 | `--scope working-tree` | Review uncommitted changes |
 | `--scope branch` | Review branch vs base |
 | `--base <ref>` | Base branch for comparison (auto-detects main/master/trunk) |
+
+`--scope working-tree` (and `--scope auto` when it resolves to working-tree) **short-circuits with exit 6 `REVIEW_EMPTY_DIFF`** when both `git diff --quiet` and `git diff --cached --quiet` succeed — no billed turn. `--scope branch` does not short-circuit.
 
 Focus text is not accepted by `review`. Use `adversarial-review` for custom focus.
 
@@ -190,10 +207,10 @@ codex-bridge summary <thread-id> [--tail <n>] [--json]
 
 ## status
 
-Check job status.
+Check job status. The positional accepts either a job id (e.g. `task-mo2n0i8z-cbefzo`) or the thread UUID — the resolver tries id-exact, then thread-id-exact, then id-prefix.
 
 ```
-codex-bridge status [job-id] [--all] [--wait] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]
+codex-bridge status [job-id-or-thread-id] [--all] [--wait] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]
 ```
 
 | Flag | Description |
@@ -205,19 +222,63 @@ codex-bridge status [job-id] [--all] [--wait] [--timeout-ms <ms>] [--poll-interv
 
 ## result
 
-Get the full result of a completed job.
+Get the full result of a completed job. Accepts either a job id or the thread UUID.
 
 ```
-codex-bridge result [job-id] [--json]
+codex-bridge result [job-id-or-thread-id] [--json]
 ```
 
 ## cancel
 
-Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.
+Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree. Accepts either a job id or the thread UUID.
 
 ```
-codex-bridge cancel [job-id] [--json]
+codex-bridge cancel [job-id-or-thread-id] [--json]
 ```
+
+## wait
+
+Block until the target job's events file emits `[DONE]`, `[ERROR]`, or `[INCOMPLETE]`. Uses `fs.watch` plus a 500 ms poll fallback; cheaper and more reliable than `status --wait` when you only need the terminal signal.
+
+```
+codex-bridge wait <job-id-or-thread-id> [--timeout-ms <ms>] [--json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--timeout-ms <ms>` | Overall deadline (default 600000 = 10 min). Exit 7 `WAIT_TIMEOUT` on expiry. |
+| `--json` | Emit the standard success envelope on stdout when a terminal tag appears. |
+
+Success payload shape:
+```json
+{
+  "jobId": "task-...",
+  "threadId": "019d...",
+  "terminalTag": "DONE" | "ERROR" | "INCOMPLETE",
+  "lastEventLine": "[DONE] 019d... completed in 4s | 1 files | +2 -0",
+  "eventsPath": "/abs/path/to/events",
+  "elapsedMs": 3214
+}
+```
+
+Known gap: when the target thread never writes an events file (e.g. a cancelled-before-start job), `wait` currently resolves with null fields instead of raising `WAIT_TIMEOUT`. Prefer `wait` against threads that have at least begun executing; use `status --wait` for the deeper lifecycle.
+
+## events
+
+Stream the target's `.events` file to stdout, with optional tag filter and follow mode. Steers agents toward a line-delimited event stream without the need for a hand-rolled `tail -f` pipeline.
+
+```
+codex-bridge events <job-id-or-thread-id> [--follow] [--filter <tags>] [--timeout-ms <ms>] [--json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--follow` | Keep watching for appended lines; self-terminates on any terminal tag (even if already present in the initial dump). |
+| `--filter <tags>` | Comma-separated tag prefixes; only matching lines are emitted. `PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, etc. Case-insensitive. |
+| `--timeout-ms <ms>` | Deadline for `--follow`; default 600000. |
+| `--json` | Emits a trailing success envelope (`result.followed`, `result.filter`, `result.eventsPath`) after streaming lines. |
+
+Without `--follow`, the command dumps existing lines (filtered) and exits 0. Line stream is verbatim text; `--json` does not convert line format — consumers parse the `[TAG]` prefix themselves or pair with `summary` for structured output.
 
 ## setup
 

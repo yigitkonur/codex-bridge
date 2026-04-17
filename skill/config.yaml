@@ -2,6 +2,11 @@ codex_bridge:
   # Collaboration mode: "plan" (default) or "default"
   # "plan" — Codex plans first, Claude approves, then executes
   # "default" — Codex executes directly (may ask questions if allow_questions: true)
+  #
+  # Override on a single run with `codex-bridge task --mode <plan|default> …`.
+  # Foreground only: `task --background --mode …` stores the override in the
+  # job record but the detached worker reads this value, so switching modes
+  # for background launches requires editing the file.
   mode: "plan"
 
   # Default model (inherits from Codex config if not set here)
