@@ -1,5 +1,6 @@
 node_modules/
 skill/scripts/codex-bridge.mjs
+skill/app-server-broker.mjs
 skill/prompts/
 skill/schemas/
 skill/templates/

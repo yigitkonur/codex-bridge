@@ -1,0 +1,38 @@
+codex_bridge:
+  # Collaboration mode: "plan" (default) or "default"
+  # "plan" — Codex plans first, Claude approves, then executes
+  # "default" — Codex executes directly (may ask questions if allow_questions: true)
+  mode: "plan"
+
+  # Default model (inherits from Codex config if not set here)
+  # model: "gpt-5.4"
+
+  # Execution reasoning effort: none | minimal | low | medium | high | xhigh
+  # Plan mode always uses xhigh regardless of this setting
+  effort: "high"
+
+  # Run automatic review after task completion
+  auto_review: true
+
+  # Prompt sent after task + review to check completeness
+  # Set to empty string to disable completion check
+  post_task_prompt: |
+    Review your own work critically:
+    1. Is this task 100% complete?
+    2. Are there any edge cases you missed?
+    3. Did you run all relevant tests?
+    List any unfinished items.
+
+  # Allow Codex to ask questions during execution (Default mode only)
+  # In Plan mode, questions are always enabled
+  allow_questions: true
+
+  # Session log directory
+  session_dir: "~/.codex-bridge/sessions"
+
+  # Footer appended to every prompt — instructs Codex to use requestUserInput tool
+  # for questions instead of asking via plain text messages
+  prompt_footer: >
+    When you need to ask a question to user, always use the request_user_input
+    tool with distinct options to help the user navigate choices. Never ask
+    questions as plain text messages.
