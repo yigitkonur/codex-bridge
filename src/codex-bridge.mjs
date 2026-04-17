@@ -165,16 +165,16 @@ const COMMANDS = Object.freeze({
   },
   send: {
     synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--json] [prompt or file.md]",
-    summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups.",
+    summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task.",
     examples: [
-      'codex-bridge send thr_abc --mode default "Implement the plan."',
-      'codex-bridge send thr_abc "Revise step 2: use token bucket instead"'
+      'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --mode default "Implement the plan."',
+      'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 "Revise step 2: use token bucket instead"'
     ]
   },
   steer: {
     synopsis: "steer <thread-id> <turn-id> [prompt or file.md]",
-    summary: "Send mid-turn guidance to an active Codex turn. Not valid for review/compaction turns.",
-    examples: ['codex-bridge steer thr_abc turn_xyz "Focus on auth first"']
+    summary: "Send mid-turn guidance to an active Codex turn. Not valid for review/compaction turns. Both ids are UUIDs.",
+    examples: ['codex-bridge steer 019d9a86-1c8a-7f41-8032-6c76bbe730a1 019d9a86-2012-7152-bcc9-228a263d286a "Focus on auth first"']
   },
   respond: {
     synopsis: "respond <request-id> (--question-id <qid> --answer <answer> | --json-payload <json>) [--json]",
@@ -203,7 +203,7 @@ const COMMANDS = Object.freeze({
   summary: {
     synopsis: "summary <thread-id> [--tail <n>] [--json]",
     summary: "Generate a readable transcript from the NDJSON session log (default tail=200).",
-    examples: ["codex-bridge summary thr_abc --tail 400"]
+    examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
     synopsis: "status [job-id] [--all] [--wait] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
