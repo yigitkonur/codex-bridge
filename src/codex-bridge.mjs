@@ -181,10 +181,11 @@ function buildMonitorHint({ eventsPath, jobId, threadId }) {
 // table as the CLI contract and update it in the same commit as any flag move.
 const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground.",
+    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--json] [prompt or file.md]",
+    summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
+      'codex-bridge task --mode default --write "Trivial typo fix"',
       "codex-bridge task --prompt-file prompt.md --effort high --write",
       "codex-bridge task --resume-last --write",
       'codex-bridge task --background --write "Rewrite tests" --json'
@@ -1000,7 +1001,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId, mode }) {
   return {
     cwd,
     model,
@@ -1008,7 +1009,8 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
-    jobId
+    jobId,
+    mode: mode ?? null
   };
 }
 
@@ -1195,8 +1197,9 @@ async function runBridgeTask(request) {
   const sessionDir = resolveSessionDir(config.session_dir);
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
 
-  // Override params based on config
-  const isPlanMode = config.mode === "plan" && !request.resumeLast;
+  // Override params based on config. Request-level `mode` (from --mode) wins over config.yaml.
+  const effectiveMode = request.mode ?? config.mode ?? "plan";
+  const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
 
   // Append prompt footer from config (instructs Codex to use requestUserInput tool)
   const promptWithFooter = config.prompt_footer
@@ -1416,12 +1419,17 @@ function extractPlanSteps(planText) {
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "mode"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
     }
   });
+
+  const VALID_MODES = new Set(["plan", "default"]);
+  if (options.mode != null && !VALID_MODES.has(options.mode)) {
+    throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
+  }
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
@@ -1457,7 +1465,8 @@ async function handleTask(argv) {
       prompt,
       write,
       resumeLast,
-      jobId: job.id
+      jobId: job.id,
+      mode: options.mode ?? null
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -1479,6 +1488,7 @@ async function handleTask(argv) {
         write,
         resumeLast,
         jobId: job.id,
+        mode: options.mode ?? null,
         onProgress: progress
       }),
     { json: options.json, startedAt, command: "task" }
