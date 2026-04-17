@@ -30,7 +30,8 @@ Task or review Codex turns may fail with a typed error from Codex itself. The br
 | `ClientTimeout` (transport went silent) | timeout | 7 |
 | `ProcessDeath` (Codex app-server exited) | dependency_failed | 7 |
 | `InternalServerError` | dependency_failed | 7 |
-| `ResponseTooManyFailedAttempts` | dependency_failed | 7 |
+| `ResponseTooManyFailedAttempts` | internal | 1 |
+| `ActiveTurnNotSteerable`, `Other` (fall-through) | internal | 1 |
 
 ## Error Types and What to Do
 
@@ -48,8 +49,8 @@ Network issue between Codex and OpenAI.
 - **Do:** Retry once. If persistent, check network connectivity.
 
 ### ResponseTooManyFailedAttempts
-App-server exhausted its own retries.
-- **Do:** Read the result log for details. Consider a different approach.
+App-server exhausted its own retries — classified as `internal` / exit 1 because retrying would hit the same wall.
+- **Do:** Read the result log for details. Do not retry the same prompt; try a different approach or a fresh thread.
 
 ### Unauthorized
 Authentication failed.
@@ -80,11 +81,11 @@ Codex app-server process exited unexpectedly.
 
 | Phase | Timeout |
 |-------|---------|
-| Plan turn | 5 minutes |
-| Execution turn | 10 minutes |
-| Question unanswered | 5 minutes (auto-answers with empty) |
-| Auto-review | 5 minutes |
-| Auto-fix | 5 minutes |
-| Completion check | 5 minutes |
-| Auto-pipeline total | 15 minutes |
-| No-event idle | 2 minutes |
+| Plan turn | 5 minutes (`turnTimeoutMs = 300_000` when `mode: plan`) |
+| Execution turn | 10 minutes (`turnTimeoutMs = 600_000` when `mode: default`) |
+| Question unanswered | 5 minutes — auto-answers with `{answers: {}}` (`DEFAULT_QUESTION_TIMEOUT_MS` in `src/lib/pending-requests.mjs`) |
+| Auto-pipeline per-stage (review / fix / check) | 5 minutes each (`STAGE_TIMEOUT_MS = 300_000` in `src/lib/auto-pipeline.mjs`) |
+| Auto-pipeline total | 15 minutes (`PIPELINE_TIMEOUT_MS = 900_000`) |
+| No-event idle | 2 minutes (`idleTimeoutMs = 120_000`, per-turn) |
+
+A timeout fires a `ClientTimeout` error to the events file as `[ERROR] {threadId} failed | ClientTimeout`. The message payload uses milliseconds (e.g. `auto-review exceeded 300000ms`); don't match on `"300s"` or `"5m"`.

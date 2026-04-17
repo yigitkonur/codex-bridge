@@ -31,6 +31,10 @@ Every notification has three parts: **Status** (what happened), **Evidence** (da
     cancel: node {scriptPath} cancel {jobId}
 ```
 
+`{errorCode}` is the raw Codex `codexErrorInfo` variant (e.g. `ClientTimeout`, `ResponseTooManyFailedAttempts`, `ActiveTurnNotSteerable`, `Unauthorized`) — not a shortened alias. Exit codes follow the mapping in `error-recovery.md`.
+
+`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 300000ms` with `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — so read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared.
+
 ### [INCOMPLETE]
 ```
 [INCOMPLETE] {threadId} | {diffStat}
@@ -85,7 +89,9 @@ actions:
 [PIPELINE:diff] HH:MM:SS
 ```
 
-### [REVIEW] (standalone review only)
+`[PIPELINE:fix]` fires only when a structured review populated `reviewFindings` (e.g. an adversarial-review result fed back in). The default native auto-review returns plain text, so `reviewFindings` is empty and `[PIPELINE:fix]` does not appear on the normal `auto_review: true` path. See `orchestration-flows.md`.
+
+### [REVIEW] (reserved — not emitted by the current build)
 ```
 [REVIEW] {threadId} verdict: {verdict} | {findingCount} findings
   [{severity}] {title} — {file}:{lineStart}
@@ -93,9 +99,11 @@ actions:
   actions:
     fix: node {scriptPath} task --write "fix the {n} review findings"
 ```
+`formatReviewEvent` and `writeReview` exist in `src/lib/session-log.mjs` but nothing in the standalone `review` / `adversarial-review` handlers calls them today. Neither this tag nor `{threadId}.review.json` appears on disk — the review payload is returned on stdout (or `--json`) only. Don't gate on this tag in Monitor scripts.
 
-### [PHASE] (optional, progress preset)
+### [PHASE] (reserved — not emitted by the current build)
 ```
 [PHASE] editing src/auth.ts
 [PHASE] running: npm test
 ```
+`formatPhaseEvent` is defined but has no caller. Monitor scripts should not expect `[PHASE]` lines.

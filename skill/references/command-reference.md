@@ -68,6 +68,8 @@ When a task or review Codex turn fails, the exit code is mapped from Codex's own
 | `InternalServerError` | 7 | dependency_failed |
 | `BadRequest` | 6 | validation |
 | `SandboxError` | 5 | conflict |
+| `ResponseTooManyFailedAttempts` | 1 | internal |
+| `ActiveTurnNotSteerable`, `Other`, unrecognized variants | 1 | internal |
 
 ### `task --json` `phase` + `next_action`
 
@@ -101,6 +103,10 @@ codex-bridge task [--write] [--effort <level>] [-m <model>] [--prompt-file <path
 | `--background` | Detached worker; returns immediately with a job id |
 
 Plan mode always forces `effort: xhigh`. Empty prompts fail fast with exit 6 — no billed Codex turn.
+
+**`task` has no `--mode` flag.** The default `mode: plan` from `config.yaml` is the only lever for starting in plan mode; to go straight to execution, set `codex_bridge.mode: "default"` in `config.yaml` first. Otherwise the first turn runs in plan mode with a `readOnly` sandbox and `--write` has no effect until a subsequent `send … --mode default` approves the plan.
+
+Thread IDs returned by `task` are UUID v7 strings (e.g. `019d9a86-1c8a-7f41-8032-6c76bbe730a1`). There is no `thr_` prefix; do not build regexes that assume one.
 
 ## send
 
@@ -145,7 +151,7 @@ codex-bridge respond <request-id> --json-payload '{"answers":{"q1":{"answers":["
 
 ## review
 
-Run a standalone code review using Codex's built-in reviewer.
+Run a standalone code review using Codex's built-in reviewer. **This runs a billed Codex turn** (not a local diff probe); expect 30–180 s and tokens proportional to the diff size. No-op short-circuit when the diff is empty is not implemented — check `git diff --quiet` first if you want to avoid a wasted review.
 
 ```
 codex-bridge review [--scope <auto|working-tree|branch>] [--base <ref>] [-m <model>] [--json]

@@ -5,3 +5,4 @@ skill/prompts/
 skill/schemas/
 skill/templates/
 *.log
+.tmp/

@@ -84,7 +84,7 @@ Session:
 - TaskStop → kill by task ID
 - Session end → all monitors die
 - Auto-kill for volume → restart with tighter filter
-- **Timeout (no terminal tag)** → Monitor times out after `timeout_ms`. Use 600000 (10 min) as safety net.
+- **Timeout (no terminal tag)** → Monitor times out after `timeout_ms`. Use 600000 (10 min) as safety net. The bridge's own 120 s idle watchdog usually surfaces a `[ERROR] … | ClientTimeout` first; if Monitor is silent past ~3 min assume a deeper stall and `status`/`cancel` the job.
 
 ## When No Events Arrive
 

@@ -7,17 +7,23 @@ Use when the task is short, self-contained, and you don't need interim progress 
 ```
 task --json "prompt"
   → blocks until turn completes (or plan is produced)
-  → envelope returns with result.phase ∈ { plan-pending | done | incomplete | error }
-  → branch on result.next_action.command
+  → then blocks through the auto-pipeline (review + completion-check) if config enables them
+  → envelope returns with result.phase ∈ { plan-pending | done | incomplete }
+  → branch on result.next_action.command (substitute `node <scriptPath>` for `codex-bridge`)
 ```
 
-Typical branches:
+With the default `auto_review: true`, sync wall-time is turn-time + up to ~5 minutes of pipeline. A zero-diff prompt may still stall until the reviewer hits its 300 s timeout. Flip `auto_review: false` in `config.yaml` for snappier sync runs, or use async + Monitor.
+
+A failed Codex turn returns the standard error envelope (`ok:false`, `error.class`, exit code per `command-reference.md`); sync does **not** return a success envelope with `phase:"error"`.
+
+Typical branches (success envelope only — failures land as `ok:false` and never reach the `phase` switch):
 | `phase` | `next_action.command` (example) |
 |---|---|
 | `plan-pending` | `codex-bridge send <tid> --mode default "Implement the plan."` |
 | `done` | `codex-bridge result <job-id>` |
 | `incomplete` | `codex-bridge send <tid> "Complete the missing items"` |
-| `error` | `codex-bridge send <tid> "<revised prompt>"` (check `$?` first) |
+
+For failures, read `error.code` and `error.class` from the error envelope, then consult `error-recovery.md`.
 
 Sync is **not** the right choice when Codex may ask a question via `requestUserInput` — the worker blocks waiting for a separate `respond` process, which only exists in the async flow. Use Monitor for anything interactive.
 
