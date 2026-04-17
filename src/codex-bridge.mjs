@@ -149,6 +149,33 @@ function getBridgeConfig() {
 // The respond command reads from disk and writes a response file.
 // See lib/pending-requests.mjs for the file-based IPC protocol.
 
+// Produces a ready-to-paste Monitor hint so agents don't have to assemble one
+// from eventsPath + terminal tags. Prefers our `events --follow` subcommand
+// (stable, filtered) over raw `tail -f`. `eventsPath` may be null when the
+// thread id isn't known yet (background launches); in that case the shell
+// fallback is omitted but the CLI command still works via the job id.
+function buildMonitorHint({ eventsPath, jobId, threadId }) {
+  const identifier = jobId ?? threadId;
+  if (!identifier) return null;
+  const cliCommand = `node ${SCRIPT_PATH} events ${identifier} --follow --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION --timeout-ms 600000`;
+  const shellFallback = eventsPath
+    ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do ` +
+      `echo "$line"; case "$line" in *"[DONE]"*|*"[ERROR]"*|*"[INCOMPLETE]"*) break ;; esac; done`
+    : null;
+  return {
+    command: cliCommand,
+    shell_fallback: shellFallback,
+    terminal_tags: ["DONE", "ERROR", "INCOMPLETE"],
+    timeout_ms: 600000,
+    tool_hint: {
+      description: "codex-bridge task terminal events",
+      command: cliCommand,
+      timeout_ms: 3600000,
+      persistent: false
+    }
+  };
+}
+
 // Single source of truth for subcommand synopses. Every entry must match the
 // actual `booleanOptions` / `valueOptions` list in its handler; treat this
 // table as the CLI contract and update it in the same commit as any flag move.
@@ -1071,10 +1098,13 @@ function enqueueBackgroundTask(cwd, job, request) {
   return {
     payload: {
       jobId: job.id,
+      threadId: null,
+      eventsPath: null,
       status: "queued",
       title: job.title,
       summary: job.summary,
-      logFile
+      logFile,
+      monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null })
     },
     logFile
   };
@@ -1238,6 +1268,14 @@ async function runBridgeTask(request) {
   // Create session for post-processing
   const session = initSession(sessionDir, result.threadId);
 
+  // Ready-to-paste Monitor hint — computed once, attached to every setPhase
+  // branch below so synchronous callers never have to assemble one.
+  const monitor = buildMonitorHint({
+    eventsPath: result.threadId ? path.join(sessionDir, `${result.threadId}.events`) : null,
+    jobId: request.jobId ?? null,
+    threadId: result.threadId ?? null
+  });
+
   // Log turn completion. Note: `result` here is executeTaskRun's return, which
   // exposes the upstream turn status as `exitStatus` and puts `touchedFiles`
   // inside `payload`.
@@ -1275,7 +1313,7 @@ async function runBridgeTask(request) {
     setPhase("error", {
       command: `node ${SCRIPT_PATH} send ${result.threadId} "<revised prompt>"`,
       description: "Retry with an adjusted prompt, or cancel and start fresh."
-    }, { errorCode });
+    }, { errorCode, monitor });
     return { ...result, session };
   }
 
@@ -1294,7 +1332,7 @@ async function runBridgeTask(request) {
     setPhase("plan-pending", {
       command: `node ${SCRIPT_PATH} send ${result.threadId} --mode default "Implement the plan."`,
       description: "Approve the plan and switch to execution mode. To revise instead, drop --mode and send revision text."
-    }, { planPath, planSteps: steps });
+    }, { planPath, planSteps: steps, monitor });
     return { ...result, session, planPath };
   }
 
@@ -1315,12 +1353,12 @@ async function runBridgeTask(request) {
       setPhase("incomplete", {
         command: `node ${SCRIPT_PATH} send ${result.threadId} "Complete the missing items"`,
         description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."
-      }, { pipeline: pipelineResult });
+      }, { pipeline: pipelineResult, monitor });
     } else {
       setPhase("done", {
         command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
         description: "Task finished and passed completion check. Inspect full result or send a follow-up."
-      }, { pipeline: pipelineResult });
+      }, { pipeline: pipelineResult, monitor });
     }
     return { ...result, session, pipeline: pipelineResult };
   }
@@ -1339,7 +1377,7 @@ async function runBridgeTask(request) {
   setPhase("done", {
     command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
     description: "Task finished. Inspect full result or send a follow-up."
-  }, { diffPath: diff.diffPath });
+  }, { diffPath: diff.diffPath, monitor });
 
   return { ...result, session, diff };
 }
