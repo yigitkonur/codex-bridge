@@ -34,7 +34,7 @@ import {
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -724,6 +724,26 @@ async function executeReviewRun(request) {
     base: request.base,
     scope: request.scope
   });
+
+  // Short-circuit: if the resolved target is the working tree and there are
+  // actually no staged or unstaged changes, refuse before spending a Codex turn.
+  // Only fires for working-tree targets (explicit --scope working-tree, or
+  // --scope auto that fell through to working-tree). Branch-scope reviews can
+  // legitimately have empty diffs and should run.
+  if (target.mode === "working-tree") {
+    const diffCheck = runCommand("git", ["diff", "--quiet"], { cwd: request.cwd });
+    const stagedCheck = runCommand("git", ["diff", "--cached", "--quiet"], { cwd: request.cwd });
+    if (diffCheck.status === 0 && stagedCheck.status === 0) {
+      throw new CliError("No working-tree changes to review.", {
+        class: "validation",
+        code: "REVIEW_EMPTY_DIFF",
+        retryable: false,
+        suggestion:
+          "Make a change (working tree or staged) before invoking `review`, or use --scope branch to review a branch vs base."
+      });
+    }
+  }
+
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
