@@ -16,6 +16,14 @@ import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } f
 const PIPELINE_TIMEOUT_MS = 900_000; // 15 minutes total
 const STAGE_TIMEOUT_MS = 300_000;    // 5 minutes per stage
 
+function fmtSeconds(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m${rem.toString().padStart(2, "0")}s`;
+}
+
 function loadExecuteInstructions(rootDir) {
   const p = path.join(rootDir, "templates", "execute-instructions.md");
   try {
@@ -230,7 +238,7 @@ export async function runAutoPipeline(options) {
     const duration = Math.round((Date.now() - startTime) / 1000);
     const errorCode = error instanceof TimeoutError ? "ClientTimeout" : "PipelineError";
     const errorMessage = error instanceof PipelineTimeoutError
-      ? `Auto-pipeline exceeded ${PIPELINE_TIMEOUT_MS}ms. Completed stages: ${completedStages.join(", ")}`
+      ? `Auto-pipeline exceeded ${fmtSeconds(PIPELINE_TIMEOUT_MS)}. Completed stages: ${completedStages.join(", ")}`
       : error.message;
 
     // Capture whatever diff exists
@@ -294,7 +302,7 @@ function parseReviewText(reviewText) {
 
 export class TimeoutError extends Error {
   constructor(label, timeoutMs) {
-    super(`${label} exceeded ${timeoutMs}ms`);
+    super(`${label} exceeded ${fmtSeconds(timeoutMs)}`);
     this.label = label;
     this.timeoutMs = timeoutMs;
   }
