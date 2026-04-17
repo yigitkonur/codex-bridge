@@ -200,6 +200,13 @@ function matchJobReference(jobs, reference, predicate = () => true) {
     return exact;
   }
 
+  // Thread-id resolution (exact only — thread ids are UUIDs, prefix matching
+  // is meaningless and dangerous).
+  const byThread = filtered.find((job) => job.threadId && job.threadId === reference);
+  if (byThread) {
+    return byThread;
+  }
+
   const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
   if (prefixMatches.length === 1) {
     return prefixMatches[0];
