@@ -99,8 +99,8 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
       return;
     }
 
-    upsertJob(workspaceRoot, patch);
-
+    // Detail-first dual-write (REVIEW.md rule 12): index must never reference
+    // state the detail file hasn't recorded yet.
     const jobFile = resolveJobFile(workspaceRoot, jobId);
     if (!fs.existsSync(jobFile)) {
       return;
@@ -111,6 +111,8 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
       ...storedJob,
       ...patch
     });
+
+    upsertJob(workspaceRoot, patch);
   };
 }
 

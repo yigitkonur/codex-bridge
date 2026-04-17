@@ -78,7 +78,8 @@ Synchronous `task --json` returns a `result.phase` and `result.next_action` alon
 | `plan-pending` | Plan detected; awaiting approval | `codex-bridge send <tid> --mode default "Implement the plan."` |
 | `done` | Task completed (pipeline ran clean or was skipped) | `codex-bridge result <job-id>` |
 | `incomplete` | Pipeline's completion check flagged gaps | `codex-bridge send <tid> "Complete the missing items"` |
-| `error` | Turn failed; check `.error.code` | `codex-bridge send <tid> "<revised prompt>"` |
+
+A failed `task --json` **does not** return a success envelope with `phase=error`. It returns the standard error envelope (`ok:false, error:{class,code,…}`) on stdout, and the exit code reflects the error class. The phases above apply only to successful turns.
 
 ## task
 
@@ -106,7 +107,7 @@ Plan mode always forces `effort: xhigh`. Empty prompts fail fast with exit 6 —
 Resume a thread with a new prompt. Used for plan approval, revisions, and follow-ups.
 
 ```
-codex-bridge send <thread-id> [--mode <plan|default>] [--effort <level>] [--prompt-file <path>] [--json] [prompt or file.md]
+codex-bridge send <thread-id> [--mode <plan|default>] [--effort <level>] [--json] [prompt or file.md]
 ```
 
 | Flag | Description |
@@ -122,7 +123,7 @@ Plan revision: `send <thread-id> "Revise step 2: ..."`
 Send mid-turn guidance to an active Codex turn.
 
 ```
-codex-bridge steer <thread-id> <turn-id> [--prompt-file <path>] [prompt or file.md]
+codex-bridge steer <thread-id> <turn-id> [prompt or file.md]
 ```
 
 Cannot steer review or compaction turns (app-server rejects with -32600).

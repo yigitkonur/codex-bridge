@@ -11,7 +11,7 @@ Codex-bridge maps every failure to a semantic exit code and a structured error e
 | 4 | `auth` | No | Run `codex login`, then retry. |
 | 5 | `conflict` | No | State mismatch (already running, mutually exclusive flags). Inspect `status`. |
 | 6 | `validation` | No | Bad input (unsupported effort, empty prompt, context too large). Fix input. |
-| 7 | `rate_limit` / `timeout` / `network` / `dependency_failed` | **Yes** (with backoff) | Retry, or fall back. |
+| 7 | `rate_limit` / `timeout` / `network` / `dependency_failed` | **Depends** | `rate_limit` / `timeout` / `network`: retry with backoff. `dependency_failed`: inspect `error.code` and `error.retryable` — some variants (e.g. `CODEX_UNAVAILABLE`, `GIT_NOT_INSTALLED`) are not retryable. |
 | 1 | `internal` | Maybe | Crash / uncategorized. Escalate. |
 
 ## Codex `codexErrorInfo` → Exit Code
@@ -85,6 +85,6 @@ Codex app-server process exited unexpectedly.
 | Question unanswered | 5 minutes (auto-answers with empty) |
 | Auto-review | 5 minutes |
 | Auto-fix | 5 minutes |
-| Completion check | 2 minutes |
+| Completion check | 5 minutes |
 | Auto-pipeline total | 15 minutes |
 | No-event idle | 2 minutes |

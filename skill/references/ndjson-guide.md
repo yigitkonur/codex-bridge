@@ -46,23 +46,25 @@ Each line is one JSON object:
 jq 'select(.tag == "ERROR")' < session.ndjson
 
 # Timeline of significant events
-jq -r 'select(.tag | test("TURN_|ITEM_COMPLETED|PIPELINE")) | "\(.ts[11:19]) \(.tag) \(.method // .data.stage // "")"' < session.ndjson
+jq -r 'select(.tag | test("TURN_|PIPELINE")) | "\(.ts[11:19]) \(.tag) \(.method // .data.stage // "")"' < session.ndjson
 
-# All agent messages (full text)
-jq -r 'select(.method == "item/completed" and .data.item.type == "agentMessage") | .data.item.text' < session.ndjson
+# Turn parameters (what was sent to Codex per turn)
+jq -r 'select(.tag == "TURN_PARAMS") | "\(.ts[11:19]) model=\(.data.model) effort=\(.data.effort) promptLen=\(.data.promptLength)"' < session.ndjson
 
-# All file changes
-jq 'select(.method == "item/completed" and .data.item.type == "fileChange") | .data.item.changes[].path' < session.ndjson
+# Turn completion summaries
+jq -r 'select(.tag == "TURN_COMPLETED") | "\(.ts[11:19]) turn=\(.data.turnId // "?") status=\(.data.status // "?") touchedFiles=\((.data.touchedFiles // []) | length)"' < session.ndjson
 
-# All commands that ran
-jq -r 'select(.method == "item/completed" and .data.item.type == "commandExecution") | "\(.data.item.command) (exit: \(.data.item.exitCode // "?"))"' < session.ndjson
-
-# Questions and answers
-jq 'select(.tag == "QUESTION" or .tag == "SERVER_RESPONSE")' < session.ndjson
+# Questions and answers (interactive flow)
+jq 'select(.tag == "QUESTION" or .tag == "CONFIRMED" or .tag == "STEER" or .tag == "SERVER_RESPONSE")' < session.ndjson
 
 # Pipeline stages and timing
 jq -r 'select(.tag | test("PIPELINE")) | "\(.ts[11:19]) \(.tag) \(.data.stage // .data.completedStages // "")"' < session.ndjson
+
+# For a readable transcript with assistant messages, commands, and file changes:
+node skill/scripts/codex-bridge.mjs summary <threadId> --tail 200
 ```
+
+**Note:** the bridge does **not** persist `item/completed` notifications into `.ndjson` — only the tagged entries listed in the Tag Reference above. For assistant text / command execution / file change details, use `summary` (which reads the `.events` timeline and the diff file), or consult the full text of `.events` directly.
 
 ## Difference: NDJSON vs .events
 

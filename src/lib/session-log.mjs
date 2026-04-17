@@ -134,7 +134,9 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
   lines.push("  actions:");
   lines.push(`    review: node ${scriptPath} review --scope working-tree`);
   lines.push(`    revise: node ${scriptPath} send ${session.threadId} "<message>"`);
-  lines.push(`    detail: node ${scriptPath} result ${session.threadId}`);
+  // `result`/`cancel` resolve job-ids (thread-ids won't match). No-arg form
+  // defaults to the latest job in the current session, which is this one.
+  lines.push(`    detail: node ${scriptPath} result`);
   return lines.join("\n");
 }
 
@@ -145,8 +147,9 @@ export function formatErrorEvent(session, { errorCode, message, phase, scriptPat
     `  phase: ${phase || "unknown"}`,
     "  actions:",
     `    retry: node ${scriptPath} send ${session.threadId} "<revised prompt>"`,
-    `    log:   node ${scriptPath} result ${session.threadId}`,
-    `    cancel: node ${scriptPath} cancel ${session.threadId}`,
+    // `result`/`cancel` take job-ids; no-arg form picks the latest in session.
+    `    log:   node ${scriptPath} result`,
+    `    cancel: node ${scriptPath} cancel`,
   ];
   return lines.join("\n");
 }
@@ -166,7 +169,7 @@ export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, fi
   lines.push("  actions:");
   lines.push(`    fix:  node ${scriptPath} send ${session.threadId} "Complete the missing items"`);
   lines.push(`    new:  node ${scriptPath} task --write "..."`);
-  lines.push(`    detail: node ${scriptPath} result ${session.threadId}`);
+  lines.push(`    detail: node ${scriptPath} result`);
   return lines.join("\n");
 }
 

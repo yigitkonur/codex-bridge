@@ -55,8 +55,10 @@ Monitor params: `persistent: true, timeout_ms: 300000`
 Use when the events file approach isn't working.
 
 ```bash
+# Poll on JOB id (not thread id) — status/result/cancel resolve job ids.
+# The success envelope wraps result under `.result.job.status`.
 while true; do
-  STATUS=$(node "$SCRIPT_PATH" status "$THREAD_ID" --json 2>/dev/null | jq -r '.job.status // "unknown"')
+  STATUS=$(node "$SCRIPT_PATH" status "$JOB_ID" --json 2>/dev/null | jq -r '.result.job.status // "unknown"')
   echo "[POLL] status=${STATUS}"
   if [ "${STATUS}" = "completed" ] || [ "${STATUS}" = "failed" ] || [ "${STATUS}" = "cancelled" ]; then
     break
@@ -88,9 +90,9 @@ Session:
 
 If Monitor starts but no events appear within 2-3 minutes:
 
-1. Check task status: `node <scriptPath> status <thread-id> --json`
+1. Check job status: `node <scriptPath> status <job-id> --json` (or omit the id to list all jobs).
 2. If status is "running" — Codex is working but hasn't produced actionable events yet. Wait.
-3. If status is "completed" — the task finished but no events were written (possible wiring issue). Read the result: `node <scriptPath> result <thread-id>`
+3. If status is "completed" — the task finished but no events were written (possible wiring issue). Read the result: `node <scriptPath> result <job-id>` (or with no id to pick the latest in the session).
 4. If status is "failed" — cancel and retry.
 
 If Codex completed instantly with `[DONE]` and 0 file changes, it likely asked a question via text output instead of the `requestUserInput` tool. Read the stdout from the task launch and respond via `send`.

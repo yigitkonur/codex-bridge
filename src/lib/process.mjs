@@ -13,10 +13,16 @@ export function runCommand(command, args = [], options = {}) {
     windowsHide: true
   });
 
+  // Preserve null status when spawnSync returns it (subprocess killed by signal
+  // or failed to spawn). Coercing to 0 would make signal kills look like success
+  // and bypass `runCommandChecked`'s status check.
+  const normalizedStatus =
+    result.status != null ? result.status : (result.signal ? 128 : 1);
+
   return {
     command,
     args,
-    status: result.status ?? 0,
+    status: normalizedStatus,
     signal: result.signal ?? null,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",

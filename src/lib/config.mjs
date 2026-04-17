@@ -66,10 +66,13 @@ export function buildCollaborationMode(mode, config, options = {}) {
 }
 
 export function buildSandboxPolicy(mode) {
-  if (mode === "plan") {
-    return { type: "readOnly" };
+  // Only the two recognized modes opt into write access. Unknown values
+  // default to the safest policy (readOnly) so a typo in config.yaml cannot
+  // silently widen sandbox permissions.
+  if (mode === "default") {
+    return { type: "workspaceWrite" };
   }
-  return { type: "workspaceWrite" };
+  return { type: "readOnly" };
 }
 
 export const COMPLETION_CHECK_SCHEMA = {

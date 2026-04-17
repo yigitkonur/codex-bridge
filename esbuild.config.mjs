@@ -2,13 +2,29 @@ import { build } from "esbuild";
 import fs from "node:fs";
 import path from "node:path";
 
+// Bundle both entry points. The broker is spawned separately by
+// `broker-lifecycle.mjs` via `new URL("../app-server-broker.mjs", import.meta.url)`,
+// so after bundling it must live adjacent to the main CLI at the same relative
+// depth (`skill/scripts/` contains both → `../` resolves to `skill/`).
+// Instead we emit the broker to `skill/app-server-broker.mjs`.
 await build({
   entryPoints: ["src/codex-bridge.mjs"],
   bundle: true,
   platform: "node",
   format: "esm",
   outfile: "skill/scripts/codex-bridge.mjs",
-  // No shebang — invoked via `node codex-bridge.mjs`, not as executable
+  external: [],
+  minify: false,
+  sourcemap: false,
+  logLevel: "info",
+});
+
+await build({
+  entryPoints: ["src/app-server-broker.mjs"],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outfile: "skill/app-server-broker.mjs",
   external: [],
   minify: false,
   sourcemap: false,

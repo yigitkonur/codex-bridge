@@ -54,11 +54,12 @@ task --write "prompt"
 ```
 task --write "prompt"
   → Plan → approve → Execute
-  → [PIPELINE:review] — auto-review finds 2 issues
-  → [PIPELINE:fix] — Codex fixes them silently
-  → [PIPELINE:check] — completion check passes
-  → [DONE] notification (diff includes original + fix changes)
+  → [PIPELINE:review] — auto-review summarises findings (text)
+  → [PIPELINE:check]  — completion check gates the result
+  → [DONE] notification (diff includes original changes)
 ```
+
+The current native auto-review returns plain text, not a structured findings list, so there is no automatic `[PIPELINE:fix]` stage — use `adversarial-review` for structured findings you can feed back via `send`.
 
 ## Task with Incomplete Result
 

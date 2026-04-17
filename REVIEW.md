@@ -34,7 +34,7 @@ Severity:
 
 ## Security
 
-15. **[ERROR]** Any spawned process (`codex app-server`, the broker, git) must retain the existing 10 s timeout caps in `src/lib/{process,session-log,git}.mjs`. Longer or absent timeouts risk hanging the CLI on hostile or pathological inputs.
+15. **[ERROR]** Spawned commands that are expected to finish quickly (e.g. `captureGitDiff` in `src/lib/session-log.mjs`, git helpers in `src/lib/git.mjs`) must retain explicit timeout caps (currently 10 s). Long-lived processes (`codex app-server`, the broker) are deliberately uncapped but must preserve their explicit shutdown/cleanup paths (`close()` + `terminateProcessTree` + best-effort socket/pid cleanup).
 16. **[ERROR]** Shell quoting in `src/lib/args.mjs::splitRawArgumentString` is the only place user-supplied raw argument strings are parsed. Changes must not introduce command injection. Regression: any change that evaluates or forwards argument content through `shell: true` beyond what already exists for Windows parity.
 17. **[WARN]** User-controlled text must never be interpolated into `<role>`, `<task>`, or other directive blocks of `src/prompts/*.md`. Focus text lives inside `{{USER_FOCUS}}` specifically to prevent role hijacking.
 18. **[WARN]** `src/lib/session-log.mjs::captureGitDiff` inlines untracked files only when `isProbablyText && size < 24 KB`. A PR that increases the threshold or drops the text-sniff will leak binary blobs into review prompts and session logs.

@@ -271,6 +271,26 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+
+  // Check active jobs FIRST when a reference was given, so a running job
+  // matching the reference returns JOB_NOT_FINISHED (conflict/5) instead of
+  // falling through to JOB_NOT_FOUND via the terminal-only lookup.
+  if (reference) {
+    const activeMatch = jobs.find(
+      (job) =>
+        (job.status === "queued" || job.status === "running") &&
+        (job.id === reference || job.id.startsWith(reference))
+    );
+    if (activeMatch) {
+      throw new CliError(`Job ${activeMatch.id} is still ${activeMatch.status}.`, {
+        class: "conflict",
+        code: "JOB_NOT_FINISHED",
+        retryable: false,
+        suggestion: `Check \`status ${activeMatch.id} --wait\` and try again once it finishes.`
+      });
+    }
+  }
+
   const selected = matchJobReference(
     jobs,
     reference,
@@ -279,16 +299,6 @@ export function resolveResultJob(cwd, reference) {
 
   if (selected) {
     return { workspaceRoot, job: selected };
-  }
-
-  const active = matchJobReference(jobs, reference, (job) => job.status === "queued" || job.status === "running");
-  if (active) {
-    throw new CliError(`Job ${active.id} is still ${active.status}.`, {
-      class: "conflict",
-      code: "JOB_NOT_FINISHED",
-      retryable: false,
-      suggestion: `Check \`status ${active.id} --wait\` and try again once it finishes.`
-    });
   }
 
   if (reference) {

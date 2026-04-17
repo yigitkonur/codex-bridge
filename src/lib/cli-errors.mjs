@@ -165,7 +165,9 @@ export function classifyError(err) {
       exitCode: ExitCode.TRANSIENT
     };
   }
-  if (/Codex app-server exited unexpectedly/.test(message)) {
+  // Match both the synthesized capitalized message from codex.mjs and the
+  // lowercase protocol error from app-server.mjs.
+  if (/codex app-server exited unexpectedly/i.test(message)) {
     return {
       class: "dependency_failed",
       code: "ProcessDeath",

@@ -354,9 +354,12 @@ function completeTurn(state, turn = null, options = {}) {
       state.turnId = turn.id;
     }
   } else if (!state.finalTurn) {
+    // Honor explicit `inferredStatus` from the caller (idle-timeout /
+    // process-death / error notifications all pass "failed"). Defaulting to
+    // "completed" on every inferred completion would let timeouts return exit 0.
     state.finalTurn = {
       id: state.turnId ?? "inferred-turn",
-      status: "completed"
+      status: options.inferredStatus ?? "completed"
     };
   }
 

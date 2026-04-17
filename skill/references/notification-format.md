@@ -15,8 +15,10 @@ Every notification has three parts: **Status** (what happened), **Evidence** (da
   actions:
     review: node {scriptPath} review --scope working-tree
     revise: node {scriptPath} send {threadId} "<message>"
-    detail: node {scriptPath} result {threadId}
+    detail: node {scriptPath} result
 ```
+
+`send`/`steer` take **thread** ids. `result`/`cancel`/`status` take **job** ids — run them with no id to pick the latest job in the current session.
 
 ### [ERROR]
 ```
@@ -25,8 +27,8 @@ Every notification has three parts: **Status** (what happened), **Evidence** (da
   phase: {currentPhase}
   actions:
     retry: node {scriptPath} send {threadId} "<revised prompt>"
-    log:   node {scriptPath} result {threadId}
-    cancel: node {scriptPath} cancel {threadId}
+    log:   node {scriptPath} result
+    cancel: node {scriptPath} cancel
 ```
 
 ### [INCOMPLETE]
@@ -40,7 +42,7 @@ Every notification has three parts: **Status** (what happened), **Evidence** (da
   actions:
     fix:  node {scriptPath} send {threadId} "Complete the missing items"
     new:  node {scriptPath} task --write "..."
-    detail: node {scriptPath} result {threadId}
+    detail: node {scriptPath} result
 ```
 
 ## Interactive Tags (Claude Code acts on these)

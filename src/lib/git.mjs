@@ -106,7 +106,14 @@ export function detectDefaultBranch(cwd) {
   if (symbolic.status === 0) {
     const remoteHead = symbolic.stdout.trim();
     if (remoteHead.startsWith("refs/remotes/origin/")) {
-      return remoteHead.replace("refs/remotes/origin/", "");
+      const candidate = remoteHead.replace("refs/remotes/origin/", "");
+      // Only return the bare name if a matching local branch exists;
+      // otherwise `merge-base HEAD <name>` will fail in freshly cloned repos.
+      const localCheck = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+      if (localCheck.status === 0) {
+        return candidate;
+      }
+      return `origin/${candidate}`;
     }
   }
 

@@ -215,8 +215,14 @@ async function main() {
           if (activeRequestSocket === socket) {
             activeRequestSocket = null;
           }
-          if (activeStreamSocket === socket && !isStreaming) {
+          // Only clear stream ownership if THIS failed request was the stream
+          // itself. A failed non-stream request on the same socket must not
+          // orphan an in-flight turn — stream ownership is released by
+          // turn/completed or by socket close/error, not by unrelated per-
+          // request failures.
+          if (activeStreamSocket === socket && isStreaming) {
             activeStreamSocket = null;
+            activeStreamThreadIds = null;
           }
         }
       }

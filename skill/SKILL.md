@@ -58,14 +58,16 @@ A synchronous `task --json` call returns the same lifecycle outcome as a single 
 
 **Important:** Codex has its own internal skills that may override plan mode behavior. It may skip planning and go directly to execution, or ask questions via text instead of the `requestUserInput` tool. If `[PLAN]` never arrives and `[DONE]` appears instead, Codex executed without planning — review the diff and send follow-ups as needed.
 
-**Timeout:** If no terminal tag (`[DONE]`/`[ERROR]`/`[INCOMPLETE]`) appears within 10 minutes, the task may be stuck. Check status with `status <thread-id>` and consider canceling with `cancel <thread-id>`.
+**Timeout:** If no terminal tag (`[DONE]`/`[ERROR]`/`[INCOMPLETE]`) appears within 10 minutes, the task may be stuck. Check status with `status <job-id>` and consider canceling with `cancel <job-id>`. (`status`/`result`/`cancel` resolve **job** ids, not thread ids; `send`/`steer` take thread ids. Run `status` with no argument to see the latest job id.)
 
 ## Starting a Task
 
 ```bash
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write "your prompt here"
-node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write prompt.md
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --prompt-file prompt.md
 ```
+
+The positional form takes **text**, not a path; use `--prompt-file` to load from disk.
 
 The task starts in plan mode by default. Output includes:
 - Thread ID (e.g., `thr_abc123`)

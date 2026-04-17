@@ -33,17 +33,23 @@ export function readPendingRequest(sessionDir, threadId) {
 }
 
 export function readPendingRequestById(sessionDir, requestId) {
-  // Scan all .pending.json files for matching requestId
+  // Scan all .pending.json files for matching requestId. A single malformed
+  // file must not abort the scan — tolerate it and keep looking.
+  let files;
   try {
-    const files = fs.readdirSync(sessionDir).filter((f) => f.endsWith(".pending.json"));
-    for (const file of files) {
+    files = fs.readdirSync(sessionDir).filter((f) => f.endsWith(".pending.json"));
+  } catch {
+    return null;
+  }
+  for (const file of files) {
+    try {
       const content = JSON.parse(fs.readFileSync(path.join(sessionDir, file), "utf8"));
       if (content.internalId === requestId) {
         return content;
       }
+    } catch {
+      // Skip malformed/empty pending file; keep scanning.
     }
-  } catch {
-    // Directory doesn't exist or read error
   }
   return null;
 }
@@ -73,15 +79,24 @@ export function readResponseFile(sessionDir, threadId) {
 /**
  * Wait for a response file to appear (called by the worker process).
  * Returns the response payload, or null on timeout.
+ *
+ * When `expectedRequestId` is provided, responses whose `requestId` does not
+ * match are treated as stale (consumed and discarded). This prevents a late
+ * response to a previous question from being delivered to a newly pending
+ * question on the same thread.
  */
-export function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIMEOUT_MS) {
+export function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIMEOUT_MS, expectedRequestId = null) {
   return new Promise((resolve) => {
     const deadline = Date.now() + timeoutMs;
     const check = () => {
       const response = readResponseFile(sessionDir, threadId);
       if (response) {
-        resolve(response);
-        return;
+        if (expectedRequestId && response.requestId && response.requestId !== expectedRequestId) {
+          // Stale response — drop it and keep waiting.
+        } else {
+          resolve(response);
+          return;
+        }
       }
       if (Date.now() >= deadline) {
         resolve(null); // timeout

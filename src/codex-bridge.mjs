@@ -162,7 +162,7 @@ const COMMANDS = Object.freeze({
     ]
   },
   send: {
-    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--prompt-file <path>] [--json] [prompt or file.md]",
+    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--json] [prompt or file.md]",
     summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups.",
     examples: [
       'codex-bridge send thr_abc --mode default "Implement the plan."',
@@ -170,7 +170,7 @@ const COMMANDS = Object.freeze({
     ]
   },
   steer: {
-    synopsis: "steer <thread-id> <turn-id> [--prompt-file <path>] [prompt or file.md]",
+    synopsis: "steer <thread-id> <turn-id> [prompt or file.md]",
     summary: "Send mid-turn guidance to an active Codex turn. Not valid for review/compaction turns.",
     examples: ['codex-bridge steer thr_abc turn_xyz "Focus on auth first"']
   },
@@ -1196,8 +1196,10 @@ async function runBridgeTask(request) {
       }));
       logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
 
-      // Poll for response file (blocks until respond CLI writes it or timeout)
-      waitForResponse(sessionDir, threadId, 300_000).then((response) => {
+      // Poll for response file (blocks until respond CLI writes it or timeout).
+      // Pass `internalId` so stale responses from a previous question on this
+      // thread are discarded instead of delivered to the new RPC request.
+      waitForResponse(sessionDir, threadId, 300_000, internalId).then((response) => {
         clearPendingRequest(sessionDir, threadId);
         if (response && response.payload) {
           // Send response on the SAME connection that received the request
@@ -1219,12 +1221,14 @@ async function runBridgeTask(request) {
   // Create session for post-processing
   const session = initSession(sessionDir, result.threadId);
 
-  // Log turn completion
+  // Log turn completion. Note: `result` here is executeTaskRun's return, which
+  // exposes the upstream turn status as `exitStatus` and puts `touchedFiles`
+  // inside `payload`.
   logNdjson(session, "TURN_COMPLETED", "turn/completed", {
     turnId: result.turnId,
-    status: result.status,
+    status: result.exitStatus,
     planDetected: result.planDetected,
-    touchedFiles: result.touchedFiles,
+    touchedFiles: result.payload?.touchedFiles ?? [],
   });
 
   // V10.1: every return branch decorates `result.payload` with `phase` and
@@ -1239,7 +1243,7 @@ async function runBridgeTask(request) {
     };
   };
 
-  if (result.status !== 0 && result.error) {
+  if (result.exitStatus !== 0 && result.error) {
     const errorMessage = String(result.error.message ?? result.error);
     const isIdleTimeout = errorMessage.includes("No events received for");
     const errorCode = isIdleTimeout ? "ClientTimeout" : "CodexError";
@@ -1277,7 +1281,7 @@ async function runBridgeTask(request) {
   }
 
   // If execution completed (not plan), run auto-pipeline
-  if (result.status === 0 && (config.auto_review || config.post_task_prompt)) {
+  if (result.exitStatus === 0 && (config.auto_review || config.post_task_prompt)) {
     const pipelineResult = await runAutoPipeline({
       session,
       threadId: result.threadId,
@@ -1693,6 +1697,15 @@ async function handleSend(argv) {
   ensureCodexAvailable(cwd);
   const workspaceRoot = resolveCommandWorkspace(options);
   const result = await runAppServerTurn(workspaceRoot, turnOptions);
+
+  // Route failed Codex turns through emitError so exit code reflects the
+  // failure class. Previously `send` emitted success + exit 0 even when the
+  // turn failed with Unauthorized/ContextWindowExceeded/etc.
+  if (result.status !== 0) {
+    const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
+    emitError(errLike, { json: options.json, command: "send" });
+    return;
+  }
 
   const session = findSession(sessionDir, threadId);
   const eventsPath = session?.eventsPath ?? null;

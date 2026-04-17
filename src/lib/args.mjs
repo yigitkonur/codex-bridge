@@ -94,28 +94,54 @@ export function parseArgs(argv, config = {}) {
 }
 
 export function splitRawArgumentString(raw) {
+  // Shell-like tokenizer with POSIX-leaning backslash rules so Windows paths
+  // survive intact inside quotes:
+  //   - Inside single quotes: every character is literal (including `\`).
+  //   - Inside double quotes: backslash only escapes `\` or `"`; other
+  //     backslashes are literal.
+  //   - Outside quotes: backslash escapes the next character (drops `\`).
   const tokens = [];
   let current = "";
   let quote = null;
-  let escaping = false;
 
-  for (const character of raw) {
-    if (escaping) {
-      current += character;
-      escaping = false;
-      continue;
-    }
+  for (let i = 0; i < raw.length; i += 1) {
+    const character = raw[i];
 
-    if (character === "\\") {
-      escaping = true;
-      continue;
-    }
-
-    if (quote) {
-      if (character === quote) {
+    if (quote === "'") {
+      if (character === "'") {
         quote = null;
       } else {
         current += character;
+      }
+      continue;
+    }
+
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null;
+        continue;
+      }
+      if (character === "\\" && i + 1 < raw.length) {
+        const next = raw[i + 1];
+        if (next === "\\" || next === '"') {
+          current += next;
+          i += 1;
+        } else {
+          current += "\\";
+        }
+        continue;
+      }
+      current += character;
+      continue;
+    }
+
+    // Outside any quote
+    if (character === "\\") {
+      if (i + 1 < raw.length) {
+        current += raw[i + 1];
+        i += 1;
+      } else {
+        current += "\\";
       }
       continue;
     }
@@ -134,10 +160,6 @@ export function splitRawArgumentString(raw) {
     }
 
     current += character;
-  }
-
-  if (escaping) {
-    current += "\\";
   }
 
   if (current) {

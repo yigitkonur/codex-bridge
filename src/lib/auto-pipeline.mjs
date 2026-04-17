@@ -148,8 +148,17 @@ export async function runAutoPipeline(options) {
 
         completedStages.push("check");
 
-        // Parse structured output
-        if (checkResult.finalMessage) {
+        // Treat a failed completion-check turn as "incomplete" with a
+        // diagnostic item, rather than silently falling through to `complete`.
+        if (checkResult.status !== 0) {
+          completionResult = {
+            complete: false,
+            missing_items: [
+              `Completion check turn failed (status ${checkResult.status}${checkResult.error?.message ? `: ${checkResult.error.message}` : ""}).`
+            ],
+            summary: "completion-check failed",
+          };
+        } else if (checkResult.finalMessage) {
           try {
             completionResult = JSON.parse(checkResult.finalMessage);
           } catch {
@@ -160,6 +169,13 @@ export async function runAutoPipeline(options) {
               summary: checkResult.finalMessage.slice(0, 200),
             };
           }
+        } else {
+          // Turn succeeded but no final message — treat as inconclusive/incomplete.
+          completionResult = {
+            complete: false,
+            missing_items: ["Completion check produced no final message."],
+            summary: "completion-check inconclusive",
+          };
         }
       } catch (error) {
         if (error instanceof TimeoutError) {
