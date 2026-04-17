@@ -1252,6 +1252,7 @@ async function runBridgeTask(request) {
       message: errorMessage,
       phase: isPlanMode ? "plan" : "execution",
       scriptPath: SCRIPT_PATH,
+      jobId: request.jobId ?? null,
     }));
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage });
     setPhase("error", {
@@ -1291,6 +1292,7 @@ async function runBridgeTask(request) {
       rootDir: ROOT_DIR,
       runAppServerTurn,
       runAppServerReview,
+      jobId: request.jobId ?? null,
     });
     if (pipelineResult?.complete === false) {
       setPhase("incomplete", {
@@ -1315,6 +1317,7 @@ async function runBridgeTask(request) {
     config: { model: config.model, effort: config.effort, modeFlow: isPlanMode ? "plan→default" : "default" },
     diffPath: diff.diffPath,
     scriptPath: SCRIPT_PATH,
+    jobId: request.jobId ?? null,
   }));
   setPhase("done", {
     command: `codex-bridge result ${request.jobId ?? result.threadId}`,

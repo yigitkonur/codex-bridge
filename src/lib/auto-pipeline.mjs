@@ -35,6 +35,7 @@ export async function runAutoPipeline(options) {
     rootDir,
     runAppServerTurn,
     runAppServerReview,
+    jobId = null,
   } = options;
 
   const completedStages = [];
@@ -198,6 +199,7 @@ export async function runAutoPipeline(options) {
         config: { model: config.model, effort: config.effort, modeFlow: "plan→default" },
         diffPath: finalDiff.diffPath,
         scriptPath,
+        jobId,
       }));
     } else {
       logEvent(session, formatIncompleteEvent(session, {
@@ -207,6 +209,7 @@ export async function runAutoPipeline(options) {
         findingCount: reviewFindingCount,
         missingItems: completionResult.missing_items || [],
         scriptPath,
+        jobId,
       }));
     }
 
@@ -243,6 +246,7 @@ export async function runAutoPipeline(options) {
       message: errorMessage,
       phase: `pipeline (completed: ${completedStages.join(", ")})`,
       scriptPath,
+      jobId,
     }));
 
     logNdjson(session, "PIPELINE_ERROR", null, {

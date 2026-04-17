@@ -119,7 +119,23 @@ function summarizeNumstat(files) {
   return `${files.length} files | +${totalAdds} -${totalDels}`;
 }
 
-export function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath }) {
+// Action-command helpers: the events file is a record of ONE specific task,
+// so the result/cancel commands must pin to that task's job id. Bare
+// `result`/`cancel` would target "latest in session", which changes as new
+// tasks start and could silently hit the wrong job when an agent reads the
+// event later.
+function resultActionLine(scriptPath, jobId, indent = "    detail: ") {
+  return jobId
+    ? `${indent}node ${scriptPath} result ${jobId}`
+    : `${indent}node ${scriptPath} result    # rerun with the specific job id from status`;
+}
+function cancelActionLine(scriptPath, jobId, indent = "    cancel: ") {
+  return jobId
+    ? `${indent}node ${scriptPath} cancel ${jobId}`
+    : `${indent}node ${scriptPath} cancel    # rerun with the specific job id from status`;
+}
+
+export function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null }) {
   const lines = [
     `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
     `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
@@ -134,27 +150,24 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
   lines.push("  actions:");
   lines.push(`    review: node ${scriptPath} review --scope working-tree`);
   lines.push(`    revise: node ${scriptPath} send ${session.threadId} "<message>"`);
-  // `result`/`cancel` resolve job-ids (thread-ids won't match). No-arg form
-  // defaults to the latest job in the current session, which is this one.
-  lines.push(`    detail: node ${scriptPath} result`);
+  lines.push(resultActionLine(scriptPath, jobId));
   return lines.join("\n");
 }
 
-export function formatErrorEvent(session, { errorCode, message, phase, scriptPath }) {
+export function formatErrorEvent(session, { errorCode, message, phase, scriptPath, jobId = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
     `  phase: ${phase || "unknown"}`,
     "  actions:",
     `    retry: node ${scriptPath} send ${session.threadId} "<revised prompt>"`,
-    // `result`/`cancel` take job-ids; no-arg form picks the latest in session.
-    `    log:   node ${scriptPath} result`,
-    `    cancel: node ${scriptPath} cancel`,
+    resultActionLine(scriptPath, jobId, "    log:   "),
+    cancelActionLine(scriptPath, jobId),
   ];
   return lines.join("\n");
 }
 
-export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath }) {
+export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null }) {
   const lines = [
     `[INCOMPLETE] ${session.threadId} | ${diffStat}`,
     `  diff: ${diffPath}`,
@@ -169,7 +182,7 @@ export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, fi
   lines.push("  actions:");
   lines.push(`    fix:  node ${scriptPath} send ${session.threadId} "Complete the missing items"`);
   lines.push(`    new:  node ${scriptPath} task --write "..."`);
-  lines.push(`    detail: node ${scriptPath} result`);
+  lines.push(resultActionLine(scriptPath, jobId));
   return lines.join("\n");
 }
 
