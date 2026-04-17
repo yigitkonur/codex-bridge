@@ -124,6 +124,19 @@ export function transientError(message, code = "TRANSIENT", suggestion) {
   return new CliError(message, { class: "network", code, retryable: true, suggestion });
 }
 
+export function invalidThreadIdError(value, source = "thread-id") {
+  const hint = typeof value === "string" ? JSON.stringify(value.slice(0, 40)) : String(value);
+  return new CliError(
+    `invalid ${source}: expected a UUID (8-4-4-4-12 hex), got ${hint}`,
+    {
+      class: "validation",
+      code: "INVALID_THREAD_ID",
+      retryable: false,
+      suggestion: "Thread ids are UUID v7 like 019d9a86-1c8a-7f41-8032-6c76bbe730a1. Run `status` to list known threads."
+    }
+  );
+}
+
 export function classifyError(err) {
   if (err instanceof CliError) {
     return {

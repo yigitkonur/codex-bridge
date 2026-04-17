@@ -14,8 +14,10 @@ import {
   usageError,
   validationError,
   notFoundError,
-  conflictError
+  conflictError,
+  invalidThreadIdError
 } from "./lib/cli-errors.mjs";
+import { isThreadId } from "./lib/thread-id.mjs";
 import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
@@ -1650,10 +1652,14 @@ async function handleSend(argv) {
   });
 
   const startedAt = Date.now();
-  const threadId = positionals[0];
-  if (!threadId) {
+  const rawThreadId = positionals[0];
+  if (!rawThreadId) {
     throw usageError("send requires <thread-id>");
   }
+  if (!isThreadId(rawThreadId)) {
+    throw invalidThreadIdError(rawThreadId, "thread-id");
+  }
+  const threadId = rawThreadId.trim();
 
   const promptParts = positionals.slice(1);
   const cwd = resolveCommandCwd(options);
@@ -1734,10 +1740,14 @@ async function handleSteer(argv) {
     booleanOptions: ["json"]
   });
 
-  const [threadId, turnId, ...promptParts] = positionals;
-  if (!threadId || !turnId) {
+  const [rawThreadId, turnId, ...promptParts] = positionals;
+  if (!rawThreadId || !turnId) {
     throw usageError("steer requires <thread-id> <turn-id> <prompt...>");
   }
+  if (!isThreadId(rawThreadId)) {
+    throw invalidThreadIdError(rawThreadId, "thread-id");
+  }
+  const threadId = rawThreadId.trim();
 
   const cwd = resolveCommandCwd(options);
   const prompt = resolvePromptInput(options, promptParts, cwd);
