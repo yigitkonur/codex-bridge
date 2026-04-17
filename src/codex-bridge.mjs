@@ -1257,7 +1257,7 @@ async function runBridgeTask(request) {
     }));
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage });
     setPhase("error", {
-      command: `codex-bridge send ${result.threadId} "<revised prompt>"`,
+      command: `node ${SCRIPT_PATH} send ${result.threadId} "<revised prompt>"`,
       description: "Retry with an adjusted prompt, or cancel and start fresh."
     }, { errorCode });
     return { ...result, session };
@@ -1276,7 +1276,7 @@ async function runBridgeTask(request) {
       scriptPath: SCRIPT_PATH,
     }));
     setPhase("plan-pending", {
-      command: `codex-bridge send ${result.threadId} --mode default "Implement the plan."`,
+      command: `node ${SCRIPT_PATH} send ${result.threadId} --mode default "Implement the plan."`,
       description: "Approve the plan and switch to execution mode. To revise instead, drop --mode and send revision text."
     }, { planPath, planSteps: steps });
     return { ...result, session, planPath };
@@ -1297,12 +1297,12 @@ async function runBridgeTask(request) {
     });
     if (pipelineResult?.complete === false) {
       setPhase("incomplete", {
-        command: `codex-bridge send ${result.threadId} "Complete the missing items"`,
+        command: `node ${SCRIPT_PATH} send ${result.threadId} "Complete the missing items"`,
         description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."
       }, { pipeline: pipelineResult });
     } else {
       setPhase("done", {
-        command: `codex-bridge result ${request.jobId ?? result.threadId}`,
+        command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
         description: "Task finished and passed completion check. Inspect full result or send a follow-up."
       }, { pipeline: pipelineResult });
     }
@@ -1321,7 +1321,7 @@ async function runBridgeTask(request) {
     jobId: request.jobId ?? null,
   }));
   setPhase("done", {
-    command: `codex-bridge result ${request.jobId ?? result.threadId}`,
+    command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
     description: "Task finished. Inspect full result or send a follow-up."
   }, { diffPath: diff.diffPath });
 
