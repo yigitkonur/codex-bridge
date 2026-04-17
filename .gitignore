@@ -6,3 +6,4 @@ skill/schemas/
 skill/templates/
 *.log
 .tmp/
+.claude/

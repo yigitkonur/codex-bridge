@@ -1,11 +1,23 @@
 ---
 name: codex-bridge
 description: >
-  Orchestrate Codex as Claude Code's execution aide. Use when delegating 
-  coding tasks, reviews, or multi-step work to Codex. Manages plan→execute→review 
-  cycles with Monitor-based notifications.
-compatibility: Requires Node.js 22+ and codex CLI (npm i -g @openai/codex)
+  Delegate coding, refactoring, review, and multi-step implementation tasks to
+  OpenAI Codex. Use this skill when the user asks Claude to "run this by Codex",
+  "have Codex fix it", offload a plan→execute→review loop, spawn a background
+  coding job that Claude can tail via the Monitor tool, run an adversarial code
+  review, answer a [QUESTION] Codex raised mid-turn, follow up on a Codex
+  [PLAN], or watch terminal events via the built-in `events --follow` / `wait`
+  subcommands instead of raw `tail -f`. Also use for heavy-lift implementation
+  jobs Claude would rather hand off. Every `--json` call returns a uniform
+  envelope (`{ok, schema_version, command, result.phase, result.next_action,
+  meta}`) with a ready-to-paste `result.monitor` hint pre-formatted for the
+  Monitor tool.
+compatibility: Requires Node.js 22+ and the Codex CLI on $PATH (npm i -g @openai/codex && codex login). macOS or Linux — the JSON-RPC broker uses unix sockets.
+license: MIT
 allowed-tools: Bash(node *) Monitor
+metadata:
+  version: "1.0.0"
+  homepage: "https://github.com/yigitkonur/codex-bridge"
 ---
 
 # Codex Bridge

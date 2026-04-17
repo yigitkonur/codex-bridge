@@ -1,0 +1,56 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    name: build + attach skill tarball to release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: install
+        run: npm ci
+
+      - name: build
+        run: npm run build
+
+      - name: stage skill payload under codex-bridge/
+        run: |
+          # Per agentskills.io, the installed directory name must match the
+          # `name` in SKILL.md front-matter. We ship a pre-named tarball so
+          # installers can extract it directly into their skills scope.
+          mkdir -p dist
+          cp -R skill/ dist/codex-bridge/
+          # Drop the maintainer docs from the shipped bundle — users only need
+          # the runtime + user-facing references.
+          rm -f dist/codex-bridge/AGENTS.md dist/codex-bridge/CLAUDE.md
+
+      - name: create tarball + zip
+        run: |
+          cd dist
+          tar -czf "codex-bridge-${GITHUB_REF_NAME}.tar.gz" codex-bridge
+          zip -qr "codex-bridge-${GITHUB_REF_NAME}.zip"     codex-bridge
+          shasum -a 256 codex-bridge-${GITHUB_REF_NAME}.tar.gz codex-bridge-${GITHUB_REF_NAME}.zip > SHA256SUMS
+
+      - name: upload artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/codex-bridge-*.tar.gz
+            dist/codex-bridge-*.zip
+            dist/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true
