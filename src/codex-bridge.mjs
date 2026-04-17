@@ -1981,10 +1981,12 @@ async function main() {
 
   const handler = SUBCOMMAND_DISPATCH[subcommand];
   if (!handler) {
-    throw usageError(
-      `Unknown subcommand: ${subcommand}`,
-      `Run \`codex-bridge --help\` for the list of subcommands.`
-    );
+    throw new CliError(`Unknown subcommand: ${subcommand}`, {
+      class: "usage",
+      code: "UNKNOWN_SUBCOMMAND",
+      retryable: false,
+      suggestion: "Run `help --json` to list available subcommands."
+    });
   }
 
   await handler(argv);
