@@ -14,7 +14,7 @@ Session-anchored notes about codex-bridge behavior that surprised the author dur
 | 04 | `.ndjson` missing `TURN_PARAMS` + `ITEM_COMPLETED` under superpowers | open, hypothesis not verified |
 | 05 | `bridge cancel` (no args) errors with `AMBIGUOUS_CANCEL` when multiple jobs active | open, spec update needed |
 | 06 | Stop-gate review accumulates orphaned "running" rescue tasks across sessions (7 ghosts reaped during this session's cleanup) | open, startup-time reaper scoped |
-| 07 | `config.yaml` in cwd/workspace is silently ignored — real config lives at `$CLAUDE_PLUGIN_DATA/state/<slug>-<hash>/config.yaml` | open, 5 fixes scoped |
+| 07 | `config.yaml` in cwd/workspace is silently ignored (real config was at `${CLAUDE_SKILL_DIR}/config.yaml`; workspace override now layered on top) | partially resolved 2026-04-18 — 3 of 5 fixes live |
 | 08 | `adversarial-review` writes no session artifacts for its own thread — `.events` / `.ndjson` / `.review.json` all absent | open, 3 fixes scoped |
 
 ## How to add an entry

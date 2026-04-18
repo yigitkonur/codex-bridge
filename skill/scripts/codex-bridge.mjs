@@ -590,11 +590,11 @@ function formatCommandFailure(result) {
 var MAX_UNTRACKED_BYTES = 24 * 1024;
 var DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
-function git(cwd, args, options = {}) {
-  return runCommand("git", args, { cwd, ...options });
+function git(cwd2, args, options = {}) {
+  return runCommand("git", args, { cwd: cwd2, ...options });
 }
-function gitChecked(cwd, args, options = {}) {
-  return runCommandChecked("git", args, { cwd, ...options });
+function gitChecked(cwd2, args, options = {}) {
+  return runCommandChecked("git", args, { cwd: cwd2, ...options });
 }
 function listUniqueFiles(...groups) {
   return [...new Set(groups.flat().filter(Boolean))].sort();
@@ -613,8 +613,8 @@ function normalizeMaxInlineDiffBytes(value) {
   }
   return Math.floor(parsed);
 }
-function measureGitOutputBytes(cwd, args, maxBytes) {
-  const result = git(cwd, args, { maxBuffer: maxBytes + 1 });
+function measureGitOutputBytes(cwd2, args, maxBytes) {
+  const result = git(cwd2, args, { maxBuffer: maxBytes + 1 });
   if (result.error && /** @type {NodeJS.ErrnoException} */
   result.error.code === "ENOBUFS") {
     return maxBytes + 1;
@@ -627,30 +627,30 @@ function measureGitOutputBytes(cwd, args, maxBytes) {
   }
   return Buffer.byteLength(result.stdout, "utf8");
 }
-function measureCombinedGitOutputBytes(cwd, argSets, maxBytes) {
+function measureCombinedGitOutputBytes(cwd2, argSets, maxBytes) {
   let totalBytes = 0;
   for (const args of argSets) {
     const remainingBytes = maxBytes - totalBytes;
     if (remainingBytes < 0) {
       return maxBytes + 1;
     }
-    totalBytes += measureGitOutputBytes(cwd, args, remainingBytes);
+    totalBytes += measureGitOutputBytes(cwd2, args, remainingBytes);
     if (totalBytes > maxBytes) {
       return totalBytes;
     }
   }
   return totalBytes;
 }
-function buildBranchComparison(cwd, baseRef) {
-  const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", baseRef]).stdout.trim();
+function buildBranchComparison(cwd2, baseRef) {
+  const mergeBase = gitChecked(cwd2, ["merge-base", "HEAD", baseRef]).stdout.trim();
   return {
     mergeBase,
     commitRange: `${mergeBase}..HEAD`,
     reviewRange: `${baseRef}...HEAD`
   };
 }
-function ensureGitRepository(cwd) {
-  const result = git(cwd, ["rev-parse", "--show-toplevel"]);
+function ensureGitRepository(cwd2) {
+  const result = git(cwd2, ["rev-parse", "--show-toplevel"]);
   const errorCode = result.error && "code" in result.error ? result.error.code : null;
   if (errorCode === "ENOENT") {
     throw new CliError("git is not installed. Install Git and retry.", {
@@ -670,16 +670,16 @@ function ensureGitRepository(cwd) {
   }
   return result.stdout.trim();
 }
-function getRepoRoot(cwd) {
-  return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
+function getRepoRoot(cwd2) {
+  return gitChecked(cwd2, ["rev-parse", "--show-toplevel"]).stdout.trim();
 }
-function detectDefaultBranch(cwd) {
-  const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
+function detectDefaultBranch(cwd2) {
+  const symbolic = git(cwd2, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
   if (symbolic.status === 0) {
     const remoteHead = symbolic.stdout.trim();
     if (remoteHead.startsWith("refs/remotes/origin/")) {
       const candidate = remoteHead.replace("refs/remotes/origin/", "");
-      const localCheck = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+      const localCheck = git(cwd2, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
       if (localCheck.status === 0) {
         return candidate;
       }
@@ -688,11 +688,11 @@ function detectDefaultBranch(cwd) {
   }
   const candidates = ["main", "master", "trunk"];
   for (const candidate of candidates) {
-    const local = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+    const local = git(cwd2, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
     if (local.status === 0) {
       return candidate;
     }
-    const remote = git(cwd, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]);
+    const remote = git(cwd2, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]);
     if (remote.status === 0) {
       return `origin/${candidate}`;
     }
@@ -704,13 +704,13 @@ function detectDefaultBranch(cwd) {
     suggestion: "Pass `--base <ref>` explicitly, or use `--scope working-tree`."
   });
 }
-function getCurrentBranch(cwd) {
-  return gitChecked(cwd, ["branch", "--show-current"]).stdout.trim() || "HEAD";
+function getCurrentBranch(cwd2) {
+  return gitChecked(cwd2, ["branch", "--show-current"]).stdout.trim() || "HEAD";
 }
-function getWorkingTreeState(cwd) {
-  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
-  const unstaged = gitChecked(cwd, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
-  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard"]).stdout.trim().split("\n").filter(Boolean);
+function getWorkingTreeState(cwd2) {
+  const staged = gitChecked(cwd2, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
+  const unstaged = gitChecked(cwd2, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
+  const untracked = gitChecked(cwd2, ["ls-files", "--others", "--exclude-standard"]).stdout.trim().split("\n").filter(Boolean);
   return {
     staged,
     unstaged,
@@ -718,11 +718,11 @@ function getWorkingTreeState(cwd) {
     isDirty: staged.length > 0 || unstaged.length > 0 || untracked.length > 0
   };
 }
-function resolveReviewTarget(cwd, options = {}) {
-  ensureGitRepository(cwd);
+function resolveReviewTarget(cwd2, options = {}) {
+  ensureGitRepository(cwd2);
   const requestedScope = options.scope ?? "auto";
   const baseRef = options.base ?? null;
-  const state = getWorkingTreeState(cwd);
+  const state = getWorkingTreeState(cwd2);
   const supportedScopes = /* @__PURE__ */ new Set(["auto", "working-tree", "branch"]);
   if (baseRef) {
     return {
@@ -751,7 +751,7 @@ function resolveReviewTarget(cwd, options = {}) {
     );
   }
   if (requestedScope === "branch") {
-    const detectedBase2 = detectDefaultBranch(cwd);
+    const detectedBase2 = detectDefaultBranch(cwd2);
     return {
       mode: "branch",
       label: `branch diff against ${detectedBase2}`,
@@ -766,7 +766,7 @@ function resolveReviewTarget(cwd, options = {}) {
       explicit: false
     };
   }
-  const detectedBase = detectDefaultBranch(cwd);
+  const detectedBase = detectDefaultBranch(cwd2);
   return {
     mode: "branch",
     label: `branch diff against ${detectedBase}`,
@@ -777,8 +777,8 @@ function resolveReviewTarget(cwd, options = {}) {
 function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
-function formatUntrackedFile(cwd, relativePath) {
-  const absolutePath = path2.join(cwd, relativePath);
+function formatUntrackedFile(cwd2, relativePath) {
+  const absolutePath = path2.join(cwd2, relativePath);
   let stat;
   try {
     stat = fs2.statSync(absolutePath);
@@ -807,15 +807,15 @@ function formatUntrackedFile(cwd, relativePath) {
   }
   return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
 }
-function collectWorkingTreeContext(cwd, state, options = {}) {
+function collectWorkingTreeContext(cwd2, state, options = {}) {
   const includeDiff = options.includeDiff !== false;
-  const status = gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim();
+  const status = gitChecked(cwd2, ["status", "--short", "--untracked-files=all"]).stdout.trim();
   const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
   let parts;
   if (includeDiff) {
-    const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    const stagedDiff = gitChecked(cwd2, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const unstagedDiff = gitChecked(cwd2, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd2, file)).join("\n\n");
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff", stagedDiff),
@@ -823,9 +823,9 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
       formatSection("Untracked Files", untrackedBody)
     ];
   } else {
-    const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
-    const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    const stagedStat = gitChecked(cwd2, ["diff", "--shortstat", "--cached"]).stdout.trim();
+    const unstagedStat = gitChecked(cwd2, ["diff", "--shortstat"]).stdout.trim();
+    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd2, file)).join("\n\n");
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
@@ -841,13 +841,13 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
     changedFiles
   };
 }
-function collectBranchContext(cwd, baseRef, options = {}) {
+function collectBranchContext(cwd2, baseRef, options = {}) {
   const includeDiff = options.includeDiff !== false;
-  const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
-  const currentBranch = getCurrentBranch(cwd);
-  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
-  const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
-  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
+  const comparison = options.comparison ?? buildBranchComparison(cwd2, baseRef);
+  const currentBranch = getCurrentBranch(cwd2);
+  const changedFiles = gitChecked(cwd2, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
+  const logOutput = gitChecked(cwd2, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
+  const diffStat = gitChecked(cwd2, ["diff", "--stat", comparison.commitRange]).stdout.trim();
   return {
     mode: "branch",
     summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,
@@ -856,7 +856,7 @@ function collectBranchContext(cwd, baseRef, options = {}) {
       formatSection("Diff Stat", diffStat),
       formatSection(
         "Branch Diff",
-        gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
+        gitChecked(cwd2, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
       )
     ].join("\n") : [
       formatSection("Commit Log", logOutput),
@@ -873,8 +873,8 @@ function buildAdversarialCollectionGuidance(options = {}) {
   }
   return "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.";
 }
-function collectReviewContext(cwd, target, options = {}) {
-  const repoRoot = getRepoRoot(cwd);
+function collectReviewContext(cwd2, target, options = {}) {
+  const repoRoot = getRepoRoot(cwd2);
   const currentBranch = getCurrentBranch(repoRoot);
   const maxInlineFiles = normalizeMaxInlineFiles(options.maxInlineFiles);
   const maxInlineDiffBytes = normalizeMaxInlineDiffBytes(options.maxInlineDiffBytes);
@@ -918,11 +918,11 @@ function collectReviewContext(cwd, target, options = {}) {
 }
 
 // src/lib/workspace.mjs
-function resolveWorkspaceRoot(cwd) {
+function resolveWorkspaceRoot(cwd2) {
   try {
-    return ensureGitRepository(cwd);
+    return ensureGitRepository(cwd2);
   } catch {
-    return cwd;
+    return cwd2;
   }
 }
 
@@ -945,8 +945,8 @@ function defaultState() {
     jobs: []
   };
 }
-function resolveStateDir(cwd) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+function resolveStateDir(cwd2) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd2);
   let canonicalWorkspaceRoot = workspaceRoot;
   try {
     canonicalWorkspaceRoot = fs3.realpathSync.native(workspaceRoot);
@@ -960,17 +960,17 @@ function resolveStateDir(cwd) {
   const stateRoot = pluginDataDir ? path3.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
   return path3.join(stateRoot, `${slug}-${hash}`);
 }
-function resolveStateFile(cwd) {
-  return path3.join(resolveStateDir(cwd), STATE_FILE_NAME);
+function resolveStateFile(cwd2) {
+  return path3.join(resolveStateDir(cwd2), STATE_FILE_NAME);
 }
-function resolveJobsDir(cwd) {
-  return path3.join(resolveStateDir(cwd), JOBS_DIR_NAME);
+function resolveJobsDir(cwd2) {
+  return path3.join(resolveStateDir(cwd2), JOBS_DIR_NAME);
 }
-function ensureStateDir(cwd) {
-  fs3.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+function ensureStateDir(cwd2) {
+  fs3.mkdirSync(resolveJobsDir(cwd2), { recursive: true });
 }
-function loadState(cwd) {
-  const stateFile = resolveStateFile(cwd);
+function loadState(cwd2) {
+  const stateFile = resolveStateFile(cwd2);
   if (!fs3.existsSync(stateFile)) {
     return defaultState();
   }
@@ -997,9 +997,9 @@ function removeFileIfExists(filePath) {
     fs3.unlinkSync(filePath);
   }
 }
-function saveState(cwd, state) {
-  const previousJobs = loadState(cwd).jobs;
-  ensureStateDir(cwd);
+function saveState(cwd2, state) {
+  const previousJobs = loadState(cwd2).jobs;
+  ensureStateDir(cwd2);
   const nextJobs = pruneJobs(state.jobs ?? []);
   const nextState = {
     version: STATE_VERSION,
@@ -1014,24 +1014,24 @@ function saveState(cwd, state) {
     if (retainedIds.has(job.id)) {
       continue;
     }
-    removeJobFile(resolveJobFile(cwd, job.id));
+    removeJobFile(resolveJobFile(cwd2, job.id));
     removeFileIfExists(job.logFile);
   }
-  fs3.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}
+  fs3.writeFileSync(resolveStateFile(cwd2), `${JSON.stringify(nextState, null, 2)}
 `, "utf8");
   return nextState;
 }
-function updateState(cwd, mutate) {
-  const state = loadState(cwd);
+function updateState(cwd2, mutate) {
+  const state = loadState(cwd2);
   mutate(state);
-  return saveState(cwd, state);
+  return saveState(cwd2, state);
 }
 function generateJobId(prefix = "job") {
   const random = Math.random().toString(36).slice(2, 8);
   return `${prefix}-${Date.now().toString(36)}-${random}`;
 }
-function upsertJob(cwd, jobPatch) {
-  return updateState(cwd, (state) => {
+function upsertJob(cwd2, jobPatch) {
+  return updateState(cwd2, (state) => {
     const timestamp2 = nowIso();
     const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
     if (existingIndex === -1) {
@@ -1049,23 +1049,23 @@ function upsertJob(cwd, jobPatch) {
     };
   });
 }
-function listJobs(cwd) {
-  return loadState(cwd).jobs;
+function listJobs(cwd2) {
+  return loadState(cwd2).jobs;
 }
-function setConfig(cwd, key, value) {
-  return updateState(cwd, (state) => {
+function setConfig(cwd2, key, value) {
+  return updateState(cwd2, (state) => {
     state.config = {
       ...state.config,
       [key]: value
     };
   });
 }
-function getConfig(cwd) {
-  return loadState(cwd).config;
+function getConfig(cwd2) {
+  return loadState(cwd2).config;
 }
-function writeJobFile(cwd, jobId, payload) {
-  ensureStateDir(cwd);
-  const jobFile = resolveJobFile(cwd, jobId);
+function writeJobFile(cwd2, jobId, payload) {
+  ensureStateDir(cwd2);
+  const jobFile = resolveJobFile(cwd2, jobId);
   fs3.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}
 `, "utf8");
   return jobFile;
@@ -1078,13 +1078,13 @@ function removeJobFile(jobFile) {
     fs3.unlinkSync(jobFile);
   }
 }
-function resolveJobLogFile(cwd, jobId) {
-  ensureStateDir(cwd);
-  return path3.join(resolveJobsDir(cwd), `${jobId}.log`);
+function resolveJobLogFile(cwd2, jobId) {
+  ensureStateDir(cwd2);
+  return path3.join(resolveJobsDir(cwd2), `${jobId}.log`);
 }
-function resolveJobFile(cwd, jobId) {
-  ensureStateDir(cwd);
-  return path3.join(resolveJobsDir(cwd), `${jobId}.json`);
+function resolveJobFile(cwd2, jobId) {
+  ensureStateDir(cwd2);
+  return path3.join(resolveJobsDir(cwd2), `${jobId}.json`);
 }
 
 // src/lib/broker-lifecycle.mjs
@@ -1114,10 +1114,10 @@ async function waitForBrokerEndpoint(endpoint, timeoutMs = 2e3) {
   }
   return false;
 }
-function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process5.env }) {
+function spawnBrokerProcess({ scriptPath, cwd: cwd2, endpoint, pidFile, logFile, env = process5.env }) {
   const logFd = fs4.openSync(logFile, "a");
-  const child = spawn(process5.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
-    cwd,
+  const child = spawn(process5.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd2, "--pid-file", pidFile], {
+    cwd: cwd2,
     env,
     detached: true,
     stdio: ["ignore", logFd, logFd]
@@ -1126,11 +1126,11 @@ function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env =
   fs4.closeSync(logFd);
   return child;
 }
-function resolveBrokerStateFile(cwd) {
-  return path4.join(resolveStateDir(cwd), BROKER_STATE_FILE);
+function resolveBrokerStateFile(cwd2) {
+  return path4.join(resolveStateDir(cwd2), BROKER_STATE_FILE);
 }
-function loadBrokerSession(cwd) {
-  const stateFile = resolveBrokerStateFile(cwd);
+function loadBrokerSession(cwd2) {
+  const stateFile = resolveBrokerStateFile(cwd2);
   if (!fs4.existsSync(stateFile)) {
     return null;
   }
@@ -1140,14 +1140,14 @@ function loadBrokerSession(cwd) {
     return null;
   }
 }
-function saveBrokerSession(cwd, session) {
-  const stateDir = resolveStateDir(cwd);
+function saveBrokerSession(cwd2, session) {
+  const stateDir = resolveStateDir(cwd2);
   fs4.mkdirSync(stateDir, { recursive: true });
-  fs4.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}
+  fs4.writeFileSync(resolveBrokerStateFile(cwd2), `${JSON.stringify(session, null, 2)}
 `, "utf8");
 }
-function clearBrokerSession(cwd) {
-  const stateFile = resolveBrokerStateFile(cwd);
+function clearBrokerSession(cwd2) {
+  const stateFile = resolveBrokerStateFile(cwd2);
   if (fs4.existsSync(stateFile)) {
     fs4.unlinkSync(stateFile);
   }
@@ -1162,8 +1162,8 @@ async function isBrokerEndpointReady(endpoint) {
     return false;
   }
 }
-async function ensureBrokerSession(cwd, options = {}) {
-  const existing = loadBrokerSession(cwd);
+async function ensureBrokerSession(cwd2, options = {}) {
+  const existing = loadBrokerSession(cwd2);
   if (existing && await isBrokerEndpointReady(existing.endpoint)) {
     return existing;
   }
@@ -1176,7 +1176,7 @@ async function ensureBrokerSession(cwd, options = {}) {
       pid: existing.pid ?? null,
       killProcess: options.killProcess ?? null
     });
-    clearBrokerSession(cwd);
+    clearBrokerSession(cwd2);
   }
   const sessionDir = createBrokerSessionDir();
   const endpointFactory = options.createBrokerEndpoint ?? createBrokerEndpoint;
@@ -1186,7 +1186,7 @@ async function ensureBrokerSession(cwd, options = {}) {
   const scriptPath = options.scriptPath ?? fileURLToPath(new URL("../app-server-broker.mjs", import.meta.url));
   const child = spawnBrokerProcess({
     scriptPath,
-    cwd,
+    cwd: cwd2,
     endpoint,
     pidFile,
     logFile,
@@ -1211,7 +1211,7 @@ async function ensureBrokerSession(cwd, options = {}) {
     sessionDir,
     pid: child.pid ?? null
   };
-  saveBrokerSession(cwd, session);
+  saveBrokerSession(cwd2, session);
   return session;
 }
 function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
@@ -1277,8 +1277,8 @@ function createProtocolError(message, data) {
   return error;
 }
 var AppServerClientBase = class {
-  constructor(cwd, options = {}) {
-    this.cwd = cwd;
+  constructor(cwd2, options = {}) {
+    this.cwd = cwd2;
     this.options = options;
     this.pending = /* @__PURE__ */ new Map();
     this.nextId = 1;
@@ -1413,8 +1413,8 @@ var AppServerClientBase = class {
   }
 };
 var SpawnedCodexAppServerClient = class extends AppServerClientBase {
-  constructor(cwd, options = {}) {
-    super(cwd, options);
+  constructor(cwd2, options = {}) {
+    super(cwd2, options);
     this.transport = "direct";
   }
   async initialize() {
@@ -1484,8 +1484,8 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
   }
 };
 var BrokerCodexAppServerClient = class extends AppServerClientBase {
-  constructor(cwd, options = {}) {
-    super(cwd, options);
+  constructor(cwd2, options = {}) {
+    super(cwd2, options);
     this.transport = "broker";
     this.endpoint = options.brokerEndpoint;
   }
@@ -1536,19 +1536,19 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
   }
 };
 var CodexAppServerClient = class {
-  static async connect(cwd, options = {}) {
+  static async connect(cwd2, options = {}) {
     let brokerEndpoint = null;
     if (!options.disableBroker) {
       brokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process6.env[BROKER_ENDPOINT_ENV] ?? null;
       if (!brokerEndpoint && options.reuseExistingBroker) {
-        brokerEndpoint = loadBrokerSession(cwd)?.endpoint ?? null;
+        brokerEndpoint = loadBrokerSession(cwd2)?.endpoint ?? null;
       }
       if (!brokerEndpoint && !options.reuseExistingBroker) {
-        const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
+        const brokerSession = await ensureBrokerSession(cwd2, { env: options.env });
         brokerEndpoint = brokerSession?.endpoint ?? null;
       }
     }
-    const client = brokerEndpoint ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint }) : new SpawnedCodexAppServerClient(cwd, options);
+    const client = brokerEndpoint ? new BrokerCodexAppServerClient(cwd2, { ...options, brokerEndpoint }) : new SpawnedCodexAppServerClient(cwd2, options);
     await client.initialize();
     return client;
   }
@@ -1561,9 +1561,9 @@ var DEFAULT_CONTINUE_PROMPT = "Continue from the current thread state. Pick the 
 function cleanCodexStderr(stderr) {
   return stderr.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line && !line.startsWith("WARNING: proceeding, even though we could not update PATH:")).join("\n");
 }
-function buildThreadParams(cwd, options = {}) {
+function buildThreadParams(cwd2, options = {}) {
   return {
-    cwd,
+    cwd: cwd2,
     model: options.model ?? null,
     approvalPolicy: "never",
     sandbox: options.sandbox ?? "read-only",
@@ -1572,10 +1572,10 @@ function buildThreadParams(cwd, options = {}) {
     experimentalRawEvents: false
   };
 }
-function buildResumeParams(threadId, cwd, options = {}) {
+function buildResumeParams(threadId, cwd2, options = {}) {
   return {
     threadId,
-    cwd,
+    cwd: cwd2,
     model: options.model ?? null,
     approvalPolicy: "never",
     sandbox: options.sandbox ?? "read-only"
@@ -2111,10 +2111,10 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     else if (client.removeListener) client.removeListener("exit", onExit);
   }
 }
-async function withAppServer(cwd, fn) {
+async function withAppServer(cwd2, fn) {
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd);
+    client = await CodexAppServerClient.connect(cwd2);
     const result = await fn(client);
     await client.close();
     return result;
@@ -2129,7 +2129,7 @@ async function withAppServer(cwd, fn) {
     if (!shouldRetryDirect) {
       throw error;
     }
-    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+    const directClient = await CodexAppServerClient.connect(cwd2, { disableBroker: true });
     try {
       return await fn(directClient);
     } finally {
@@ -2137,8 +2137,8 @@ async function withAppServer(cwd, fn) {
     }
   }
 }
-async function startThread(client, cwd, options = {}) {
-  const response = await client.request("thread/start", buildThreadParams(cwd, options));
+async function startThread(client, cwd2, options = {}) {
+  const response = await client.request("thread/start", buildThreadParams(cwd2, options));
   const threadId = response.thread.id;
   if (options.threadName) {
     try {
@@ -2152,8 +2152,8 @@ async function startThread(client, cwd, options = {}) {
   }
   return response;
 }
-async function resumeThread(client, threadId, cwd, options = {}) {
-  return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
+async function resumeThread(client, threadId, cwd2, options = {}) {
+  return client.request("thread/resume", buildResumeParams(threadId, cwd2, options));
 }
 function buildResultStatus(turnState) {
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
@@ -2251,12 +2251,12 @@ function buildAppServerAuthStatus(accountResponse, configResponse) {
     provider: providerId
   });
 }
-async function getCodexAuthStatusFromClient(client, cwd) {
+async function getCodexAuthStatusFromClient(client, cwd2) {
   try {
     const accountResponse = await client.request("account/read", { refreshToken: false });
     const configResponse = await client.request("config/read", {
       includeLayers: false,
-      cwd
+      cwd: cwd2
     });
     return buildAppServerAuthStatus(accountResponse, configResponse);
   } catch (error) {
@@ -2267,12 +2267,12 @@ async function getCodexAuthStatusFromClient(client, cwd) {
     });
   }
 }
-function getCodexAvailability(cwd) {
-  const versionStatus = binaryAvailable("codex", ["--version"], { cwd });
+function getCodexAvailability(cwd2) {
+  const versionStatus = binaryAvailable("codex", ["--version"], { cwd: cwd2 });
   if (!versionStatus.available) {
     return versionStatus;
   }
-  const appServerStatus = binaryAvailable("codex", ["app-server", "--help"], { cwd });
+  const appServerStatus = binaryAvailable("codex", ["app-server", "--help"], { cwd: cwd2 });
   if (!appServerStatus.available) {
     return {
       available: false,
@@ -2284,8 +2284,8 @@ function getCodexAvailability(cwd) {
     detail: `${versionStatus.detail}; advanced runtime available`
   };
 }
-function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
-  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
+function getSessionRuntimeStatus(env = process.env, cwd2 = process.cwd()) {
+  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd2)?.endpoint ?? null;
   if (endpoint) {
     return {
       mode: "shared",
@@ -2301,8 +2301,8 @@ function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
     endpoint: null
   };
 }
-async function getCodexAuthStatus(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
+async function getCodexAuthStatus(cwd2, options = {}) {
+  const availability = getCodexAvailability(cwd2);
   if (!availability.available) {
     return {
       available: false,
@@ -2317,11 +2317,11 @@ async function getCodexAuthStatus(cwd, options = {}) {
   }
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd, {
+    client = await CodexAppServerClient.connect(cwd2, {
       env: options.env,
       reuseExistingBroker: true
     });
-    return await getCodexAuthStatusFromClient(client, cwd);
+    return await getCodexAuthStatusFromClient(client, cwd2);
   } catch (error) {
     return buildAuthStatus({
       loggedIn: false,
@@ -2335,7 +2335,7 @@ async function getCodexAuthStatus(cwd, options = {}) {
     }
   }
 }
-async function interruptAppServerTurn(cwd, { threadId, turnId }) {
+async function interruptAppServerTurn(cwd2, { threadId, turnId }) {
   if (!threadId || !turnId) {
     return {
       attempted: false,
@@ -2344,7 +2344,7 @@ async function interruptAppServerTurn(cwd, { threadId, turnId }) {
       detail: "missing threadId or turnId"
     };
   }
-  const availability = getCodexAvailability(cwd);
+  const availability = getCodexAvailability(cwd2);
   if (!availability.available) {
     return {
       attempted: false,
@@ -2355,7 +2355,7 @@ async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   }
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
+    client = await CodexAppServerClient.connect(cwd2, { reuseExistingBroker: true });
     await client.request("turn/interrupt", { threadId, turnId });
     return {
       attempted: true,
@@ -2375,8 +2375,8 @@ async function interruptAppServerTurn(cwd, { threadId, turnId }) {
     });
   }
 }
-async function runAppServerReview(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
+async function runAppServerReview(cwd2, options = {}) {
+  const availability = getCodexAvailability(cwd2);
   if (!availability.available) {
     throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
       class: "dependency_failed",
@@ -2385,9 +2385,9 @@ async function runAppServerReview(cwd, options = {}) {
       suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
     });
   }
-  return withAppServer(cwd, async (client) => {
+  return withAppServer(cwd2, async (client) => {
     emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
-    const thread = await startThread(client, cwd, {
+    const thread = await startThread(client, cwd2, {
       model: options.model,
       sandbox: "read-only",
       ephemeral: true,
@@ -2431,8 +2431,8 @@ async function runAppServerReview(cwd, options = {}) {
     };
   });
 }
-async function runAppServerTurn(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
+async function runAppServerTurn(cwd2, options = {}) {
+  const availability = getCodexAvailability(cwd2);
   if (!availability.available) {
     throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
       class: "dependency_failed",
@@ -2441,14 +2441,14 @@ async function runAppServerTurn(cwd, options = {}) {
       suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
     });
   }
-  return withAppServer(cwd, async (client) => {
+  return withAppServer(cwd2, async (client) => {
     let threadId;
     if (options.onServerRequest) {
       client.setServerRequestHandler(options.onServerRequest);
     }
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
-      const response = await resumeThread(client, options.resumeThreadId, cwd, {
+      const response = await resumeThread(client, options.resumeThreadId, cwd2, {
         model: options.model,
         sandbox: options.sandbox,
         ephemeral: false
@@ -2456,7 +2456,7 @@ async function runAppServerTurn(cwd, options = {}) {
       threadId = response.thread.id;
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
-      const response = await startThread(client, cwd, {
+      const response = await startThread(client, cwd2, {
         model: options.model,
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
@@ -2539,8 +2539,8 @@ async function runAppServerTurn(cwd, options = {}) {
     };
   });
 }
-async function findLatestTaskThread(cwd) {
-  const availability = getCodexAvailability(cwd);
+async function findLatestTaskThread(cwd2) {
+  const availability = getCodexAvailability(cwd2);
   if (!availability.available) {
     throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
       class: "dependency_failed",
@@ -2549,9 +2549,9 @@ async function findLatestTaskThread(cwd) {
       suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
     });
   }
-  return withAppServer(cwd, async (client) => {
+  return withAppServer(cwd2, async (client) => {
     const response = await client.request("thread/list", {
-      cwd,
+      cwd: cwd2,
       limit: 20,
       sortKey: "updated_at",
       sourceKinds: ["appServer"],
@@ -2968,8 +2968,8 @@ function matchJobReference(jobs, reference, predicate = () => true) {
     suggestion: "Run `status` to list known jobs."
   });
 }
-function buildStatusSnapshot(cwd, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+function buildStatusSnapshot(cwd2, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd2);
   const config = getConfig(workspaceRoot);
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
@@ -2988,8 +2988,8 @@ function buildStatusSnapshot(cwd, options = {}) {
     needsReview: Boolean(config.stopReviewGate)
   };
 }
-function buildSingleJobSnapshot(cwd, reference, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+function buildSingleJobSnapshot(cwd2, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd2);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
@@ -3005,8 +3005,8 @@ function buildSingleJobSnapshot(cwd, reference, options = {}) {
     job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
   };
 }
-function resolveResultJob(cwd, reference) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+function resolveResultJob(cwd2, reference) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd2);
   const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
   if (reference) {
     const activeMatch = jobs.find(
@@ -3043,8 +3043,8 @@ function resolveResultJob(cwd, reference) {
     retryable: false
   });
 }
-function resolveCancelableJob(cwd, reference, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+function resolveCancelableJob(cwd2, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd2);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
   if (reference) {
@@ -6151,18 +6151,24 @@ var DEFAULT_CONFIG = {
   session_dir: "~/.codex-bridge/sessions",
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
-function loadConfig(skillDir) {
-  const configPath = skillDir ? path6.join(skillDir, "config.yaml") : path6.join(os3.homedir(), ".codex-bridge", "config.yaml");
-  let userConfig = {};
-  try {
-    const raw = fs8.readFileSync(configPath, "utf8");
-    userConfig = jsYaml.load(raw) ?? {};
-  } catch {
-  }
-  const bridge = userConfig.codex_bridge ?? userConfig;
+function loadConfig(skillDir, overrideDir = null) {
+  const readYaml = (p) => {
+    try {
+      const raw = fs8.readFileSync(p, "utf8");
+      const doc = jsYaml.load(raw) ?? {};
+      const bridge = doc.codex_bridge ?? doc;
+      return typeof bridge === "object" && bridge !== null ? bridge : {};
+    } catch {
+      return {};
+    }
+  };
+  const skillConfigPath = skillDir ? path6.join(skillDir, "config.yaml") : path6.join(os3.homedir(), ".codex-bridge", "config.yaml");
+  const skillLayer = readYaml(skillConfigPath);
+  const overrideLayer = overrideDir && fs8.existsSync(path6.join(overrideDir, "config.yaml")) ? readYaml(path6.join(overrideDir, "config.yaml")) : {};
   return {
     ...DEFAULT_CONFIG,
-    ...typeof bridge === "object" && bridge !== null ? bridge : {}
+    ...skillLayer,
+    ...overrideLayer
   };
 }
 function resolveEffort(config, options = {}) {
@@ -6266,9 +6272,9 @@ function writePlan(session, planText) {
   }
   return planPath;
 }
-function captureGitDiff(cwd, session) {
-  const numstatResult = spawnSync2("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
-  const fullResult = spawnSync2("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+function captureGitDiff(cwd2, session) {
+  const numstatResult = spawnSync2("git", ["diff", "--numstat", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+  const fullResult = spawnSync2("git", ["diff", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
   const diffContent = fullResult.stdout || "";
   const diffPath = writeDiff(session, diffContent);
   const numstatOutput = numstatResult.stdout || "";
@@ -6498,7 +6504,7 @@ async function runAutoPipeline(options) {
   const {
     session,
     threadId,
-    cwd,
+    cwd: cwd2,
     config,
     scriptPath,
     rootDir,
@@ -6517,7 +6523,7 @@ async function runAutoPipeline(options) {
   try {
     logEvent(session, formatPipelineEvent(session, { stage: "diff" }));
     logNdjson(session, "PIPELINE_STAGE", null, { stage: "diff" });
-    const diff1 = captureGitDiff(cwd, session);
+    const diff1 = captureGitDiff(cwd2, session);
     completedStages.push("diff");
     checkPipelineTimeout();
     let reviewVerdict = "approve";
@@ -6528,7 +6534,7 @@ async function runAutoPipeline(options) {
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "review" });
       try {
         const reviewResult = await withTimeout(
-          runAppServerReview2(cwd, {
+          runAppServerReview2(cwd2, {
             target: { type: "uncommittedChanges" },
             model: config.model
           }),
@@ -6548,7 +6554,7 @@ async function runAutoPipeline(options) {
           logNdjson(session, "PIPELINE_STAGE", null, { stage: "fix", findingCount: reviewFindings.length });
           const fixPrompt = buildFixPrompt(reviewFindings);
           await withTimeout(
-            runAppServerTurn2(cwd, {
+            runAppServerTurn2(cwd2, {
               resumeThreadId: threadId,
               prompt: fixPrompt,
               model: config.model,
@@ -6563,7 +6569,7 @@ async function runAutoPipeline(options) {
           );
           completedStages.push("fix");
           checkPipelineTimeout();
-          captureGitDiff(cwd, session);
+          captureGitDiff(cwd2, session);
         }
       } catch (error) {
         if (error instanceof TimeoutError) {
@@ -6579,7 +6585,7 @@ async function runAutoPipeline(options) {
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "check" });
       try {
         const checkResult = await withTimeout(
-          runAppServerTurn2(cwd, {
+          runAppServerTurn2(cwd2, {
             resumeThreadId: threadId,
             prompt: config.post_task_prompt,
             model: config.model,
@@ -6627,7 +6633,7 @@ async function runAutoPipeline(options) {
         completedStages.push("check-failed");
       }
     }
-    const finalDiff = captureGitDiff(cwd, session);
+    const finalDiff = captureGitDiff(cwd2, session);
     const duration = Math.round((Date.now() - startTime) / 1e3);
     if (completionResult.complete) {
       logEvent(session, formatDoneEvent(session, {
@@ -6667,7 +6673,7 @@ async function runAutoPipeline(options) {
     const errorMessage = error instanceof PipelineTimeoutError ? `Auto-pipeline exceeded ${fmtSeconds(PIPELINE_TIMEOUT_MS)}. Completed stages: ${completedStages.join(", ")}` : error.message;
     let finalDiff;
     try {
-      finalDiff = captureGitDiff(cwd, session);
+      finalDiff = captureGitDiff(cwd2, session);
     } catch {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
@@ -6769,12 +6775,15 @@ var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
 var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
 var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
-var BRIDGE_CONFIG = null;
-function getBridgeConfig() {
-  if (!BRIDGE_CONFIG) {
-    BRIDGE_CONFIG = loadConfig(ROOT_DIR);
+var BRIDGE_CONFIG_SKILL_LAYER = null;
+function getBridgeConfig(cwd2 = null) {
+  if (!cwd2) {
+    if (!BRIDGE_CONFIG_SKILL_LAYER) {
+      BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
+    }
+    return BRIDGE_CONFIG_SKILL_LAYER;
   }
-  return BRIDGE_CONFIG;
+  return loadConfig(ROOT_DIR, cwd2);
 }
 function buildMonitorHint({ eventsPath, jobId, threadId }) {
   const identifier = jobId ?? threadId;
@@ -7075,12 +7084,12 @@ function firstMeaningfulLine(text, fallback) {
   const line = String(text ?? "").split(/\r?\n/).map((value) => value.trim()).find(Boolean);
   return line ?? fallback;
 }
-async function buildSetupReport(cwd, actionsTaken = []) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
-  const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
-  const codexStatus = getCodexAvailability(cwd);
-  const authStatus = await getCodexAuthStatus(cwd);
+async function buildSetupReport(cwd2, actionsTaken = []) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+  const nodeStatus = binaryAvailable("node", ["--version"], { cwd: cwd2 });
+  const npmStatus = binaryAvailable("npm", ["--version"], { cwd: cwd2 });
+  const codexStatus = getCodexAvailability(cwd2);
+  const authStatus = await getCodexAuthStatus(cwd2);
   const config = getConfig(workspaceRoot);
   const nextSteps = [];
   if (!codexStatus.available) {
@@ -7117,7 +7126,7 @@ async function handleSetup(argv) {
       "REVIEW_GATE_CONFLICT"
     );
   }
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
   if (options["enable-review-gate"]) {
@@ -7127,7 +7136,7 @@ async function handleSetup(argv) {
     setConfig(workspaceRoot, "stopReviewGate", false);
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
   }
-  const finalReport = await buildSetupReport(cwd, actionsTaken);
+  const finalReport = await buildSetupReport(cwd2, actionsTaken);
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
     json: options.json,
     startedAt
@@ -7151,8 +7160,8 @@ async function handleVersion(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd = resolveCommandCwd(options);
-  const codex = getCodexAvailability(cwd);
+  const cwd2 = resolveCommandCwd(options);
+  const codex = getCodexAvailability(cwd2);
   const payload = {
     version: BRIDGE_VERSION,
     schema_version: BRIDGE_SCHEMA_VERSION,
@@ -7177,8 +7186,8 @@ async function handleAuthStatus(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd = resolveCommandCwd(options);
-  const auth = await getCodexAuthStatus(cwd);
+  const cwd2 = resolveCommandCwd(options);
+  const auth = await getCodexAuthStatus(cwd2);
   const status = auth.loggedIn ? "logged in" : "not logged in";
   const provider = auth.provider ? ` via ${auth.provider}` : "";
   const lines = [`Auth: ${status}${provider}.`];
@@ -7230,8 +7239,8 @@ function buildAdversarialReviewPrompt(context, focusText) {
     REVIEW_INPUT: context.content
   });
 }
-function ensureCodexAvailable(cwd) {
-  const availability = getCodexAvailability(cwd);
+function ensureCodexAvailable(cwd2) {
+  const availability = getCodexAvailability(cwd2);
   if (!availability.available) {
     throw new CliError(
       "Codex CLI is not installed or is missing required runtime support.",
@@ -7289,14 +7298,14 @@ function findLatestResumableTaskJob(jobs) {
     (job) => job.jobClass === "task" && job.threadId && job.status === "completed"
   ) ?? null;
 }
-async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
+async function waitForSingleJobSnapshot(cwd2, reference, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
   const pollIntervalMs = Math.max(100, Number(options.pollIntervalMs) || DEFAULT_STATUS_POLL_INTERVAL_MS);
   const deadline = Date.now() + timeoutMs;
-  let snapshot = buildSingleJobSnapshot(cwd, reference);
+  let snapshot = buildSingleJobSnapshot(cwd2, reference);
   while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
-    snapshot = buildSingleJobSnapshot(cwd, reference);
+    snapshot = buildSingleJobSnapshot(cwd2, reference);
   }
   return {
     ...snapshot,
@@ -7304,8 +7313,8 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
     timeoutMs
   };
 }
-async function resolveLatestTrackedTaskThread(cwd, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+async function resolveLatestTrackedTaskThread(cwd2, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd2);
   const sessionId = getCurrentClaudeSessionId();
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.id !== options.excludeJobId);
   const visibleJobs = filterJobsForCurrentClaudeSession(jobs);
@@ -7580,9 +7589,9 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
     write
   });
 }
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId, mode }) {
+function buildTaskRequest({ cwd: cwd2, model, effort, prompt, write, resumeLast, jobId, mode }) {
   return {
-    cwd,
+    cwd: cwd2,
     model,
     effort,
     prompt,
@@ -7592,9 +7601,9 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     mode: mode ?? null
   };
 }
-function readTaskPrompt(cwd, options, positionals) {
+function readTaskPrompt(cwd2, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path10.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path10.resolve(cwd2, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
@@ -7651,10 +7660,10 @@ async function runForegroundCommand(job, runner, options = {}) {
   });
   return execution;
 }
-function spawnDetachedTaskWorker(cwd, jobId) {
+function spawnDetachedTaskWorker(cwd2, jobId) {
   const scriptPath = SCRIPT_PATH;
-  const child = spawn3(process8.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
-    cwd,
+  const child = spawn3(process8.execPath, [scriptPath, "task-worker", "--cwd", cwd2, "--job-id", jobId], {
+    cwd: cwd2,
     env: process8.env,
     detached: true,
     stdio: "ignore",
@@ -7663,10 +7672,10 @@ function spawnDetachedTaskWorker(cwd, jobId) {
   child.unref();
   return child;
 }
-function enqueueBackgroundTask(cwd, job, request) {
+function enqueueBackgroundTask(cwd2, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
-  const child = spawnDetachedTaskWorker(cwd, job.id);
+  const child = spawnDetachedTaskWorker(cwd2, job.id);
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -7700,10 +7709,10 @@ async function handleReviewCommand(argv, config) {
       m: "model"
     }
   });
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const focusText = positionals.join(" ").trim();
-  const target = resolveReviewTarget(cwd, {
+  const target = resolveReviewTarget(cwd2, {
     base: options.base,
     scope: options.scope
   });
@@ -7720,7 +7729,7 @@ async function handleReviewCommand(argv, config) {
   await runForegroundCommand(
     job,
     (progress) => executeReviewRun({
-      cwd,
+      cwd: cwd2,
       base: options.base,
       scope: options.scope,
       model: options.model,
@@ -7742,7 +7751,7 @@ async function handleReview(argv) {
   });
 }
 async function runBridgeTask(request) {
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(request.cwd ?? null);
   const sessionDir = resolveSessionDir(config.session_dir);
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   const effectiveMode = request.mode ?? config.mode ?? "plan";
@@ -7887,10 +7896,16 @@ ${config.prompt_footer}` : request.prompt;
       jobId: request.jobId ?? null
     });
     if (pipelineResult?.complete === false) {
-      setPhase("incomplete", {
+      const pipelineErrored = Boolean(pipelineResult.error);
+      const failedStage = pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff";
+      const nextAction = pipelineErrored ? {
+        command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
+        description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`
+      } : {
         command: `node ${SCRIPT_PATH} send ${result.threadId} "Complete the missing items"`,
         description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."
-      }, { pipeline: pipelineResult, monitor });
+      };
+      setPhase("incomplete", nextAction, { pipeline: pipelineResult, monitor });
     } else {
       setPhase("done", {
         command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
@@ -7938,11 +7953,11 @@ async function handleTask(argv) {
   if (options.mode != null && !VALID_MODES.has(options.mode)) {
     throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
-  const prompt = readTaskPrompt(cwd, options, positionals);
+  const prompt = readTaskPrompt(cwd2, options, positionals);
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
   if (resumeLast && fresh) {
@@ -7958,10 +7973,10 @@ async function handleTask(argv) {
     resumeLast
   });
   if (options.background) {
-    ensureCodexAvailable(cwd);
+    ensureCodexAvailable(cwd2);
     const job2 = buildTaskJob(workspaceRoot, taskMetadata, write);
     const request = buildTaskRequest({
-      cwd,
+      cwd: cwd2,
       model,
       effort,
       prompt,
@@ -7970,7 +7985,7 @@ async function handleTask(argv) {
       jobId: job2.id,
       mode: options.mode ?? null
     });
-    const { payload } = enqueueBackgroundTask(cwd, job2, request);
+    const { payload } = enqueueBackgroundTask(cwd2, job2, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
       json: options.json,
       startedAt
@@ -7981,7 +7996,7 @@ async function handleTask(argv) {
   await runForegroundCommand(
     job,
     (progress) => runBridgeTask({
-      cwd,
+      cwd: cwd2,
       model,
       effort,
       prompt,
@@ -8001,7 +8016,7 @@ async function handleTaskWorker(argv) {
   if (!options["job-id"]) {
     throw usageError("Missing required --job-id for task-worker.");
   }
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
@@ -8045,13 +8060,13 @@ async function handleStatus(argv) {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
     booleanOptions: ["json", "all", "wait"]
   });
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   if (reference) {
-    const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd, reference, {
+    const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd2, reference, {
       timeoutMs: options["timeout-ms"],
       pollIntervalMs: options["poll-interval-ms"]
-    }) : buildSingleJobSnapshot(cwd, reference);
+    }) : buildSingleJobSnapshot(cwd2, reference);
     emitSuccess("status", snapshot, renderJobStatusReport(snapshot.job), {
       json: options.json,
       startedAt
@@ -8061,7 +8076,7 @@ async function handleStatus(argv) {
   if (options.wait) {
     throw usageError("`status --wait` requires a job id.");
   }
-  const report = buildStatusSnapshot(cwd, { all: options.all });
+  const report = buildStatusSnapshot(cwd2, { all: options.all });
   emitSuccess("status", report, renderStatusReport(report), {
     json: options.json,
     startedAt
@@ -8073,9 +8088,9 @@ function handleResult(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveResultJob(cwd, reference);
+  const { workspaceRoot, job } = resolveResultJob(cwd2, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
   const payload = {
     job,
@@ -8164,17 +8179,17 @@ async function handleWait(argv) {
     valueOptions: ["cwd", "timeout-ms"],
     booleanOptions: ["json"]
   });
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   if (!reference) {
     throw usageError("wait requires <job-id-or-thread-id>");
   }
   let job;
   try {
-    job = resolveResultJob(cwd, reference).job;
+    job = resolveResultJob(cwd2, reference).job;
   } catch (err) {
     if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, reference).job;
+      job = buildSingleJobSnapshot(cwd2, reference).job;
     } else {
       throw err;
     }
@@ -8185,7 +8200,7 @@ async function handleWait(argv) {
       "JOB_HAS_NO_THREAD"
     );
   }
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd2);
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path10.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
@@ -8224,17 +8239,17 @@ async function handleEvents(argv) {
     valueOptions: ["cwd", "timeout-ms", "filter"],
     booleanOptions: ["json", "follow"]
   });
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   if (!reference) {
     throw usageError("events requires <job-id-or-thread-id>");
   }
   let job;
   try {
-    job = resolveResultJob(cwd, reference).job;
+    job = resolveResultJob(cwd2, reference).job;
   } catch (err) {
     if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, reference).job;
+      job = buildSingleJobSnapshot(cwd2, reference).job;
     } else {
       throw err;
     }
@@ -8245,7 +8260,7 @@ async function handleEvents(argv) {
       "JOB_HAS_NO_THREAD"
     );
   }
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd2);
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path10.join(sessionDir, `${job.threadId}.events`);
   const filter = options.filter ? new Set(
@@ -8385,7 +8400,7 @@ function handleTaskResumeCandidate(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const sessionId = getCurrentClaudeSessionId();
   const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst(listJobs(workspaceRoot)));
@@ -8416,13 +8431,13 @@ async function handleCancel(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd = resolveCommandCwd(options);
+  const cwd2 = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process8.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd2, reference, { env: process8.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
-  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
+  const interrupt = await interruptAppServerTurn(cwd2, { threadId, turnId });
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,
@@ -8465,12 +8480,12 @@ async function handleCancel(argv) {
     startedAt
   });
 }
-function resolvePromptInput(options, positionals, cwd) {
+function resolvePromptInput(options, positionals, cwd2) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path10.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path10.resolve(cwd2, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path10.resolve(cwd, positionals[0]);
+    const candidate = path10.resolve(cwd2, positionals[0]);
     try {
       if (fs12.existsSync(candidate) && fs12.statSync(candidate).isFile()) {
         return fs12.readFileSync(candidate, "utf8");
@@ -8502,12 +8517,12 @@ async function handleSend(argv) {
   }
   const threadId = rawThreadId.trim();
   const promptParts = positionals.slice(1);
-  const cwd = resolveCommandCwd(options);
-  const prompt = resolvePromptInput(options, promptParts, cwd);
+  const cwd2 = resolveCommandCwd(options);
+  const prompt = resolvePromptInput(options, promptParts, cwd2);
   if (!prompt) {
     throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
   }
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd2);
   const modeOverride = options.mode;
   const sessionDir = resolveSessionDir(config.session_dir);
   const turnOptions = {
@@ -8548,7 +8563,7 @@ async function handleSend(argv) {
     });
     turnOptions.sandboxPolicy = buildSandboxPolicy(modeOverride);
   }
-  ensureCodexAvailable(cwd);
+  ensureCodexAvailable(cwd2);
   const workspaceRoot = resolveCommandWorkspace(options);
   const result = await runAppServerTurn(workspaceRoot, turnOptions);
   if (result.status !== 0) {
@@ -8587,20 +8602,20 @@ async function handleSteer(argv) {
     throw invalidThreadIdError(rawThreadId, "thread-id");
   }
   const threadId = rawThreadId.trim();
-  const cwd = resolveCommandCwd(options);
-  const prompt = resolvePromptInput(options, promptParts, cwd);
+  const cwd2 = resolveCommandCwd(options);
+  const prompt = resolvePromptInput(options, promptParts, cwd2);
   if (!prompt) {
     throw validationError("steer requires a prompt", "MISSING_PROMPT");
   }
-  ensureCodexAvailable(cwd);
-  await withAppServer(cwd, async (client) => {
+  ensureCodexAvailable(cwd2);
+  await withAppServer(cwd2, async (client) => {
     await client.request("turn/steer", {
       threadId,
       input: [{ type: "text", text: prompt }],
       expectedTurnId: turnId
     });
   });
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd2);
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
   if (session) {
@@ -8622,7 +8637,7 @@ async function handleRespond(argv) {
   if (!requestId) {
     throw usageError("respond requires <request-id>");
   }
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd);
   const sessionDir = resolveSessionDir(config.session_dir);
   const pending = readPendingRequestById(sessionDir, requestId);
   if (!pending) {
@@ -8674,7 +8689,7 @@ async function handleSummary(argv) {
   if (!threadId) {
     throw usageError("summary requires <thread-id>");
   }
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd);
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
   if (!session) {

@@ -137,12 +137,27 @@ const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "hi
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
-let BRIDGE_CONFIG = null;
-function getBridgeConfig() {
-  if (!BRIDGE_CONFIG) {
-    BRIDGE_CONFIG = loadConfig(ROOT_DIR);
+// Bridge config: skill-dir defaults + optional per-cwd override.
+//
+// The skill-dir layer is read once and reused (it ships with the skill; it
+// doesn't change during a process's lifetime). The override layer — a
+// `config.yaml` at the invocation's cwd — is re-read on every call because
+// different subcommands may run in different workspaces within one process
+// (e.g. `-C ...` flag), and each invocation's cwd is authoritative.
+//
+// Call sites that have a meaningful cwd (task, send, review, steer) must pass
+// it so project-level config can take effect. Call sites without (help,
+// version) fall back to the skill-dir layer only, which is harmless — those
+// commands don't consume the knobs the override layer is meant to flip.
+let BRIDGE_CONFIG_SKILL_LAYER = null;
+function getBridgeConfig(cwd = null) {
+  if (!cwd) {
+    if (!BRIDGE_CONFIG_SKILL_LAYER) {
+      BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
+    }
+    return BRIDGE_CONFIG_SKILL_LAYER;
   }
-  return BRIDGE_CONFIG;
+  return loadConfig(ROOT_DIR, cwd);
 }
 
 // Pending requests are persisted to disk by the worker process.
@@ -1256,7 +1271,7 @@ async function handleReview(argv) {
 // timeout, and auto-pipeline.
 
 async function runBridgeTask(request) {
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(request.cwd ?? null);
   const sessionDir = resolveSessionDir(config.session_dir);
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
 
@@ -1450,10 +1465,28 @@ async function runBridgeTask(request) {
       jobId: request.jobId ?? null,
     });
     if (pipelineResult?.complete === false) {
-      setPhase("incomplete", {
-        command: `node ${SCRIPT_PATH} send ${result.threadId} "Complete the missing items"`,
-        description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."
-      }, { pipeline: pipelineResult, monitor });
+      // Branch on whether the pipeline FINISHED incomplete (Codex's check
+      // stage returned `complete:false` with real missing items) or FAILED
+      // (a stage threw, e.g. timeout / transport error). Both paths carry
+      // `complete:false` but the right next-action differs — telling a
+      // caller to `send … "Complete the missing items"` when the pipeline
+      // actually timed out in the diff stage is actively misleading, per
+      // `unexpected-bridge-observations/03-pipeline-incomplete-next-action-misleads-orchestrator.md`.
+      const pipelineErrored = Boolean(pipelineResult.error);
+      const failedStage =
+        pipelineResult.completedStages?.length
+          ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1]
+          : "diff";
+      const nextAction = pipelineErrored
+        ? {
+            command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
+            description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`,
+          }
+        : {
+            command: `node ${SCRIPT_PATH} send ${result.threadId} "Complete the missing items"`,
+            description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics.",
+          };
+      setPhase("incomplete", nextAction, { pipeline: pipelineResult, monitor });
     } else {
       setPhase("done", {
         command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
@@ -1785,7 +1818,7 @@ async function handleWait(argv) {
     );
   }
 
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd);
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
@@ -1850,7 +1883,7 @@ async function handleEvents(argv) {
     );
   }
 
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd);
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
 
@@ -2166,7 +2199,7 @@ async function handleSend(argv) {
     throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
   }
 
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd);
   const modeOverride = options.mode;
 
   const sessionDir = resolveSessionDir(config.session_dir);
@@ -2273,7 +2306,7 @@ async function handleSteer(argv) {
     });
   });
 
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd);
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
   if (session) {
@@ -2298,7 +2331,7 @@ async function handleRespond(argv) {
     throw usageError("respond requires <request-id>");
   }
 
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd);
   const sessionDir = resolveSessionDir(config.session_dir);
 
   // Look up the pending request from disk (written by the worker process)
@@ -2360,7 +2393,7 @@ async function handleSummary(argv) {
     throw usageError("summary requires <thread-id>");
   }
 
-  const config = getBridgeConfig();
+  const config = getBridgeConfig(cwd);
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
   if (!session) {

@@ -20,23 +20,63 @@ const DEFAULT_CONFIG = {
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 
-export function loadConfig(skillDir) {
-  const configPath = skillDir
+// Load bridge config with three-layer precedence (lowest → highest):
+//   1. DEFAULT_CONFIG (hard-coded fallback)
+//   2. `{skillDir}/config.yaml`            — the installed skill's defaults
+//   3. `{overrideDir}/config.yaml`         — workspace override (if present)
+//
+// The override layer exists so a user can tweak bridge behavior for a single
+// project without editing their global skill config. Prior to this, only
+// layer (2) was read — a `config.yaml` in the working directory was silently
+// ignored. See `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md`
+// for the original derailment. When invoked as `loadConfig(ROOT_DIR, cwd)`,
+// the cwd's config.yaml is layered on top.
+export function loadConfig(skillDir, overrideDir = null) {
+  const readYaml = (p) => {
+    try {
+      const raw = fs.readFileSync(p, "utf8");
+      const doc = yaml.load(raw) ?? {};
+      const bridge = doc.codex_bridge ?? doc;
+      return typeof bridge === "object" && bridge !== null ? bridge : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const skillConfigPath = skillDir
     ? path.join(skillDir, "config.yaml")
     : path.join(os.homedir(), ".codex-bridge", "config.yaml");
+  const skillLayer = readYaml(skillConfigPath);
 
-  let userConfig = {};
-  try {
-    const raw = fs.readFileSync(configPath, "utf8");
-    userConfig = yaml.load(raw) ?? {};
-  } catch {
-    // Config missing or malformed — use defaults silently
-  }
+  // Override layer is read only when a cwd/workspace root is explicitly
+  // passed AND its config.yaml exists. No silent upward traversal.
+  const overrideLayer =
+    overrideDir && fs.existsSync(path.join(overrideDir, "config.yaml"))
+      ? readYaml(path.join(overrideDir, "config.yaml"))
+      : {};
 
-  const bridge = userConfig.codex_bridge ?? userConfig;
   return {
     ...DEFAULT_CONFIG,
-    ...(typeof bridge === "object" && bridge !== null ? bridge : {}),
+    ...skillLayer,
+    ...overrideLayer,
+  };
+}
+
+// Helper so callers can answer "where did the active config come from?".
+// Used by `setup --json` / `version --json` so users can discover the file
+// they need to edit. Honors the same resolution order as `loadConfig`.
+export function resolveConfigSources(skillDir, overrideDir = null) {
+  const skillConfigPath = skillDir
+    ? path.join(skillDir, "config.yaml")
+    : path.join(os.homedir(), ".codex-bridge", "config.yaml");
+  const overrideConfigPath =
+    overrideDir ? path.join(overrideDir, "config.yaml") : null;
+  return {
+    skillConfigPath,
+    skillConfigExists: fs.existsSync(skillConfigPath),
+    overrideConfigPath,
+    overrideConfigExists:
+      overrideConfigPath ? fs.existsSync(overrideConfigPath) : false,
   };
 }
 

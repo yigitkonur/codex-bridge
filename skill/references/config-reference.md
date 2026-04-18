@@ -1,8 +1,18 @@
 # Configuration Reference
 
-Config file: `${CLAUDE_SKILL_DIR}/config.yaml`
+## Config file resolution
 
-If the file is missing or malformed, hardcoded defaults are used. The system never crashes on config errors.
+Bridge config is layered. Each layer overrides the one above it (lowest → highest):
+
+1. **Built-in defaults** — hardcoded in `src/lib/config.mjs::DEFAULT_CONFIG`. Used when nothing else exists.
+2. **Skill config** — `${CLAUDE_SKILL_DIR}/config.yaml`, e.g. `~/.claude/skills/codex-bridge/config.yaml` for a global install. This is the file that ships with the skill bundle; edit it to change defaults for every project.
+3. **Workspace override** — `$(pwd)/config.yaml` (where `pwd` is the cwd passed to the command, via `-C` flag or the default process cwd). This is per-project. Use it when one repo needs different settings than your global skill config.
+
+If any file is missing or malformed, that layer is skipped silently — the next layer's values apply. The system never crashes on config errors.
+
+**Workspace override is new (2026-04-18).** Before that, only the skill config was read; a `config.yaml` sitting next to your project was silently ignored. See `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md` for the original derailment.
+
+**Quick check**: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs setup --json | jq .result.config` surfaces the effective merged config. Use it when a knob seems to have no effect.
 
 ## Options
 

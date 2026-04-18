@@ -35,15 +35,32 @@ bridge task --mode default --write --json "create a minimal index.html with <h1>
 
 The config file sitting next to the task's cwd was never read.
 
-## Root cause
+## Root cause (corrected)
 
-Bridge config lives at **`$CLAUDE_PLUGIN_DATA/state/<slug>-<hash>/config.yaml`**, not at `$(pwd)/config.yaml`. The `<slug>-<hash>` component is computed from `src/lib/state.mjs` as `basename(workspaceRoot) + "-" + sha256(realpathSync.native(workspaceRoot)).slice(0,16)`. For the fixture `/tmp/cbtest-retest.nVz080`, the actual config path is:
+My initial diagnosis pointed at `$CLAUDE_PLUGIN_DATA/state/<slug>-<hash>/config.yaml` — wrong. That path is a state store (`state.json` + `jobs/*.json`) and only holds one setting (`stopReviewGate`) via `src/lib/state.mjs::getConfig`. The actual bridge config is at:
 
 ```
-$CLAUDE_PLUGIN_DATA/state/cbtest-retest.nVz080-<16hex>/config.yaml
+${CLAUDE_SKILL_DIR}/config.yaml
 ```
 
-A user writing `config.yaml` in their cwd has zero chance of guessing that path. There's no warning, no hint, no error — the file is silently ignored and defaults apply.
+…i.e. the installed skill's own config.yaml (`~/.claude/skills/codex-bridge/config.yaml` for a global install). `src/lib/config.mjs::loadConfig(skillDir)` reads only that single file and merges it with `DEFAULT_CONFIG`. A `config.yaml` anywhere else — cwd, workspace root, state dir — was never consulted. Before the fix below, a user tweaking `config.yaml` in their project directory had no effect whatsoever.
+
+## Resolution — 2026-04-18
+
+`src/lib/config.mjs::loadConfig` now takes an optional `overrideDir` argument. When a caller passes one (task, send, steer, wait, events, review), `{overrideDir}/config.yaml` is read as a top layer over the skill config:
+
+```
+DEFAULT_CONFIG < ${CLAUDE_SKILL_DIR}/config.yaml < ${cwd}/config.yaml
+```
+
+Verified live against the same fixture this observation was discovered on: with `config.yaml` in cwd setting `auto_review: false, post_task_prompt: ""`, a full `bridge task --mode default --write …` now produces only `[DONE]` — no `[PIPELINE:review]`, no `[PIPELINE:check]`. `gherkin-tests-v2/03-config/01` and `03-config/02` now PASS.
+
+Fix landed in commit covering `src/lib/config.mjs` (new override layer), `src/codex-bridge.mjs` (cwd wired into `getBridgeConfig(cwd)` for task/send/steer/wait/events), `skill/references/config-reference.md` (documents the layered resolution), and the regenerated `skill/scripts/codex-bridge.mjs` bundle.
+
+Three of the five originally-scoped fixes are now live (override semantics, docs, discoverable via `bridge setup --json`). Two remain for a follow-up:
+
+- `bridge config show` as a first-class introspection command
+- Warning surfaced to stderr when a plausible-but-unused config.yaml is detected at cwd while the current overrideDir is elsewhere (currently silent success)
 
 ## Why this is a derailment
 
