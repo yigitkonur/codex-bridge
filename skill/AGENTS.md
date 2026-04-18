@@ -12,12 +12,13 @@ Root rules live in `/AGENTS.md`. This file covers the skill-specific conventions
 | `skill/config.yaml` | **Hand-edited.** Default config shipped with the skill. | Yes |
 | `skill/references/**.md` | **Hand-edited.** Reference docs. | Yes |
 | `skill/references/templates/*.md` | **Hand-edited.** Example mission templates. | Yes |
-| `skill/scripts/codex-bridge.mjs` | Generated from `src/codex-bridge.mjs` via esbuild. | **No** (gitignored) |
-| `skill/prompts/*.md` | Copied from `src/prompts/` by esbuild. | **No** |
-| `skill/schemas/*.json` | Copied from `src/schemas/` by esbuild. | **No** |
-| `skill/templates/*.md` | Copied from `src/templates/` by esbuild. | **No** |
+| `skill/scripts/codex-bridge.mjs` | **Committed build output.** Generated from `src/codex-bridge.mjs` via esbuild. | Yes |
+| `skill/app-server-broker.mjs` | **Committed build output.** Generated from `src/app-server-broker.mjs` via esbuild. | Yes |
+| `skill/prompts/*.md` | **Committed build output.** Copied from `src/prompts/` by esbuild. | Yes |
+| `skill/schemas/*.json` | **Committed build output.** Copied from `src/schemas/` by esbuild. | Yes |
+| `skill/templates/*.md` | **Committed build output.** Copied from `src/templates/` by esbuild. | Yes |
 
-`.gitignore` currently lists: `skill/scripts/codex-bridge.mjs`, `skill/prompts/`, `skill/schemas/`, `skill/templates/`. Anything else under `skill/` is tracked and must be hand-maintained.
+The build outputs are committed so that `npx skills add yigitkonur/codex-bridge` works without a build step on the user's machine. CI verifies the committed bundle matches a fresh `npm run build` — see `.github/workflows/build.yml`. After any change under `src/`, run `npm run build` and commit the resulting diff alongside your source changes.
 
 ## `SKILL.md`
 
@@ -100,8 +101,8 @@ If `src/` grows a new prompt, schema, or template, **add it to `copies`**. The r
 
 ## Rules for contributors
 
-1. **Never hand-edit generated files under `skill/`.** The next build overwrites them.
-2. **Never commit `skill/scripts/`, `skill/prompts/`, `skill/schemas/`, or `skill/templates/`.** They're gitignored for a reason.
+1. **Never hand-edit generated files under `skill/`.** The next build overwrites them. Edit `src/` and run `npm run build`.
+2. **Commit the build diff alongside the source diff.** The bundle under `skill/scripts/`, `skill/app-server-broker.mjs`, `skill/prompts/`, `skill/schemas/`, `skill/templates/` ships to users as-is via `npx skills add` — it must be up to date on every main-branch commit. CI fails the build on drift.
 3. **Front matter in `SKILL.md` is load-bearing** — Claude Code parses it. Wrong YAML or missing keys break skill discovery.
 4. **Keep reference files diffable.** No mechanically-generated content; no TOCs that need re-generation.
-5. **Keep examples runnable.** Every command in a reference should work against a `npm run build` output from `main`.
+5. **Keep examples runnable.** Every command in a reference should work against the checked-in `skill/scripts/codex-bridge.mjs`.

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://code.claude.com/schemas/plugin.schema.json",
+  "name": "codex-bridge",
+  "description": "Delegate coding work to OpenAI Codex from Claude Code; tail progress via the Monitor tool.",
+  "version": "1.0.0",
+  "homepage": "https://github.com/yigitkonur/codex-bridge",
+  "license": "MIT",
+  "author": {
+    "name": "Yigit Konur",
+    "url": "https://github.com/yigitkonur"
+  },
+  "skills": ["./skill"]
+}

@@ -53,20 +53,22 @@ codex-bridge/
 │   ├── prompts/AGENTS.md        # adversarial-review.md authoring rules
 │   ├── schemas/AGENTS.md        # review-output.schema.json contract
 │   └── templates/AGENTS.md      # plan-enforcement vs execute-instructions
-├── skill/                       # bundle output (partly gitignored)
+├── skill/                       # the skill bundle — shipped via `npx skills add`
 │   ├── AGENTS.md                # authored vs generated, references index
 │   ├── SKILL.md                 # user-facing skill doc (authored)
 │   ├── config.yaml              # user-facing defaults (authored)
 │   ├── references/*.md          # end-user reference docs (authored)
-│   ├── scripts/                 # ← generated
-│   ├── prompts/ schemas/ templates/   # ← generated
+│   ├── scripts/codex-bridge.mjs # ← generated, COMMITTED (CI enforces freshness)
+│   ├── app-server-broker.mjs    # ← generated, COMMITTED
+│   ├── prompts/ schemas/ templates/   # ← generated, COMMITTED
+├── .claude-plugin/plugin.json   # declares ./skill for skills.sh / Claude plugin discovery
 └── test-gherkin/                # behavioral specs, not runnable tests
     └── AGENTS.md
 ```
 
 ## Cross-cutting conventions
 
-1. **Edit `src/`, then `npm run build`.** `skill/scripts/*`, `skill/prompts/*`, `skill/schemas/*`, `skill/templates/*` are build outputs (see `.gitignore`). `skill/SKILL.md`, `skill/config.yaml`, and `skill/references/**` are hand-authored.
+1. **Edit `src/`, then `npm run build`, then commit both the source and the regenerated bundle.** `skill/scripts/*`, `skill/app-server-broker.mjs`, `skill/prompts/*`, `skill/schemas/*`, `skill/templates/*` are build outputs — **committed to git** so `npx skills add yigitkonur/codex-bridge` works without a build step on the user's machine. CI verifies the committed bundle matches a fresh build (see `.github/workflows/build.yml`). `skill/SKILL.md`, `skill/config.yaml`, and `skill/references/**` are hand-authored.
 2. **Two path roots.** `ROOT_DIR` in `src/codex-bridge.mjs:97-103` detects source vs. bundled layout. Any new bundled asset must be added to `esbuild.config.mjs`'s `copies` array AND referenced through `ROOT_DIR`.
 3. **`workspaceRoot` ≠ `cwd`.** `state.mjs` hashes off the canonical workspace root (`fs.realpathSync.native` — stable across symlink layouts). Job files, logs, and the broker session are workspace-scoped; git operations and the Codex spawn environment use `cwd`. Don't cross the streams.
 4. **Session artifacts are append-only.** `src/lib/session-log.mjs`'s `appendFileSync` is the only writer to `.events` and `.ndjson`. Adding async writers will interleave lines.
