@@ -8235,7 +8235,9 @@ ${config.prompt_footer}` : request.prompt;
   if (result.exitStatus !== 0 && result.error) {
     const errorMessage = String(result.error.message ?? result.error);
     const isIdleTimeout = errorMessage.includes("No events received for");
-    const errorCode = isIdleTimeout ? "ClientTimeout" : "CodexError";
+    const codexErrorInfo = result.error.codexErrorInfo ?? result.error.codex_error_info ?? null;
+    const errorCode = isIdleTimeout ? "ClientTimeout" : codexErrorInfo ?? "CodexError";
+    const touchedFiles = result.payload?.touchedFiles ?? [];
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
@@ -8245,6 +8247,13 @@ ${config.prompt_footer}` : request.prompt;
       jobId: request.jobId ?? null
     }));
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin: "turn" });
+    if (codexErrorInfo === "SandboxError" && touchedFiles.length > 0) {
+      setPhase("workspace-dirty", {
+        command: `git -C ${request.cwd} add -A && git -C ${request.cwd} commit -m "<subject>"`,
+        description: "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
+      }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
+      return { ...result, session, exitStatus: 0, error: null };
+    }
     setPhase("error", {
       command: `node ${SCRIPT_PATH} send ${result.threadId} "<revised prompt>"`,
       description: "Retry with an adjusted prompt, or cancel and start fresh."

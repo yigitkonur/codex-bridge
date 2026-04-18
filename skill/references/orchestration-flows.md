@@ -22,6 +22,9 @@ Typical branches (success envelope only — failures land as `ok:false` and neve
 | `plan-pending` | `codex-bridge send <tid> --mode default "Implement the plan."` |
 | `done` | `codex-bridge result <job-id>` |
 | `incomplete` | `codex-bridge send <tid> "Complete the missing items"` |
+| `workspace-dirty` | `git -C <cwd> add -A && git -C <cwd> commit -m "<subject>"` |
+
+`workspace-dirty` fires when Codex produced file changes (`result.touchedFiles` non-empty) but the turn ended with `codexErrorInfo: "SandboxError"` — typically because `workspace-write` blocks writes to `.git/` and Codex could not commit its own work. The envelope is a **success envelope** (`ok:true`, exit 0) because the diff is actionable: the orchestrator commits on Codex's behalf, or re-runs with `config.sandbox_policy: "danger-full-access"` (see `config-reference.md`). `result.sandboxError` carries the raw sandbox error message for diagnostics.
 
 For failures, read `error.code` and `error.class` from the error envelope, then consult `error-recovery.md`.
 

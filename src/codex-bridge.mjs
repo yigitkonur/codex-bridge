@@ -1644,7 +1644,10 @@ async function runBridgeTask(request) {
   if (result.exitStatus !== 0 && result.error) {
     const errorMessage = String(result.error.message ?? result.error);
     const isIdleTimeout = errorMessage.includes("No events received for");
-    const errorCode = isIdleTimeout ? "ClientTimeout" : "CodexError";
+    const codexErrorInfo =
+      result.error.codexErrorInfo ?? result.error.codex_error_info ?? null;
+    const errorCode = isIdleTimeout ? "ClientTimeout" : (codexErrorInfo ?? "CodexError");
+    const touchedFiles = result.payload?.touchedFiles ?? [];
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
@@ -1654,6 +1657,24 @@ async function runBridgeTask(request) {
       jobId: request.jobId ?? null,
     }));
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin: "turn" });
+
+    // `workspace-dirty` phase: Codex produced a diff but the sandbox blocked
+    // the final step (e.g. `workspace-write` refuses `.git/` writes so the
+    // commit fails). Surface a distinct phase so the orchestrator can commit
+    // the diff on Codex's behalf, rather than interpreting the run as total
+    // failure. Triggered by `codexErrorInfo: "SandboxError"` with a non-empty
+    // touched-files list. We flip `exitStatus` to 0 so `runForegroundCommand`
+    // emits a success envelope carrying the phase — a sandbox-blocked commit
+    // is actionable state, not a terminal failure.
+    if (codexErrorInfo === "SandboxError" && touchedFiles.length > 0) {
+      setPhase("workspace-dirty", {
+        command: `git -C ${request.cwd} add -A && git -C ${request.cwd} commit -m "<subject>"`,
+        description:
+          "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
+      }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
+      return { ...result, session, exitStatus: 0, error: null };
+    }
+
     setPhase("error", {
       command: `node ${SCRIPT_PATH} send ${result.threadId} "<revised prompt>"`,
       description: "Retry with an adjusted prompt, or cancel and start fresh."
