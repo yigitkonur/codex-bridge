@@ -7283,7 +7283,7 @@ async function handleSetup(argv) {
     startedAt
   });
 }
-var BRIDGE_VERSION = "1.0.0";
+var BRIDGE_VERSION = "1.1.0";
 var BRIDGE_SCHEMA_VERSION = "1.0";
 var BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",

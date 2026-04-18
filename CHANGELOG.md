@@ -9,7 +9,66 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
-## [1.0.0] — 2026-04-18
+## [1.1.0] — 2026-04-18
+
+First release with per-launch update-check surface and workspace-level
+config override. No breaking changes; every 1.0.0 caller continues to
+work unchanged.
+
+### Added
+
+- **Update-check plumbing** (commit `cff0e5f`).
+  - New `src/lib/update-check.mjs` module: 24h on-disk cache, 2.5s fetch
+    timeout, silent failure. Uses GitHub REST (unauthenticated, within
+    rate-limit budget given the cache).
+  - `version [--check-update] [--json]` now surfaces `result.update` with
+    `latest_version`, `has_update`, `checked_at_age_ms`,
+    `check_skipped`, `check_skip_reason`. `--check-update` forces a
+    fresh fetch.
+  - New `update [--force] [--json]` subcommand: prints current vs
+    latest + the `npx -y skills add …` install recipe. Does NOT
+    self-modify the skill.
+  - Silent per-launch stdout notice when a newer version is cached.
+    Opt-out via `CODEX_BRIDGE_NO_UPDATE_CHECK=1` env or `--json` flag
+    (envelope is preserved). Also skipped for `help`/`version`/`update`.
+  - `BRIDGE_CAPABILITIES` gains `update-check` and
+    `workspace-config-override`.
+
+### Changed
+
+- **Workspace `config.yaml` override** is now a real thing (commit
+  `945621b`, see
+  `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md`).
+  `src/lib/config.mjs::loadConfig(skillDir, overrideDir = null)` reads
+  three layers top-down (`DEFAULT_CONFIG` < `{skillDir}/config.yaml` <
+  `{overrideDir}/config.yaml`). Callers with a meaningful cwd (task,
+  send, steer, wait, events) pass it through; cwd-less callers (help,
+  version, respond, summary) keep the old behavior. New export
+  `resolveConfigSources()` reports both paths + existence flags.
+
+### Fixed
+
+- `next_action.description` at `phase: "incomplete"` no longer claims
+  "Codex's completion check flagged gaps" when the actual cause was a
+  pipeline stage timeout. Branches on `pipeline.error` presence so
+  orchestrators get a truthful next-step (commit `945621b`,
+  `unexpected-bridge-observations/03`).
+
+### Docs
+
+- `CHANGELOG.md` (this file) introduced with "Adding an entry"
+  workflow at the bottom.
+- `README.md` gains a "Releasing" subsection documenting the version-
+  bump + tag + push procedure.
+- `skill/references/config-reference.md` documents the three-layer
+  config resolution order.
+- `unexpected-bridge-observations/` grows to 8 entries — new 07
+  (workspace config.yaml ignored, partially resolved) and 08
+  (`adversarial-review` creates no session artifacts).
+- `gherkin-tests-v2/LIVE_RUN_REPORT.md` adds a retest addendum showing
+  5 predicates now PASS live (1 was blocked on the config fix).
+
+## [1.0.0] — 2026-04-17
 
 First tagged release of the Claude Code skill + single-file Node.js bridge to
 the OpenAI Codex app-server. `npx -y skills add yigitkonur/codex-bridge -a claude-code -g -y`
@@ -42,30 +101,6 @@ a uniform envelope that Claude Code can switch on.
   refuses to pass if `skill/scripts/*` diverges from the committed bundle.
 - Release workflow: pushing a `vX.Y.Z` tag auto-packages `.tar.gz` + `.zip` +
   `SHA256SUMS` and attaches them to a GitHub release.
-- Workspace `config.yaml` override layered on top of the skill-dir config —
-  `$(pwd)/config.yaml` now takes effect (fixed in commit `945621b` after
-  derailment described in
-  `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md`).
-- Update-check plumbing: `version` emits cached `update` info; `update`
-  subcommand forces a fresh probe and prints the install command; per-launch
-  silent stdout notice when a newer release is known (opt-out via
-  `CODEX_BRIDGE_NO_UPDATE_CHECK=1` or `--json`).
-- 24 Gherkin-style behavioral contract specs under `gherkin-tests-v2/`
-  covering lifecycle, questions, config, errors, ambiguities, artifacts,
-  orchestration, review-and-resume.
-- 8 live-run derailment observations under `unexpected-bridge-observations/`
-  flagging rough edges that need future fixes (plan-mode bypass via Codex
-  superpowers, stop-gate orphan reaper, adversarial-review session-artifact
-  gap, etc.).
-
-### Fixed
-
-- `next_action.description` at `phase: "incomplete"` no longer claims "Codex's
-  completion check flagged gaps" when the actual cause was a pipeline stage
-  timeout. Branches on `pipeline.error` presence so orchestrators get a
-  truthful next-step (commit `945621b`,
-  `unexpected-bridge-observations/03`).
-
 ### Docs
 
 - `AGENTS.md` (+ `CLAUDE.md` symlink) — repo-root instructions for agents.
