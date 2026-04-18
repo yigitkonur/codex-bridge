@@ -109,7 +109,7 @@ export async function runAutoPipeline(options) {
               collaborationMode: buildCollaborationMode("default", config, {
                 developerInstructions: executeInstructions,
               }),
-              sandboxPolicy: buildSandboxPolicy("default"),
+              sandboxPolicy: buildSandboxPolicy("default", config),
             }),
             STAGE_TIMEOUT_MS,
             "auto-fix"

@@ -6265,7 +6265,21 @@ function buildCollaborationMode(mode, config, options = {}) {
     }
   };
 }
-function buildSandboxPolicy(mode) {
+var VALID_SANDBOX_POLICY_OVERRIDES = /* @__PURE__ */ new Set([
+  "danger-full-access",
+  "workspace-write",
+  "read-only"
+]);
+function buildSandboxPolicy(mode, config = {}) {
+  const override = config?.sandbox_policy;
+  if (override != null && !VALID_SANDBOX_POLICY_OVERRIDES.has(override)) {
+  } else if (override === "danger-full-access") {
+    return { type: "dangerFullAccess" };
+  } else if (override === "workspace-write") {
+    return { type: "workspaceWrite" };
+  } else if (override === "read-only") {
+    return { type: "readOnly" };
+  }
   if (mode === "default") {
     return { type: "workspaceWrite" };
   }
@@ -6644,7 +6658,7 @@ async function runAutoPipeline(options) {
               collaborationMode: buildCollaborationMode("default", config, {
                 developerInstructions: executeInstructions
               }),
-              sandboxPolicy: buildSandboxPolicy("default")
+              sandboxPolicy: buildSandboxPolicy("default", config)
             }),
             STAGE_TIMEOUT_MS,
             "auto-fix"
@@ -8135,7 +8149,7 @@ ${config.prompt_footer}` : request.prompt;
     ...request,
     prompt: promptWithFooter,
     collaborationMode: isPlanMode ? buildCollaborationMode("plan", config, { developerInstructions }) : request.write ? buildCollaborationMode("default", config, { developerInstructions, effort: request.effort }) : null,
-    sandboxPolicy: isPlanMode ? buildSandboxPolicy("plan") : request.write ? buildSandboxPolicy("default") : null,
+    sandboxPolicy: isPlanMode ? buildSandboxPolicy("plan", config) : request.write ? buildSandboxPolicy("default", config) : null,
     effort: isPlanMode ? "xhigh" : request.effort ?? config.effort ?? "high",
     turnTimeoutMs: isPlanMode ? 3e5 : 6e5,
     idleTimeoutMs: 12e4,
@@ -8931,7 +8945,7 @@ async function handleSend(argv) {
       effort: options.effort,
       developerInstructions: loadDeveloperInstructions(modeOverride)
     });
-    turnOptions.sandboxPolicy = buildSandboxPolicy(modeOverride);
+    turnOptions.sandboxPolicy = buildSandboxPolicy(modeOverride, config);
   }
   ensureCodexAvailable(cwd2);
   const workspaceRoot = resolveCommandWorkspace(options);

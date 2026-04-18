@@ -27,6 +27,17 @@ If any file is missing or malformed, that layer is skipped silently — the next
 | `prompt_footer` | string | (see below) | Text appended to every prompt. Used to instruct Codex to use `requestUserInput` tool for questions. |
 | `allow_questions` | boolean | `true` | Allow Codex to ask questions in Default mode. Always enabled in Plan mode. |
 | `session_dir` | string | `"~/.codex-bridge/sessions"` | Where session logs are stored. `~` expands to home directory. |
+| `sandbox_policy` | string \| null | `null` | Override the mode-derived sandbox. One of `"read-only"`, `"workspace-write"`, `"danger-full-access"`. See below. |
+
+### `sandbox_policy`
+
+By default, `mode: plan` runs under a `read-only` sandbox and `mode: default` under `workspace-write`. The `workspace-write` profile explicitly **blocks writes to `.git/`** — a turn that needs to commit its own work will fail with a raw POSIX error that Codex often misdiagnoses as a puzzle to solve (e.g. it may attempt `osascript` to reach a human-operated Terminal).
+
+`sandbox_policy: "danger-full-access"` maps to upstream `SandboxPolicy::DangerFullAccess`. It lifts the `.git/` restriction and mirrors the behavior of `codex --dangerously-bypass-approvals-and-sandbox`. Use only on trusted workspaces — Codex gains unrestricted filesystem and network access for the duration of the turn.
+
+The override applies to `task` and `send` turns and to the auto-pipeline's **fix** stage. The **completion-check** stage stays read-only regardless, because the check must not mutate the workspace while evaluating it.
+
+Unknown values silently fall back to the mode-derived default. A typo will never widen permissions.
 
 ## Default post_task_prompt
 
