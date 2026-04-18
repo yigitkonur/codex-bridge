@@ -51,8 +51,41 @@ Two layers:
 
 Ran a targeted script to mark all 7 ghosts as `status: "cancelled"` with `errorMessage: "Orphaned rescue task — no backing process at cleanup on 2026-04-18"`. The state is now consistent, but will re-fill if the underlying bug isn't fixed.
 
+## Addendum (2026-04-18 14:25–14:29 UTC) — network-induced failure loop
+
+After reaping the 7 ghosts, the same session immediately produced **three more failed rescue tasks** (`task-mo4fiu41-h5pyx6`, `task-mo4fmg0n-shn8dz`, `task-mo4fnzih-3ij477`) within five minutes. Reading their job logs shows an identical failure signature for each:
+
+```
+[14:29:24] Starting Codex Stop Gate Review.
+[14:29:25] Thread ready (019da0ff-...).
+[14:29:25] Turn started.
+[14:29:29] Codex error: Reconnecting... 1/5
+[14:29:32] Codex error: Reconnecting... 2/5
+[14:29:36] Codex error: Reconnecting... 3/5
+[14:29:40] Codex error: Reconnecting... 4/5
+[14:29:44] Codex error: Reconnecting... 5/5
+[14:29:50] Codex error: stream disconnected before completion:
+           error sending request for url
+           (http://135.180.58.130:1453/backend-api/codex/responses)
+[14:29:50] Turn failed.
+```
+
+So the "failed empty" review pattern at the end of the session is **not** a codex-bridge bug — it's Codex's backend responses URL being unreachable. The bridge correctly retries 5 times, surfaces the final network error, transitions the job to `status: "failed"` (no orphan this time — the status drift bug was earlier), and exits.
+
+### What this means for the fix scope
+
+- The stop-gate review becomes **useless during any network outage affecting Codex**. Every session end triggers a stop hook that produces a fresh network-failed rescue task. The user sees "Stop hook feedback: The stop-time Codex review task failed" on every session close with no way to get a verdict.
+- The orphan-reaper fixes in this observation (numbered 1–4) are still correct but incomplete. A 5th fix is needed:
+
+5. **Network-failure short-circuit.** When `runBridgeTask` sees a `turn/completed.turn.error.codexErrorInfo` of `HttpConnectionFailed`, `ResponseStreamConnectionFailed`, or `ResponseStreamDisconnected`, the stop-gate review caller should transition to a neutral "ALLOW with warning" verdict instead of failing. The idea: a stop-gate review that can't reach Codex is not blocking for a safety reason — it's blocking because of transport — and transport failures shouldn't gate local work.
+
+### Workaround for this session
+
+The right escape hatch exists today: `bridge setup --disable-review-gate --json` toggles `stopReviewGate: false` in the workspace config.yaml. Users hit by a Codex backend outage can flip it off until connectivity returns. Not doing so in this session — commit trail stays clean — but documenting the escape hatch so the next user in this situation has an answer.
+
 ## Related
 
 - `gherkin-tests-v2/07-orchestration/04-cancel-interrupts-running-turn.md` — the cancel-semantics spec. A new scenario could assert the reaper's orphan-detection behavior once (1) lands.
 - Observation 05 (`AMBIGUOUS_CANCEL`) — the related UX where `bridge cancel` (no args) errors when multiple rescue ghosts are active. A reaper would make that case rarer.
 - Observation 01 (plan-mode bypass) — the underlying reason rescue tasks take so long: they too are subject to the superpowers skill chain before they reach the actual review turn.
+- SKILL.md `codexErrorInfo` variants `HttpConnectionFailed` / `ResponseStreamConnectionFailed` / `ResponseStreamDisconnected` — the exact error-code strings the short-circuit fix (5) should match.
