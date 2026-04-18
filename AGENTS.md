@@ -87,6 +87,8 @@ codex-bridge/
 | `CODEX_COMPANION_APP_SERVER_PID_FILE` | `src/lib/broker-lifecycle.mjs:11` | Broker PID file path (informational, for diagnostics). |
 | `CODEX_COMPANION_APP_SERVER_LOG_FILE` | `src/lib/broker-lifecycle.mjs:12` | Broker stdout/stderr log path. |
 | `CODEX_COMPANION_SESSION_ID` | `src/lib/tracked-jobs.mjs:6` (`SESSION_ID_ENV`) | Scopes job filtering to the current Claude session. |
+| `GITHUB_TOKEN` / `GH_TOKEN` | `src/lib/update-check.mjs` | Auth for GitHub Releases API when probing `bridge update`. Optional on public repos; required on private (unauth returns 404). Read in that priority order. |
+| `CODEX_BRIDGE_NO_UPDATE_CHECK` | `src/codex-bridge.mjs:128` | When set to `"1"` (strict equality), suppresses the silent per-launch "new version available" notice. |
 | `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` | upstream server | Overrides `ClientInfo.name`-based originator; tested upstream. Do not set unless debugging. |
 
 ## What to do when making a change
@@ -96,6 +98,7 @@ codex-bridge/
 - **New bundled asset** → path in `esbuild.config.mjs` `copies`, update `.gitignore`, reference through `ROOT_DIR` in `codex-bridge.mjs`.
 - **Protocol change upstream** → regenerate `src/lib/app-server-protocol.d.ts` (`codex app-server generate-ts --experimental --out <dir>`), audit diff against `src/lib/app-server.mjs` and `src/lib/codex.mjs`, update `src/lib/AGENTS.md` invariants.
 - **Config key** → add to `DEFAULT_CONFIG` in `src/lib/config.mjs`, document in `skill/config.yaml` (with comment) and `skill/references/config-reference.md`, add a scenario in `gherkin-tests-v2/03-config/`.
+- **Release / tag push** → bump version in `package.json` + `skill/SKILL.md` frontmatter, add a `## [X.Y.Z] — YYYY-MM-DD` section to `CHANGELOG.md` (reset `Unreleased`), `npm run build`, commit, then `git tag -a vX.Y.Z -m "…"` and `git push origin main vX.Y.Z`. `.github/workflows/release.yml` extracts that CHANGELOG section as the GitHub release body; without it the body is a placeholder + commit trail only.
 
 ## Where to look next
 
