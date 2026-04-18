@@ -67,6 +67,18 @@ breaking changes.
   resolved with dates + mechanism notes.
 - `skill/references/config-reference.md` documents the new 4-layer
   resolution order (was 3-layer).
+- `README.md` grows a "staying up to date" section documenting
+  `bridge update`, `bridge update --force`, the silent-notice opt-out
+  env var, and the "re-run `skills add`" upgrade recipe. Also grows a
+  "seeing what config is in effect" section pointing at `bridge config
+  show` as the authoritative debug tool for config drift.
+- `README.md` "what you get" bullets gain the self-healing-state
+  reaper and the built-in update check as first-class features.
+- `.github/workflows/release.yml` now builds the GitHub Release body
+  from the matching `## [X.Y.Z]` section in `CHANGELOG.md`, prepended
+  with an `## Install` snippet so users landing on the Release page
+  see the install command at the top. The commit-based auto-summary
+  still appends below for completeness.
 
 ## [1.1.0] — 2026-04-18
 

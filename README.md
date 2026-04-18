@@ -18,7 +18,7 @@ A [Claude Code](https://code.claude.com/) skill that hands coding work off to **
 npm i -g @openai/codex && codex login
 
 # 2. install the skill into Claude Code (user-scope, works for every project)
-npx -y skills add yigitkonur/codex-bridge -a claude-code -g -y
+npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y
 
 # 3. verify the install
 node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs setup --json | jq .result.ready
@@ -27,6 +27,40 @@ node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs setup --json | jq .r
 If `setup` reports `true`, you're done. Fire up Claude Code in any repo and ask it to "run this by Codex" — the skill takes over from there.
 
 If you don't have Node, `jq`, or `npm`, jump to the [guided bootstrap](#guided-bootstrap-zero-to-working) below.
+
+## staying up to date
+
+```bash
+# ask "is there a newer version?" — cached 24h, cheap
+node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs update
+
+# same answer, JSON-shaped for scripting
+node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs update --json | jq '.result.has_update'
+
+# force a fresh GitHub API probe (bypasses cache)
+node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs update --force
+```
+
+A one-line notice also prints to stdout on any non-`--json` invocation when a newer release is known locally. Opt out via `CODEX_BRIDGE_NO_UPDATE_CHECK=1`.
+
+When `update` says a new version is available, re-run the `skills@latest add …` command from step 2 above — `skills` is idempotent and will replace the installed bundle in place. No uninstall step.
+
+## seeing what config is in effect
+
+If a setting isn't doing what you expect, `config show` prints every source the bridge consults and flags keys that differ from built-in defaults:
+
+```bash
+node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs config show
+```
+
+Config resolves across four layers (lowest → highest precedence):
+
+1. built-in defaults (`src/lib/config.mjs::DEFAULT_CONFIG`)
+2. `~/.claude/skills/codex-bridge/config.yaml` (ships with the skill)
+3. `$(git rev-parse --show-toplevel)/config.yaml` (your repo root)
+4. `$(pwd)/config.yaml` (wins last)
+
+Drop a `config.yaml` at layer 3 or 4 to override per-project without editing your global install.
 
 ---
 
@@ -43,7 +77,9 @@ If you don't have Node, `jq`, or `npm`, jump to the [guided bootstrap](#guided-b
 - **typed error taxonomy** — Codex's `codexErrorInfo` mapped to stable `error.code` values: `INVALID_THREAD_ID`, `REVIEW_EMPTY_DIFF`, `WAIT_TIMEOUT`, `UNKNOWN_SUBCOMMAND`, `CONTEXT_WINDOW_EXCEEDED`, and the rest.
 - **structured review output** — `adversarial-review` returns findings conforming to a shipped JSON schema; pair with `review` for Codex's native pass.
 - **mid-turn steering + resume** — `steer <tid> <turn-id> "…"` sends guidance to a live turn; `task --resume-last` picks up the session's latest resumable thread.
+- **self-healing state** — `bridge status` reaps orphaned "running" jobs on load (dead-pid probe). Crashed workers don't wedge your state file.
 - **no telemetry. no sidecar manifest.** Everything lives in `SKILL.md` frontmatter + the single bundled CLI.
+- **update check built in** — `bridge update` against the GitHub Releases API, 24 h cache, silent stdout notice on every launch, opt-out via env.
 
 ---
 
