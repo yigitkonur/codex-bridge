@@ -582,7 +582,17 @@ function applyTurnNotification(state, message) {
         `Turn ${message.params.turn.status === "completed" ? "completed" : message.params.turn.status}.`,
         "finalizing"
       );
-      completeTurn(state, message.params.turn);
+      {
+        const completedTurn = message.params.turn;
+        // Per upstream spec, `codexErrorInfo` lives on `turn.error`, not on the
+        // prior `error` notification payload. Hoist it onto `state.error` so
+        // classifyError can map it to retryable/class/suggestion instead of
+        // falling through to {class:"internal", retryable:false}.
+        if (completedTurn?.status !== "completed" && completedTurn?.error) {
+          state.error = { ...(state.error ?? {}), ...completedTurn.error };
+        }
+        completeTurn(state, completedTurn);
+      }
       break;
     default:
       break;

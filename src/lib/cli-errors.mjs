@@ -190,6 +190,21 @@ export function classifyError(err) {
       exitCode: ExitCode.TRANSIENT
     };
   }
+  // Transport-layer drops where upstream never tags a `codexErrorInfo` (e.g.
+  // the WS to /v1/responses closes without a close frame, so no terminal
+  // `turn/completed` arrives). Treat as transient — workspace is unchanged,
+  // safe to retry. Covers the user-reported "stream disconnected before
+  // completion: Upstream websocket closed before response.completed" case.
+  if (/stream disconnected|websocket closed|no close frame|ECONNRESET|ETIMEDOUT|socket hang up/i.test(message)) {
+    return {
+      class: "network",
+      code: "UPSTREAM_STREAM_DISCONNECTED",
+      message,
+      retryable: true,
+      suggestion: "Upstream connection dropped mid-turn. Retry the same prompt; prior reasoning is lost but the workspace is unchanged.",
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
 
   return {
     class: "internal",
