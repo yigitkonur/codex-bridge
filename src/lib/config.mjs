@@ -17,6 +17,12 @@ const DEFAULT_CONFIG = {
   ].join("\n"),
   allow_questions: true,
   session_dir: "~/.codex-bridge/sessions",
+  // Ship with no sandbox by default so Codex can commit its own work without
+  // hitting raw POSIX errors on `.git/` writes. Users who want a stricter
+  // profile can set `sandbox_policy: "workspace-write"` or `"read-only"` in
+  // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
+  // sandbox`. See skill/references/config-reference.md for the full matrix.
+  sandbox_policy: "danger-full-access",
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 

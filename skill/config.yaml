@@ -32,20 +32,22 @@ codex_bridge:
   # In Plan mode, questions are always enabled
   allow_questions: true
 
-  # Sandbox policy override. Leave unset to use the mode-derived default:
-  # `mode: plan` → read-only, `mode: default` → workspace-write.
+  # Sandbox policy. Shipped default is "danger-full-access" so Codex can
+  # commit its own work without the `workspace-write` sandbox blocking
+  # `.git/` writes. This matches `codex --dangerously-bypass-approvals-and-
+  # sandbox`.
   #
   # Values:
-  #   read-only           — same as plan-mode default
-  #   workspace-write     — same as default-mode default
-  #   danger-full-access  — upstream SandboxPolicy::DangerFullAccess; lifts
-  #                         the `.git/` write-lock imposed by workspace-write
-  #                         and mirrors `codex --dangerously-bypass-approvals-
-  #                         and-sandbox`. Use only on trusted workspaces.
+  #   danger-full-access  — no sandbox, no permission blocker (SHIPPED DEFAULT)
+  #   workspace-write     — write inside cwd only, `.git/` blocked
+  #   read-only           — no writes at all
   #
-  # The override applies to task/send turns and the auto-pipeline fix stage.
+  # Opt into a stricter profile by uncommenting one of the two lines below.
+  # The setting applies to task/send turns and the auto-pipeline fix stage.
   # The completion-check stage stays read-only regardless.
-  # sandbox_policy: "danger-full-access"
+  sandbox_policy: "danger-full-access"
+  # sandbox_policy: "workspace-write"
+  # sandbox_policy: "read-only"
 
   # Session log directory
   session_dir: "~/.codex-bridge/sessions"

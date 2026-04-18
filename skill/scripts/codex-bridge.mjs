@@ -6206,6 +6206,12 @@ var DEFAULT_CONFIG = {
   ].join("\n"),
   allow_questions: true,
   session_dir: "~/.codex-bridge/sessions",
+  // Ship with no sandbox by default so Codex can commit its own work without
+  // hitting raw POSIX errors on `.git/` writes. Users who want a stricter
+  // profile can set `sandbox_policy: "workspace-write"` or `"read-only"` in
+  // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
+  // sandbox`. See skill/references/config-reference.md for the full matrix.
+  sandbox_policy: "danger-full-access",
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
@@ -8149,7 +8155,14 @@ ${config.prompt_footer}` : request.prompt;
     ...request,
     prompt: promptWithFooter,
     collaborationMode: isPlanMode ? buildCollaborationMode("plan", config, { developerInstructions }) : request.write ? buildCollaborationMode("default", config, { developerInstructions, effort: request.effort }) : null,
-    sandboxPolicy: isPlanMode ? buildSandboxPolicy("plan", config) : request.write ? buildSandboxPolicy("default", config) : null,
+    // Always resolve through buildSandboxPolicy so `config.sandbox_policy`
+    // wins regardless of plan/write flags. When no override is set, the
+    // mode-derived default applies (plan → readOnly, --write → workspaceWrite,
+    // plain exec → readOnly).
+    sandboxPolicy: buildSandboxPolicy(
+      isPlanMode || !request.write ? "plan" : "default",
+      config
+    ),
     effort: isPlanMode ? "xhigh" : request.effort ?? config.effort ?? "high",
     turnTimeoutMs: isPlanMode ? 3e5 : 6e5,
     idleTimeoutMs: 12e4,
