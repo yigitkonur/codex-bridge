@@ -75,8 +75,35 @@ Not executed in this run but verified by code read and citation:
 
 A literal execution of all 24 scenarios would take ~4 hours (20+ Codex turns × ~8 min each under superpowers overhead) plus manual config rewrites between each. Not a one-shot workload. The pattern established here — run the fast/smoke paths, run one real lifecycle to catch real-world derailments, static-verify the rest, capture every surprise in an observation — is sustainable for ongoing maintenance. Subsequent contributors should re-run the smoke suite + one live lifecycle on every Codex version bump.
 
+# Addendum — retest after Codex backend recovery (2026-04-18 15:12+)
+
+After the Codex backend outage ended, ran a fresh fixture at `/tmp/cbtest-retest.nVz080` with `config.yaml` overriding `mode: default, auto_review: false, post_task_prompt: ""`. Task on thread `019da125-7497-7831-926b-8b143412bcb4` completed in 168 s.
+
+### Predicates verified live
+
+| Spec | Predicate | Verdict |
+|---|---|---|
+| `01-lifecycle/03-direct-default-mode-skips-plan` | phase==done, no `[PLAN]` in `.events` | **PASS** |
+| `06-artifacts/02-plan-md-absent-without-structured-plan` | no `{TID}.plan.md` in session dir | **PASS** |
+| `06-artifacts/01-events-ndjson-append-only` | post-send ndjson grew (932→3173), prior 932 bytes byte-identical | **PASS** |
+| `06-artifacts/03-review-json-is-phantom-file` | no `{TID}.review.json` after adversarial-review | **PASS** (stronger: no artifacts at all — see obs 08) |
+| `08-review-and-resume/01-adversarial-review-structured-findings` | envelope schema conforms; findings array well-formed | **PASS** (empty findings array on this fixture — schema predicate vacuously true) |
+| `03-config/01-auto-review-false-shortcircuits-pipeline` | no `[PIPELINE:review]` | **FAIL** — all 3 pipeline stages ran (cwd config.yaml was ignored; see obs 07) |
+| `03-config/02-empty-post-task-prompt-skips-check` | no `[PIPELINE:check]` | **FAIL** — same cause |
+
+### Three new observations from this retest
+
+- **07**: cwd `config.yaml` silently ignored — actual location is `$CLAUDE_PLUGIN_DATA/state/<slug>-<hash>/config.yaml`. Directly explains the two FAILs above.
+- **08**: `adversarial-review` creates no session-log artifacts for its thread at all (not just `.review.json` — also no `.events`, no `.ndjson`). Review commands bypass `initSession`.
+- **04 (addendum)**: `TURN_PARAMS` and `ITEM_COMPLETED` records DO appear in `.ndjson` when Codex runs without the superpowers skill chain (6 ITEM_COMPLETED captured this retest). The earlier "gutted ndjson" finding is superpowers-specific, not a bridge bug.
+
 ## Commit trail for this session
 
 - `refactor(test-specs): replace test-gherkin+derailment-logbook with gherkin-tests-v2`
 - `docs(observations): record three live-run derailments from gherkin-tests-v2 run`
-- (pending at the time of this report): `docs(tests): capture live-run findings + AMBIGUOUS_CANCEL + ndjson gap`
+- `docs(observations): capture live-run findings + AMBIGUOUS_CANCEL + ndjson gap`
+- `docs(agents): update cross-refs after test-gherkin/derailment-logbook retirement`
+- `docs(review-rules): make rule 22 cover all gherkin-tests-v2 contexts`
+- `docs(observations): stop-gate review accumulates orphaned rescue tasks`
+- `docs(observations): addendum — network-failure loop is the proximate cause`
+- (this commit): `docs(observations): retest evidence — cwd config trap + review artifact gap + superpowers-specific ndjson scope`

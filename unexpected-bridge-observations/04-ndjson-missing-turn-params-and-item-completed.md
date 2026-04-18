@@ -46,8 +46,28 @@ Neither hypothesis is verified without instrumenting the bridge. Worth a targete
 2. **Emit `TURN_PARAMS` as soon as `turn/start` confirms**, not after the first item event. If the bridge waits for the first root-thread item before writing TURN_PARAMS, and no root-thread items ever fire (this case), TURN_PARAMS never lands.
 3. **Add a regression test asserting that `bridge summary` produces non-trivial output for any non-empty turn.** Currently spec `06-artifacts/01` asserts file growth, but growth could be just from PIPELINE_* records and not a meaningful replay.
 
+## Addendum (2026-04-18 retest) — confirmed superpowers-specific
+
+Ran the same `bridge task --mode default --write` against a cleaner fixture with Codex's backend restored. The resulting `.ndjson` had:
+
+```
+   6 ITEM_COMPLETED
+   1 PIPELINE_COMPLETE
+   3 PIPELINE_STAGE
+   1 TURN_COMPLETED
+   1 TURN_PARAMS
+```
+
+Both `TURN_PARAMS` AND `ITEM_COMPLETED` are present. Conclusion: **this is not a bridge regression — it's specifically Codex's superpowers skill chain dispatching work onto subagent threads that `onItemCompleted` (`codex-bridge.mjs:1308`) filters out, since the callback is gated to root-thread items only.** When the turn runs without superpowers interception, every item/completed on the root thread flows through normally.
+
+This narrows the fix scope: instead of rewriting the bridge's item-logging logic, the root cause is a Codex prompt-footer / skill-disable question. Options:
+
+1. **Strip superpowers skills from the bridge's prompt footer** when running rescue/review turns. The footer at `config.mjs` can name `"--skip-skill using-superpowers"` (if such a flag exists upstream) or similar.
+2. **Log subagent thread items too**, accepting the noise. Change the filter on `codex-bridge.mjs:1308` from "root-thread-only" to "any thread, tagged with thread class". The summary command already knows how to filter back down if needed.
+3. **Accept the reality** and update `bridge summary` to display "task executed via subagent delegation; see raw turn log" when root-thread ITEM_COMPLETED is empty but TURN_COMPLETED is present.
+
 ## Related
 
 - `01-plan-mode-bypassed-by-superpowers-skills.md` — same root cause (Codex's internal skills routing).
-- `gherkin-tests-v2/03-config/03-plan-mode-masks-effort-config.md` — predicate depends on TURN_PARAMS being present.
+- `gherkin-tests-v2/03-config/03-plan-mode-masks-effort-config.md` — predicate depends on TURN_PARAMS being present; in non-superpowers setups the predicate evaluates correctly (as this retest confirms).
 - `gherkin-tests-v2/07-orchestration/01-background-worker-ignores-mode-override.md` — same.
