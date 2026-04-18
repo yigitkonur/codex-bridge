@@ -1524,9 +1524,14 @@ async function runBridgeTask(request) {
       : request.write
         ? buildCollaborationMode("default", config, { developerInstructions, effort: request.effort })
         : null,
-    sandboxPolicy: isPlanMode
-      ? buildSandboxPolicy("plan", config)
-      : request.write ? buildSandboxPolicy("default", config) : null,
+    // Always resolve through buildSandboxPolicy so `config.sandbox_policy`
+    // wins regardless of plan/write flags. When no override is set, the
+    // mode-derived default applies (plan → readOnly, --write → workspaceWrite,
+    // plain exec → readOnly).
+    sandboxPolicy: buildSandboxPolicy(
+      isPlanMode || !request.write ? "plan" : "default",
+      config
+    ),
     effort: isPlanMode ? "xhigh" : (request.effort ?? config.effort ?? "high"),
     turnTimeoutMs: isPlanMode ? 300_000 : 600_000,
     idleTimeoutMs: 120_000,

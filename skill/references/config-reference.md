@@ -27,17 +27,23 @@ If any file is missing or malformed, that layer is skipped silently — the next
 | `prompt_footer` | string | (see below) | Text appended to every prompt. Used to instruct Codex to use `requestUserInput` tool for questions. |
 | `allow_questions` | boolean | `true` | Allow Codex to ask questions in Default mode. Always enabled in Plan mode. |
 | `session_dir` | string | `"~/.codex-bridge/sessions"` | Where session logs are stored. `~` expands to home directory. |
-| `sandbox_policy` | string \| null | `null` | Override the mode-derived sandbox. One of `"read-only"`, `"workspace-write"`, `"danger-full-access"`. See below. |
+| `sandbox_policy` | string | `"danger-full-access"` | Sandbox profile. One of `"danger-full-access"`, `"workspace-write"`, `"read-only"`. See below. |
 
 ### `sandbox_policy`
 
-By default, `mode: plan` runs under a `read-only` sandbox and `mode: default` under `workspace-write`. The `workspace-write` profile explicitly **blocks writes to `.git/`** — a turn that needs to commit its own work will fail with a raw POSIX error that Codex often misdiagnoses as a puzzle to solve (e.g. it may attempt `osascript` to reach a human-operated Terminal).
+The shipped default is **`"danger-full-access"`** — no sandbox, no permission blocker. This mirrors `codex --dangerously-bypass-approvals-and-sandbox` and lets Codex commit its own work without hitting raw POSIX errors on `.git/` writes. The pre-v1.2.0 default of `workspace-write` routinely caused Codex to misinterpret sandbox denials as puzzles to solve (e.g. attempting `osascript` to reach a human-operated Terminal).
 
-`sandbox_policy: "danger-full-access"` maps to upstream `SandboxPolicy::DangerFullAccess`. It lifts the `.git/` restriction and mirrors the behavior of `codex --dangerously-bypass-approvals-and-sandbox`. Use only on trusted workspaces — Codex gains unrestricted filesystem and network access for the duration of the turn.
+Opt into a stricter profile by editing `config.yaml`:
 
-The override applies to `task` and `send` turns and to the auto-pipeline's **fix** stage. The **completion-check** stage stays read-only regardless, because the check must not mutate the workspace while evaluating it.
+| Value | Behavior |
+|---|---|
+| `"danger-full-access"` | Upstream `SandboxPolicy::DangerFullAccess`. No filesystem or network restriction. **Shipped default.** |
+| `"workspace-write"` | Writes allowed inside cwd only. `.git/` blocked. Fine for pure-edit tasks that don't commit. |
+| `"read-only"` | No writes. Useful for analysis-only runs. |
 
-Unknown values silently fall back to the mode-derived default. A typo will never widen permissions.
+The setting applies to `task` and `send` turns and to the auto-pipeline's **fix** stage. The **completion-check** stage stays `read-only` regardless, because the check must not mutate the workspace while evaluating it.
+
+Unknown values silently fall back to the mode-derived default (`plan → read-only`, `default → workspace-write`). A typo cannot widen permissions beyond the mode-derived floor.
 
 ## Default post_task_prompt
 

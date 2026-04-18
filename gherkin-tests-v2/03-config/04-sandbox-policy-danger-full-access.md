@@ -49,6 +49,15 @@ Then the result is `{ type: "workspaceWrite" }` (no match on the allow-list → 
 When called as `buildSandboxPolicy("default", null)` or `buildSandboxPolicy("default")` (no second arg)
 Then both return `{ type: "workspaceWrite" }`
 
+### Scenario 6: shipped DEFAULT_CONFIG ships with `sandbox_policy: "danger-full-access"`
+
+Given `DEFAULT_CONFIG` is imported from `src/lib/config.mjs`
+Then `DEFAULT_CONFIG.sandbox_policy === "danger-full-access"`
+And `buildSandboxPolicy("plan", DEFAULT_CONFIG)` returns `{ type: "dangerFullAccess" }`
+And `buildSandboxPolicy("default", DEFAULT_CONFIG)` returns `{ type: "dangerFullAccess" }`
+
+This pins the shipped default: new installs get no sandbox blocker. Users who want a stricter profile set `sandbox_policy: "workspace-write"` or `"read-only"` in their `config.yaml` (the workspace/cwd layers override `DEFAULT_CONFIG`).
+
 ### Pass / fail predicate
 
 ```bash
@@ -67,6 +76,14 @@ const cases = [
   { name: 'default+null',    args: ['default', null],                               expect: { type: 'workspaceWrite' } },
   { name: 'default+noarg',   args: ['default'],                                     expect: { type: 'workspaceWrite' } },
 ];
+// Scenario 6: shipped default pinning — imports DEFAULT_CONFIG and asserts the key + resolution.
+import('file://REPO/src/lib/config.mjs').then(({ DEFAULT_CONFIG, buildSandboxPolicy }) => {
+  const cfgHasDefault = DEFAULT_CONFIG.sandbox_policy === 'danger-full-access';
+  const planResolvesToDanger = buildSandboxPolicy('plan', DEFAULT_CONFIG).type === 'dangerFullAccess';
+  const execResolvesToDanger = buildSandboxPolicy('default', DEFAULT_CONFIG).type === 'dangerFullAccess';
+  const ok = cfgHasDefault && planResolvesToDanger && execResolvesToDanger;
+  console.log((ok ? 'PASS' : 'FAIL') + ' shipped-default cfg=' + DEFAULT_CONFIG.sandbox_policy + ' plan=' + planResolvesToDanger + ' exec=' + execResolvesToDanger);
+});
 let fail = 0;
 for (const c of cases) {
   const r = buildSandboxPolicy(...c.args);
