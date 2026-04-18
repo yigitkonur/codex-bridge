@@ -9,6 +9,16 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+### Fixed
+
+- Update-check now honors `GITHUB_TOKEN` / `GH_TOKEN` env vars. Without
+  auth, unauthenticated requests against a private repository return 404
+  and the check silently skips (`check_skip_reason:
+  "fetch-failed-no-cache"`). With a token set, the check succeeds and
+  returns the real `latest_version`. GH Actions workflows and developers
+  running `gh auth login` get working checks for free; nothing else
+  breaks if the token is absent.
+
 ## [1.1.0] — 2026-04-18
 
 First release with per-launch update-check surface and workspace-level

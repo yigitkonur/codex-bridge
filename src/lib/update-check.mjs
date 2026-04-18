@@ -78,13 +78,21 @@ export function compareVersions(a, b) {
 async function fetchLatestTag(timeoutMs) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
+  // If the repo is private, unauthenticated requests return 404. Pick up
+  // the standard token env vars if set (GITHUB_TOKEN is what Actions
+  // workflows expose, GH_TOKEN is the `gh` CLI convention). Also silent
+  // on failure — a missing / invalid token just looks like "no update
+  // info this time."
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": USER_AGENT,
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
   try {
     const res = await fetch(GITHUB_API_URL, {
       signal: controller.signal,
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": USER_AGENT,
-      },
+      headers,
     });
     if (!res.ok) return null;
     const json = await res.json();

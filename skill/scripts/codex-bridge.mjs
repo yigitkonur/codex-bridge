@@ -6804,13 +6804,16 @@ function compareVersions(a, b) {
 async function fetchLatestTag(timeoutMs) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": USER_AGENT
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
   try {
     const res = await fetch(GITHUB_API_URL, {
       signal: controller.signal,
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": USER_AGENT
-      }
+      headers
     });
     if (!res.ok) return null;
     const json2 = await res.json();
