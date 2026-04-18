@@ -13,6 +13,7 @@ Session-anchored notes about codex-bridge behavior that surprised the author dur
 | 03 | `next_action.description` misleads orchestrator on pipeline timeouts | open, one-line fix scoped |
 | 04 | `.ndjson` missing `TURN_PARAMS` + `ITEM_COMPLETED` under superpowers | open, hypothesis not verified |
 | 05 | `bridge cancel` (no args) errors with `AMBIGUOUS_CANCEL` when multiple jobs active | open, spec update needed |
+| 06 | Stop-gate review accumulates orphaned "running" rescue tasks across sessions (7 ghosts reaped during this session's cleanup) | open, startup-time reaper scoped |
 
 ## How to add an entry
 
