@@ -67,6 +67,20 @@ jq -e '.ok == true and .result.phase == "plan-pending"' task.json \
   && jq -se '[.[] | select(.tag == "TURN_PARAMS")][1].data.sandboxPolicy.type == "workspaceWrite"' "$SESSION_DIR/$TID.ndjson"
 ```
 
+### Observed derailment (2026-04-18)
+
+Running this scenario end-to-end against Codex `codex-cli 0.104.0` produced the following failure, recorded in `unexpected-bridge-observations/01-plan-mode-bypassed-by-superpowers-skills.md`:
+
+- `[PLAN]` never appeared in `$EVENTS`.
+- `$SESSION_DIR/$TID.plan.md` was never written (the `writePlan` guard in `codex-bridge.mjs:1422` needs `result.planDetected && result.planText`; `planDetected` is set only on `item/completed` with `type: "plan"`, which Codex's `using-superpowers` + `brainstorming` internal-skill chain skips).
+- `index.html` was written to disk during the plan turn despite `config.mode: plan` supposedly forcing a `readOnly` sandbox.
+- The auto-pipeline then stalled at the review stage for 5 minutes, producing the `[ERROR] origin: pipeline:diff` + `ok:true, phase:incomplete` ambiguity documented in `05-ambiguities/01-pipeline-error-coexists-with-ok-true.md`.
+
+**Consequence:** every assertion after "envelope parses and `ok == true`" fails on a realistic user setup. The scenario is **aspirational** until one of the enhancement paths below lands.
+
 ### Enhancement candidates
 
-If `[PLAN]` never fires but Codex produces a plan-shaped assistant message (the derailment SKILL.md explicitly warns about — "Codex's internal skills may override plan mode"), this scenario fails at `grep -c '^\[PLAN\] '`, pointing maintainers at the `formatPlanEvent` wiring in `src/lib/session-log.mjs:216` rather than at the pipeline. A concrete fix: the worker could detect plan-shaped text content and synthesize a `[PLAN]` tag so the invariant holds under upstream drift. The `sandboxPolicy.type` assertion (not `sandboxPolicy == "string"`) is load-bearing — `buildSandboxPolicy` returns an object (`{ type: "readOnly" }`), so a string comparison would silently pass a broken build.
+1. **Bridge-side plan synthesis.** If Codex's internal-skill chain writes files during a plan-mode turn without emitting a `type:plan` item, the bridge can synthesize a `[PLAN]` from the assistant message content before the turn completes. Keeps the invariant for downstream consumers.
+2. **Hard sandbox enforcement.** Plan mode's `readOnly` sandbox policy should be enforced at the bridge layer (reject `apply_patch` calls) rather than relied upon to propagate through Codex's own machinery. This observation proves the propagation is leaky under superpowers.
+3. **Scenario split.** Keep this file as the "ideal contract" scenario — document what the skill SHOULD do — and add a sibling `01b-plan-bypassed-by-internal-skills.md` that asserts the current reality (no `[PLAN]`, writes happen, `[PIPELINE:*]` still runs). The two together form a regression test *and* a known-derailment record.
+4. **Assertion robustness.** The `sandboxPolicy.type` jq path (not `sandboxPolicy == "string"`) is load-bearing because `buildSandboxPolicy` returns an object. Verified correct here.
