@@ -1525,8 +1525,8 @@ async function runBridgeTask(request) {
         ? buildCollaborationMode("default", config, { developerInstructions, effort: request.effort })
         : null,
     sandboxPolicy: isPlanMode
-      ? buildSandboxPolicy("plan")
-      : request.write ? buildSandboxPolicy("default") : null,
+      ? buildSandboxPolicy("plan", config)
+      : request.write ? buildSandboxPolicy("default", config) : null,
     effort: isPlanMode ? "xhigh" : (request.effort ?? config.effort ?? "high"),
     turnTimeoutMs: isPlanMode ? 300_000 : 600_000,
     idleTimeoutMs: 120_000,
@@ -2470,7 +2470,7 @@ async function handleSend(argv) {
       effort: options.effort,
       developerInstructions: loadDeveloperInstructions(modeOverride),
     });
-    turnOptions.sandboxPolicy = buildSandboxPolicy(modeOverride);
+    turnOptions.sandboxPolicy = buildSandboxPolicy(modeOverride, config);
   }
 
   ensureCodexAvailable(cwd);

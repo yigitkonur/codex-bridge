@@ -129,10 +129,32 @@ export function buildCollaborationMode(mode, config, options = {}) {
   };
 }
 
-export function buildSandboxPolicy(mode) {
-  // Only the two recognized modes opt into write access. Unknown values
-  // default to the safest policy (readOnly) so a typo in config.yaml cannot
-  // silently widen sandbox permissions.
+// Values accepted by config.sandbox_policy. `workspace-write` and `read-only`
+// are the implicit defaults driven by `mode`; `danger-full-access` is a
+// power-user opt-in that maps to upstream `SandboxPolicy::DangerFullAccess`
+// and lifts the workspace-write restriction on `.git/` metadata (matches the
+// behavior of `codex --dangerously-bypass-approvals-and-sandbox`).
+const VALID_SANDBOX_POLICY_OVERRIDES = new Set([
+  "danger-full-access",
+  "workspace-write",
+  "read-only",
+]);
+
+export function buildSandboxPolicy(mode, config = {}) {
+  const override = config?.sandbox_policy;
+  if (override != null && !VALID_SANDBOX_POLICY_OVERRIDES.has(override)) {
+    // Unknown override silently falls back to the mode-derived default below —
+    // a typo in config.yaml should never widen permissions.
+  } else if (override === "danger-full-access") {
+    return { type: "dangerFullAccess" };
+  } else if (override === "workspace-write") {
+    return { type: "workspaceWrite" };
+  } else if (override === "read-only") {
+    return { type: "readOnly" };
+  }
+
+  // Mode-derived defaults. Only the two recognized modes opt into write
+  // access; unknown values default to the safest policy.
   if (mode === "default") {
     return { type: "workspaceWrite" };
   }
