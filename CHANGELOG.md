@@ -1,0 +1,125 @@
+# Changelog
+
+All notable changes to `codex-bridge` are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
+to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Unreleased changes live under the `Unreleased` section until a release is cut —
+see the "Adding an entry" section at the bottom for the workflow.
+
+## [Unreleased]
+
+## [1.0.0] — 2026-04-18
+
+First tagged release of the Claude Code skill + single-file Node.js bridge to
+the OpenAI Codex app-server. `npx -y skills add yigitkonur/codex-bridge -a claude-code -g -y`
+installs and runs; `bridge task --json "…"` delegates work to Codex and returns
+a uniform envelope that Claude Code can switch on.
+
+### Added
+
+- Plan → approve → execute → auto-pipeline → done/incomplete lifecycle, driven
+  by `src/lib/auto-pipeline.mjs` (diff → review → fix → completion-check).
+- Append-only `.events` and `.ndjson` session artifacts per thread, plus
+  `.diff` and `.plan.md` captured at appropriate points
+  (`src/lib/session-log.mjs`).
+- Structured error envelope (`{ok, error:{class, code, retryable, suggestion}}`)
+  on failure, mapped 1:1 to exit codes 0/1/2/3/4/5/6/7/8
+  (`src/lib/cli-errors.mjs`).
+- `requestUserInput` round-trip via disk IPC (`src/lib/pending-requests.mjs`)
+  so a separate `respond` CLI invocation can answer a question raised mid-turn.
+- `adversarial-review` subcommand returning findings that validate against
+  `schemas/review-output.schema.json`.
+- `wait`, `events --follow`, `steer`, `summary`, `cancel`, and background jobs
+  via `task --background`.
+- JSON-RPC broker (`src/app-server-broker.mjs`) that multiplexes multiple CLI
+  invocations onto a single Codex app-server connection in the same workspace.
+- `.claude-plugin/plugin.json` for skills.sh / Claude plugin-marketplace
+  discovery.
+- Guided README bootstrap for new machines (Node 22 → Codex CLI → skill
+  install) plus a troubleshooting table.
+- CI drift check: `.github/workflows/build.yml` rebuilds from source and
+  refuses to pass if `skill/scripts/*` diverges from the committed bundle.
+- Release workflow: pushing a `vX.Y.Z` tag auto-packages `.tar.gz` + `.zip` +
+  `SHA256SUMS` and attaches them to a GitHub release.
+- Workspace `config.yaml` override layered on top of the skill-dir config —
+  `$(pwd)/config.yaml` now takes effect (fixed in commit `945621b` after
+  derailment described in
+  `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md`).
+- Update-check plumbing: `version` emits cached `update` info; `update`
+  subcommand forces a fresh probe and prints the install command; per-launch
+  silent stdout notice when a newer release is known (opt-out via
+  `CODEX_BRIDGE_NO_UPDATE_CHECK=1` or `--json`).
+- 24 Gherkin-style behavioral contract specs under `gherkin-tests-v2/`
+  covering lifecycle, questions, config, errors, ambiguities, artifacts,
+  orchestration, review-and-resume.
+- 8 live-run derailment observations under `unexpected-bridge-observations/`
+  flagging rough edges that need future fixes (plan-mode bypass via Codex
+  superpowers, stop-gate orphan reaper, adversarial-review session-artifact
+  gap, etc.).
+
+### Fixed
+
+- `next_action.description` at `phase: "incomplete"` no longer claims "Codex's
+  completion check flagged gaps" when the actual cause was a pipeline stage
+  timeout. Branches on `pipeline.error` presence so orchestrators get a
+  truthful next-step (commit `945621b`,
+  `unexpected-bridge-observations/03`).
+
+### Docs
+
+- `AGENTS.md` (+ `CLAUDE.md` symlink) — repo-root instructions for agents.
+- `REVIEW.md` — review-time checklist.
+- `src/`, `src/lib/`, `skill/`, `gherkin-tests-v2/` — per-folder `AGENTS.md`
+  with folder-specific conventions and invariants.
+- `skill/references/` — user-facing reference docs for commands, config,
+  notifications, NDJSON schema, error recovery, monitor patterns, prompt
+  writing, and orchestration flow diagrams.
+
+---
+
+## Adding an entry
+
+Every PR that changes behavior — adds a subcommand, changes an envelope
+field, renames a config key, introduces or resolves an observation, etc. —
+must touch this file.
+
+1. **During development**, append a bullet under the `## [Unreleased]`
+   section. Use one of five categories in this exact order:
+   - `### Added` for new features / surfaces
+   - `### Changed` for behavior changes to existing features
+   - `### Deprecated` for soon-to-be-removed features (keep entry until
+     removal release)
+   - `### Removed` for features that were deprecated earlier and have now
+     been removed
+   - `### Fixed` for bug fixes
+   - `### Security` for vulnerability mitigations
+2. **Link each bullet** to the relevant commit SHA and, when applicable, the
+   spec or observation it corresponds to (e.g.
+   `gherkin-tests-v2/04-errors/03-review-empty-diff.md`,
+   `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md`).
+3. **Keep voice consistent**: imperative, past-less. "Honor workspace
+   config.yaml" — not "Honored" or "Now honors."
+4. **When cutting a release**:
+   - Decide major/minor/patch per semver:
+     - MAJOR: breaking envelope / exit-code / config-key changes.
+     - MINOR: new subcommands, new capabilities, new config keys.
+     - PATCH: bug fixes, doc-only changes, internal refactors.
+   - Rename the `[Unreleased]` heading to `[X.Y.Z] — YYYY-MM-DD`.
+   - Add a fresh empty `## [Unreleased]` above it.
+   - Bump `package.json` `version` and `src/codex-bridge.mjs`'s
+     `BRIDGE_VERSION` in the same commit.
+   - Commit as `chore(release): vX.Y.Z`, then tag and push:
+     ```sh
+     git tag vX.Y.Z
+     git push origin main vX.Y.Z
+     ```
+   - The `release.yml` workflow auto-packages the tarball + zip +
+     SHA256SUMS and attaches them to the GitHub release.
+5. **Keep it truthful**: if a feature shipped only behind a flag or was
+   reverted before release, note that explicitly. A changelog that overstates
+   coverage is worse than no changelog.
+
+Do NOT edit historical entries below `[Unreleased]`. Once a release is
+tagged, its entry is frozen — subsequent fixes that affect it belong in a
+new release section, not a retroactive edit.

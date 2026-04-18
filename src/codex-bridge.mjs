@@ -106,6 +106,39 @@ import {
   clearPendingRequest,
 } from "./lib/pending-requests.mjs";
 import { runAutoPipeline } from "./lib/auto-pipeline.mjs";
+import { checkForUpdate, formatUpdateNotice } from "./lib/update-check.mjs";
+
+// Read the update cache synchronously (no network) and print a one-line
+// stdout notice if a newer version is known. Opt-out via `--json` flag,
+// `CODEX_BRIDGE_NO_UPDATE_CHECK=1` env, or the two subcommands that render
+// update status themselves. Also silent for subcommand-less / help runs so
+// `codex-bridge` (no args) keeps printing clean usage. Fires an async cache
+// refresh so the NEXT invocation sees newly-published releases.
+function maybeEmitUpdateNotice(rawArgv, subcommand) {
+  try {
+    if (process.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
+    if (detectJsonFlag(rawArgv)) return;
+    if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
+    if (subcommand === "version" || subcommand === "update") return;
+
+    // Sync cache read; no network on the hot path.
+    void checkForUpdate({ currentVersion: BRIDGE_VERSION })
+      .then((result) => {
+        if (!result || !result.hasUpdate) return;
+        if (result.cached === false && result.cacheAgeMs === 0) {
+          // Fresh fetch produced new data, but we don't want to block the
+          // subcommand that's already running. The notice will appear on
+          // the next invocation via the now-warm cache.
+          return;
+        }
+        const line = formatUpdateNotice(result);
+        if (line) process.stdout.write(`${line}\n`);
+      })
+      .catch(() => {});
+  } catch {
+    // Update-check must never fail the caller.
+  }
+}
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.join(SCRIPT_DIR, "codex-bridge.mjs");
@@ -352,9 +385,14 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge setup --json"]
   },
   version: {
-    synopsis: "version [--json]",
-    summary: "Print bridge version, schema version, Node version, Codex version, and capability list.",
-    examples: ["codex-bridge version --json"]
+    synopsis: "version [--check-update] [--json]",
+    summary: "Print bridge version, schema version, Node version, Codex version, capability list, and cached update status. `--check-update` forces a fresh GitHub round-trip.",
+    examples: ["codex-bridge version --json", "codex-bridge version --check-update --json"]
+  },
+  update: {
+    synopsis: "update [--force] [--json]",
+    summary: "Check GitHub releases for a newer codex-bridge and print the install recipe. Does not self-modify the skill — run the printed command yourself when you want to upgrade.",
+    examples: ["codex-bridge update --json", "codex-bridge update --force"]
   },
   "auth-status": {
     synopsis: "auth-status [--json]",
@@ -579,18 +617,27 @@ const BRIDGE_CAPABILITIES = Object.freeze([
   "stop-gate-review",
   "structured-errors",
   "per-subcommand-help",
-  "machine-readable-help"
+  "machine-readable-help",
+  "workspace-config-override",
+  "update-check"
 ]);
 
 async function handleVersion(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "check-update"]
   });
 
   const cwd = resolveCommandCwd(options);
   const codex = getCodexAvailability(cwd);
+
+  // `version --check-update` forces a fresh GitHub round-trip; the bare
+  // `version` call reads the cached result so it stays cheap (no network).
+  const update = await checkForUpdate({
+    currentVersion: BRIDGE_VERSION,
+    force: Boolean(options["check-update"]),
+  });
 
   const payload = {
     version: BRIDGE_VERSION,
@@ -600,17 +647,68 @@ async function handleVersion(argv) {
       available: codex.available,
       detail: codex.detail ?? null
     },
-    capabilities: [...BRIDGE_CAPABILITIES]
+    capabilities: [...BRIDGE_CAPABILITIES],
+    update: {
+      latest_version: update.latestVersion ?? null,
+      has_update: Boolean(update.hasUpdate),
+      checked_at_age_ms: update.cacheAgeMs ?? null,
+      check_skipped: Boolean(update.skipped),
+      check_skip_reason: update.reason ?? null,
+    }
   };
 
+  const updateLine = formatUpdateNotice(update);
   const rendered = [
     `codex-bridge ${payload.version} (schema ${payload.schema_version})`,
     `  node:  ${payload.node_version}`,
     `  codex: ${codex.available ? (codex.detail ?? "available") : "not installed"}`,
-    `  caps:  ${payload.capabilities.join(", ")}`
+    `  caps:  ${payload.capabilities.join(", ")}`,
+    updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
   ].join("\n") + "\n";
 
   emitSuccess("version", payload, rendered, { json: options.json, startedAt });
+}
+
+// Force a fresh update check and print a human-readable verdict plus the
+// one-command install recipe. Never mutates the installed skill itself —
+// updates land via `npx skills …` from the user's shell, not from inside
+// the bridge. This keeps the bridge's blast radius tight (no self-modify)
+// and means a failed update check is always recoverable: try again later.
+async function handleUpdate(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "force"]
+  });
+
+  const update = await checkForUpdate({
+    currentVersion: BRIDGE_VERSION,
+    force: options.force !== false,
+  });
+
+  const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+
+  const payload = {
+    current_version: BRIDGE_VERSION,
+    latest_version: update.latestVersion ?? null,
+    has_update: Boolean(update.hasUpdate),
+    check_skipped: Boolean(update.skipped),
+    check_skip_reason: update.reason ?? null,
+    install_command: installCommand,
+  };
+
+  let rendered;
+  if (update.skipped && !update.latestVersion) {
+    rendered = `Update check skipped (${update.reason}). Try again in a moment.\n`;
+  } else if (update.hasUpdate) {
+    rendered =
+      `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).\n` +
+      `To update, run:\n  ${installCommand}\n`;
+  } else {
+    rendered = `codex-bridge is up to date (${BRIDGE_VERSION}${update.latestVersion ? `, latest ${update.latestVersion}` : ""}).\n`;
+  }
+
+  emitSuccess("update", payload, rendered, { json: options.json, startedAt });
 }
 
 async function handleAuthStatus(argv) {
@@ -2480,6 +2578,7 @@ function buildTranscript(entries, threadId) {
 const SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
+  update: handleUpdate,
   "auth-status": handleAuthStatus,
   review: handleReview,
   "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),
@@ -2501,6 +2600,14 @@ async function main() {
   const startedAt = Date.now();
   const rawArgv = process.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
+
+  // Silent per-launch update notice. Reads the cached latest-version result
+  // only (no network on the hot path) — the cache is warmed asynchronously
+  // in the background after dispatch so the NEXT invocation sees a new
+  // upstream release. Never runs under `--json` (would pollute envelopes),
+  // never runs for `version`/`update` (they have their own render), and
+  // never runs for the hook-spawned "Stop Gate Review" rescue paths.
+  maybeEmitUpdateNotice(rawArgv, subcommand);
 
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
     if (detectJsonFlag(rawArgv)) {

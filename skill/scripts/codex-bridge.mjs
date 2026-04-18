@@ -1,7 +1,7 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3 } from "node:child_process";
-import fs12 from "node:fs";
-import path10 from "node:path";
+import fs13 from "node:fs";
+import path11 from "node:path";
 import process8 from "node:process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -6751,13 +6751,149 @@ function withTimeout(promise, timeoutMs, label) {
   });
 }
 
+// src/lib/update-check.mjs
+import fs12 from "node:fs";
+import path10 from "node:path";
+import os5 from "node:os";
+var DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+var DEFAULT_FETCH_TIMEOUT_MS = 2500;
+var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest";
+var USER_AGENT = "codex-bridge-update-check";
+function cachePath() {
+  const root = process.env.CLAUDE_PLUGIN_DATA ? path10.join(process.env.CLAUDE_PLUGIN_DATA, "codex-bridge-update.json") : path10.join(os5.homedir(), ".codex-bridge", "update-cache.json");
+  return root;
+}
+function readCache() {
+  try {
+    const raw = fs12.readFileSync(cachePath(), "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed == null) return null;
+    if (typeof parsed.checkedAt !== "number") return null;
+    if (typeof parsed.latestVersion !== "string") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function writeCache(entry) {
+  try {
+    const p = cachePath();
+    fs12.mkdirSync(path10.dirname(p), { recursive: true });
+    fs12.writeFileSync(p, JSON.stringify(entry, null, 2));
+  } catch {
+  }
+}
+function parseVersion(s) {
+  if (typeof s !== "string") return null;
+  const m = s.trim().replace(/^v/i, "").match(/^(\d+)\.(\d+)\.(\d+)(?:[-+](.+))?$/);
+  if (!m) return null;
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), tag: m[4] ?? "" };
+}
+function compareVersions(a, b) {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
+  if (!pa || !pb) return 0;
+  if (pa.major !== pb.major) return pa.major - pb.major;
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
+  if (pa.tag === pb.tag) return 0;
+  if (pa.tag === "") return 1;
+  if (pb.tag === "") return -1;
+  return pa.tag < pb.tag ? -1 : 1;
+}
+async function fetchLatestTag(timeoutMs) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(GITHUB_API_URL, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": USER_AGENT
+      }
+    });
+    if (!res.ok) return null;
+    const json2 = await res.json();
+    if (typeof json2?.tag_name !== "string") return null;
+    return json2.tag_name.replace(/^v/i, "");
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+async function checkForUpdate({
+  currentVersion,
+  force = false,
+  cacheTtlMs = DEFAULT_CACHE_TTL_MS,
+  fetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS
+} = {}) {
+  const cache = readCache();
+  const now = Date.now();
+  if (!force && cache && now - cache.checkedAt < cacheTtlMs) {
+    return {
+      skipped: false,
+      cached: true,
+      currentVersion,
+      latestVersion: cache.latestVersion,
+      hasUpdate: compareVersions(currentVersion, cache.latestVersion) < 0,
+      cacheAgeMs: now - cache.checkedAt
+    };
+  }
+  const latest = await fetchLatestTag(fetchTimeoutMs);
+  if (!latest) {
+    return {
+      skipped: true,
+      reason: cache ? "fetch-failed-using-stale" : "fetch-failed-no-cache",
+      currentVersion,
+      ...cache && {
+        latestVersion: cache.latestVersion,
+        hasUpdate: compareVersions(currentVersion, cache.latestVersion) < 0,
+        cacheAgeMs: now - cache.checkedAt
+      }
+    };
+  }
+  writeCache({ checkedAt: now, latestVersion: latest });
+  return {
+    skipped: false,
+    cached: false,
+    currentVersion,
+    latestVersion: latest,
+    hasUpdate: compareVersions(currentVersion, latest) < 0,
+    cacheAgeMs: 0
+  };
+}
+function formatUpdateNotice(result) {
+  if (!result || !result.hasUpdate || !result.latestVersion) return null;
+  return `codex-bridge ${result.latestVersion} is available (you have ${result.currentVersion}). Run \`npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y\` to update.`;
+}
+
 // src/codex-bridge.mjs
-var SCRIPT_DIR = path10.dirname(fileURLToPath2(import.meta.url));
-var SCRIPT_PATH = path10.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs12.existsSync(path10.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path10.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path10.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path10.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path10.join(ROOT_DIR, "templates", "plan-enforcement.md");
+function maybeEmitUpdateNotice(rawArgv, subcommand) {
+  try {
+    if (process8.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
+    if (detectJsonFlag(rawArgv)) return;
+    if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
+    if (subcommand === "version" || subcommand === "update") return;
+    void checkForUpdate({ currentVersion: BRIDGE_VERSION }).then((result) => {
+      if (!result || !result.hasUpdate) return;
+      if (result.cached === false && result.cacheAgeMs === 0) {
+        return;
+      }
+      const line = formatUpdateNotice(result);
+      if (line) process8.stdout.write(`${line}
+`);
+    }).catch(() => {
+    });
+  } catch {
+  }
+}
+var SCRIPT_DIR = path11.dirname(fileURLToPath2(import.meta.url));
+var SCRIPT_PATH = path11.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs13.existsSync(path11.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path11.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path11.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path11.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path11.join(ROOT_DIR, "templates", "plan-enforcement.md");
 var DEVELOPER_INSTRUCTIONS_FALLBACK = {
   plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
   default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
@@ -6765,7 +6901,7 @@ var DEVELOPER_INSTRUCTIONS_FALLBACK = {
 function loadDeveloperInstructions(mode) {
   const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
   try {
-    return fs12.readFileSync(templatePath, "utf8");
+    return fs13.readFileSync(templatePath, "utf8");
   } catch {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
@@ -6817,8 +6953,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path11 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path11}`.trim();
+      const path12 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path12}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -6955,9 +7091,14 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge setup --json"]
   },
   version: {
-    synopsis: "version [--json]",
-    summary: "Print bridge version, schema version, Node version, Codex version, and capability list.",
-    examples: ["codex-bridge version --json"]
+    synopsis: "version [--check-update] [--json]",
+    summary: "Print bridge version, schema version, Node version, Codex version, capability list, and cached update status. `--check-update` forces a fresh GitHub round-trip.",
+    examples: ["codex-bridge version --json", "codex-bridge version --check-update --json"]
+  },
+  update: {
+    synopsis: "update [--force] [--json]",
+    summary: "Check GitHub releases for a newer codex-bridge and print the install recipe. Does not self-modify the skill \u2014 run the printed command yourself when you want to upgrade.",
+    examples: ["codex-bridge update --json", "codex-bridge update --force"]
   },
   "auth-status": {
     synopsis: "auth-status [--json]",
@@ -7062,7 +7203,7 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path10.resolve(process8.cwd(), options.cwd) : process8.cwd();
+  return options.cwd ? path11.resolve(process8.cwd(), options.cwd) : process8.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
@@ -7152,16 +7293,22 @@ var BRIDGE_CAPABILITIES = Object.freeze([
   "stop-gate-review",
   "structured-errors",
   "per-subcommand-help",
-  "machine-readable-help"
+  "machine-readable-help",
+  "workspace-config-override",
+  "update-check"
 ]);
 async function handleVersion(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "check-update"]
   });
   const cwd2 = resolveCommandCwd(options);
   const codex = getCodexAvailability(cwd2);
+  const update = await checkForUpdate({
+    currentVersion: BRIDGE_VERSION,
+    force: Boolean(options["check-update"])
+  });
   const payload = {
     version: BRIDGE_VERSION,
     schema_version: BRIDGE_SCHEMA_VERSION,
@@ -7170,15 +7317,58 @@ async function handleVersion(argv) {
       available: codex.available,
       detail: codex.detail ?? null
     },
-    capabilities: [...BRIDGE_CAPABILITIES]
+    capabilities: [...BRIDGE_CAPABILITIES],
+    update: {
+      latest_version: update.latestVersion ?? null,
+      has_update: Boolean(update.hasUpdate),
+      checked_at_age_ms: update.cacheAgeMs ?? null,
+      check_skipped: Boolean(update.skipped),
+      check_skip_reason: update.reason ?? null
+    }
   };
+  const updateLine = formatUpdateNotice(update);
   const rendered = [
     `codex-bridge ${payload.version} (schema ${payload.schema_version})`,
     `  node:  ${payload.node_version}`,
     `  codex: ${codex.available ? codex.detail ?? "available" : "not installed"}`,
-    `  caps:  ${payload.capabilities.join(", ")}`
+    `  caps:  ${payload.capabilities.join(", ")}`,
+    updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
   ].join("\n") + "\n";
   emitSuccess("version", payload, rendered, { json: options.json, startedAt });
+}
+async function handleUpdate(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "force"]
+  });
+  const update = await checkForUpdate({
+    currentVersion: BRIDGE_VERSION,
+    force: options.force !== false
+  });
+  const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const payload = {
+    current_version: BRIDGE_VERSION,
+    latest_version: update.latestVersion ?? null,
+    has_update: Boolean(update.hasUpdate),
+    check_skipped: Boolean(update.skipped),
+    check_skip_reason: update.reason ?? null,
+    install_command: installCommand
+  };
+  let rendered;
+  if (update.skipped && !update.latestVersion) {
+    rendered = `Update check skipped (${update.reason}). Try again in a moment.
+`;
+  } else if (update.hasUpdate) {
+    rendered = `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).
+To update, run:
+  ${installCommand}
+`;
+  } else {
+    rendered = `codex-bridge is up to date (${BRIDGE_VERSION}${update.latestVersion ? `, latest ${update.latestVersion}` : ""}).
+`;
+  }
+  emitSuccess("update", payload, rendered, { json: options.json, startedAt });
 }
 async function handleAuthStatus(argv) {
   const startedAt = Date.now();
@@ -7603,14 +7793,14 @@ function buildTaskRequest({ cwd: cwd2, model, effort, prompt, write, resumeLast,
 }
 function readTaskPrompt(cwd2, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path10.resolve(cwd2, options["prompt-file"]));
+    return readPromptFileOrThrow(path11.resolve(cwd2, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs12.readFileSync(absPath, "utf8");
+    return fs13.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -7830,7 +8020,7 @@ ${config.prompt_footer}` : request.prompt;
   const result = await executeTaskRun(bridgeRequest);
   const session = initSession(sessionDir, result.threadId);
   const monitor = buildMonitorHint({
-    eventsPath: result.threadId ? path10.join(sessionDir, `${result.threadId}.events`) : null,
+    eventsPath: result.threadId ? path11.join(sessionDir, `${result.threadId}.events`) : null,
     jobId: request.jobId ?? null,
     threadId: result.threadId ?? null
   });
@@ -8123,7 +8313,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs12.readFileSync(eventsPath, "utf8");
+        const data = fs13.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -8140,13 +8330,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs12.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs13.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs12.existsSync(eventsPath)) {
+              if (fs13.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -8158,12 +8348,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs12.existsSync(eventsPath)) {
+    if (fs13.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs12.existsSync(eventsPath)) {
+        if (fs13.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -8202,7 +8392,7 @@ async function handleWait(argv) {
   }
   const config = getBridgeConfig(cwd2);
   const sessionDir = resolveSessionDir(config.session_dir);
-  const eventsPath = path10.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path11.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = /\[(DONE|ERROR|INCOMPLETE)\]/;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -8262,7 +8452,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd2);
   const sessionDir = resolveSessionDir(config.session_dir);
-  const eventsPath = path10.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path11.join(sessionDir, `${job.threadId}.events`);
   const filter = options.filter ? new Set(
     options.filter.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)
   ) : null;
@@ -8278,8 +8468,8 @@ async function handleEvents(argv) {
   const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs12.existsSync(eventsPath)) {
-    initial = fs12.readFileSync(eventsPath, "utf8");
+  if (fs13.existsSync(eventsPath)) {
+    initial = fs13.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) process8.stdout.write(line + "\n");
@@ -8321,7 +8511,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs12.readFileSync(eventsPath, "utf8");
+        data = fs13.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -8339,13 +8529,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs12.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs13.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs12.existsSync(eventsPath)) {
+              if (fs13.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -8356,11 +8546,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs12.existsSync(eventsPath)) {
+    if (fs13.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs12.existsSync(eventsPath)) {
+        if (fs13.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -8482,13 +8672,13 @@ async function handleCancel(argv) {
 }
 function resolvePromptInput(options, positionals, cwd2) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path10.resolve(cwd2, options["prompt-file"]));
+    return readPromptFileOrThrow(path11.resolve(cwd2, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path10.resolve(cwd2, positionals[0]);
+    const candidate = path11.resolve(cwd2, positionals[0]);
     try {
-      if (fs12.existsSync(candidate) && fs12.statSync(candidate).isFile()) {
-        return fs12.readFileSync(candidate, "utf8");
+      if (fs13.existsSync(candidate) && fs13.statSync(candidate).isFile()) {
+        return fs13.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -8701,7 +8891,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs12.readFileSync(session.ndjsonPath, "utf8");
+    content = fs13.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -8765,6 +8955,7 @@ function buildTranscript(entries, threadId) {
 var SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
+  update: handleUpdate,
   "auth-status": handleAuthStatus,
   review: handleReview,
   "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),
@@ -8785,6 +8976,7 @@ async function main() {
   const startedAt = Date.now();
   const rawArgv = process8.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
+  maybeEmitUpdateNotice(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
     if (detectJsonFlag(rawArgv)) {
       emitSuccess("help", buildMachineReadableHelp(), null, { json: true, startedAt });

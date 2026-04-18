@@ -269,6 +269,21 @@ Read [`AGENTS.md`](AGENTS.md) (symlinked as `CLAUDE.md`) before touching source.
 
 **One rule worth repeating:** after any change under `src/`, run `npm run build` and commit the regenerated bundle (`skill/scripts/*`, `skill/app-server-broker.mjs`, `skill/prompts/*`, `skill/schemas/*`, `skill/templates/*`) in the same commit. CI's drift check will reject PRs with stale bundles.
 
+Every behavior-visible change also belongs in [`CHANGELOG.md`](CHANGELOG.md) — bullets go under `## [Unreleased]` during development and get promoted to a dated `## [X.Y.Z]` section at release time. Full instructions (categories, voice, version-bump rules, release procedure) live at the bottom of `CHANGELOG.md`.
+
+### Releasing
+
+```sh
+# 1. Bump version in package.json and BRIDGE_VERSION in src/codex-bridge.mjs
+# 2. Rename the `## [Unreleased]` heading in CHANGELOG.md to `## [X.Y.Z] — YYYY-MM-DD`
+#    and add a fresh empty [Unreleased] section above it
+git commit -am "chore(release): vX.Y.Z"
+git tag vX.Y.Z
+git push origin main vX.Y.Z
+```
+
+Pushing the tag fires `.github/workflows/release.yml`, which builds the bundle, packages `.tar.gz` + `.zip` + `SHA256SUMS`, and attaches everything to the GitHub release. Users who installed via `npx skills add` will see the new version on their next `bridge version` or `bridge update` call.
+
 ---
 
 ## license
