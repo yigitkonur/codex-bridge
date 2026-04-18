@@ -169,6 +169,16 @@ function classifyError(err) {
       exitCode: ExitCode.TRANSIENT
     };
   }
+  if (/stream disconnected|websocket closed|no close frame|ECONNRESET|ETIMEDOUT|socket hang up/i.test(message)) {
+    return {
+      class: "network",
+      code: "UPSTREAM_STREAM_DISCONNECTED",
+      message,
+      retryable: true,
+      suggestion: "Upstream connection dropped mid-turn. Retry the same prompt; prior reasoning is lost but the workspace is unchanged.",
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
   return {
     class: "internal",
     code: "INTERNAL_ERROR",
@@ -2058,7 +2068,13 @@ function applyTurnNotification(state, message) {
         `Turn ${message.params.turn.status === "completed" ? "completed" : message.params.turn.status}.`,
         "finalizing"
       );
-      completeTurn(state, message.params.turn);
+      {
+        const completedTurn = message.params.turn;
+        if (completedTurn?.status !== "completed" && completedTurn?.error) {
+          state.error = { ...state.error ?? {}, ...completedTurn.error };
+        }
+        completeTurn(state, completedTurn);
+      }
       break;
     default:
       break;
