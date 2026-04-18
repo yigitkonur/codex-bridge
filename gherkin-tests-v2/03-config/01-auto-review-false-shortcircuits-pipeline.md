@@ -53,4 +53,4 @@ EVENTS=~/.codex-bridge/sessions/${THREAD_ID}.events
 
 - If someone lands a "quick review only when `auto_review: false`" variant, this contract forces them to introduce a third-state config (`auto_review: "quick" | true | false`) instead of overloading the boolean.
 - A lint rule in `src/lib/config.mjs` could warn when `auto_review: false` and `post_task_prompt` is also empty, since that collapses the pipeline to a single `diff` stage — surprising for users who expected some postflight work.
-- Add a matching assertion in `test-gherkin/08-config-system.feature` so the contract is reachable from both the config-feature index and this numbered v2 file.
+- A lint rule in `src/lib/config.mjs` could warn when `auto_review: false` AND `post_task_prompt == ""` together — the pipeline collapses to a single `diff` stage, which surprises users expecting some postflight work.

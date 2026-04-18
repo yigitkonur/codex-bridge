@@ -234,7 +234,8 @@ codex-bridge/
 │   └── prompts/ schemas/ templates/  ← committed build outputs
 │
 ├── .github/workflows/              ci: build.yml (drift check on pr/push), release.yml (on tag)
-├── test-gherkin/*.feature          behavioral specs (contract docs — not runnable)
+├── gherkin-tests-v2/**/*.md        behavioral specs (contract docs — not runnable)
+├── unexpected-bridge-observations/ session-anchored skill-quality notes
 └── docs/superpowers/plans/         implementation plans
 ```
 
@@ -264,7 +265,7 @@ Targets the [agentskills.io spec](https://agentskills.io/specification) and the 
 
 ## contributing
 
-Read [`AGENTS.md`](AGENTS.md) (symlinked as `CLAUDE.md`) before touching source. Per-folder `AGENTS.md` files scope the conventions: `src/lib/AGENTS.md` locks in protocol invariants against the Codex app-server spec; `skill/AGENTS.md` says which files under `skill/` are authored vs generated; `test-gherkin/AGENTS.md` is the contract for behavioral specs.
+Read [`AGENTS.md`](AGENTS.md) (symlinked as `CLAUDE.md`) before touching source. Per-folder `AGENTS.md` files scope the conventions: `src/lib/AGENTS.md` locks in protocol invariants against the Codex app-server spec; `skill/AGENTS.md` says which files under `skill/` are authored vs generated; `gherkin-tests-v2/AGENTS.md` is the contract for behavioral specs (including the canonical `bridge()` shell-function rule that all specs must follow).
 
 **One rule worth repeating:** after any change under `src/`, run `npm run build` and commit the regenerated bundle (`skill/scripts/*`, `skill/app-server-broker.mjs`, `skill/prompts/*`, `skill/schemas/*`, `skill/templates/*`) in the same commit. CI's drift check will reject PRs with stale bundles.
 

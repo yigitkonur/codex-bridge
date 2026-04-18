@@ -44,8 +44,8 @@ Severity:
 
 20. **[WARN]** Edits under `src/` must be accompanied by a `npm run build` run locally before commit when CI doesn't cover it. The `skill/scripts/*` bundle is gitignored, so commits containing `src/` changes without a matching tree update will ship stale bundles to end users.
 21. **[WARN]** New bundled assets must land in both `esbuild.config.mjs::copies` and `.gitignore` in the same change. Missing either leaks build output into git or leaves the skill without the asset at runtime.
-22. **[WARN]** New CLI subcommands need: handler in `src/codex-bridge.mjs`, `main()` switch entry, `printUsage()` line, Gherkin coverage in `test-gherkin/07-cli-commands.feature`, reference entry in `skill/references/command-reference.md`. PRs missing any of these five are incomplete.
-23. **[WARN]** New notification tags need: format helper in `src/lib/session-log.mjs`, spec in `skill/references/notification-format.md`, scenarios in `test-gherkin/04-notifications-and-events.feature`. PRs missing any of the three are incomplete.
+22. **[WARN]** New CLI subcommands need: handler in `src/codex-bridge.mjs`, `main()` switch entry, `printUsage()` line, behavioral coverage under `gherkin-tests-v2/` (typically `04-errors/` for new error codes or `07-orchestration/` for new lifecycle verbs), reference entry in `skill/references/command-reference.md`. PRs missing any of these five are incomplete.
+23. **[WARN]** New notification tags need: format helper in `src/lib/session-log.mjs`, spec in `skill/references/notification-format.md`, scenarios in `gherkin-tests-v2/06-artifacts/` (and `05-ambiguities/` if the tag has dual-channel semantics with the sync envelope). PRs missing any of the three are incomplete.
 24. **[INFO]** Prefer `outputCommandResult(payload, rendered, options.json)` over raw `console.log` in handlers. Consistent JSON flag support.
 25. **[INFO]** Prefer `src/lib/` helpers to inline logic in `src/codex-bridge.mjs`. Handler file already pushes ~1500 lines.
 
@@ -70,7 +70,7 @@ Severity:
 
 ## Testing
 
-- **There is no runnable test suite.** `test-gherkin/*.feature` is a behavioral spec, not an executable test. Reviewers must manually verify behaviors a PR changes by running `npm run build && node src/codex-bridge.mjs …` against a real Codex install.
+- **There is no runnable test suite.** `gherkin-tests-v2/**/*.md` is a behavioral contract, not an executable test. Reviewers must manually verify behaviors a PR changes by running `npm run build && node skill/scripts/codex-bridge.mjs …` against a real Codex install. Use the canonical `bridge()` shell-function form documented in `gherkin-tests-v2/AGENTS.md` — raw `$BRIDGE` string variables fail under zsh word-splitting rules.
 - **Before approving a PR that touches protocol code**, run a task round-trip locally: `node src/codex-bridge.mjs task --write "<trivial prompt>"`, observe the plan, approve with `send --mode default`, wait for `[DONE]`. Confirm `.events` and `.ndjson` are well-formed.
 - **Before approving a PR that touches `captureTurn` or the state machine**, additionally run a task with `--write` that triggers a question (`requestUserInput` path) and verify `respond` works end-to-end.
 - **Before approving a PR that changes `app-server.mjs` wire handling**, additionally re-read `codex-rs/app-server/README.md` and diff-check `src/lib/app-server-protocol.d.ts` against a freshly-regenerated TS schema from the upstream `codex app-server generate-ts --experimental` command.

@@ -247,7 +247,7 @@ Fallback root: `os.tmpdir()/codex-companion/` when `CLAUDE_PLUGIN_DATA` isn't se
 
 **Append-only rule**: `appendFileSync` is the only writer. Never add async writers to `.events` or `.ndjson` — lines will interleave.
 
-**Event format helpers** (`formatDoneEvent`, `formatErrorEvent`, `formatIncompleteEvent`, `formatQuestionEvent`, `formatPlanEvent`, `formatConfirmedEvent`, `formatPipelineEvent`, `formatPhaseEvent`, `formatReviewEvent`) each return a formatted string block. Changing any format requires syncing `skill/references/notification-format.md` AND the Gherkin scenarios in `test-gherkin/04-notifications-and-events.feature`.
+**Event format helpers** (`formatDoneEvent`, `formatErrorEvent`, `formatIncompleteEvent`, `formatQuestionEvent`, `formatPlanEvent`, `formatConfirmedEvent`, `formatPipelineEvent`, `formatPhaseEvent`, `formatReviewEvent`) each return a formatted string block. Changing any format requires syncing `skill/references/notification-format.md` AND the scenarios under `gherkin-tests-v2/06-artifacts/` plus any `05-ambiguities/` entry that asserts on dual-channel event+envelope behavior. Note: `formatPhaseEvent` and `formatReviewEvent` are currently defined but have no call sites — the `[PHASE]` and `[REVIEW]` tags never emit in the live build; see `gherkin-tests-v2/06-artifacts/03-review-json-is-phantom-file.md`.
 
 ### `pending-requests.mjs`
 

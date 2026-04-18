@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node 22+ ESM, esbuild, existing `src/lib/cli-errors.mjs` envelope layer, existing `src/lib/args.mjs` parser, existing `src/lib/session-log.mjs` append-only writers.
 
-**Root-cause context** (from `derailment-logbook/`):
+**Root-cause context** (historical — from the now-retired `derailment-logbook/`, superseded on 2026-04-18 by `unexpected-bridge-observations/` and the v2 behavioral contract at `gherkin-tests-v2/`):
 - Agent calls `send thr_abc …` → exit 1 `INTERNAL_ERROR` with raw UUID-parser message. The Codex app-server protocol (`codex-rs/app-server-protocol`) serializes thread ids as `Uuid` (v7); `thr_abc` is not parseable. The CLI never validates the shape at the handler boundary, so the error bubbles up uncategorized.
 - Agent calls `send … --mode execute`. The Codex collaboration-mode enum (see `codex-rs/app-server/README.md`) accepts only `plan | default`; `execute` is an internal alias that is never reachable over the wire. The handler doesn't pre-validate; the failure message comes from Rust deep inside.
 - Agent expected sync `task --json` to be a single call; found it blocks 5–8 min through the auto-pipeline with no intermediate feedback. The upstream app-server's `turn/completed` is followed by our own pipeline stages, but none of them surface to the caller until the outer promise resolves.

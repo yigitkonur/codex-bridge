@@ -22,7 +22,7 @@ Every protocol claim in `src/lib/AGENTS.md` cites back to those paths. When Code
 | Toolchain self-check | `node src/codex-bridge.mjs setup --json` | Verifies Node, npm, `codex` CLI, auth, broker runtime. |
 | Smoke a task locally | `node src/codex-bridge.mjs task --write "<prompt>"` | Requires `codex` installed and authenticated. |
 
-**There is no test runner.** `test-gherkin/*.feature` are behavioral specs, not runnable (no `cucumber-js` / `vitest-cucumber` in `package.json`). See `test-gherkin/AGENTS.md`. Verify changes by running the CLI against a real Codex install and reading the specs.
+**There is no test runner.** `gherkin-tests-v2/**/*.md` are behavioral specs, not runnable (no `cucumber-js` / `vitest-cucumber` in `package.json`). See `gherkin-tests-v2/AGENTS.md`. Verify changes by running the CLI against a real Codex install and reading the specs. Session-anchored surprises go in `unexpected-bridge-observations/` (see its README).
 
 ## Runtime requirements
 
@@ -62,8 +62,9 @@ codex-bridge/
 │   ├── app-server-broker.mjs    # ← generated, COMMITTED
 │   ├── prompts/ schemas/ templates/   # ← generated, COMMITTED
 ├── .claude-plugin/plugin.json   # declares ./skill for skills.sh / Claude plugin discovery
-└── test-gherkin/                # behavioral specs, not runnable tests
-    └── AGENTS.md
+├── gherkin-tests-v2/            # behavioral specs (contract docs — not runnable)
+│   └── AGENTS.md                # spec template + canonical bridge() binary rule
+└── unexpected-bridge-observations/   # session-anchored skill-quality notes
 ```
 
 ## Cross-cutting conventions
@@ -74,7 +75,7 @@ codex-bridge/
 4. **Session artifacts are append-only.** `src/lib/session-log.mjs`'s `appendFileSync` is the only writer to `.events` and `.ndjson`. Adding async writers will interleave lines.
 5. **No `"jsonrpc":"2.0"` on the wire.** The Codex app-server spec explicitly omits it (`codex-rs/app-server/README.md` → "Protocol"). Any JSON-RPC parser that rejects missing `jsonrpc` will break the transport. Our client in `src/lib/app-server.mjs` is already compliant.
 6. **`DEFAULT_CLIENT_INFO.name = "codex_bridge"` (`src/lib/app-server.mjs:25`) is load-bearing.** The upstream server uses it as the HTTP `originator` header (tested in `codex-rs/app-server/tests/suite/v2/initialize.rs`). ASCII only; no CR/LF/colons. Changing it breaks broker session identification and upstream model routing.
-7. **Plan mode forces `effort: "xhigh"` regardless of config.** `src/lib/config.mjs` at `buildCollaborationMode("plan", ...)`. This is intentional (deep reasoning for planning) and tested in `test-gherkin/01-task-lifecycle.feature:27`.
+7. **Plan mode forces `effort: "xhigh"` regardless of config.** `src/lib/config.mjs:56` at `buildCollaborationMode`. This is intentional (deep reasoning for planning) and asserted in `gherkin-tests-v2/03-config/03-plan-mode-masks-effort-config.md`.
 8. **Don't guess method names.** Every JSON-RPC method sent on the wire must match the Rust `protocol/common.rs` serde-renamed name exactly. See `src/lib/AGENTS.md` for the full list.
 
 ## Environment variables
@@ -90,11 +91,11 @@ codex-bridge/
 
 ## What to do when making a change
 
-- **New subcommand** → handler in `src/codex-bridge.mjs`, wire into the `main()` switch, extend `printUsage()`, add coverage in `test-gherkin/07-cli-commands.feature`.
-- **New event tag** → format helper in `src/lib/session-log.mjs`, add to `skill/references/notification-format.md`, update `test-gherkin/04-notifications-and-events.feature`, update `REVIEW.md` if the tag carries structured data.
+- **New subcommand** → handler in `src/codex-bridge.mjs`, wire into the `main()` switch, extend `printUsage()`, add coverage in the matching `gherkin-tests-v2/` context (typically `04-errors/` for failure modes or `07-orchestration/` for lifecycle).
+- **New event tag** → format helper in `src/lib/session-log.mjs`, add to `skill/references/notification-format.md`, add/update scenarios in `gherkin-tests-v2/06-artifacts/` (and `05-ambiguities/` if the tag has dual-channel semantics), update `REVIEW.md` if the tag carries structured data.
 - **New bundled asset** → path in `esbuild.config.mjs` `copies`, update `.gitignore`, reference through `ROOT_DIR` in `codex-bridge.mjs`.
 - **Protocol change upstream** → regenerate `src/lib/app-server-protocol.d.ts` (`codex app-server generate-ts --experimental --out <dir>`), audit diff against `src/lib/app-server.mjs` and `src/lib/codex.mjs`, update `src/lib/AGENTS.md` invariants.
-- **Config key** → add to `DEFAULT_CONFIG` in `src/lib/config.mjs`, document in `skill/config.yaml` (with comment) and `skill/references/config-reference.md`, add a scenario in `test-gherkin/08-config-system.feature`.
+- **Config key** → add to `DEFAULT_CONFIG` in `src/lib/config.mjs`, document in `skill/config.yaml` (with comment) and `skill/references/config-reference.md`, add a scenario in `gherkin-tests-v2/03-config/`.
 
 ## Where to look next
 
@@ -106,7 +107,8 @@ codex-bridge/
 | Editing the output schema | `src/schemas/AGENTS.md` |
 | Editing plan/execute developer instructions | `src/templates/AGENTS.md` |
 | Editing user-facing skill docs | `skill/AGENTS.md` |
-| Adding or modifying Gherkin specs | `test-gherkin/AGENTS.md` |
+| Adding or modifying behavioral specs | `gherkin-tests-v2/AGENTS.md` |
+| Recording surprising bridge behavior (candidates for skill/script fixes) | `unexpected-bridge-observations/README.md` |
 | What reviewers should flag | `REVIEW.md` |
 
 ## Unknowns flagged during discovery

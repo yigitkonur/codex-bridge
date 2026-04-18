@@ -64,7 +64,7 @@ When adding a new config key:
 1. Add to `DEFAULT_CONFIG` in `src/lib/config.mjs`.
 2. Add a commented-out example in `skill/config.yaml`.
 3. Document in `skill/references/config-reference.md`.
-4. Add a scenario in `test-gherkin/08-config-system.feature`.
+4. Add a scenario in `gherkin-tests-v2/03-config/`.
 
 ## References directory
 

@@ -34,7 +34,7 @@ Three zones, in reading order:
 1. Add the handler `async function handle<Name>(argv)` in the handler zone.
 2. Register it in the `switch` inside `main()` (bottom of the file).
 3. Extend `printUsage()`.
-4. Add scenarios in `test-gherkin/07-cli-commands.feature`.
+4. Add scenarios in the matching `gherkin-tests-v2/` context — typically `04-errors/` for new failure envelopes, `07-orchestration/` for lifecycle-affecting subcommands, or `08-review-and-resume/` for review/resume variants.
 5. Update `skill/references/command-reference.md`.
 
 ### Modes, sandbox, and developer instructions
