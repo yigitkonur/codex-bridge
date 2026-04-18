@@ -44,13 +44,36 @@ And stdout is a single envelope with `ok == false`, `error.class == "not_found"`
 
 **Note:** `resolveCancelableJob` (`src/lib/job-control.mjs:327`) filters to only `queued` or `running` jobs before calling `matchJobReference`. A cancelled job is not in that set. `matchJobReference` finds no match among active jobs and throws `JOB_NOT_FOUND` (exit 3), not a conflict. This differs from the `src/AGENTS.md` note that cancel is "idempotent-as-error" — the error class is `not_found`, not `conflict`. The `ACTIVE_JOB_NOT_FOUND` code defined in `resolveCancelableJob:335` is effectively dead code because `matchJobReference` throws `JOB_NOT_FOUND` before the outer null-check can run.
 
-### Scenario (error path, fast): `cancel` with no argument and no active jobs returns `NO_ACTIVE_JOBS`, exit 3
+### Scenario (3a, fast): `cancel` with no argument and **zero** active jobs returns `NO_ACTIVE_JOBS`, exit 3
 
 When I run `bridge cancel --json` with `CODEX_COMPANION_SESSION_ID` set to a fresh uuid (no jobs exist for that session)
 Then the process exits 3
 And stdout is a single envelope with `ok == false`, `error.class == "not_found"`, `error.code == "NO_ACTIVE_JOBS"`
 
 **Smoke result (verified):** exit 3, `{"ok":false,"error":{"class":"not_found","code":"NO_ACTIVE_JOBS","message":"No active Codex jobs to cancel for this session.",...}}`
+
+### Scenario (3b, requires one live background job): `cancel` with no argument and **exactly one** active job cancels that job, exit 0
+
+Given exactly one `status: "running"` or `status: "queued"` job exists for the current session
+When I run `bridge cancel --json`
+Then the process exits 0
+And the envelope `result.status == "cancelled"` with `jobId == <the one active job>`
+
+**Smoke status:** static — requires a live background task; not reached in the 2026-04-18 session (see `LIVE_RUN_REPORT.md`). The no-args code path (`resolveCancelableJob` without a reference) disambiguates by counting active jobs and cancels when count == 1.
+
+### Scenario (3c, observed live): `cancel` with no argument and **multiple** active jobs returns `AMBIGUOUS_CANCEL`, exit 6
+
+Given two or more `status ∈ {queued, running}` jobs exist for the current session (e.g. a stuck stop-gate review task + a user-launched task)
+When I run `bridge cancel --json`
+Then the process exits 6
+And stdout is a single envelope with `ok == false`, `error.class == "validation"`, `error.code == "AMBIGUOUS_CANCEL"`, suggestion naming the fix (`"Pass a job id to \`cancel\`."`)
+
+**Observed live on 2026-04-18** (see `unexpected-bridge-observations/05-ambiguous-cancel-without-job-id-errors-not-most-recent.md`):
+```json
+{"ok":false,"error":{"class":"validation","code":"AMBIGUOUS_CANCEL","message":"Multiple Codex jobs are active.","retryable":false,"suggestion":"Pass a job id to `cancel`."}}
+```
+
+This scenario retires the earlier "cancel most recent" assumption — the bridge refuses to guess when there's more than one candidate.
 
 ### Scenario (error path, fast): `cancel <nonexistent-id>` returns `JOB_NOT_FOUND`, exit 3
 

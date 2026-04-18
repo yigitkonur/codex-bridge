@@ -969,6 +969,33 @@ function resolveJobsDir(cwd2) {
 function ensureStateDir(cwd2) {
   fs3.mkdirSync(resolveJobsDir(cwd2), { recursive: true });
 }
+function pidIsAlive(pid) {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err && err.code === "ESRCH") return false;
+    return true;
+  }
+}
+function reapOrphans(jobs) {
+  if (!Array.isArray(jobs) || jobs.length === 0) return { jobs, reaped: 0 };
+  let changed = 0;
+  const reaped = jobs.map((job) => {
+    if (!job || job.status !== "running" && job.status !== "queued") return job;
+    if (pidIsAlive(job.pid)) return job;
+    changed++;
+    return {
+      ...job,
+      status: "orphaned",
+      phase: "orphaned",
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      errorMessage: job.errorMessage ?? `Backing process (pid ${job.pid ?? "?"}) no longer alive \u2014 reaped on load.`
+    };
+  });
+  return { jobs: reaped, reaped: changed };
+}
 function loadState(cwd2) {
   const stateFile = resolveStateFile(cwd2);
   if (!fs3.existsSync(stateFile)) {
@@ -976,15 +1003,29 @@ function loadState(cwd2) {
   }
   try {
     const parsed = JSON.parse(fs3.readFileSync(stateFile, "utf8"));
-    return {
+    const rawJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+    const { jobs, reaped } = reapOrphans(rawJobs);
+    const state = {
       ...defaultState(),
       ...parsed,
       config: {
         ...defaultState().config,
         ...parsed.config ?? {}
       },
-      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : []
+      jobs
     };
+    if (reaped > 0) {
+      try {
+        fs3.writeFileSync(stateFile, `${JSON.stringify({
+          version: parsed.version ?? STATE_VERSION,
+          config: state.config,
+          jobs: state.jobs
+        }, null, 2)}
+`, "utf8");
+      } catch {
+      }
+    }
+    return state;
   } catch {
     return defaultState();
   }
@@ -6151,7 +6192,7 @@ var DEFAULT_CONFIG = {
   session_dir: "~/.codex-bridge/sessions",
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
-function loadConfig(skillDir, overrideDir = null) {
+function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
   const readYaml = (p) => {
     try {
       const raw = fs8.readFileSync(p, "utf8");
@@ -6164,11 +6205,28 @@ function loadConfig(skillDir, overrideDir = null) {
   };
   const skillConfigPath = skillDir ? path6.join(skillDir, "config.yaml") : path6.join(os3.homedir(), ".codex-bridge", "config.yaml");
   const skillLayer = readYaml(skillConfigPath);
-  const overrideLayer = overrideDir && fs8.existsSync(path6.join(overrideDir, "config.yaml")) ? readYaml(path6.join(overrideDir, "config.yaml")) : {};
+  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path6.join(workspaceRoot, "config.yaml") : null;
+  const workspaceLayer = workspaceConfigPath && fs8.existsSync(workspaceConfigPath) ? readYaml(workspaceConfigPath) : {};
+  const overrideConfigPath = overrideDir ? path6.join(overrideDir, "config.yaml") : null;
+  const overrideLayer = overrideConfigPath && fs8.existsSync(overrideConfigPath) ? readYaml(overrideConfigPath) : {};
   return {
     ...DEFAULT_CONFIG,
     ...skillLayer,
+    ...workspaceLayer,
     ...overrideLayer
+  };
+}
+function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
+  const skillConfigPath = skillDir ? path6.join(skillDir, "config.yaml") : path6.join(os3.homedir(), ".codex-bridge", "config.yaml");
+  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path6.join(workspaceRoot, "config.yaml") : null;
+  const overrideConfigPath = overrideDir ? path6.join(overrideDir, "config.yaml") : null;
+  return {
+    skillConfigPath,
+    skillConfigExists: fs8.existsSync(skillConfigPath),
+    workspaceConfigPath,
+    workspaceConfigExists: workspaceConfigPath ? fs8.existsSync(workspaceConfigPath) : false,
+    overrideConfigPath,
+    overrideConfigExists: overrideConfigPath ? fs8.existsSync(overrideConfigPath) : false
   };
 }
 function resolveEffort(config, options = {}) {
@@ -6271,6 +6329,14 @@ function writePlan(session, planText) {
   } catch {
   }
   return planPath;
+}
+function writeReview(session, reviewData) {
+  const reviewPath = path7.join(session.sessionDir, `${session.threadId}.review.json`);
+  try {
+    fs9.writeFileSync(reviewPath, JSON.stringify(reviewData, null, 2));
+  } catch {
+  }
+  return reviewPath;
 }
 function captureGitDiff(cwd2, session) {
   const numstatResult = spawnSync2("git", ["diff", "--numstat", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
@@ -6915,14 +6981,14 @@ var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low",
 var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
 var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 var BRIDGE_CONFIG_SKILL_LAYER = null;
-function getBridgeConfig(cwd2 = null) {
-  if (!cwd2) {
+function getBridgeConfig(cwd2 = null, workspaceRoot = null) {
+  if (!cwd2 && !workspaceRoot) {
     if (!BRIDGE_CONFIG_SKILL_LAYER) {
       BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
     }
     return BRIDGE_CONFIG_SKILL_LAYER;
   }
-  return loadConfig(ROOT_DIR, cwd2);
+  return loadConfig(ROOT_DIR, cwd2, workspaceRoot);
 }
 function buildMonitorHint({ eventsPath, jobId, threadId }) {
   const identifier = jobId ?? threadId;
@@ -7102,6 +7168,11 @@ var COMMANDS = Object.freeze({
     synopsis: "update [--force] [--json]",
     summary: "Check GitHub releases for a newer codex-bridge and print the install recipe. Does not self-modify the skill \u2014 run the printed command yourself when you want to upgrade.",
     examples: ["codex-bridge update --json", "codex-bridge update --force"]
+  },
+  config: {
+    synopsis: "config show [--json]",
+    summary: "Show effective merged config + which files the values came from (defaults < skill-dir < workspace-root < cwd). Use when a config knob seems to have no effect.",
+    examples: ["codex-bridge config show", "codex-bridge config show --json"]
   },
   "auth-status": {
     synopsis: "auth-status [--json]",
@@ -7286,7 +7357,7 @@ async function handleSetup(argv) {
     startedAt
   });
 }
-var BRIDGE_VERSION = "1.1.0";
+var BRIDGE_VERSION = "1.1.1";
 var BRIDGE_SCHEMA_VERSION = "1.0";
 var BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -7338,6 +7409,69 @@ async function handleVersion(argv) {
     updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
   ].join("\n") + "\n";
   emitSuccess("version", payload, rendered, { json: options.json, startedAt });
+}
+async function handleConfigShow(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const action = positionals[0] ?? "show";
+  if (action !== "show") {
+    throw usageError(
+      `config: unknown action '${action}'. Supported: show.`
+    );
+  }
+  const cwd2 = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const sources = resolveConfigSources(ROOT_DIR, cwd2, workspaceRoot);
+  const effective = getBridgeConfig(cwd2, workspaceRoot);
+  const overrides = {};
+  for (const [k, v] of Object.entries(effective)) {
+    if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
+      overrides[k] = v;
+    }
+  }
+  const payload = {
+    sources: {
+      defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
+      skill_config_path: sources.skillConfigPath,
+      skill_config_exists: sources.skillConfigExists,
+      workspace_config_path: sources.workspaceConfigPath,
+      workspace_config_exists: sources.workspaceConfigExists,
+      override_config_path: sources.overrideConfigPath,
+      override_config_exists: sources.overrideConfigExists
+    },
+    effective_config: effective,
+    overrides_vs_defaults: overrides,
+    precedence_order_low_to_high: [
+      "DEFAULT_CONFIG",
+      "skill-dir config.yaml",
+      "workspace-root config.yaml",
+      "cwd config.yaml"
+    ]
+  };
+  const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
+  const lines = [
+    "Config resolution (lowest \u2192 highest precedence):",
+    `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
+    `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
+    `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
+    `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
+    "",
+    "Effective config:"
+  ];
+  for (const [k, v] of Object.entries(effective)) {
+    const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
+    const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
+    lines.push(`  ${marker} ${k}: ${preview}`);
+  }
+  if (Object.keys(overrides).length > 0) {
+    lines.push("", "* = differs from DEFAULT_CONFIG");
+  }
+  const rendered = `${lines.join("\n")}
+`;
+  emitSuccess("config", payload, rendered, { json: options.json, startedAt });
 }
 async function handleUpdate(argv) {
   const startedAt = Date.now();
@@ -7531,6 +7665,8 @@ async function resolveLatestTrackedTaskThread(cwd2, options = {}) {
 async function executeReviewRun(request) {
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
+  const reviewConfig = getBridgeConfig(request.cwd, resolveWorkspaceRoot(request.cwd));
+  const reviewSessionDir = resolveSessionDir(reviewConfig.session_dir);
   const target = resolveReviewTarget(request.cwd, {
     base: request.base,
     scope: request.scope
@@ -7556,6 +7692,15 @@ async function executeReviewRun(request) {
       model: request.model,
       onProgress: request.onProgress
     });
+    if (result2.threadId) {
+      const reviewSession = findSession(reviewSessionDir, result2.threadId) ?? initSession(reviewSessionDir, result2.threadId);
+      logNdjson(reviewSession, "TURN_COMPLETED", "turn/completed", {
+        turnId: result2.turnId,
+        status: result2.status,
+        reviewKind: "native",
+        target
+      });
+    }
     const payload2 = {
       review: reviewName,
       target,
@@ -7602,6 +7747,22 @@ async function executeReviewRun(request) {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr
   });
+  if (result.threadId) {
+    const advSession = findSession(reviewSessionDir, result.threadId) ?? initSession(reviewSessionDir, result.threadId);
+    logNdjson(advSession, "TURN_COMPLETED", "turn/completed", {
+      turnId: result.turnId,
+      status: result.status,
+      reviewKind: "adversarial",
+      target,
+      findingCount: Array.isArray(parsed.parsed?.findings) ? parsed.parsed.findings.length : null
+    });
+    if (parsed.parsed && !parsed.parseError) {
+      try {
+        writeReview(advSession, parsed.parsed);
+      } catch {
+      }
+    }
+  }
   const payload = {
     review: reviewName,
     target,
@@ -7944,9 +8105,9 @@ async function handleReview(argv) {
   });
 }
 async function runBridgeTask(request) {
-  const config = getBridgeConfig(request.cwd ?? null);
-  const sessionDir = resolveSessionDir(config.session_dir);
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir);
   const effectiveMode = request.mode ?? config.mode ?? "plan";
   const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
   const promptWithFooter = config.prompt_footer ? `${request.prompt}
@@ -8959,6 +9120,7 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
   update: handleUpdate,
+  config: handleConfigShow,
   "auth-status": handleAuthStatus,
   review: handleReview,
   "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),

@@ -13,9 +13,9 @@ Session-anchored notes about codex-bridge behavior that surprised the author dur
 | 03 | `next_action.description` misleads orchestrator on pipeline timeouts | open, one-line fix scoped |
 | 04 | `.ndjson` missing `TURN_PARAMS` + `ITEM_COMPLETED` under superpowers | open, hypothesis not verified |
 | 05 | `bridge cancel` (no args) errors with `AMBIGUOUS_CANCEL` when multiple jobs active | open, spec update needed |
-| 06 | Stop-gate review accumulates orphaned "running" rescue tasks across sessions (7 ghosts reaped during this session's cleanup) | open, startup-time reaper scoped |
-| 07 | `config.yaml` in cwd/workspace is silently ignored (real config was at `${CLAUDE_SKILL_DIR}/config.yaml`; workspace override now layered on top) | partially resolved 2026-04-18 — 3 of 5 fixes live |
-| 08 | `adversarial-review` writes no session artifacts for its own thread — `.events` / `.ndjson` / `.review.json` all absent | open, 3 fixes scoped |
+| 06 | Stop-gate review accumulates orphaned "running" rescue tasks across sessions (7 ghosts reaped during this session's cleanup) | **resolved 2026-04-18** — `loadState` PID-probe reaper auto-transitions dead-pid jobs to `orphaned` on every state read (commit landing with v1.1.1) |
+| 07 | `config.yaml` in cwd/workspace is silently ignored (real config was at `${CLAUDE_SKILL_DIR}/config.yaml`; 4-layer resolution now supports defaults < skill < workspace-root < cwd) | **resolved 2026-04-18** — all 5 originally-scoped fixes live: override semantics, docs, `bridge config show` discovery, 4-layer resolution (cwd + workspace-root), `LIVE_RUN_REPORT.md` updated |
+| 08 | `adversarial-review` writes no session artifacts for its own thread — `.events` / `.ndjson` / `.review.json` all absent | **resolved 2026-04-18** — review handler now calls `initSession` + writes a `TURN_COMPLETED` ndjson record; adversarial-review additionally calls `writeReview` to persist findings (previously-phantom function) |
 
 ## How to add an entry
 

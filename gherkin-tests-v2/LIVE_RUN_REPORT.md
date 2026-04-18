@@ -88,8 +88,8 @@ After the Codex backend outage ended, ran a fresh fixture at `/tmp/cbtest-retest
 | `06-artifacts/01-events-ndjson-append-only` | post-send ndjson grew (932→3173), prior 932 bytes byte-identical | **PASS** |
 | `06-artifacts/03-review-json-is-phantom-file` | no `{TID}.review.json` after adversarial-review | **PASS** (stronger: no artifacts at all — see obs 08) |
 | `08-review-and-resume/01-adversarial-review-structured-findings` | envelope schema conforms; findings array well-formed | **PASS** (empty findings array on this fixture — schema predicate vacuously true) |
-| `03-config/01-auto-review-false-shortcircuits-pipeline` | no `[PIPELINE:review]` | **FAIL** — all 3 pipeline stages ran (cwd config.yaml was ignored; see obs 07) |
-| `03-config/02-empty-post-task-prompt-skips-check` | no `[PIPELINE:check]` | **FAIL** — same cause |
+| `03-config/01-auto-review-false-shortcircuits-pipeline` | no `[PIPELINE:review]` | **PASS** (after commit `945621b` wired cwd config layering) — verified on fixture `/tmp/cbtest-cfgfix.vLuNWX` thread `019da133-...` ran 65 s with only `[DONE]`, no review/check stages |
+| `03-config/02-empty-post-task-prompt-skips-check` | no `[PIPELINE:check]` | **PASS** (same commit) — verified on the same run |
 
 ### Three new observations from this retest
 

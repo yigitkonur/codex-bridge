@@ -20,18 +20,22 @@ const DEFAULT_CONFIG = {
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 
-// Load bridge config with three-layer precedence (lowest → highest):
-//   1. DEFAULT_CONFIG (hard-coded fallback)
-//   2. `{skillDir}/config.yaml`            — the installed skill's defaults
-//   3. `{overrideDir}/config.yaml`         — workspace override (if present)
+// Load bridge config with four-layer precedence (lowest → highest):
+//   1. DEFAULT_CONFIG             — hard-coded fallback
+//   2. `{skillDir}/config.yaml`   — installed skill's global defaults
+//   3. `{workspaceRoot}/config.yaml` — project-level (git repo root) if distinct from cwd
+//   4. `{overrideDir}/config.yaml`   — cwd override (most specific)
 //
-// The override layer exists so a user can tweak bridge behavior for a single
-// project without editing their global skill config. Prior to this, only
-// layer (2) was read — a `config.yaml` in the working directory was silently
-// ignored. See `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md`
-// for the original derailment. When invoked as `loadConfig(ROOT_DIR, cwd)`,
-// the cwd's config.yaml is layered on top.
-export function loadConfig(skillDir, overrideDir = null) {
+// Layers 3 and 4 let a user override bridge behavior per-project without
+// editing their global skill config. Running commands from a subdirectory
+// of a repo still picks up the repo-root config via layer 3, and a cwd
+// sibling config.yaml wins last. Prior to this, only layer 2 was read —
+// see `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md`
+// for the original derailment.
+//
+// `overrideDir` is typically the caller's cwd. If `workspaceRoot` is
+// provided and differs, its config.yaml gets layered in before cwd.
+export function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
   const readYaml = (p) => {
     try {
       const raw = fs.readFileSync(p, "utf8");
@@ -48,32 +52,52 @@ export function loadConfig(skillDir, overrideDir = null) {
     : path.join(os.homedir(), ".codex-bridge", "config.yaml");
   const skillLayer = readYaml(skillConfigPath);
 
-  // Override layer is read only when a cwd/workspace root is explicitly
-  // passed AND its config.yaml exists. No silent upward traversal.
+  // Workspace-root layer — only read if distinct from overrideDir (avoid
+  // reading the same file twice) and actually exists.
+  const workspaceConfigPath =
+    workspaceRoot && workspaceRoot !== overrideDir
+      ? path.join(workspaceRoot, "config.yaml")
+      : null;
+  const workspaceLayer =
+    workspaceConfigPath && fs.existsSync(workspaceConfigPath)
+      ? readYaml(workspaceConfigPath)
+      : {};
+
+  // Override (cwd) layer — most specific, wins last.
+  const overrideConfigPath =
+    overrideDir ? path.join(overrideDir, "config.yaml") : null;
   const overrideLayer =
-    overrideDir && fs.existsSync(path.join(overrideDir, "config.yaml"))
-      ? readYaml(path.join(overrideDir, "config.yaml"))
+    overrideConfigPath && fs.existsSync(overrideConfigPath)
+      ? readYaml(overrideConfigPath)
       : {};
 
   return {
     ...DEFAULT_CONFIG,
     ...skillLayer,
+    ...workspaceLayer,
     ...overrideLayer,
   };
 }
 
 // Helper so callers can answer "where did the active config come from?".
-// Used by `setup --json` / `version --json` so users can discover the file
-// they need to edit. Honors the same resolution order as `loadConfig`.
-export function resolveConfigSources(skillDir, overrideDir = null) {
+// Used by `config show`, `setup --json`, `version --json` so users can
+// discover the exact file they need to edit. Reports all four layers.
+export function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
   const skillConfigPath = skillDir
     ? path.join(skillDir, "config.yaml")
     : path.join(os.homedir(), ".codex-bridge", "config.yaml");
+  const workspaceConfigPath =
+    workspaceRoot && workspaceRoot !== overrideDir
+      ? path.join(workspaceRoot, "config.yaml")
+      : null;
   const overrideConfigPath =
     overrideDir ? path.join(overrideDir, "config.yaml") : null;
   return {
     skillConfigPath,
     skillConfigExists: fs.existsSync(skillConfigPath),
+    workspaceConfigPath,
+    workspaceConfigExists:
+      workspaceConfigPath ? fs.existsSync(workspaceConfigPath) : false,
     overrideConfigPath,
     overrideConfigExists:
       overrideConfigPath ? fs.existsSync(overrideConfigPath) : false,

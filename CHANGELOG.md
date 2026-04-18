@@ -9,6 +9,42 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-04-18
+
+Audit-driven cleanup release. Resolves `unexpected-bridge-observations/`
+entries 06 and 08 end-to-end, completes the remaining 2 of 5 fixes for
+obs 07, updates specs + reports to reflect the post-fix reality. No
+breaking changes.
+
+### Added
+
+- **`bridge config show [--json]`** — prints the effective merged config
+  along with each of the four source files (and whether each exists).
+  `*` markers in rendered output flag keys that differ from
+  `DEFAULT_CONFIG`. Closes obs 07 fix #4.
+- **Workspace-root config layer**. `loadConfig` now reads four layers
+  instead of three: `DEFAULT_CONFIG < skill-dir < workspaceRoot < cwd`.
+  A user running a command from a subdir of a git repo now picks up
+  `$(git rev-parse --show-toplevel)/config.yaml` between the skill
+  defaults and any cwd-level override. Closes obs 07 fix #5.
+- **`initSession` in the review handlers** — both `review` and
+  `adversarial-review` now create `.events` + `.ndjson` files for their
+  thread and write a `TURN_COMPLETED` record. `adversarial-review`
+  additionally calls `writeReview` to persist its findings to
+  `{threadId}.review.json` (the previously-phantom function now has a
+  real caller). `bridge summary <review-tid>` and Monitor tooling can
+  now inspect review threads. Closes obs 08.
+
+### Changed
+
+- **`loadState` is now self-reaping** — on every state read, walks the
+  job list, probes each `status ∈ {running, queued}` job's pid with
+  `process.kill(pid, 0)`, and transitions ESRCH entries to `orphaned`
+  with a dated `errorMessage`. Idempotent + cheap + writes-back only
+  when something actually changed. Closes obs 06. Empirically verified:
+  inject a job with `pid: 999999`, run `bridge status`, the job flips to
+  `orphaned`.
+
 ### Fixed
 
 - Update-check now honors `GITHUB_TOKEN` / `GH_TOKEN` env vars. Without
@@ -18,6 +54,19 @@ see the "Adding an entry" section at the bottom for the workflow.
   returns the real `latest_version`. GH Actions workflows and developers
   running `gh auth login` get working checks for free; nothing else
   breaks if the token is absent.
+
+### Docs
+
+- `gherkin-tests-v2/07-orchestration/04-cancel-interrupts-running-turn.md`
+  scenario 3 split into 3a (zero active → `NO_ACTIVE_JOBS`), 3b (exactly
+  one → cancels it), 3c (multiple → `AMBIGUOUS_CANCEL`, observed live).
+- `gherkin-tests-v2/LIVE_RUN_REPORT.md` promotes `03-config/01` and
+  `03-config/02` from FAIL to PASS with the commit ref that landed the
+  fix.
+- `unexpected-bridge-observations/README.md` marks obs 06, 07, 08 as
+  resolved with dates + mechanism notes.
+- `skill/references/config-reference.md` documents the new 4-layer
+  resolution order (was 3-layer).
 
 ## [1.1.0] — 2026-04-18
 

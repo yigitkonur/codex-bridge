@@ -6,13 +6,14 @@ Bridge config is layered. Each layer overrides the one above it (lowest → high
 
 1. **Built-in defaults** — hardcoded in `src/lib/config.mjs::DEFAULT_CONFIG`. Used when nothing else exists.
 2. **Skill config** — `${CLAUDE_SKILL_DIR}/config.yaml`, e.g. `~/.claude/skills/codex-bridge/config.yaml` for a global install. This is the file that ships with the skill bundle; edit it to change defaults for every project.
-3. **Workspace override** — `$(pwd)/config.yaml` (where `pwd` is the cwd passed to the command, via `-C` flag or the default process cwd). This is per-project. Use it when one repo needs different settings than your global skill config.
+3. **Workspace-root override** — `$(git rev-parse --show-toplevel)/config.yaml` (the project's repo root). Useful when one repo needs different settings than your global skill config and you want the setting to apply regardless of which subdirectory you run the command from.
+4. **cwd override** — `$(pwd)/config.yaml`, where `pwd` is the cwd passed to the command (via `-C` flag or the default process cwd). Wins last. Useful for running the same command against different configs by `cd`-ing into different dirs.
 
 If any file is missing or malformed, that layer is skipped silently — the next layer's values apply. The system never crashes on config errors.
 
-**Workspace override is new (2026-04-18).** Before that, only the skill config was read; a `config.yaml` sitting next to your project was silently ignored. See `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md` for the original derailment.
+**Workspace-root + cwd overrides are new (2026-04-18, v1.1.0 added cwd override, v1.1.1 adds the workspace-root layer).** Before v1.1.0, only the skill config was read; a `config.yaml` sitting next to your project was silently ignored. See `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md` for the original derailment.
 
-**Quick check**: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs setup --json | jq .result.config` surfaces the effective merged config. Use it when a knob seems to have no effect.
+**Quick check**: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs config show` prints the effective merged config plus which of the four source files actually exist. `*` marks keys that differ from `DEFAULT_CONFIG`. Use `--json` for programmatic consumption. This is the authoritative answer to "why isn't my config taking effect?"
 
 ## Options
 

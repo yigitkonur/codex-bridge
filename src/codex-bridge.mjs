@@ -77,7 +77,9 @@ import {
   loadConfig,
   buildCollaborationMode,
   buildSandboxPolicy,
-  COMPLETION_CHECK_SCHEMA
+  COMPLETION_CHECK_SCHEMA,
+  DEFAULT_CONFIG,
+  resolveConfigSources
 } from "./lib/config.mjs";
 import {
   resolveSessionDir,
@@ -170,27 +172,29 @@ const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "hi
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
-// Bridge config: skill-dir defaults + optional per-cwd override.
+// Bridge config: skill-dir defaults + optional workspace-root + cwd overrides.
 //
 // The skill-dir layer is read once and reused (it ships with the skill; it
-// doesn't change during a process's lifetime). The override layer — a
-// `config.yaml` at the invocation's cwd — is re-read on every call because
-// different subcommands may run in different workspaces within one process
-// (e.g. `-C ...` flag), and each invocation's cwd is authoritative.
+// doesn't change during a process's lifetime). The workspaceRoot and cwd
+// layers are re-read on every call because different subcommands may run
+// in different workspaces within one process (e.g. `-C ...`), and each
+// invocation's directory context is authoritative.
 //
-// Call sites that have a meaningful cwd (task, send, review, steer) must pass
-// it so project-level config can take effect. Call sites without (help,
-// version) fall back to the skill-dir layer only, which is harmless — those
-// commands don't consume the knobs the override layer is meant to flip.
+// Call sites with a meaningful cwd (task, send, review, steer, wait,
+// events) pass it through; those that ALSO derive a workspaceRoot (task,
+// review) pass that too so users running from a subdir of a git repo pick
+// up the repo-root config.yaml. Call sites without (help, version) fall
+// back to the skill-dir layer only, which is harmless — those commands
+// don't consume the knobs the override layers are meant to flip.
 let BRIDGE_CONFIG_SKILL_LAYER = null;
-function getBridgeConfig(cwd = null) {
-  if (!cwd) {
+function getBridgeConfig(cwd = null, workspaceRoot = null) {
+  if (!cwd && !workspaceRoot) {
     if (!BRIDGE_CONFIG_SKILL_LAYER) {
       BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
     }
     return BRIDGE_CONFIG_SKILL_LAYER;
   }
-  return loadConfig(ROOT_DIR, cwd);
+  return loadConfig(ROOT_DIR, cwd, workspaceRoot);
 }
 
 // Pending requests are persisted to disk by the worker process.
@@ -393,6 +397,11 @@ const COMMANDS = Object.freeze({
     synopsis: "update [--force] [--json]",
     summary: "Check GitHub releases for a newer codex-bridge and print the install recipe. Does not self-modify the skill — run the printed command yourself when you want to upgrade.",
     examples: ["codex-bridge update --json", "codex-bridge update --force"]
+  },
+  config: {
+    synopsis: "config show [--json]",
+    summary: "Show effective merged config + which files the values came from (defaults < skill-dir < workspace-root < cwd). Use when a config knob seems to have no effect.",
+    examples: ["codex-bridge config show", "codex-bridge config show --json"]
   },
   "auth-status": {
     synopsis: "auth-status [--json]",
@@ -607,7 +616,7 @@ async function handleSetup(argv) {
   });
 }
 
-const BRIDGE_VERSION = "1.1.0";
+const BRIDGE_VERSION = "1.1.1";
 const BRIDGE_SCHEMA_VERSION = "1.0";
 const BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -667,6 +676,82 @@ async function handleVersion(argv) {
   ].join("\n") + "\n";
 
   emitSuccess("version", payload, rendered, { json: options.json, startedAt });
+}
+
+// `bridge config show` — surfaces the effective merged config and every
+// source it was built from. Invaluable for debugging "I set X in my
+// config.yaml, why isn't it taking effect?" situations. The layered
+// resolution (DEFAULT_CONFIG < skill-dir < workspaceRoot < cwd) is
+// otherwise opaque.
+async function handleConfigShow(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const action = positionals[0] ?? "show";
+  if (action !== "show") {
+    throw usageError(
+      `config: unknown action '${action}'. Supported: show.`
+    );
+  }
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
+  const effective = getBridgeConfig(cwd, workspaceRoot);
+
+  // Diff against defaults so the caller can see which keys were overridden
+  // (useful for a human-eyeballing the output).
+  const overrides = {};
+  for (const [k, v] of Object.entries(effective)) {
+    if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
+      overrides[k] = v;
+    }
+  }
+
+  const payload = {
+    sources: {
+      defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
+      skill_config_path: sources.skillConfigPath,
+      skill_config_exists: sources.skillConfigExists,
+      workspace_config_path: sources.workspaceConfigPath,
+      workspace_config_exists: sources.workspaceConfigExists,
+      override_config_path: sources.overrideConfigPath,
+      override_config_exists: sources.overrideConfigExists,
+    },
+    effective_config: effective,
+    overrides_vs_defaults: overrides,
+    precedence_order_low_to_high: [
+      "DEFAULT_CONFIG",
+      "skill-dir config.yaml",
+      "workspace-root config.yaml",
+      "cwd config.yaml",
+    ],
+  };
+
+  const linePresence = (p, ok) =>
+    p ? `${p} (${ok ? "present" : "not found"})` : "(n/a — cwd == workspace root)";
+  const lines = [
+    "Config resolution (lowest → highest precedence):",
+    `  1. built-in defaults — src/lib/config.mjs::DEFAULT_CONFIG`,
+    `  2. skill-dir         — ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
+    `  3. workspace-root    — ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
+    `  4. cwd               — ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
+    "",
+    "Effective config:",
+  ];
+  for (const [k, v] of Object.entries(effective)) {
+    const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
+    const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
+    lines.push(`  ${marker} ${k}: ${preview}`);
+  }
+  if (Object.keys(overrides).length > 0) {
+    lines.push("", "* = differs from DEFAULT_CONFIG");
+  }
+  const rendered = `${lines.join("\n")}\n`;
+
+  emitSuccess("config", payload, rendered, { json: options.json, startedAt });
 }
 
 // Force a fresh update check and print a human-readable verdict plus the
@@ -897,6 +982,15 @@ async function executeReviewRun(request) {
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
 
+  // Pre-resolve sessionDir so we can initSession the moment Codex gives us
+  // a threadId — addresses `unexpected-bridge-observations/08` which
+  // documented that `review` / `adversarial-review` produced ZERO session
+  // artifacts (`.events`, `.ndjson`, `.plan.md`, `.review.json`), leaving
+  // `bridge summary <review-tid>` and the Monitor tooling completely
+  // blind to review threads.
+  const reviewConfig = getBridgeConfig(request.cwd, resolveWorkspaceRoot(request.cwd));
+  const reviewSessionDir = resolveSessionDir(reviewConfig.session_dir);
+
   const target = resolveReviewTarget(request.cwd, {
     base: request.base,
     scope: request.scope
@@ -930,6 +1024,19 @@ async function executeReviewRun(request) {
       model: request.model,
       onProgress: request.onProgress
     });
+    // Materialize session files for the review thread so `bridge summary`
+    // and the Monitor tool can inspect it (fixes obs 08).
+    if (result.threadId) {
+      const reviewSession =
+        findSession(reviewSessionDir, result.threadId) ??
+        initSession(reviewSessionDir, result.threadId);
+      logNdjson(reviewSession, "TURN_COMPLETED", "turn/completed", {
+        turnId: result.turnId,
+        status: result.status,
+        reviewKind: "native",
+        target,
+      });
+    }
     const payload = {
       review: reviewName,
       target,
@@ -978,6 +1085,30 @@ async function executeReviewRun(request) {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr
   });
+  // Materialize session artifacts for the adversarial-review thread (obs 08):
+  // .events + .ndjson for replay, .review.json for the structured findings
+  // (finally gives `writeReview` a real caller — was phantom per obs 03).
+  if (result.threadId) {
+    const advSession =
+      findSession(reviewSessionDir, result.threadId) ??
+      initSession(reviewSessionDir, result.threadId);
+    logNdjson(advSession, "TURN_COMPLETED", "turn/completed", {
+      turnId: result.turnId,
+      status: result.status,
+      reviewKind: "adversarial",
+      target,
+      findingCount: Array.isArray(parsed.parsed?.findings)
+        ? parsed.parsed.findings.length
+        : null,
+    });
+    if (parsed.parsed && !parsed.parseError) {
+      try {
+        writeReview(advSession, parsed.parsed);
+      } catch {
+        // Review JSON persistence failures must not fail the command.
+      }
+    }
+  }
   const payload = {
     review: reviewName,
     target,
@@ -1369,9 +1500,9 @@ async function handleReview(argv) {
 // timeout, and auto-pipeline.
 
 async function runBridgeTask(request) {
-  const config = getBridgeConfig(request.cwd ?? null);
-  const sessionDir = resolveSessionDir(config.session_dir);
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir);
 
   // Override params based on config. Request-level `mode` (from --mode) wins over config.yaml.
   const effectiveMode = request.mode ?? config.mode ?? "plan";
@@ -2579,6 +2710,7 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
   update: handleUpdate,
+  config: handleConfigShow,
   "auth-status": handleAuthStatus,
   review: handleReview,
   "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),

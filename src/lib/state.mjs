@@ -55,6 +55,49 @@ export function ensureStateDir(cwd) {
   fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
 }
 
+// Probe whether a pid is a live process. `process.kill(pid, 0)` throws
+// ESRCH when the pid is gone — we use that as the dead-pid signal. EPERM
+// means the pid exists but we lack permission to signal; treat as alive
+// (conservative — don't reap someone else's process). Any other error is
+// also conservative: assume alive so we don't false-reap.
+function pidIsAlive(pid) {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err && err.code === "ESRCH") return false;
+    // EPERM / EINVAL / unknown — err on the side of "alive" to avoid
+    // misclassifying a real job as orphaned.
+    return true;
+  }
+}
+
+// Walks the job list, looking for `queued`/`running` entries whose backing
+// pid is no longer alive, and transitions them to `orphaned`. This runs
+// transparently on every loadState so orphan piles drain themselves over
+// time without any manual cleanup. Addresses
+// `unexpected-bridge-observations/06-stop-gate-review-accumulates-orphaned-running-tasks.md`.
+function reapOrphans(jobs) {
+  if (!Array.isArray(jobs) || jobs.length === 0) return { jobs, reaped: 0 };
+  let changed = 0;
+  const reaped = jobs.map((job) => {
+    if (!job || (job.status !== "running" && job.status !== "queued")) return job;
+    if (pidIsAlive(job.pid)) return job;
+    changed++;
+    return {
+      ...job,
+      status: "orphaned",
+      phase: "orphaned",
+      updatedAt: new Date().toISOString(),
+      errorMessage:
+        job.errorMessage ??
+        `Backing process (pid ${job.pid ?? "?"}) no longer alive — reaped on load.`,
+    };
+  });
+  return { jobs: reaped, reaped: changed };
+}
+
 export function loadState(cwd) {
   const stateFile = resolveStateFile(cwd);
   if (!fs.existsSync(stateFile)) {
@@ -63,15 +106,32 @@ export function loadState(cwd) {
 
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    return {
+    const rawJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+    const { jobs, reaped } = reapOrphans(rawJobs);
+    const state = {
       ...defaultState(),
       ...parsed,
       config: {
         ...defaultState().config,
         ...(parsed.config ?? {})
       },
-      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : []
+      jobs,
     };
+    // Only persist when the reaper actually changed something — avoids
+    // noisy rewrites on every status/result call.
+    if (reaped > 0) {
+      try {
+        fs.writeFileSync(stateFile, `${JSON.stringify({
+          version: parsed.version ?? STATE_VERSION,
+          config: state.config,
+          jobs: state.jobs,
+        }, null, 2)}\n`, "utf8");
+      } catch {
+        // Reaper write failures must not fail the caller — stale entries
+        // just get re-reaped on the next load.
+      }
+    }
+    return state;
   } catch {
     return defaultState();
   }
