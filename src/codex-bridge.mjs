@@ -106,9 +106,14 @@ import {
   formatPlanEvent,
   formatConfirmedEvent,
   formatPipelineEvent,
+  formatHeartbeatEvent,
+  formatCheckpointEvent,
   formatPhaseEvent,
   formatReviewEvent,
   formatWarningEvent,
+  formatTailCommand,
+  TERMINAL_TAGS,
+  DEFAULT_MONITOR_EXCLUDE,
   writeReview
 } from "./lib/session-log.mjs";
 import {
@@ -283,11 +288,17 @@ function getBridgeConfig(cwd = null, workspaceRoot = null) {
 // that was the most distinctive token they could see. The footer prints the
 // canonical ids + a ready-to-paste `events` command so orchestrators can
 // pick up the right handle without a `--json` + `jq` dance.
-function appendTaskFooter(rendered, { jobId, eventsPath, monitorCommand }) {
+function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorCommand }) {
   if (!jobId) return rendered;
   const base = rendered.endsWith("\n") ? rendered : `${rendered}\n`;
+  // v1.3.0: the `.events` folder is now a first-class endpoint. Even if the
+  // bridge CLI itself breaks, `tail -f` on the file path still streams the
+  // heartbeat + terminal-tag record. Publishing the folder alongside the
+  // file gives the caller one canonical place to find every running job's
+  // observability stream.
   const parts = [`Job: ${jobId}`];
-  if (eventsPath) parts.push(`Events: ${eventsPath}`);
+  if (eventsDir) parts.push(`Events dir: ${eventsDir}`);
+  if (eventsPath) parts.push(`Events file: ${eventsPath}`);
   if (monitorCommand) parts.push(`Monitor: ${monitorCommand}`);
   return `${base}\n${parts.join(" · ")}\n`;
 }
@@ -295,7 +306,25 @@ function appendTaskFooter(rendered, { jobId, eventsPath, monitorCommand }) {
 function buildMonitorHint({ eventsPath, jobId, threadId }) {
   const identifier = jobId ?? threadId;
   if (!identifier) return null;
-  const cliCommand = `node ${SCRIPT_PATH} events ${identifier} --follow --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION --timeout-ms 600000`;
+  // v1.4.0 filter contract: exclusion-based, not inclusion-based. Every
+  // tag the bridge emits passes through Monitor by default except those
+  // in the exclude list — so new tags added in future versions reach
+  // existing orchestrators without a filter update.
+  // - HEARTBEAT excluded by default: 60-s liveness pulse is pure signal
+  //   for the .events file (and the 90-s liveness heuristic), but
+  //   floods an LLM's context in a long run.
+  // - CHECKPOINT stays in the stream: it's the primary LLM-facing
+  //   summary (every ~5 min, content-rich).
+  // - All interrupt tags (DONE/ERROR/INCOMPLETE/PLAN/QUESTION) pass
+  //   through unconditionally.
+  // Callers who specifically want the old inclusion model can pass
+  // `--filter <tags>` explicitly; the two flags are mutually exclusive.
+  const cliCommand = formatTailCommand({
+    scriptPath: SCRIPT_PATH,
+    jobId: identifier,
+    timeoutMs: 1800000,
+    exclude: DEFAULT_MONITOR_EXCLUDE,
+  });
   const shellFallback = eventsPath
     ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do ` +
       `echo "$line"; case "$line" in *"[DONE]"*|*"[ERROR]"*|*"[INCOMPLETE]"*) break ;; esac; done`
@@ -303,10 +332,11 @@ function buildMonitorHint({ eventsPath, jobId, threadId }) {
   return {
     command: cliCommand,
     shell_fallback: shellFallback,
-    terminal_tags: ["DONE", "ERROR", "INCOMPLETE"],
-    timeout_ms: 600000,
+    terminal_tags: [...TERMINAL_TAGS],
+    exclude_tags: [...DEFAULT_MONITOR_EXCLUDE],
+    timeout_ms: 1800000,
     tool_hint: {
-      description: "codex-bridge task terminal events",
+      description: "codex-bridge task events (excludes heartbeat noise; passes interrupts + checkpoints through)",
       command: cliCommand,
       timeout_ms: 3600000,
       persistent: false
@@ -457,11 +487,12 @@ const COMMANDS = Object.freeze({
     ]
   },
   events: {
-    synopsis: "events <job-id-or-thread-id> [--follow] [--filter <tags>] [--timeout-ms <ms>] [--json]",
-    summary: "Stream the target's events file; optional tag filter and follow mode. Lines go to stdout; --json adds a trailing envelope (both with and without --follow).",
+    synopsis: "events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclude <tags>] [--timeout-ms <ms>] [--json]",
+    summary: "Stream the target's events file. `--filter` keeps only listed tags (inclusion); `--exclude` drops listed tags and shows everything else (exclusion — forward-compatible default for Monitor). Flags are mutually exclusive.",
     examples: [
-      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE",
-      "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --filter PIPELINE,DONE,ERROR --timeout-ms 600000"
+      "codex-bridge events task-abc --follow --exclude HEARTBEAT  # default Monitor shape",
+      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE  # narrow inclusion view",
+      "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 600000"
     ]
   },
   cancel: {
@@ -1685,11 +1716,18 @@ function enqueueBackgroundTask(cwd, job, request) {
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
 
+  // v1.3.0: surface the events directory in every launch payload so callers
+  // have a canonical tail-able path even before the threadId-named file
+  // exists. The raw `tail -f "$EVENTS_DIR"/<threadId>.events` works without
+  // the bridge CLI being alive, which is the last-resort escape hatch when
+  // the bridge itself is the thing that's broken.
+  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir);
   return {
     payload: {
       jobId: job.id,
       threadId: null,
       eventsPath: null,
+      eventsDir: resolvedSessionDir,
       status: "queued",
       title: job.title,
       summary: job.summary,
@@ -1770,19 +1808,23 @@ async function runBridgeTask(request) {
   const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
 
   // When `skip_meta_skills` is on, prepend a directive instructing Codex to
-  // bypass its internal planning/ceremony skills (using-superpowers,
-  // brainstorming, writing-plans, using-git-worktrees). These routinely
-  // burn token budget producing docs/superpowers/specs/*.md and plans/*.md
-  // files that are not part of the deliverable. Mode-aware: plan-mode
-  // turns keep the "produce a concise plan" intent (the directive must not
-  // contradict it); execute turns get the full "execute directly" wording.
-  // Advisory only — Codex may still invoke the skills.
+  // bypass any internal planning / ceremony / meta-skill chain it would
+  // normally walk before execution. Framework-agnostic — covers any skill
+  // chain that produces spec or plan scaffolding (under paths like `docs/`,
+  // `plans/`, `specs/`, or similar) before touching the deliverable. These
+  // routinely burn token budget on artifacts that aren't part of the task
+  // when an orchestrator is already driving the plan/execute loop. Mode-
+  // aware: plan-mode turns keep the "produce a concise plan" intent (the
+  // directive must not contradict it); execute turns get the full "execute
+  // directly" wording. Advisory only — Codex may still invoke its own
+  // skills, and users who run without an orchestrator should set
+  // `skip_meta_skills: false`.
   const metaSkillsPreamble =
-    "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills — specifically " +
-    "`using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`, " +
-    "or any equivalent planning/ceremony skill. Do not create " +
-    "docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files unless " +
-    "the task explicitly asks for them.";
+    "[ORCHESTRATOR DIRECTIVE] Do not invoke your own planning, brainstorming, " +
+    "ceremony, or meta-skill chains before execution. Do not create scaffold " +
+    "files (spec documents, plan documents, design memos) under paths like " +
+    "`docs/`, `plans/`, `specs/`, or similar before touching the deliverable — " +
+    "unless the task explicitly asks for such an artifact as its output.";
   const metaSkillsPrefix = config.skip_meta_skills
     ? (isPlanMode
         ? `${metaSkillsPreamble} The calling orchestrator is already driving the plan/execute loop; produce a concise inline [PLAN] and stop — the orchestrator approves before execution.\n\n`
@@ -1881,8 +1923,8 @@ async function runBridgeTask(request) {
     // large scaffolds legitimately needed more than 10 min of execute time
     // and were getting interrupted.
     turnTimeoutMs: isPlanMode
-      ? (request.turnPlanMs ?? (Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : 300_000))
-      : (request.turnDefaultMs ?? (Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : 600_000)),
+      ? (request.turnPlanMs ?? (Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : 1_800_000))
+      : (request.turnDefaultMs ?? (Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : 1_800_000)),
     // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
     // → 300_000 fallback. 300s default covers reasoning-heavy turns between
     // `item.completed` notifications; see config.mjs DEFAULT_CONFIG comment.
@@ -1890,7 +1932,23 @@ async function runBridgeTask(request) {
       ? Number(request.idleTimeoutMs)
       : (Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 300_000),
     onTurnStart: (info) => {
-      const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
+      // Heartbeat wiring (v1.3.0). Once we know the threadId we can write
+      // [HEARTBEAT] blocks to `.events` on a fixed cadence regardless of
+      // Codex activity. This guarantees the observability channel is never
+      // silent longer than the heartbeat interval — even during long quiet
+      // reasoning, and even if a downstream error path forgets to emit an
+      // [ERROR] tag on exit (the top-level try/finally below is the
+      // ultimate backstop). Interval is 60s by default, overridable via
+      // CODEX_BRIDGE_HEARTBEAT_MS (milliseconds, positive integer).
+      heartbeatState.session = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
+      heartbeatState.phase = isPlanMode ? "plan" : "execute";
+      heartbeatState.turnTimeoutMs = info.turnParams?.turnTimeoutMs ?? heartbeatState.turnTimeoutMs;
+      startHeartbeat();
+      startCheckpoint();
+      // Reuse the session the heartbeat wiring just resolved — one
+      // findSession/initSession call per turn, not two, so we don't re-init
+      // the session file + ndjson stream under the heartbeat's nose.
+      const s = heartbeatState.session;
       // Reset per-turn circuit-breaker state. A fresh turn starts with no
       // failure history; a previous turn's tripped state should not carry
       // across (e.g. a plan turn that tripped then an execute turn).
@@ -1918,6 +1976,53 @@ async function runBridgeTask(request) {
         itemType: item?.type ?? null,
         text: extractItemText(item)
       });
+      // Heartbeat metadata — next pulse will report which item type Codex
+      // last finished, and how long ago, so silence on the wire still has
+      // useful context.
+      heartbeatState.lastItem = item?.type ?? null;
+      heartbeatState.lastItemAt = Date.now();
+
+      // Checkpoint accumulators (v1.3.0). The 5-min CHECKPOINT block
+      // consolidates the last assistant message, the list of tool calls,
+      // and the git delta so an orchestrator can catch up from one block
+      // instead of scrolling every item. `actionable` means Codex DID
+      // something (ran a command, changed a file, emitted a plan); pure
+      // reasoning or empty assistant messages don't count. The stall
+      // detector uses the actionable-count to find runs of 3 consecutive
+      // barren checkpoints = 15 min with no measurable progress.
+      try {
+        const itemType = item?.type ?? null;
+        if (itemType === "agentMessage" && typeof item.text === "string" && item.text.trim()) {
+          checkpointState.lastAssistantMessage = item.text;
+        }
+        // Summaries piggyback on extractItemText where the format already
+        // matches — same slicing + file-change kind derivation, so checkpoint
+        // output matches the NDJSON replay log.
+        if (itemType === "commandExecution") {
+          checkpointState.tools.push({
+            type: "commandExecution",
+            summary: extractItemText(item) ?? "",
+          });
+          checkpointState.actionableCount += 1;
+          checkpointState.seenFirstActionable = true;
+        } else if (itemType === "fileChange") {
+          checkpointState.tools.push({
+            type: "fileChange",
+            summary: extractItemText(item) ?? "(unknown)",
+          });
+          checkpointState.actionableCount += 1;
+          checkpointState.seenFirstActionable = true;
+        } else if (itemType === "plan") {
+          checkpointState.tools.push({
+            type: "plan",
+            summary: extractItemText(item) ?? "(plan)",
+          });
+          checkpointState.actionableCount += 1;
+          checkpointState.seenFirstActionable = true;
+        }
+      } catch {
+        // Accumulator failures must not kill the turn.
+      }
 
       // Circuit breaker — detect repeated same-family command failures that
       // indicate the environment is structurally incapable of the probe
@@ -2023,11 +2128,336 @@ async function runBridgeTask(request) {
     }
   };
 
-  // Run the task
-  const result = await executeTaskRun(bridgeRequest);
+  // v1.3.0 — unconditional observability. The `.events` file is the contract
+  // between the bridge and every caller (Monitor / events --follow / wait /
+  // raw tail -f). Pre-1.3.0 the file was only written on "notable" events
+  // (plan, done, error, pipeline stages) — silence on the wire meant either
+  // "Codex is reasoning quietly" or "the bridge died without emitting a
+  // terminal tag," and callers couldn't tell the difference. The heartbeat
+  // interval below eliminates that ambiguity: any silence on `.events`
+  // longer than ~90 s is now, by construction, a bug.
+  //
+  // The finally-backstop that follows the try-block is the ultimate safety
+  // net — it verifies a terminal tag landed before runBridgeTask returns or
+  // throws, and synthesizes an [ERROR] | UnhandledExit block otherwise.
+  // This means every future error branch (existing or newly added) is
+  // covered without having to instrument it explicitly.
+  const heartbeatState = {
+    session: null,
+    startTime: Date.now(),
+    phase: isPlanMode ? "plan" : "execute",
+    lastItem: null,
+    lastItemAt: null,
+    turnTimeoutMs: null,
+  };
+  let heartbeatTimer = null;
+  const HEARTBEAT_INTERVAL_MS =
+    Number(process.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0
+      ? Number(process.env.CODEX_BRIDGE_HEARTBEAT_MS)
+      : 60_000;
 
-  // Create session for post-processing
-  const session = initSession(sessionDir, result.threadId);
+  // v1.3.0 — 5-min CHECKPOINT digest and 15-min stall detector.
+  // The orchestrator's only channel back is the Monitor tool stream over
+  // `.events`. Heartbeat (60 s) proves liveness; checkpoint (5 min) is the
+  // semantic summary an orchestrator needs to stay oriented. Three
+  // consecutive barren checkpoints (15 min with zero "actionable" items —
+  // no commands, no file changes, no plans) fires a terminal
+  // `[ERROR] | StallDetected` so the Monitor self-terminates and the
+  // orchestrator gets the signal.
+  const CHECKPOINT_INTERVAL_MS =
+    Number(process.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0
+      ? Number(process.env.CODEX_BRIDGE_CHECKPOINT_MS)
+      : 5 * 60 * 1000;
+  const STALL_CHECKPOINT_THRESHOLD =
+    Number(process.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0
+      ? Number(process.env.CODEX_BRIDGE_STALL_CHECKPOINTS)
+      : 3;
+  let checkpointTimer = null;
+  let checkpointInFlight = false;
+  // `terminalEmitted` is flipped by every explicit terminal-tag write
+  // (stall, DONE, ERROR, INCOMPLETE). The finally-backstop reads this flag
+  // instead of scanning the events file — O(1) vs reading a multi-MB log.
+  let terminalEmitted = false;
+  const markTerminalEmitted = () => { terminalEmitted = true; };
+  const checkpointState = {
+    startTime: Date.now(),
+    lastCheckpointAt: Date.now(),
+    intervalMs: CHECKPOINT_INTERVAL_MS,
+    lastHead: null,           // git HEAD at last checkpoint (or turn start)
+    startHead: null,          // git HEAD at turn start (for since-start diff)
+    lastAssistantMessage: null,
+    tools: [],                // pushed by onItemCompleted
+    actionableCount: 0,       // reset every checkpoint
+    barrenCheckpoints: 0,     // consecutive checkpoints with actionableCount == 0
+    seenFirstActionable: false, // gate for barren-counter start (prevents false stall on slow-to-start turns)
+  };
+  // Checkpoint git helpers. Always run in the task's cwd; refuse to run if
+  // no cwd was passed (otherwise spawnSync falls back to the bridge's own
+  // cwd and reports git info for the wrong repo — silent miscoloring of
+  // checkpoint output).
+  const gitCwd = request.cwd && typeof request.cwd === "string" ? request.cwd : null;
+  const readGitHead = () => {
+    if (!gitCwd) return null;
+    try {
+      const r = spawnSync("git", ["rev-parse", "HEAD"], {
+        cwd: gitCwd,
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      return r.status === 0 ? r.stdout.trim() : null;
+    } catch {
+      return null;
+    }
+  };
+  const readGitLogRange = (from, to) => {
+    if (!gitCwd || !from || !to || from === to) return [];
+    try {
+      // Bound output at 50 commits — a range spanning thousands of commits
+      // would otherwise return a multi-MB buffer through spawnSync. 50 is
+      // enough for a checkpoint digest; the full log is always reachable
+      // via `git log` directly in the cwd.
+      const r = spawnSync(
+        "git",
+        ["log", "--no-color", "--no-decorate", "-n", "50", "--pretty=%h %s", `${from}..${to}`],
+        { cwd: gitCwd, encoding: "utf8", timeout: 5_000 }
+      );
+      if (r.status !== 0) return [];
+      return r.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          const sp = l.indexOf(" ");
+          return sp < 0
+            ? { sha: l, subject: "" }
+            : { sha: l.slice(0, sp), subject: l.slice(sp + 1) };
+        });
+    } catch {
+      return [];
+    }
+  };
+  const readGitDiffStat = (from, to) => {
+    if (!gitCwd || !from || !to || from === to) return null;
+    try {
+      const r = spawnSync("git", ["diff", "--shortstat", `${from}..${to}`], {
+        cwd: gitCwd,
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      return r.status === 0 ? (r.stdout.trim() || null) : null;
+    } catch {
+      return null;
+    }
+  };
+  const startHeartbeat = () => {
+    if (heartbeatTimer || !heartbeatState.session) return;
+    heartbeatTimer = setInterval(() => {
+      try {
+        const now = Date.now();
+        const elapsed = now - heartbeatState.startTime;
+        const budgetRemaining =
+          Number.isFinite(heartbeatState.turnTimeoutMs) && heartbeatState.turnTimeoutMs > 0
+            ? heartbeatState.turnTimeoutMs - elapsed
+            : null;
+        logEvent(
+          heartbeatState.session,
+          formatHeartbeatEvent(heartbeatState.session, {
+            elapsedMs: elapsed,
+            phase: heartbeatState.phase,
+            lastItem: heartbeatState.lastItem,
+            lastItemAgeMs: heartbeatState.lastItemAt ? now - heartbeatState.lastItemAt : null,
+            pid: process.pid,
+            jobId: request.jobId ?? null,
+            budgetRemainingMs: budgetRemaining,
+            scriptPath: SCRIPT_PATH,
+          })
+        );
+      } catch {
+        // A logging failure must not kill the turn. If the events file
+        // is gone or unwritable, the caller will notice via their own
+        // Monitor timeout.
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+    heartbeatTimer.unref?.();
+  };
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
+
+  const runCheckpoint = () => {
+    if (!heartbeatState.session) return;
+    if (checkpointInFlight) return;  // re-entrancy guard across slow git shell-outs
+    checkpointInFlight = true;
+    try {
+      const now = Date.now();
+      const elapsedMs = now - heartbeatState.startTime;
+      const intervalMs = now - checkpointState.lastCheckpointAt;
+      const currentHead = readGitHead();
+      const fromHead = checkpointState.lastHead ?? checkpointState.startHead;
+      const commits = fromHead && currentHead ? readGitLogRange(fromHead, currentHead) : [];
+      const diffStat =
+        fromHead && currentHead ? readGitDiffStat(fromHead, currentHead) : null;
+      const filesChangedSinceStart =
+        checkpointState.startHead && currentHead
+          ? readGitDiffStat(checkpointState.startHead, currentHead)
+          : null;
+
+      // Skip emission when the interval was fully empty AND no git delta —
+      // a [CHECKPOINT] block with only "(none)" placeholders adds noise and
+      // still costs a git log / diff spawn. Heartbeat already proves
+      // liveness at 60s; checkpoint's value is the *content*. Keep
+      // accumulators fresh and still advance the barren counter so stall
+      // detection works.
+      const hasContent =
+        checkpointState.actionableCount > 0 ||
+        Boolean(checkpointState.lastAssistantMessage) ||
+        commits.length > 0 ||
+        Boolean(diffStat);
+
+      if (hasContent) {
+        try {
+          // Transfer ownership of the tools buffer instead of slice() —
+          // saves an allocation and copy per checkpoint on long runs.
+          const toolsSnapshot = checkpointState.tools;
+          checkpointState.tools = [];
+          logEvent(
+            heartbeatState.session,
+            formatCheckpointEvent(heartbeatState.session, {
+              elapsedMs,
+              phase: heartbeatState.phase,
+              intervalMs,
+              pid: process.pid,
+              jobId: request.jobId ?? null,
+              lastAssistantMessage: checkpointState.lastAssistantMessage,
+              tools: toolsSnapshot,
+              commits,
+              diffStat,
+              filesChangedSinceStart,
+              scriptPath: SCRIPT_PATH,
+            })
+          );
+          logNdjson(heartbeatState.session, "CHECKPOINT", null, {
+            elapsedMs,
+            intervalMs,
+            actionableCount: checkpointState.actionableCount,
+            barrenCheckpoints: checkpointState.barrenCheckpoints,
+            toolCount: toolsSnapshot.length,
+            commitsInInterval: commits.length,
+          });
+        } catch {
+          // Logging failure must not kill the turn.
+        }
+      }
+
+      // Stall detector: a checkpoint window with zero actionable items means
+      // Codex did no commands, no file changes, and no plans. Heartbeats
+      // guarantee liveness (so Codex isn't crashed — just reasoning without
+      // acting), but several consecutive such windows means no measurable
+      // progress and the orchestrator should step in.
+      //
+      // Grace period: don't count barren windows before the first actionable
+      // item has ever landed. Otherwise a slow-to-start turn (long plan-mode
+      // reasoning before a single plan item) fires StallDetected at 15 min
+      // even though everything is fine.
+      if (checkpointState.seenFirstActionable) {
+        if (checkpointState.actionableCount === 0) {
+          checkpointState.barrenCheckpoints += 1;
+        } else {
+          checkpointState.barrenCheckpoints = 0;
+        }
+      }
+      if (
+        checkpointState.barrenCheckpoints >= STALL_CHECKPOINT_THRESHOLD &&
+        !terminalEmitted
+      ) {
+        try {
+          const stallWindowMs = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
+          logEvent(
+            heartbeatState.session,
+            formatErrorEvent(heartbeatState.session, {
+              errorCode: "StallDetected",
+              message:
+                `No actionable items (commandExecution / fileChange / plan) in ${STALL_CHECKPOINT_THRESHOLD} consecutive ` +
+                `${Math.round(CHECKPOINT_INTERVAL_MS / 60000)}-minute checkpoints ` +
+                `(${Math.round(stallWindowMs / 60000)} min total). Codex is alive (heartbeats present) but not making ` +
+                `measurable progress. Cancel with \`cancel ${request.jobId ?? heartbeatState.session.threadId}\`, ` +
+                `or steer the thread. Note: the Codex turn is still running — this terminal tag signals the orchestrator; ` +
+                `the turn itself will not stop until you cancel it or hit the turn budget.`,
+              phase: heartbeatState.phase ?? "execute",
+              origin: "bridge",
+              scriptPath: SCRIPT_PATH,
+              jobId: request.jobId ?? null,
+            })
+          );
+          logNdjson(heartbeatState.session, "ERROR", null, {
+            errorCode: "StallDetected",
+            origin: "bridge",
+            barrenCheckpoints: checkpointState.barrenCheckpoints,
+            windowMs: stallWindowMs,
+          });
+          terminalEmitted = true;
+          // Stop the timers after emission — no point re-running git shell-
+          // outs and re-checking a now-settled stall. Heartbeat stops too
+          // because a stalled-but-still-running turn generates no new signal
+          // worth sending. The Codex turn continues until the orchestrator
+          // cancels (or the turn budget hits); the finally block handles
+          // final cleanup either way.
+          stopCheckpoint();
+          stopHeartbeat();
+        } catch {
+          // Even a stall emission that fails silently is better than a crash.
+        }
+      }
+
+      // Reset per-interval accumulators; preserve `startHead` (used for the
+      // since-start diff summary in subsequent checkpoints). `tools` was
+      // already cleared on snapshot when we emitted; clear it here too so
+      // skipped-empty windows don't retain stale entries.
+      checkpointState.lastCheckpointAt = now;
+      checkpointState.lastHead = currentHead ?? checkpointState.lastHead;
+      checkpointState.lastAssistantMessage = null;
+      if (!hasContent) checkpointState.tools = [];
+      checkpointState.actionableCount = 0;
+    } finally {
+      checkpointInFlight = false;
+    }
+  };
+  const startCheckpoint = () => {
+    if (checkpointTimer) return;
+    // Capture the starting git HEAD once, when the turn begins. Subsequent
+    // checkpoints diff from this (for since-start stats) and from the
+    // previous checkpoint (for since-last-checkpoint stats).
+    if (checkpointState.startHead == null) {
+      checkpointState.startHead = readGitHead();
+      checkpointState.lastHead = checkpointState.startHead;
+    }
+    checkpointTimer = setInterval(() => {
+      try {
+        runCheckpoint();
+      } catch {
+        // Interval failures must not kill the turn.
+      }
+    }, CHECKPOINT_INTERVAL_MS);
+    checkpointTimer.unref?.();
+  };
+  const stopCheckpoint = () => {
+    if (checkpointTimer) {
+      clearInterval(checkpointTimer);
+      checkpointTimer = null;
+    }
+  };
+
+  let result;
+  let session;
+  try {
+    // Run the task
+    result = await executeTaskRun(bridgeRequest);
+
+    // Create session for post-processing
+    session = initSession(sessionDir, result.threadId);
 
   // Ready-to-paste Monitor hint — computed once, attached to every setPhase
   // branch below so synchronous callers never have to assemble one.
@@ -2051,6 +2481,7 @@ async function runBridgeTask(request) {
     result.rendered = appendTaskFooter(result.rendered, {
       jobId: request.jobId,
       eventsPath: computedEventsPath,
+      eventsDir: sessionDir,
       monitorCommand: monitor?.command ?? null
     });
   }
@@ -2080,6 +2511,7 @@ async function runBridgeTask(request) {
       phase,
       next_action: nextAction,
       eventsPath: computedEventsPath,
+      eventsDir: sessionDir,
       jobId: request.jobId ?? null,
       ...extras
     };
@@ -2101,6 +2533,7 @@ async function runBridgeTask(request) {
       jobId: request.jobId ?? null,
     }));
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin: "turn" });
+    markTerminalEmitted();
 
     // `workspace-dirty` phase: Codex produced a diff but the sandbox blocked
     // the final step (e.g. `workspace-write` refuses `.git/` writes so the
@@ -2207,6 +2640,10 @@ async function runBridgeTask(request) {
         description: "Task finished and passed completion check. Inspect full result or send a follow-up."
       }, { pipeline: pipelineResult, monitor });
     }
+    // `runAutoPipeline` emits one of [DONE] / [INCOMPLETE] / [ERROR] before
+    // returning, regardless of which branch above we take — mark terminal
+    // so the finally-backstop doesn't duplicate.
+    markTerminalEmitted();
     return { ...result, session, pipeline: pipelineResult };
   }
 
@@ -2221,12 +2658,72 @@ async function runBridgeTask(request) {
     scriptPath: SCRIPT_PATH,
     jobId: request.jobId ?? null,
   }));
+  markTerminalEmitted();
   setPhase("done", {
     command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
     description: "Task finished. Inspect full result or send a follow-up."
   }, { diffPath: diff.diffPath, monitor });
 
-  return { ...result, session, diff };
+    return { ...result, session, diff };
+  } finally {
+    // v1.3.0 — unconditional observability guarantees.
+    //   1. The heartbeat pulse stops so we don't leak intervals or race
+    //      future writes to a closed events file.
+    //   2. If the turn exited without anything writing a terminal tag to
+    //      `.events` — which can happen when an error throws past every
+    //      existing branch (e.g. turn-timeout rejects `executeTaskRun`
+    //      before any `logEvent(formatErrorEvent(...))` gets to run, which
+    //      is exactly what left a live Phase-2 run with a 0-byte events
+    //      file on 1.2.8) — we synthesize one here. The `[ERROR] |
+    //      UnhandledExit` marker tells the caller the bridge exited
+    //      ungracefully *and* identifies the class of bug so the fix
+    //      lands on the missing branch instead of another patch round.
+    stopHeartbeat();
+    stopCheckpoint();
+    // Backstop uses the in-process `terminalEmitted` flag instead of
+    // reading the events file — O(1) vs potentially several MB of heartbeat
+    // + checkpoint history on long runs. Every terminal-tag write site
+    // (turn error, no-pipeline done, auto-pipeline done/incomplete/error,
+    // stall-detector emission) calls `markTerminalEmitted()`. Anything that
+    // reaches the `finally` without flipping the flag is, by definition, an
+    // un-instrumented exit path — the synthesized `UnhandledExit` marker
+    // tells the caller exactly which run and serves as a standing request
+    // to add the missing emit.
+    //
+    // Pre-threadId failures (executeTaskRun rejects before `onTurnStart`
+    // fires) can't be rescued here — we don't know which threadId's events
+    // file to write to. In that case `backstopSession` is null and we let
+    // the original error propagate; the `~/.codex-bridge/crashes/` handler
+    // (installed at process startup) catches the underlying exception.
+    const backstopSession = heartbeatState.session ?? session ?? null;
+    if (!terminalEmitted && backstopSession && backstopSession.eventsPath) {
+      try {
+        logEvent(
+          backstopSession,
+          formatErrorEvent(backstopSession, {
+            errorCode: "UnhandledExit",
+            message:
+              "Turn exited without emitting a terminal tag. Likely a crash, SIGKILL, or an un-instrumented error path. " +
+              "If this reproduces, check `~/.codex-bridge/crashes/` for a crash dump and open an issue — this marker is " +
+              "itself the bug report.",
+            phase: heartbeatState.phase ?? "unknown",
+            origin: "bridge",
+            scriptPath: SCRIPT_PATH,
+            jobId: request.jobId ?? null,
+          })
+        );
+        logNdjson(backstopSession, "ERROR", null, {
+          errorCode: "UnhandledExit",
+          origin: "bridge",
+          message: "finally-backstop synthesized terminal tag",
+        });
+      } catch {
+        // finally must never throw — even if the events file is gone or
+        // unreadable, we've already stopped the heartbeat and letting the
+        // original error propagate is the right call.
+      }
+    }
+  }
 }
 
 function extractPlanSteps(planText) {
@@ -2712,7 +3209,7 @@ async function handleWait(argv) {
 async function handleEvents(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "filter"],
+    valueOptions: ["cwd", "timeout-ms", "filter", "exclude"],
     booleanOptions: ["json", "follow"]
   });
 
@@ -2720,6 +3217,16 @@ async function handleEvents(argv) {
   const reference = positionals[0] ?? "";
   if (!reference) {
     throw usageError("events requires <job-id-or-thread-id>");
+  }
+  // --filter (inclusion-list) and --exclude (exclusion-list) are mutually
+  // exclusive. Forward-compatible callers should prefer --exclude so new
+  // tags emitted by future bridge versions pass through by default instead
+  // of being silently dropped at an out-of-date inclusion list. See
+  // v1.4.0 plan "Change 1 — Exclusion-based filter semantics".
+  if (options.filter != null && options.exclude != null) {
+    throw usageError(
+      "Pass either --filter OR --exclude, not both. --filter shows only listed tags (inclusion); --exclude shows everything except listed tags (forward-compatible)."
+    );
   }
 
   let job;
@@ -2743,25 +3250,55 @@ async function handleEvents(argv) {
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
 
-  const filter = options.filter
-    ? new Set(
-        options.filter
-          .split(",")
-          .map((s) => s.trim().toUpperCase())
-          .filter(Boolean)
-      )
-    : null;
+  // Build filter sets. `filter` drops everything NOT in the set; `exclude`
+  // drops everything IN the set. Empty strings collapse to null (show-all).
+  const parseTagList = (raw) => {
+    if (raw == null || raw === "") return null;
+    const tags = raw
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    return tags.length > 0 ? new Set(tags) : null;
+  };
+  const filter = parseTagList(options.filter);
+  const exclude = parseTagList(options.exclude);
   const tagOf = (line) => {
-    // Match the leading bracketed tag. Tags use uppercase for the head but may
-    // carry a lowercase subtype after ":" (e.g. "[PIPELINE:review]"), so the
-    // inner class must permit lowercase too — filter scoping is head-only.
-    const m = /^\[([A-Za-z:]+)\]/.exec(line);
+    // Match any leading bracketed tag. Character class is deliberately broad
+    // (anything but a closing bracket) so future tag names — including
+    // ones with digits (`FUTURE_TAG_V15`), underscores, or hyphens
+    // (`NETWORK-STALL`) — are recognized and routed through the filter.
+    // Pre-1.4.0 this was `[A-Za-z:]+` and silently dropped unknown-shape
+    // tags; forward-compat depends on tagOf recognizing them as tags
+    // rather than treating them as continuation lines. Head-only scoping
+    // unchanged: we split on ":" so `[PIPELINE:review]` maps to PIPELINE.
+    const m = /^\[([^\]]+)\]/.exec(line);
     return m ? m[1].split(":")[0].toUpperCase() : null;
   };
+  // Predicate order: --filter (inclusion) wins if set; else --exclude drops
+  // listed tags; else show-all. Multi-line blocks (HEARTBEAT, CHECKPOINT,
+  // PLAN, DONE, ERROR, INCOMPLETE, WARNING, QUESTION) have a header line
+  // with a bracketed tag followed by indented continuation lines with no
+  // tag. Continuation lines *inherit* the header's inclusion decision —
+  // otherwise an included `[CHECKPOINT]` header would show without its
+  // `assistant:`, `tools:`, `diff-since-last-checkpoint:` body. This is a
+  // real pre-1.4.0 bug: per-line filter dropped every continuation line
+  // because `tagOf` returned null.
+  let lastBlockIncluded = true;
   const passes = (line) => {
-    if (!filter) return true;
     const tag = tagOf(line);
-    return tag != null && filter.has(tag);
+    if (tag == null) {
+      // Continuation or blank line — inherit whatever decision the most
+      // recent header got. If no header has been seen yet (preamble), show.
+      return lastBlockIncluded;
+    }
+    // Header line — compute fresh decision and remember it for subsequent
+    // continuation lines in this block.
+    let included;
+    if (filter) included = filter.has(tag);
+    else if (exclude) included = !exclude.has(tag);
+    else included = true;
+    lastBlockIncluded = included;
+    return included;
   };
 
   const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
@@ -2789,7 +3326,8 @@ async function handleEvents(argv) {
         threadId: job.threadId,
         eventsPath,
         followed: Boolean(options.follow),
-        filter: options.filter ?? null
+        filter: options.filter ?? null,
+        exclude: options.exclude ?? null
       },
       "",
       { json: options.json, startedAt }
@@ -2908,6 +3446,7 @@ async function handleEvents(argv) {
       eventsPath,
       followed: true,
       filter: options.filter ?? null,
+      exclude: options.exclude ?? null,
       timedOut,
       // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
       // distinguish happy-path closure from timeout without re-reading the

@@ -6,7 +6,17 @@ import yaml from "js-yaml";
 const DEFAULT_CONFIG = {
   mode: "plan",
   model: "gpt-5.4",
-  effort: "high",
+  // Default reasoning effort for execute turns. Plan turns are always forced
+  // to "xhigh" regardless (plan is a bounded reasoning exercise; more effort
+  // is always worth it there). For execute turns the historical default was
+  // "high", but live delegations on non-trivial scaffolding (multi-file
+  // ports, cross-module refactors) consistently benefited from "xhigh" —
+  // the wall-clock tax is modest relative to the turn budget and the quality
+  // uplift is large. "xhigh" is the new default; callers who want a cheaper
+  // turn set `effort: "high"` (or lower) in config.yaml or pass
+  // `--effort high` at the CLI. Accepted values: none | minimal | low |
+  // medium | high | xhigh.
+  effort: "xhigh",
   auto_review: true,
   post_task_prompt: [
     "Review your own work critically:",
@@ -24,11 +34,14 @@ const DEFAULT_CONFIG = {
   // sandbox`. See skill/references/config-reference.md for the full matrix.
   sandbox_policy: "danger-full-access",
   // When true, prepend a strong orchestrator directive telling Codex to skip
-  // its internal planning/ceremony skills (using-superpowers, brainstorming,
-  // writing-plans, using-git-worktrees). Codex's default skill chain routinely
-  // spends ~10 minutes writing docs/superpowers/specs/*.md and plans/*.md
-  // files that are not part of the deliverable when the bridge is already
-  // orchestrating the task. Advisory — Codex may ignore the directive.
+  // any internal planning / ceremony / meta-skill chains it would normally
+  // walk before execution (framework-agnostic — covers any skill that
+  // produces spec/plan scaffolding under `docs/`, `plans/`, or similar paths
+  // before touching the deliverable). Codex's default skill chains routinely
+  // spend many minutes producing such scaffolding that isn't part of the
+  // task when an orchestrator is already driving the plan/execute loop.
+  // Advisory — Codex may still invoke its own skills; this measurably
+  // reduces the rate.
   skip_meta_skills: true,
   // When true, monitor repeated same-family command failures (osascript,
   // open -a, display dialog, computer-use/*, AppleScript) and emit a
@@ -56,8 +69,19 @@ const DEFAULT_CONFIG = {
   // 1.2.5 these were hard-coded; a big scaffold that legitimately needed
   // >10 min (e.g. a multi-file Swift/Xcode bootstrap with SPM resolution)
   // hit the ceiling and Codex was interrupted mid-task.
-  turn_plan_ms: 300_000,
-  turn_default_ms: 600_000,
+  // v1.3.0: turn budgets are 30 min minimum on every code path.
+  // Pre-1.3.0 the plan budget was 5 min and the execute budget was 10 min;
+  // both routinely killed live work mid-task with Codex still actively
+  // reasoning or writing (the swift-vibescroll Phase 1 / Phase 2 pattern).
+  // Raising both to 30 min removes the entire class of "bridge hard-
+  // interrupted my task" bug. Short edits still complete in seconds — the
+  // ceiling only kicks in when Codex is genuinely still working. The
+  // ceiling is not the primary "something is actually wrong" detector —
+  // that's the idle watchdog (idle_timeout_ms, 5 min) and the heartbeat /
+  // finally-backstop observability guarantees. The turn budget is a
+  // safety net past those, not a throttle.
+  turn_plan_ms: 1_800_000,
+  turn_default_ms: 1_800_000,
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
   // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
