@@ -6212,6 +6212,19 @@ var DEFAULT_CONFIG = {
   // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
   // sandbox`. See skill/references/config-reference.md for the full matrix.
   sandbox_policy: "danger-full-access",
+  // When true, prepend a strong orchestrator directive telling Codex to skip
+  // its internal planning/ceremony skills (using-superpowers, brainstorming,
+  // writing-plans, using-git-worktrees). Codex's default skill chain routinely
+  // spends ~10 minutes writing docs/superpowers/specs/*.md and plans/*.md
+  // files that are not part of the deliverable when the bridge is already
+  // orchestrating the task. Advisory — Codex may ignore the directive.
+  skip_meta_skills: true,
+  // When true, monitor repeated same-family command failures (osascript,
+  // open -a, display dialog, computer-use/*) and steer the turn with a
+  // structural-impossibility message once the threshold is hit. Prevents
+  // Codex from burning token budget iterating over headless-environment
+  // probes. See config-reference.md for the threshold and family list.
+  command_failure_circuit_breaker: true,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
@@ -6508,6 +6521,16 @@ function formatConfirmedEvent(session, { requestId }) {
 }
 function formatPipelineEvent(session, { stage }) {
   return `[PIPELINE:${stage}] ${(/* @__PURE__ */ new Date()).toISOString().slice(11, 19)}`;
+}
+function formatWarningEvent(session, { reason, family, threshold, sampleCommand, turnInterrupted }) {
+  const lines = [
+    `[WARNING] ${session.threadId} ${reason}`,
+    `  family: ${family}`,
+    `  threshold: ${threshold} consecutive failures`
+  ];
+  if (sampleCommand) lines.push(`  sample: ${sampleCommand.slice(0, 120)}`);
+  lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
+  return lines.join("\n");
 }
 
 // src/lib/pending-requests.mjs
@@ -8153,11 +8176,29 @@ async function runBridgeTask(request) {
   const sessionDir = resolveSessionDir(config.session_dir);
   const effectiveMode = request.mode ?? config.mode ?? "plan";
   const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
-  const promptWithFooter = config.prompt_footer ? `${request.prompt}
+  const metaSkillsPrefix = config.skip_meta_skills ? "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills \u2014 specifically `using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`, or any equivalent planning/ceremony skill. The calling orchestrator has already planned this task; your job is to execute it directly. Do not create docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files unless the task explicitly asks for them.\n\n" : "";
+  const promptWithFooter = config.prompt_footer ? `${metaSkillsPrefix}${request.prompt}
 
-${config.prompt_footer}` : request.prompt;
+${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   const activeMode = isPlanMode ? "plan" : "default";
   const developerInstructions = loadDeveloperInstructions(activeMode);
+  const CIRCUIT_BREAKER_THRESHOLD = 3;
+  const breakerState = {
+    lastFamily: null,
+    consecutiveFailures: 0,
+    tripped: false
+  };
+  const detectCommandFamily = (command) => {
+    if (typeof command !== "string") return null;
+    const trimmed = command.trim();
+    if (!trimmed) return null;
+    if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
+    if (/\bdisplay dialog\b|\bdisplay notification\b/i.test(trimmed)) return "applescript-dialog";
+    if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
+    if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
+    if (/\bSystem Events\b|\btell application\b/i.test(trimmed)) return "applescript-system";
+    return null;
+  };
   const bridgeRequest = {
     ...request,
     prompt: promptWithFooter,
@@ -8175,6 +8216,9 @@ ${config.prompt_footer}` : request.prompt;
     idleTimeoutMs: 12e4,
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
+      breakerState.lastFamily = null;
+      breakerState.consecutiveFailures = 0;
+      breakerState.tripped = false;
       logNdjson(s, "TURN_PARAMS", "turn/start", {
         model: info.turnParams.model,
         effort: info.turnParams.effort,
@@ -8193,6 +8237,40 @@ ${config.prompt_footer}` : request.prompt;
         itemId: item?.id ?? null,
         itemType: item?.type ?? null,
         text: extractItemText(item)
+      });
+      if (!config.command_failure_circuit_breaker || breakerState.tripped || item?.type !== "commandExecution") {
+        return;
+      }
+      const failed = item.status !== "completed" || typeof item.exitCode === "number" && item.exitCode !== 0;
+      if (!failed) {
+        breakerState.lastFamily = null;
+        breakerState.consecutiveFailures = 0;
+        return;
+      }
+      const family = detectCommandFamily(item.command);
+      if (!family) {
+        return;
+      }
+      if (family === breakerState.lastFamily) {
+        breakerState.consecutiveFailures += 1;
+      } else {
+        breakerState.lastFamily = family;
+        breakerState.consecutiveFailures = 1;
+      }
+      if (breakerState.consecutiveFailures < CIRCUIT_BREAKER_THRESHOLD) return;
+      breakerState.tripped = true;
+      logEvent(s, formatWarningEvent(s, {
+        reason: "command-family-circuit-breaker-tripped",
+        family,
+        threshold: CIRCUIT_BREAKER_THRESHOLD,
+        sampleCommand: item.command,
+        turnInterrupted: false
+      }));
+      logNdjson(s, "CIRCUIT_BREAKER", null, {
+        family,
+        threshold: CIRCUIT_BREAKER_THRESHOLD,
+        consecutiveFailures: breakerState.consecutiveFailures,
+        turnInterrupted: false
       });
     }
   };

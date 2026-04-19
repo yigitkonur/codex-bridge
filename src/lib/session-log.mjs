@@ -239,6 +239,17 @@ export function formatPipelineEvent(session, { stage }) {
   return `[PIPELINE:${stage}] ${new Date().toISOString().slice(11, 19)}`;
 }
 
+export function formatWarningEvent(session, { reason, family, threshold, sampleCommand, turnInterrupted }) {
+  const lines = [
+    `[WARNING] ${session.threadId} ${reason}`,
+    `  family: ${family}`,
+    `  threshold: ${threshold} consecutive failures`,
+  ];
+  if (sampleCommand) lines.push(`  sample: ${sampleCommand.slice(0, 120)}`);
+  lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
+  return lines.join("\n");
+}
+
 export function formatPhaseEvent(session, { phase, detail }) {
   return `[PHASE] ${phase}${detail ? " " + detail : ""}`;
 }
