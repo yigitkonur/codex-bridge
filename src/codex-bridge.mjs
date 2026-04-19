@@ -617,7 +617,7 @@ async function handleSetup(argv) {
   });
 }
 
-const BRIDGE_VERSION = "1.2.0";
+const BRIDGE_VERSION = "1.2.1";
 const BRIDGE_SCHEMA_VERSION = "1.0";
 const BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -1412,16 +1412,35 @@ async function runForegroundCommand(job, runner, options = {}) {
   return execution;
 }
 
-function spawnDetachedTaskWorker(cwd, jobId) {
+function spawnDetachedTaskWorker(cwd, jobId, logFile = null) {
   const scriptPath = SCRIPT_PATH;
+  // Capture the detached child's stderr to a sibling of the per-job `.log`
+  // so silent crashes (e.g. an uncaught exception before the first progress
+  // message) leave a readable trail. Pre-v1.2.1 `stdio: "ignore"` swallowed
+  // everything, which is what let the background-path session-file bug
+  // ship undetected. The fd is dup'd into the child; we close our copy.
+  let stdioConfig = "ignore";
+  if (logFile) {
+    try {
+      const stderrPath = `${logFile}.worker.err`;
+      const stderrFd = fs.openSync(stderrPath, "a");
+      stdioConfig = ["ignore", "ignore", stderrFd];
+    } catch {
+      // Fall back to silent if the stderr file can't be opened — the spawn
+      // itself must never fail because observability couldn't.
+    }
+  }
   const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
     cwd,
     env: process.env,
     detached: true,
-    stdio: "ignore",
+    stdio: stdioConfig,
     windowsHide: true
   });
   child.unref();
+  if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
+    try { fs.closeSync(stdioConfig[2]); } catch { /* already dup'd */ }
+  }
   return child;
 }
 
@@ -1429,7 +1448,7 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
+  const child = spawnDetachedTaskWorker(cwd, job.id, logFile);
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -2031,7 +2050,16 @@ async function handleTaskWorker(argv) {
       logFile
     },
     () =>
-      executeTaskRun({
+      // Go through `runBridgeTask` (not `executeTaskRun` directly) so the
+      // detached worker builds the same session-logging hooks, prompt
+      // decorations (`skip_meta_skills`, `prompt_footer`), sandbox-policy
+      // resolution, `[QUESTION]` handler, and auto-pipeline that the
+      // foreground path uses. Pre-v1.2.1 this line called `executeTaskRun`
+      // directly, so `task --background` ran the turn but produced ZERO
+      // session artifacts (`.events`, `.ndjson`, `.diff`) — breaking every
+      // `wait` / `events --follow` caller. See `gherkin-tests-v2/
+      // 07-orchestration/08-background-path-produces-session-files.md`.
+      runBridgeTask({
         ...request,
         onProgress: progress
       }),

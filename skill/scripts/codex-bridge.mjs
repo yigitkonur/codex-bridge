@@ -2553,7 +2553,12 @@ async function runAppServerTurn(cwd2, options = {}) {
           promptLength: prompt.length,
           promptPreview: prompt.slice(0, 200)
         });
-      } catch {
+      } catch (err) {
+        emitProgress(
+          options.onProgress,
+          `onTurnStart threw: ${err?.message ?? err}`,
+          null
+        );
       }
     }
     const turnPromise = captureTurn(
@@ -7420,7 +7425,7 @@ async function handleSetup(argv) {
     startedAt
   });
 }
-var BRIDGE_VERSION = "1.2.0";
+var BRIDGE_VERSION = "1.2.1";
 var BRIDGE_SCHEMA_VERSION = "1.0";
 var BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -8084,22 +8089,37 @@ async function runForegroundCommand(job, runner, options = {}) {
   });
   return execution;
 }
-function spawnDetachedTaskWorker(cwd2, jobId) {
+function spawnDetachedTaskWorker(cwd2, jobId, logFile = null) {
   const scriptPath = SCRIPT_PATH;
+  let stdioConfig = "ignore";
+  if (logFile) {
+    try {
+      const stderrPath = `${logFile}.worker.err`;
+      const stderrFd = fs13.openSync(stderrPath, "a");
+      stdioConfig = ["ignore", "ignore", stderrFd];
+    } catch {
+    }
+  }
   const child = spawn3(process8.execPath, [scriptPath, "task-worker", "--cwd", cwd2, "--job-id", jobId], {
     cwd: cwd2,
     env: process8.env,
     detached: true,
-    stdio: "ignore",
+    stdio: stdioConfig,
     windowsHide: true
   });
   child.unref();
+  if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
+    try {
+      fs13.closeSync(stdioConfig[2]);
+    } catch {
+    }
+  }
   return child;
 }
 function enqueueBackgroundTask(cwd2, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
-  const child = spawnDetachedTaskWorker(cwd2, job.id);
+  const child = spawnDetachedTaskWorker(cwd2, job.id, logFile);
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -8548,10 +8568,21 @@ async function handleTaskWorker(argv) {
       workspaceRoot,
       logFile
     },
-    () => executeTaskRun({
-      ...request,
-      onProgress: progress
-    }),
+    () => (
+      // Go through `runBridgeTask` (not `executeTaskRun` directly) so the
+      // detached worker builds the same session-logging hooks, prompt
+      // decorations (`skip_meta_skills`, `prompt_footer`), sandbox-policy
+      // resolution, `[QUESTION]` handler, and auto-pipeline that the
+      // foreground path uses. Pre-v1.2.1 this line called `executeTaskRun`
+      // directly, so `task --background` ran the turn but produced ZERO
+      // session artifacts (`.events`, `.ndjson`, `.diff`) — breaking every
+      // `wait` / `events --follow` caller. See `gherkin-tests-v2/
+      // 07-orchestration/08-background-path-produces-session-files.md`.
+      runBridgeTask({
+        ...request,
+        onProgress: progress
+      })
+    ),
     { logFile }
   );
 }
