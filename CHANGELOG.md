@@ -9,6 +9,56 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.2.4] — 2026-04-19
+
+Three bugs surfaced during a live Claude→Codex delegation. All three
+were bridge-side, not caller error.
+
+### Fixed
+
+- **Foreground `task` no longer dies on EPIPE.** Installing `task` output
+  through a closed pipe (`bridge task … | tee … | head -N`) previously
+  killed the wrapper Node process mid-turn and left the Codex-side job
+  `orphaned` while the app-server was still healthy. `main()` now ignores
+  `SIGPIPE` and swallows `EPIPE` / `ERR_STREAM_DESTROYED` on stdout and
+  stderr (`src/codex-bridge.mjs` top-level guards). Background workers
+  were already immune via `stdio:"ignore"`; this brings foreground paths
+  to parity.
+- **`events <thread-id>` now works for running jobs.** `resolveResultJob`
+  previously checked `job.threadId` only in the terminal-status branch,
+  so a thread UUID passed to `events`/`wait` for a still-running job
+  fell through to `JOB_NOT_FOUND`. The active-match block now also
+  compares `job.threadId`, restoring the "either id works" contract
+  advertised in `SKILL.md:77` for all job states.
+
+### Changed
+
+- **Idle-timeout watchdog is now configurable; default raised from
+  120s to 300s.** Reasoning-heavy Codex turns (e.g. planning across
+  many files between `item.completed` notifications) could legitimately
+  exceed the prior 120s gap and false-positive as "stuck." Three
+  resolution layers now apply (most specific wins):
+  - `--idle-timeout-ms <ms>` flag on `task` and `send`
+  - `idle_timeout_ms` in any config.yaml layer
+  - Built-in default `300_000` in `DEFAULT_CONFIG` (`src/lib/config.mjs`)
+  A malformed flag value throws `usage` (exit 2) rather than silently
+  falling back — callers notice the typo. Idle-timeout error message
+  reworded from "(possible stuck)" to "(idle timeout)." — the regex
+  in `src/lib/cli-errors.mjs:171` still matches both.
+
+### Docs
+
+- New gherkin scenarios:
+  - `04-errors/06-foreground-task-survives-epipe.md`
+  - `01-lifecycle/04-idle-timeout-configurable.md`
+  - `07-orchestration/09-events-accepts-thread-id-for-running-job.md`
+
+### Root-cause trace
+
+Broader architectural follow-ups (fg/bg unification, broker-socket
+liveness, typed identifier resolver, feature-flag orthogonalization)
+are scoped for a separate release.
+
 ## [1.2.3] — 2026-04-19
 
 Wrapper-regex widening. v1.2.2's `isFailureHidingWrapper` matched
