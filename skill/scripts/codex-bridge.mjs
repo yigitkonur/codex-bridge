@@ -9,7 +9,7 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "1.2.8",
+  version: "1.2.9",
   description: "Claude Code skill that orchestrates Codex via Monitor tool notifications",
   type: "module",
   scripts: {
@@ -6991,8 +6991,9 @@ function withTimeout(promise, timeoutMs, label) {
 import fs12 from "node:fs";
 import path10 from "node:path";
 import os5 from "node:os";
-var DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+var DEFAULT_CACHE_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_FETCH_TIMEOUT_MS = 2500;
+var APPLY_ATTEMPT_WINDOW_MS = 60 * 60 * 1e3;
 var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest";
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
@@ -7016,6 +7017,22 @@ function writeCache(entry) {
     const p = cachePath();
     fs12.mkdirSync(path10.dirname(p), { recursive: true });
     fs12.writeFileSync(p, JSON.stringify(entry, null, 2));
+  } catch {
+  }
+}
+function shouldAttemptApply(windowMs = APPLY_ATTEMPT_WINDOW_MS) {
+  const cache = readCache();
+  if (!cache || !cache.lastApplyAttempt) return true;
+  return Date.now() - cache.lastApplyAttempt > windowMs;
+}
+function markApplyAttempted(targetVersion) {
+  try {
+    const existing = readCache() ?? {};
+    writeCache({
+      ...existing,
+      lastApplyAttempt: Date.now(),
+      lastApplyTargetVersion: targetVersion
+    });
   } catch {
   }
 }
@@ -7112,22 +7129,58 @@ function formatUpdateNotice(result) {
 }
 
 // src/codex-bridge.mjs
-function maybeEmitUpdateNotice(rawArgv, subcommand) {
+function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
     if (process8.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
     if (detectJsonFlag(rawArgv)) return;
     if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
     if (subcommand === "version" || subcommand === "update") return;
     void checkForUpdate({ currentVersion: BRIDGE_VERSION }).then((result) => {
-      if (!result || !result.hasUpdate) return;
-      if (result.cached === false && result.cacheAgeMs === 0) {
-        return;
-      }
-      const line = formatUpdateNotice(result);
-      if (line) process8.stdout.write(`${line}
-`);
+      if (!result || !result.hasUpdate || !result.latestVersion) return;
+      if (!shouldAttemptApply()) return;
+      markApplyAttempted(result.latestVersion);
+      spawnDetachedAutoApply(result.latestVersion);
     }).catch(() => {
     });
+  } catch {
+  }
+}
+function spawnDetachedAutoApply(targetVersion) {
+  try {
+    const logDir = path11.join(os6.homedir(), ".codex-bridge");
+    fs13.mkdirSync(logDir, { recursive: true });
+    const logFile = path11.join(logDir, "auto-update.log");
+    try {
+      const stat = fs13.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs13.truncateSync(logFile, 0);
+    } catch {
+    }
+    const fd = fs13.openSync(logFile, "a");
+    const banner = `
+[${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
+`;
+    fs13.writeSync(fd, banner);
+    const child = spawn3(
+      "npx",
+      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+      {
+        detached: true,
+        stdio: ["ignore", fd, fd],
+        env: process8.env
+      }
+    );
+    child.on("error", () => {
+      try {
+        fs13.writeSync(fd, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+`);
+      } catch {
+      }
+    });
+    child.unref();
+    try {
+      fs13.closeSync(fd);
+    } catch {
+    }
   } catch {
   }
 }
@@ -9772,7 +9825,7 @@ async function main() {
   const startedAt = Date.now();
   const rawArgv = process8.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
-  maybeEmitUpdateNotice(rawArgv, subcommand);
+  maybeTriggerAutoApply(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
     if (detectJsonFlag(rawArgv)) {
       emitSuccess("help", buildMachineReadableHelp(), null, { json: true, startedAt });

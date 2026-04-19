@@ -119,37 +119,96 @@ import {
   clearPendingRequest,
 } from "./lib/pending-requests.mjs";
 import { runAutoPipeline } from "./lib/auto-pipeline.mjs";
-import { checkForUpdate, formatUpdateNotice } from "./lib/update-check.mjs";
+import { checkForUpdate, formatUpdateNotice, shouldAttemptApply, markApplyAttempted } from "./lib/update-check.mjs";
 
-// Read the update cache synchronously (no network) and print a one-line
-// stdout notice if a newer version is known. Opt-out via `--json` flag,
-// `CODEX_BRIDGE_NO_UPDATE_CHECK=1` env, or the two subcommands that render
-// update status themselves. Also silent for subcommand-less / help runs so
-// `codex-bridge` (no args) keeps printing clean usage. Fires an async cache
-// refresh so the NEXT invocation sees newly-published releases.
-function maybeEmitUpdateNotice(rawArgv, subcommand) {
+// Hot-path auto-apply. On every non-json, non-update/version invocation the
+// bridge:
+//   1. Triggers a cache-backed (1 h TTL) release probe — cost: one HTTPS
+//      call at most once per hour per workspace, anonymous, non-blocking.
+//   2. If a newer version exists AND no apply attempt has landed in the
+//      last hour, spawns `npx -y skills@latest add yigitkonur/codex-bridge
+//      -a claude-code -g -y` detached, with stdio routed to
+//      `~/.codex-bridge/auto-update.log` so the caller's stdio is never
+//      touched. Installer completes in the background; the NEXT invocation
+//      of the bridge picks up the new files.
+//
+// Guards (any one → no-op):
+//   - `CODEX_BRIDGE_NO_UPDATE_CHECK=1` env         → user disabled
+//   - `--json` mode                                 → would corrupt envelope
+//   - `update` / `version` subcommands              → own the update UX
+//   - help / no-subcommand                          → keep usage clean
+//   - `shouldAttemptApply()` returns false          → rate-limited (1 h)
+//
+// Never blocks, never throws, never writes to the caller's stdio.
+function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
     if (process.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
     if (detectJsonFlag(rawArgv)) return;
     if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
     if (subcommand === "version" || subcommand === "update") return;
 
-    // Sync cache read; no network on the hot path.
     void checkForUpdate({ currentVersion: BRIDGE_VERSION })
       .then((result) => {
-        if (!result || !result.hasUpdate) return;
-        if (result.cached === false && result.cacheAgeMs === 0) {
-          // Fresh fetch produced new data, but we don't want to block the
-          // subcommand that's already running. The notice will appear on
-          // the next invocation via the now-warm cache.
-          return;
-        }
-        const line = formatUpdateNotice(result);
-        if (line) process.stdout.write(`${line}\n`);
+        if (!result || !result.hasUpdate || !result.latestVersion) return;
+        if (!shouldAttemptApply()) return;
+        // Claim the 1 h slot BEFORE spawning so concurrent invocations
+        // don't all race to install the same release.
+        markApplyAttempted(result.latestVersion);
+        spawnDetachedAutoApply(result.latestVersion);
       })
-      .catch(() => {});
+      .catch(() => {
+        // Anything thrown here is the update-check path's problem, not
+        // the caller's. Swallow and let the next invocation retry.
+      });
   } catch {
-    // Update-check must never fail the caller.
+    // Must never fail the caller.
+  }
+}
+
+// Spawns `npx -y skills@latest add …` detached with stdio routed to a
+// log file in `~/.codex-bridge/auto-update.log`. Fire-and-forget: parent
+// calls `.unref()` so the caller's exit isn't delayed, and the child's
+// outcome is visible only via the log file (readable by `bridge update
+// --force` next time, or directly).
+function spawnDetachedAutoApply(targetVersion) {
+  try {
+    const logDir = path.join(os.homedir(), ".codex-bridge");
+    fs.mkdirSync(logDir, { recursive: true });
+    const logFile = path.join(logDir, "auto-update.log");
+
+    // Crude rotation: if the log crosses ~2 MB, truncate. Failed installs
+    // on a loop could otherwise grow it unboundedly over months.
+    try {
+      const stat = fs.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs.truncateSync(logFile, 0);
+    } catch { /* file doesn't exist yet — fine */ }
+
+    const fd = fs.openSync(logFile, "a");
+    const banner = `\n[${new Date().toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})\n`;
+    fs.writeSync(fd, banner);
+
+    const child = spawn(
+      "npx",
+      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+      {
+        detached: true,
+        stdio: ["ignore", fd, fd],
+        env: process.env,
+      }
+    );
+    // Spawn can still fail asynchronously after the constructor returns
+    // (e.g. ENOENT when npx isn't on PATH). Catch silently; the banner
+    // line in the log is enough forensic trail.
+    child.on("error", () => {
+      try {
+        fs.writeSync(fd, `[${new Date().toISOString()}] spawn failed (npx not on PATH?)\n`);
+      } catch { /* closed */ }
+    });
+    child.unref();
+    try { fs.closeSync(fd); } catch { /* already dup'd into child */ }
+  } catch {
+    // Best-effort. Any failure here (mkdir, open, spawn constructor)
+    // just means this invocation doesn't auto-apply; next one will.
   }
 }
 
@@ -3419,13 +3478,13 @@ async function main() {
   const rawArgv = process.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
 
-  // Silent per-launch update notice. Reads the cached latest-version result
-  // only (no network on the hot path) — the cache is warmed asynchronously
-  // in the background after dispatch so the NEXT invocation sees a new
-  // upstream release. Never runs under `--json` (would pollute envelopes),
-  // never runs for `version`/`update` (they have their own render), and
-  // never runs for the hook-spawned "Stop Gate Review" rescue paths.
-  maybeEmitUpdateNotice(rawArgv, subcommand);
+  // Hot-path auto-apply. Non-blocking fire-and-forget: cache-backed
+  // release probe (1 h TTL, anonymous) + detached `npx skills@latest add
+  // …` when a newer version lands. Rate-limited to one apply attempt per
+  // hour so concurrent invocations don't thrash. Stdio routed to
+  // `~/.codex-bridge/auto-update.log` so the caller's output is never
+  // touched. Opt out via `CODEX_BRIDGE_NO_UPDATE_CHECK=1`.
+  maybeTriggerAutoApply(rawArgv, subcommand);
 
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
     if (detectJsonFlag(rawArgv)) {

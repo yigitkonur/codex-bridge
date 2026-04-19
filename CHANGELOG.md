@@ -9,6 +9,82 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.2.9] — 2026-04-19
+
+Hot-path auto-apply. Every `bridge task` / `send` / `result` / other
+non-json non-update invocation now not only *detects* a newer release
+(as 1.2.8 did via the anonymous probe) but also *applies* it —
+spawning `npx -y skills@latest add yigitkonur/codex-bridge -a
+claude-code -g -y` in the background, fire-and-forget, with all
+output routed to `~/.codex-bridge/auto-update.log`. The current
+invocation is never blocked; the new files land on disk before the
+user's NEXT invocation.
+
+1.2.8's `bridge update --apply` remains as the explicit synchronous
+path for users who want to force-install immediately. The per-launch
+stdout notice from 1.2.7 is gone — replaced by silent auto-apply.
+
+### Changed
+
+- **Cache TTL 24 h → 1 h** in `src/lib/update-check.mjs`. Aligns with
+  the auto-apply rate-limit window. Previously 24 h meant a freshly
+  released fix could wait a day before the user's install caught up;
+  1 h closes that gap without hammering the anonymous API (60 req/hr
+  × 1 h cache = at most 1 req/hr/workspace, well under the 60/hr/IP
+  anonymous ceiling).
+
+### Added
+
+- **`maybeTriggerAutoApply`** in `src/codex-bridge.mjs` — replaces
+  `maybeEmitUpdateNotice`. Guards are identical (opt out via
+  `CODEX_BRIDGE_NO_UPDATE_CHECK=1`; skip `--json` / `update` / `version`
+  / help / no-subcommand); on hot path it reads the 1 h cache, and
+  when a newer release exists AND `shouldAttemptApply()` returns
+  `true` (no attempt in the last hour), it claims the slot via
+  `markApplyAttempted()` and spawns the installer detached.
+- **`spawnDetachedAutoApply`** — detached spawn of `npx -y skills@
+  latest add …` with `stdio: ["ignore", logFd, logFd]`. Log file
+  rotates at ~2 MB to avoid unbounded growth on repeated failures.
+  Banner written on each attempt:
+  `[ISO-ts] auto-apply triggered for vX.Y.Z (from A.B.C)`. Spawn
+  errors (e.g. `npx` not on PATH) captured silently to the log; the
+  parent process never sees them.
+- **`shouldAttemptApply` / `markApplyAttempted`** — exported helpers
+  in `src/lib/update-check.mjs`. The per-hour apply-rate-limit
+  marker lives in the same `update-cache.json` file as `checkedAt` /
+  `latestVersion`, so no new filesystem state.
+- **`APPLY_ATTEMPT_WINDOW_MS`** — exported constant (1 h), shared
+  between the cache TTL and the apply marker so the two windows
+  stay aligned.
+
+### Removed
+
+- **Per-launch stdout notice** — superseded by silent auto-apply.
+  `formatUpdateNotice` is still exported (unchanged) for the
+  `update` subcommand's own rendering path.
+
+### Safety
+
+- Never blocks the caller (detached + `.unref()`).
+- Never writes to the caller's stdout/stderr (dedicated log file).
+- Never throws (every code path that could throw is wrapped in
+  try/catch that swallows).
+- Rate-limited: one apply attempt per hour per workspace regardless
+  of invocation frequency.
+- Race-safe: `markApplyAttempted` runs BEFORE spawn, so concurrent
+  invocations see the marker and no-op.
+- Log rotation at ~2 MB prevents unbounded growth on repeated
+  failure loops.
+
+### Known behavior
+
+- If `npx` is not on `$PATH`, the spawn fails silently. The log
+  file records it. User can still run `npx skills add …` manually.
+- The in-flight process continues to see the OLD version constant
+  (imported from `package.json` at module load). The NEW files are
+  visible to the NEXT invocation. This is by design — self-modifying
+  a running script is worse than a one-invocation version skew.
+
 ## [1.2.8] — 2026-04-19
 
 Repo flipped to public. Two changes follow from that: the 1.2.7 gh-CLI

@@ -16,7 +16,7 @@ compatibility: Requires Node.js 22+ and the Codex CLI on $PATH (npm i -g @openai
 license: MIT
 allowed-tools: Bash Monitor
 metadata:
-  version: "1.2.8"
+  version: "1.2.9"
   homepage: "https://github.com/yigitkonur/codex-bridge"
 ---
 
@@ -307,16 +307,20 @@ ls -lt ~/.codex-bridge/crashes/ | head -5
 # Each file is a JSON dump of the unhandled rejection / exception that
 # produced the exit, including argv, cwd, nodeVersion, and the error stack.
 
-# "codex-bridge is up to date" when you know it isn't?
-# `update` hits the anonymous GitHub releases API for this public repo
-# (60 req/hr/IP, cached 24 h — effectively unlimited for bridge usage).
-# Re-run with --force to bypass the cache and see the fresh result.
+# Auto-update: every `bridge task` / `send` / `result` / etc. invocation
+# checks for a new release (anonymous, 1 h cache) and — if one exists —
+# spawns `npx skills@latest add …` in the background with stdio routed to
+# ~/.codex-bridge/auto-update.log. Rate-limited to one attempt per hour.
+# The current call is not blocked; the NEW files land before your NEXT
+# invocation. Opt out with CODEX_BRIDGE_NO_UPDATE_CHECK=1.
+
+# Check auto-update history / last-attempt outcome
+tail -20 ~/.codex-bridge/auto-update.log
+
+# Force a fresh check (bypass the 1 h cache) and print current status
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs update --force
 
-# Ready to actually install the newer version? `--apply` spawns the
-# canonical installer for you (same command as npx skills@latest add …).
-# Default remains detect-only; --apply is opt-in so you never self-replace
-# a running script by accident.
+# Force immediate install synchronously (waits for npx to finish)
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs update --apply
 ```
 
