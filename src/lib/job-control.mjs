@@ -36,13 +36,19 @@ function getJobTypeLabel(job) {
     return "review";
   }
   if (job.jobClass === "task") {
-    return "rescue";
+    // Pre-1.2.5 this returned "rescue" for every task (user-launched or
+    // stop-gate). Current callers set `kindLabel` explicitly ("task" or
+    // "rescue-review") in buildTaskRunMetadata, so this fallback is only
+    // reached for legacy state-file records that predate the rename.
+    // Defaulting legacy task records to "task" is safer — it matches what
+    // a user-launched task should have read all along.
+    return "task";
   }
   if (job.kind === "review") {
     return "review";
   }
   if (job.kind === "task") {
-    return "rescue";
+    return "task";
   }
   return "job";
 }
@@ -282,11 +288,20 @@ export function resolveResultJob(cwd, reference) {
   // Check active jobs FIRST when a reference was given, so a running job
   // matching the reference returns JOB_NOT_FINISHED (conflict/5) instead of
   // falling through to JOB_NOT_FOUND via the terminal-only lookup.
+  //
+  // Thread-id equality is included alongside job-id matching because
+  // SKILL.md advertises "`status`/`result`/`cancel` accept either a job id
+  // or the thread UUID" and callers (including `events`) rely on that
+  // contract for running jobs. Without the `job.threadId === reference`
+  // branch, a thread UUID for a still-running task falls through to the
+  // terminal-only `matchJobReference` below and dead-ends at JOB_NOT_FOUND.
+  // Exact-equality only (no prefix matching) for thread ids — see
+  // matchJobReference comment.
   if (reference) {
     const activeMatch = jobs.find(
       (job) =>
         (job.status === "queued" || job.status === "running") &&
-        (job.id === reference || job.id.startsWith(reference))
+        (job.id === reference || job.id.startsWith(reference) || job.threadId === reference)
     );
     if (activeMatch) {
       throw new CliError(`Job ${activeMatch.id} is still ${activeMatch.status}.`, {

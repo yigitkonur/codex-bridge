@@ -1,9 +1,31 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3 } from "node:child_process";
 import fs13 from "node:fs";
+import os6 from "node:os";
 import path11 from "node:path";
 import process8 from "node:process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// package.json
+var package_default = {
+  name: "codex-bridge",
+  version: "1.2.5",
+  description: "Claude Code skill that orchestrates Codex via Monitor tool notifications",
+  type: "module",
+  scripts: {
+    build: "node esbuild.config.mjs",
+    dev: "node src/codex-bridge.mjs"
+  },
+  author: "Yigit Konur",
+  license: "MIT",
+  engines: {
+    node: ">=22.0.0"
+  },
+  devDependencies: {
+    esbuild: "^0.24.0",
+    "js-yaml": "^4.1.0"
+  }
+};
 
 // src/lib/cli-errors.mjs
 import process2 from "node:process";
@@ -2097,7 +2119,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
         clearInterval(idleInterval);
         idleInterval = null;
         const seconds = Math.round(idleTimeoutMs / 1e3);
-        state.error = { message: `No events received for ${seconds}s (possible stuck)` };
+        state.error = { message: `No events received for ${seconds}s (idle timeout).` };
         emitProgress(state.onProgress, state.error.message, "failed");
         if (typeof options.onIdleTimeout === "function") {
           try {
@@ -2884,13 +2906,13 @@ function getJobTypeLabel(job) {
     return "review";
   }
   if (job.jobClass === "task") {
-    return "rescue";
+    return "task";
   }
   if (job.kind === "review") {
     return "review";
   }
   if (job.kind === "task") {
-    return "rescue";
+    return "task";
   }
   return "job";
 }
@@ -3072,7 +3094,7 @@ function resolveResultJob(cwd2, reference) {
   const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
   if (reference) {
     const activeMatch = jobs.find(
-      (job) => (job.status === "queued" || job.status === "running") && (job.id === reference || job.id.startsWith(reference))
+      (job) => (job.status === "queued" || job.status === "running") && (job.id === reference || job.id.startsWith(reference) || job.threadId === reference)
     );
     if (activeMatch) {
       throw new CliError(`Job ${activeMatch.id} is still ${activeMatch.status}.`, {
@@ -6234,6 +6256,35 @@ var DEFAULT_CONFIG = {
   // config-reference.md for the threshold, family list, and enhancement
   // candidates.
   command_failure_circuit_breaker: true,
+  // Max wall-clock gap between app-server notifications before a turn is
+  // declared stuck and failed with `ClientTimeout`. The prior 120s hard-code
+  // was tuned for execute-heavy turns and would false-positive during
+  // reasoning-heavy windows (e.g. Codex planning across many files between
+  // `item.completed` notifications). 300s covers observed reasoning gaps
+  // without masking genuine stalls. Override per-project in config.yaml;
+  // per-invocation override via `--idle-timeout-ms <ms>` on `task` / `send`.
+  idle_timeout_ms: 3e5,
+  // Wall-clock ceiling per Codex turn, distinct from the idle gap. Plan
+  // turns get a shorter budget because they're bounded reasoning jobs;
+  // execute turns need more because they actually change code. Both are
+  // overridable via --turn-plan-ms / --turn-default-ms on task (or
+  // --turn-timeout-ms on send, which resolves to the applicable one). Pre-
+  // 1.2.5 these were hard-coded; a big scaffold that legitimately needed
+  // >10 min (e.g. a multi-file Swift/Xcode bootstrap with SPM resolution)
+  // hit the ceiling and Codex was interrupted mid-task.
+  turn_plan_ms: 3e5,
+  turn_default_ms: 6e5,
+  // Auto-pipeline budgets — per-stage (review / fix / check) and total.
+  // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
+  // on ~60-file diffs could blow the stage ceiling without any escape hatch.
+  pipeline_stage_ms: 3e5,
+  pipeline_total_ms: 9e5,
+  // How long `requestUserInput` waits for a human/orchestrator to answer
+  // before auto-answering `{answers: {}}`. Five minutes is tight for
+  // thoughtful decisions; make it configurable so a slow loop (human in a
+  // meeting, or a subagent orchestrator with its own deliberation latency)
+  // isn't silently coerced into a no-op answer.
+  question_answer_ms: 3e5,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
@@ -6528,8 +6579,10 @@ function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPa
 function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }
-function formatPipelineEvent(session, { stage }) {
-  return `[PIPELINE:${stage}] ${(/* @__PURE__ */ new Date()).toISOString().slice(11, 19)}`;
+function formatPipelineEvent(session, { stage, suffix, detail }) {
+  const head = suffix ? `PIPELINE:${stage}:${suffix}` : `PIPELINE:${stage}`;
+  const ts = (/* @__PURE__ */ new Date()).toISOString().slice(11, 19);
+  return detail ? `[${head}] ${ts} ${detail}` : `[${head}] ${ts}`;
 }
 function formatWarningEvent(session, { reason, family, threshold, sampleCommand, turnInterrupted }) {
   const lines = [
@@ -6617,8 +6670,8 @@ function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIME
 // src/lib/auto-pipeline.mjs
 import fs11 from "node:fs";
 import path9 from "node:path";
-var PIPELINE_TIMEOUT_MS = 9e5;
-var STAGE_TIMEOUT_MS = 3e5;
+var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;
+var STAGE_TIMEOUT_MS_DEFAULT = 3e5;
 function fmtSeconds(ms) {
   const s = Math.max(0, Math.round(ms / 1e3));
   if (s < 60) return `${s}s`;
@@ -6644,21 +6697,27 @@ async function runAutoPipeline(options) {
     rootDir,
     runAppServerTurn: runAppServerTurn2,
     runAppServerReview: runAppServerReview2,
-    jobId = null
+    jobId = null,
+    stageTimeoutMs = null,
+    totalTimeoutMs = null
   } = options;
+  const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
+  const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
   const completedStages = [];
   const startTime = Date.now();
   const executeInstructions = loadExecuteInstructions(rootDir);
   const checkPipelineTimeout = () => {
-    if (Date.now() - startTime > PIPELINE_TIMEOUT_MS) {
-      throw new PipelineTimeoutError(completedStages);
+    if (Date.now() - startTime > totalMs) {
+      throw new PipelineTimeoutError(completedStages, totalMs);
     }
   };
+  let fixFilesTouched = [];
   try {
     logEvent(session, formatPipelineEvent(session, { stage: "diff" }));
     logNdjson(session, "PIPELINE_STAGE", null, { stage: "diff" });
     const diff1 = captureGitDiff(cwd2, session);
     completedStages.push("diff");
+    logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
     checkPipelineTimeout();
     let reviewVerdict = "approve";
     let reviewFindings = [];
@@ -6672,7 +6731,7 @@ async function runAutoPipeline(options) {
             target: { type: "uncommittedChanges" },
             model: config.model
           }),
-          STAGE_TIMEOUT_MS,
+          stageMs,
           "auto-review"
         );
         completedStages.push("review");
@@ -6683,9 +6742,16 @@ async function runAutoPipeline(options) {
           reviewFindings = parsed.findings;
           reviewFindingCount = reviewFindings.length;
         }
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "review",
+          suffix: "done",
+          detail: `verdict=${reviewVerdict} findings=${reviewFindingCount}`
+        }));
         if (reviewFindings.length > 0) {
           logEvent(session, formatPipelineEvent(session, { stage: "fix" }));
           logNdjson(session, "PIPELINE_STAGE", null, { stage: "fix", findingCount: reviewFindings.length });
+          const diffBeforeFix = captureGitDiff(cwd2, session);
+          const filesBeforeFix = new Set(diffBeforeFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]));
           const fixPrompt = buildFixPrompt(reviewFindings);
           await withTimeout(
             runAppServerTurn2(cwd2, {
@@ -6698,18 +6764,30 @@ async function runAutoPipeline(options) {
               }),
               sandboxPolicy: buildSandboxPolicy("default", config)
             }),
-            STAGE_TIMEOUT_MS,
+            stageMs,
             "auto-fix"
           );
           completedStages.push("fix");
           checkPipelineTimeout();
-          captureGitDiff(cwd2, session);
+          const diffAfterFix = captureGitDiff(cwd2, session);
+          const filesAfterFix = diffAfterFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]);
+          fixFilesTouched = filesAfterFix.filter((f) => !filesBeforeFix.has(f));
+          logEvent(session, formatPipelineEvent(session, {
+            stage: "fix",
+            suffix: "done",
+            detail: fixFilesTouched.length ? `files=${JSON.stringify(fixFilesTouched.slice(0, 10))}${fixFilesTouched.length > 10 ? ` (+${fixFilesTouched.length - 10} more)` : ""}` : "files=[]"
+          }));
         }
       } catch (error) {
         if (error instanceof TimeoutError) {
           throw error;
         }
         logNdjson(session, "PIPELINE_ERROR", null, { stage: "review", error: error.message });
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "review",
+          suffix: "failed",
+          detail: error.message ?? "review failed"
+        }));
         completedStages.push("review-failed");
       }
     }
@@ -6730,7 +6808,7 @@ async function runAutoPipeline(options) {
             sandboxPolicy: { type: "readOnly" },
             outputSchema: COMPLETION_CHECK_SCHEMA
           }),
-          STAGE_TIMEOUT_MS,
+          stageMs,
           "completion-check"
         );
         completedStages.push("check");
@@ -6759,11 +6837,21 @@ async function runAutoPipeline(options) {
             summary: "completion-check inconclusive"
           };
         }
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "check",
+          suffix: "done",
+          detail: `complete=${Boolean(completionResult.complete)}${Array.isArray(completionResult.missing_items) && completionResult.missing_items.length ? ` missing=${completionResult.missing_items.length}` : ""}`
+        }));
       } catch (error) {
         if (error instanceof TimeoutError) {
           throw error;
         }
         logNdjson(session, "PIPELINE_ERROR", null, { stage: "check", error: error.message });
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "check",
+          suffix: "failed",
+          detail: error.message ?? "check failed"
+        }));
         completedStages.push("check-failed");
       }
     }
@@ -6793,18 +6881,25 @@ async function runAutoPipeline(options) {
     logNdjson(session, "PIPELINE_COMPLETE", null, {
       completedStages,
       duration,
-      complete: completionResult.complete
+      complete: completionResult.complete,
+      touchedFiles: fixFilesTouched
     });
+    logEvent(session, formatPipelineEvent(session, {
+      stage: "pipeline",
+      suffix: "done",
+      detail: `stages=${completedStages.join(",")} complete=${Boolean(completionResult.complete)} touched=${fixFilesTouched.length}`
+    }));
     return {
       complete: completionResult.complete,
       completedStages,
       duration,
-      diff: finalDiff
+      diff: finalDiff,
+      touchedFiles: fixFilesTouched
     };
   } catch (error) {
     const duration = Math.round((Date.now() - startTime) / 1e3);
     const errorCode = error instanceof TimeoutError ? "ClientTimeout" : "PipelineError";
-    const errorMessage = error instanceof PipelineTimeoutError ? `Auto-pipeline exceeded ${fmtSeconds(PIPELINE_TIMEOUT_MS)}. Completed stages: ${completedStages.join(", ")}` : error.message;
+    const errorMessage = error instanceof PipelineTimeoutError ? `Auto-pipeline exceeded ${fmtSeconds(totalMs)}. Completed stages: ${completedStages.join(", ")}` : error.message;
     let finalDiff;
     try {
       finalDiff = captureGitDiff(cwd2, session);
@@ -6825,13 +6920,20 @@ async function runAutoPipeline(options) {
       completedStages,
       duration,
       error: errorMessage,
-      origin
+      origin,
+      touchedFiles: fixFilesTouched
     });
+    logEvent(session, formatPipelineEvent(session, {
+      stage: "pipeline",
+      suffix: "failed",
+      detail: `at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+    }));
     return {
       complete: false,
       completedStages,
       duration,
-      error: errorMessage
+      error: errorMessage,
+      touchedFiles: fixFilesTouched
     };
   }
 }
@@ -6861,8 +6963,8 @@ var TimeoutError = class extends Error {
   }
 };
 var PipelineTimeoutError = class extends TimeoutError {
-  constructor(completedStages) {
-    super("auto-pipeline", PIPELINE_TIMEOUT_MS);
+  constructor(completedStages, timeoutMs = PIPELINE_TIMEOUT_MS_DEFAULT) {
+    super("auto-pipeline", timeoutMs);
     this.completedStages = completedStages;
   }
 };
@@ -7058,6 +7160,17 @@ function getBridgeConfig(cwd2 = null, workspaceRoot = null) {
   }
   return loadConfig(ROOT_DIR, cwd2, workspaceRoot);
 }
+function appendTaskFooter(rendered, { jobId, eventsPath, monitorCommand }) {
+  if (!jobId) return rendered;
+  const base = rendered.endsWith("\n") ? rendered : `${rendered}
+`;
+  const parts = [`Job: ${jobId}`];
+  if (eventsPath) parts.push(`Events: ${eventsPath}`);
+  if (monitorCommand) parts.push(`Monitor: ${monitorCommand}`);
+  return `${base}
+${parts.join(" \xB7 ")}
+`;
+}
 function buildMonitorHint({ eventsPath, jobId, threadId }) {
   const identifier = jobId ?? threadId;
   if (!identifier) return null;
@@ -7135,7 +7248,7 @@ function extractItemText(item) {
 }
 var COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -7146,7 +7259,7 @@ var COMMANDS = Object.freeze({
     ]
   },
   send: {
-    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--json] [prompt or file.md]",
+    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--quiet] [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task.",
     examples: [
       'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --mode default "Implement the plan."',
@@ -7188,7 +7301,7 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    synopsis: "status [job-id] [--all] [--wait] [--prune-orphans|--cleanup] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
     summary: "List jobs, or inspect one by id. With --wait, poll until the job reaches a terminal state.",
     examples: [
       "codex-bridge status",
@@ -7425,7 +7538,7 @@ async function handleSetup(argv) {
     startedAt
   });
 }
-var BRIDGE_VERSION = "1.2.3";
+var BRIDGE_VERSION = package_default.version;
 var BRIDGE_SCHEMA_VERSION = "1.0";
 var BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -7963,13 +8076,15 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   if (!resumeLast && String(prompt ?? "").includes(STOP_REVIEW_TASK_MARKER)) {
     return {
       title: "Codex Stop Gate Review",
-      summary: "Stop-gate review of previous Claude turn"
+      summary: "Stop-gate review of previous Claude turn",
+      kindLabel: "rescue-review"
     };
   }
   const title = resumeLast ? "Codex Resume" : "Codex Task";
   const fallbackSummary = resumeLast ? DEFAULT_CONTINUE_PROMPT : "Task";
   return {
     title,
+    kindLabel: "task",
     summary: shorten2(prompt || fallbackSummary)
   };
 }
@@ -7981,13 +8096,15 @@ function getJobKindLabel(kind, jobClass) {
   if (kind === "adversarial-review") {
     return "adversarial-review";
   }
-  return jobClass === "review" ? "review" : "rescue";
+  if (jobClass === "review") return "review";
+  if (jobClass === "task") return "task";
+  return "job";
 }
-function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false }) {
+function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, kindLabel, summary, write = false }) {
   return createJobRecord({
     id: generateJobId(prefix),
     kind,
-    kindLabel: getJobKindLabel(kind, jobClass),
+    kindLabel: kindLabel ?? getJobKindLabel(kind, jobClass),
     title,
     workspaceRoot,
     jobClass,
@@ -8014,11 +8131,29 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
     title: taskMetadata.title,
     workspaceRoot,
     jobClass: "task",
+    kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
     write
   });
 }
-function buildTaskRequest({ cwd: cwd2, model, effort, prompt, write, resumeLast, jobId, mode }) {
+function buildTaskRequest({
+  cwd: cwd2,
+  model,
+  effort,
+  prompt,
+  write,
+  resumeLast,
+  jobId,
+  mode,
+  idleTimeoutMs,
+  noPipeline,
+  turnPlanMs,
+  turnDefaultMs,
+  pipelineStageMs,
+  pipelineTotalMs,
+  questionAnswerMs
+}) {
+  const opt = (n) => Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null;
   return {
     cwd: cwd2,
     model,
@@ -8027,7 +8162,14 @@ function buildTaskRequest({ cwd: cwd2, model, effort, prompt, write, resumeLast,
     write,
     resumeLast,
     jobId,
-    mode: mode ?? null
+    mode: mode ?? null,
+    idleTimeoutMs: opt(idleTimeoutMs),
+    turnPlanMs: opt(turnPlanMs),
+    turnDefaultMs: opt(turnDefaultMs),
+    pipelineStageMs: opt(pipelineStageMs),
+    pipelineTotalMs: opt(pipelineTotalMs),
+    questionAnswerMs: opt(questionAnswerMs),
+    noPipeline: Boolean(noPipeline)
   };
 }
 function readTaskPrompt(cwd2, options, positionals) {
@@ -8065,6 +8207,16 @@ function requireTaskRequest(prompt, resumeLast) {
       'Example: `codex-bridge task --write "Fix the auth bug"`'
     );
   }
+}
+function parsePositiveMsOption(flagName, raw) {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw usageError(
+      `${flagName} must be a positive number of milliseconds, got ${JSON.stringify(raw)}`
+    );
+  }
+  return n;
 }
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
@@ -8246,8 +8398,17 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       config
     ),
     effort: isPlanMode ? "xhigh" : request.effort ?? config.effort ?? "high",
-    turnTimeoutMs: isPlanMode ? 3e5 : 6e5,
-    idleTimeoutMs: 12e4,
+    // Turn timeout resolution (most specific wins): CLI flag → config.yaml
+    // key → built-in default. Plan and execute turns use separate budgets
+    // because plan is a bounded reasoning exercise while execute spans the
+    // actual code changes. Pre-1.2.5 these were hard-coded (300 000 / 600 000);
+    // large scaffolds legitimately needed more than 10 min of execute time
+    // and were getting interrupted.
+    turnTimeoutMs: isPlanMode ? request.turnPlanMs ?? (Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : 3e5) : request.turnDefaultMs ?? (Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : 6e5),
+    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
+    // → 300_000 fallback. 300s default covers reasoning-heavy turns between
+    // `item.completed` notifications; see config.mjs DEFAULT_CONFIG comment.
+    idleTimeoutMs: Number(request.idleTimeoutMs) > 0 ? Number(request.idleTimeoutMs) : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 3e5,
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
       breakerState.recent.length = 0;
@@ -8325,7 +8486,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         scriptPath: SCRIPT_PATH
       }));
       logNdjson(session2, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
-      waitForResponse(sessionDir, threadId, 3e5, internalId).then((response) => {
+      const questionTimeoutMs = request.questionAnswerMs ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : 3e5);
+      waitForResponse(sessionDir, threadId, questionTimeoutMs, internalId).then((response) => {
         clearPendingRequest(sessionDir, threadId);
         if (response && response.payload) {
           message._client?.sendMessage?.({ id: message.id, result: response.payload });
@@ -8340,11 +8502,19 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   };
   const result = await executeTaskRun(bridgeRequest);
   const session = initSession(sessionDir, result.threadId);
+  const computedEventsPath = result.threadId ? path11.join(sessionDir, `${result.threadId}.events`) : null;
   const monitor = buildMonitorHint({
-    eventsPath: result.threadId ? path11.join(sessionDir, `${result.threadId}.events`) : null,
+    eventsPath: computedEventsPath,
     jobId: request.jobId ?? null,
     threadId: result.threadId ?? null
   });
+  if (request.jobId && result.rendered && typeof result.rendered === "string") {
+    result.rendered = appendTaskFooter(result.rendered, {
+      jobId: request.jobId,
+      eventsPath: computedEventsPath,
+      monitorCommand: monitor?.command ?? null
+    });
+  }
   logNdjson(session, "TURN_COMPLETED", "turn/completed", {
     turnId: result.turnId,
     status: result.exitStatus,
@@ -8356,6 +8526,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       ...result.payload,
       phase,
       next_action: nextAction,
+      eventsPath: computedEventsPath,
+      jobId: request.jobId ?? null,
       ...extras
     };
   };
@@ -8404,7 +8576,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     }, { planPath, planSteps: steps, monitor });
     return { ...result, session, planPath };
   }
-  if (result.exitStatus === 0 && (config.auto_review || config.post_task_prompt)) {
+  if (request.noPipeline) {
+    logNdjson(session, "PIPELINE_SKIPPED", null, { reason: "--no-pipeline flag" });
+  }
+  if (result.exitStatus === 0 && !request.noPipeline && (config.auto_review || config.post_task_prompt)) {
     const pipelineResult = await runAutoPipeline({
       session,
       threadId: result.threadId,
@@ -8414,7 +8589,13 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       rootDir: ROOT_DIR,
       runAppServerTurn,
       runAppServerReview,
-      jobId: request.jobId ?? null
+      jobId: request.jobId ?? null,
+      // Timeouts: CLI flag → config.yaml → built-in default, same pattern as
+      // the turn/idle budgets. runAutoPipeline treats `null` as "use your own
+      // resolution order" so we only pass resolved numbers when we have
+      // them.
+      stageTimeoutMs: request.pipelineStageMs ?? (Number(config.pipeline_stage_ms) > 0 ? Number(config.pipeline_stage_ms) : null),
+      totalTimeoutMs: request.pipelineTotalMs ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null)
     });
     if (pipelineResult?.complete === false) {
       const pipelineErrored = Boolean(pipelineResult.error);
@@ -8464,8 +8645,20 @@ function extractPlanSteps(planText) {
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "mode"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    valueOptions: [
+      "model",
+      "effort",
+      "cwd",
+      "prompt-file",
+      "mode",
+      "idle-timeout-ms",
+      "turn-plan-ms",
+      "turn-default-ms",
+      "pipeline-stage-timeout-ms",
+      "pipeline-total-timeout-ms",
+      "question-timeout-ms"
+    ],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
     aliasMap: {
       m: "model"
     }
@@ -8474,6 +8667,14 @@ async function handleTask(argv) {
   if (options.mode != null && !VALID_MODES.has(options.mode)) {
     throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
+  const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
+  const turnPlanOverride = parsePositiveMsOption("--turn-plan-ms", options["turn-plan-ms"]);
+  const turnDefaultOverride = parsePositiveMsOption("--turn-default-ms", options["turn-default-ms"]);
+  const pipelineStageOverride = parsePositiveMsOption("--pipeline-stage-timeout-ms", options["pipeline-stage-timeout-ms"]);
+  const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
+  const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
+  const noPipeline = Boolean(options["no-pipeline"]);
+  const quietMode = Boolean(options.quiet);
   const cwd2 = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model);
@@ -8504,7 +8705,14 @@ async function handleTask(argv) {
       write,
       resumeLast,
       jobId: job2.id,
-      mode: options.mode ?? null
+      mode: options.mode ?? null,
+      idleTimeoutMs: idleTimeoutOverride,
+      turnPlanMs: turnPlanOverride,
+      turnDefaultMs: turnDefaultOverride,
+      pipelineStageMs: pipelineStageOverride,
+      pipelineTotalMs: pipelineTotalOverride,
+      questionAnswerMs: questionTimeoutOverride,
+      noPipeline
     });
     const { payload } = enqueueBackgroundTask(cwd2, job2, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -8525,7 +8733,17 @@ async function handleTask(argv) {
       resumeLast,
       jobId: job.id,
       mode: options.mode ?? null,
-      onProgress: progress
+      idleTimeoutMs: idleTimeoutOverride,
+      turnPlanMs: turnPlanOverride,
+      turnDefaultMs: turnDefaultOverride,
+      pipelineStageMs: pipelineStageOverride,
+      pipelineTotalMs: pipelineTotalOverride,
+      questionAnswerMs: questionTimeoutOverride,
+      noPipeline,
+      // `--quiet` suppresses the stderr `[codex] …` progress stream so
+      // agents don't pattern-match a thread UUID out of it. Monitor /
+      // `events --follow` remain the canonical in-run observation surface.
+      onProgress: quietMode ? null : progress
     }),
     { json: options.json, startedAt, command: "task" }
   );
@@ -8590,9 +8808,17 @@ async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "all", "wait"]
+    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup"]
   });
   const cwd2 = resolveCommandCwd(options);
+  if (options["prune-orphans"] || options.cleanup) {
+    const pruneReport = pruneOrphanedJobs(cwd2);
+    emitSuccess("status", pruneReport, renderPruneOrphansReport(pruneReport), {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
   const reference = positionals[0] ?? "";
   if (reference) {
     const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd2, reference, {
@@ -8613,6 +8839,76 @@ async function handleStatus(argv) {
     json: options.json,
     startedAt
   });
+}
+function pruneOrphanedJobs(cwd2) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+  const jobs = listJobs(workspaceRoot);
+  const reaped = [];
+  const skipped = [];
+  const ts = (/* @__PURE__ */ new Date()).toISOString();
+  for (const job of jobs) {
+    const isActive = job.status === "running" || job.status === "queued";
+    if (!isActive) continue;
+    const pid = Number(job.pid);
+    if (!Number.isFinite(pid) || pid <= 0) {
+      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "no-pid"));
+      continue;
+    }
+    let alive = false;
+    try {
+      process8.kill(pid, 0);
+      alive = true;
+    } catch (err) {
+      if (err && err.code === "EPERM") {
+        alive = true;
+      }
+    }
+    if (alive) {
+      skipped.push({ id: job.id, pid, reason: "pid-alive" });
+    } else {
+      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "dead-pid"));
+    }
+  }
+  return { workspaceRoot, reaped, skipped, reapedCount: reaped.length, skippedCount: skipped.length, ts };
+}
+function finalizeOrphan(workspaceRoot, job, ts, reason) {
+  const record = {
+    ...job,
+    status: "orphaned",
+    phase: "orphaned",
+    pid: null,
+    completedAt: ts,
+    errorMessage: `Reaped by status --prune-orphans at ${ts} (${reason}).`
+  };
+  writeJobFile(workspaceRoot, job.id, record);
+  upsertJob(workspaceRoot, {
+    id: job.id,
+    status: "orphaned",
+    phase: "orphaned",
+    pid: null,
+    completedAt: ts,
+    errorMessage: record.errorMessage
+  });
+  return { id: job.id, previousStatus: job.status, reason, pid: job.pid ?? null };
+}
+function renderPruneOrphansReport(report) {
+  if (report.reapedCount === 0 && report.skippedCount === 0) {
+    return "No active jobs to inspect \u2014 state is clean.\n";
+  }
+  const lines = [];
+  if (report.reapedCount === 0) {
+    lines.push(`No orphans: ${report.skippedCount} active job(s), all backed by live PIDs.`);
+  } else {
+    lines.push(`Reaped ${report.reapedCount} orphan(s) (status:"running"/"queued" with dead PIDs):`);
+    for (const entry of report.reaped) {
+      lines.push(`  - ${entry.id} (was ${entry.previousStatus}, ${entry.reason}, pid=${entry.pid ?? "null"})`);
+    }
+    if (report.skippedCount > 0) {
+      lines.push(`Kept ${report.skippedCount} active job(s) backed by live PIDs.`);
+    }
+  }
+  return `${lines.join("\n")}
+`;
 }
 function handleResult(argv) {
   const startedAt = Date.now();
@@ -8835,6 +9131,9 @@ async function handleEvents(argv) {
     return;
   }
   let timedOut = false;
+  let terminalTag = null;
+  let terminalLine = null;
+  const followStartMs = Date.now();
   await new Promise((resolve) => {
     let offset = initial.length;
     let watcher = null;
@@ -8866,7 +9165,11 @@ async function handleEvents(argv) {
         const line = lines[i];
         if (!line) continue;
         if (passes(line)) process8.stdout.write(line + "\n");
-        if (TERMINAL.test(line)) return finish("terminal");
+        if (TERMINAL.test(line)) {
+          terminalTag = TERMINAL.exec(line)[1];
+          terminalLine = line;
+          return finish("terminal");
+        }
       }
     };
     const attachWatcher = () => {
@@ -8920,7 +9223,15 @@ async function handleEvents(argv) {
       eventsPath,
       followed: true,
       filter: options.filter ?? null,
-      timedOut
+      timedOut,
+      // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
+      // distinguish happy-path closure from timeout without re-reading the
+      // file. terminalTag is one of DONE / ERROR / INCOMPLETE on success,
+      // or null when the stream ended via timeout. elapsedMs measures
+      // follow duration only (not total job elapsed time).
+      terminalTag,
+      terminalLine,
+      elapsedMs: Date.now() - followStartMs
     },
     "",
     { json: options.json, startedAt }
@@ -9031,14 +9342,25 @@ function resolvePromptInput(options, positionals, cwd2) {
 }
 async function handleSend(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["mode", "effort", "cwd"],
-    booleanOptions: ["json", "wait"],
+    valueOptions: [
+      "mode",
+      "effort",
+      "cwd",
+      "idle-timeout-ms",
+      "turn-timeout-ms",
+      "question-timeout-ms"
+    ],
+    booleanOptions: ["json", "wait", "quiet"],
     aliasMap: { m: "mode" }
   });
   const VALID_MODES = /* @__PURE__ */ new Set(["plan", "default"]);
   if (options.mode != null && !VALID_MODES.has(options.mode)) {
     throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
+  const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
+  const turnTimeoutOverride = parsePositiveMsOption("--turn-timeout-ms", options["turn-timeout-ms"]);
+  const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
+  const quietMode = Boolean(options.quiet);
   const startedAt = Date.now();
   const rawThreadId = positionals[0];
   if (!rawThreadId) {
@@ -9057,6 +9379,7 @@ async function handleSend(argv) {
   const config = getBridgeConfig(cwd2);
   const modeOverride = options.mode;
   const sessionDir = resolveSessionDir(config.session_dir);
+  const sendIsPlanMode = modeOverride === "plan";
   const turnOptions = {
     resumeThreadId: threadId,
     prompt,
@@ -9064,7 +9387,14 @@ async function handleSend(argv) {
     effort: normalizeReasoningEffort(options.effort ?? config.effort),
     sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : void 0,
     onProgress: null,
-    idleTimeoutMs: 12e4,
+    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
+    // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
+    idleTimeoutMs: idleTimeoutOverride != null ? idleTimeoutOverride : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 3e5,
+    // Turn timeout: per-invocation override > the mode-appropriate config key
+    // (turn_plan_ms for plan-mode sends, turn_default_ms otherwise) > built-in
+    // default. `send` gets a single --turn-timeout-ms flag that maps onto the
+    // right budget based on the resolved mode.
+    turnTimeoutMs: turnTimeoutOverride ?? (sendIsPlanMode ? Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : 3e5 : Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : 6e5),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
       logNdjson(s, "TURN_PARAMS", "turn/start", {
@@ -9315,6 +9645,51 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   events: handleEvents,
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel
+});
+process8.on("SIGPIPE", () => {
+});
+process8.stdout.on("error", (err) => {
+  if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+  throw err;
+});
+process8.stderr.on("error", (err) => {
+  if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+  throw err;
+});
+function writeCrashLog(kind, error) {
+  try {
+    const crashDir = path11.join(os6.homedir(), ".codex-bridge", "crashes");
+    fs13.mkdirSync(crashDir, { recursive: true });
+    const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+    const file = path11.join(crashDir, `${ts}-${process8.pid}.log`);
+    const payload = {
+      kind,
+      ts,
+      pid: process8.pid,
+      argv: process8.argv,
+      cwd: process8.cwd(),
+      nodeVersion: process8.version,
+      bridgeVersion: package_default.version,
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
+    };
+    fs13.writeFileSync(file, JSON.stringify(payload, null, 2));
+    try {
+      process8.stderr.write(
+        `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
+`
+      );
+    } catch {
+    }
+  } catch {
+  }
+}
+process8.on("unhandledRejection", (reason) => {
+  writeCrashLog("unhandledRejection", reason);
+  process8.exitCode = process8.exitCode || 1;
+});
+process8.on("uncaughtException", (err) => {
+  writeCrashLog("uncaughtException", err);
+  process8.exit(process8.exitCode || 1);
 });
 async function main() {
   const startedAt = Date.now();

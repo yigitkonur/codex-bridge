@@ -100,13 +100,26 @@ Session:
 ```
 Thread IDs are UUID v7; truncate for display as needed. The `events` subcommand accepts either the job id or the thread id.
 
+## When NOT to use Monitor
+
+Monitor is specifically bound to **codex-bridge `.events` files and their terminal-tag vocabulary** (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[PIPELINE:…]`). Re-arming Monitor for a foreign process whose stdout does *not* emit those tags will only ever time out — the filter never matches, so Monitor waits the full `timeout_ms` and then reports `stream ended`. Agents that re-arm Monitor 4–8 times on a single `xcodebuild` / `npm test` / `pytest` run burn orchestrator turns and learn nothing beyond "command eventually finished."
+
+| Situation | Use this |
+|---|---|
+| Codex task is running in the background, you need to know when it reaches a terminal tag | Monitor (canonical) |
+| `xcodebuild` / `npm test` / `cargo build` / `pytest` / any foreign long command | `Bash` with `run_in_background: true` + block on exit, or `Bash` with a reasonable `timeout` |
+| Polling a file for content (not a terminal tag) | Plain `Bash` loop (e.g. `until [ -s path ]; do sleep 1; done`) |
+| Watching the repo for diff-level changes made by pipeline | `events --follow --filter PIPELINE` (symmetric `:done` tags as of 1.2.5) |
+
+The rule: if the thing you're watching doesn't write to `~/.codex-bridge/sessions/<threadId>.events` with one of the recognized tags, Monitor is the wrong tool.
+
 ## Stopping a Monitor
 
 - Terminal tag ([DONE]/[ERROR]/[INCOMPLETE]) → self-terminates via `break`
 - TaskStop → kill by task ID
 - Session end → all monitors die
 - Auto-kill for volume → restart with tighter filter
-- **Timeout (no terminal tag)** → Monitor times out after `timeout_ms`. Use 600000 (10 min) as safety net. The bridge's own 120 s idle watchdog usually surfaces a `[ERROR] … | ClientTimeout` first; if Monitor is silent past ~3 min assume a deeper stall and `status`/`cancel` the job.
+- **Timeout (no terminal tag)** → Monitor times out after `timeout_ms`. Use 600000 (10 min) as safety net. The bridge's own idle watchdog (default **300 s**, configurable via `idle_timeout_ms` config key or `--idle-timeout-ms` flag) usually surfaces a `[ERROR] … | ClientTimeout` first; if Monitor is silent past ~6 min assume a deeper stall and `status`/`cancel` the job.
 
 ## When No Events Arrive
 

@@ -2,6 +2,11 @@
 
 Codex-bridge maps every failure to a semantic exit code and a structured error envelope so an agent can branch on `$?` before parsing stdout.
 
+## Environment gotchas
+
+- **Claude Code + Xcode `build.db` I/O errors.** When running `xcodebuild` from inside a Claude Code session on macOS, the sandbox around DerivedData intermittently returns `disk I/O error` on the build database. The workaround is to put DerivedData **outside** the workspace: `xcodebuild -derivedDataPath /tmp/<project>-dd …`. Never use the default workspace-side `DerivedData/` from inside Claude Code. Not a codex-bridge issue; hits every macOS user of the skill eventually.
+- **XcodeGen / protoc / prisma / other generator outputs are not deterministic across re-runs.** If your verification step re-runs the generator and then compares diffs, you'll see phantom "pipeline rewrote my files" warnings that are actually just generator ordering noise. See orchestration-flows.md → "Post-[DONE] checklist" item 4.
+
 ## Exit Code → Action
 
 | `$?` | Class | Retry? | Agent action |
@@ -86,13 +91,15 @@ Codex app-server process exited unexpectedly.
 
 ## Timeout Values
 
-| Phase | Timeout |
-|-------|---------|
-| Plan turn | 5 minutes (`turnTimeoutMs = 300_000` when `mode: plan`) |
-| Execution turn | 10 minutes (`turnTimeoutMs = 600_000` when `mode: default`) |
-| Question unanswered | 5 minutes — auto-answers with `{answers: {}}` (`DEFAULT_QUESTION_TIMEOUT_MS` in `src/lib/pending-requests.mjs`) |
-| Auto-pipeline per-stage (review / fix / check) | 5 minutes each (`STAGE_TIMEOUT_MS = 300_000` in `src/lib/auto-pipeline.mjs`) |
-| Auto-pipeline total | 15 minutes (`PIPELINE_TIMEOUT_MS = 900_000`) |
-| No-event idle | 2 minutes (`idleTimeoutMs = 120_000`, per-turn) |
+Every budget is configurable. Resolution order for each: CLI flag → `config.yaml` key → built-in default. Malformed values throw usage (exit 2) rather than silent fallback.
+
+| Phase | Default | Config key | CLI flag |
+|-------|---------|------------|----------|
+| Plan turn | 5 min (300 000 ms) | `turn_plan_ms` | `--turn-plan-ms` |
+| Execution turn | 10 min (600 000 ms) | `turn_default_ms` | `--turn-default-ms` |
+| Question unanswered (auto-answers with `{answers: {}}`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
+| Auto-pipeline per-stage (review / fix / check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
+| Auto-pipeline total | 15 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
+| No-event idle (per-turn) | 5 min (300 000 ms) | `idle_timeout_ms` | `--idle-timeout-ms` |
 
 A timeout fires a `ClientTimeout` error to the events file as `[ERROR] {threadId} failed | ClientTimeout`. The rendered message uses seconds/minutes (`Xs` under 60 s, `Xm` for whole minutes, `XmYYs` for mixed — e.g. `auto-review exceeded 5m`, `auto-fix exceeded 7m30s`). The underlying `TimeoutError` instance preserves the raw `timeoutMs` integer as a field — machine consumers should read `.timeoutMs` rather than parse the string. Every `[ERROR]` block also carries an `origin:` line (`turn` or `pipeline:<stage>`); pipeline-origin timeouts may coexist with a success envelope whose `phase: "incomplete"`.

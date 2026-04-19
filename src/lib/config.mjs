@@ -40,6 +40,35 @@ const DEFAULT_CONFIG = {
   // config-reference.md for the threshold, family list, and enhancement
   // candidates.
   command_failure_circuit_breaker: true,
+  // Max wall-clock gap between app-server notifications before a turn is
+  // declared stuck and failed with `ClientTimeout`. The prior 120s hard-code
+  // was tuned for execute-heavy turns and would false-positive during
+  // reasoning-heavy windows (e.g. Codex planning across many files between
+  // `item.completed` notifications). 300s covers observed reasoning gaps
+  // without masking genuine stalls. Override per-project in config.yaml;
+  // per-invocation override via `--idle-timeout-ms <ms>` on `task` / `send`.
+  idle_timeout_ms: 300_000,
+  // Wall-clock ceiling per Codex turn, distinct from the idle gap. Plan
+  // turns get a shorter budget because they're bounded reasoning jobs;
+  // execute turns need more because they actually change code. Both are
+  // overridable via --turn-plan-ms / --turn-default-ms on task (or
+  // --turn-timeout-ms on send, which resolves to the applicable one). Pre-
+  // 1.2.5 these were hard-coded; a big scaffold that legitimately needed
+  // >10 min (e.g. a multi-file Swift/Xcode bootstrap with SPM resolution)
+  // hit the ceiling and Codex was interrupted mid-task.
+  turn_plan_ms: 300_000,
+  turn_default_ms: 600_000,
+  // Auto-pipeline budgets — per-stage (review / fix / check) and total.
+  // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
+  // on ~60-file diffs could blow the stage ceiling without any escape hatch.
+  pipeline_stage_ms: 300_000,
+  pipeline_total_ms: 900_000,
+  // How long `requestUserInput` waits for a human/orchestrator to answer
+  // before auto-answering `{answers: {}}`. Five minutes is tight for
+  // thoughtful decisions; make it configurable so a slow loop (human in a
+  // meeting, or a subagent orchestrator with its own deliberation latency)
+  // isn't silently coerced into a no-op answer.
+  question_answer_ms: 300_000,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 

@@ -1,8 +1,18 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+// Single source of truth for the bridge version: package.json. esbuild inlines
+// the JSON content into the bundled distributable at build time, so the
+// installed skill/scripts/bundle stays in sync with the published version
+// without a manual string sweep. Pre-1.2.5 the version was hard-coded here at
+// line ~620 and drifted (package.json bumped to 1.2.4 while the const still
+// read "1.2.3"), causing `version --json` and the update checker to report a
+// stale number.
+import packageJson from "../package.json" with { type: "json" };
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
@@ -207,6 +217,22 @@ function getBridgeConfig(cwd = null, workspaceRoot = null) {
 // (stable, filtered) over raw `tail -f`. `eventsPath` may be null when the
 // thread id isn't known yet (background launches); in that case the shell
 // fallback is omitted but the CLI command still works via the job id.
+// Appends a single-line handle footer to a rendered task result. Non-JSON
+// foreground output previously surfaced only Codex's finalMessage, which gave
+// orchestrators no visible jobId / events path — agents often grabbed the
+// thread UUID from stderr `[codex] Thread ready (…)` progress lines because
+// that was the most distinctive token they could see. The footer prints the
+// canonical ids + a ready-to-paste `events` command so orchestrators can
+// pick up the right handle without a `--json` + `jq` dance.
+function appendTaskFooter(rendered, { jobId, eventsPath, monitorCommand }) {
+  if (!jobId) return rendered;
+  const base = rendered.endsWith("\n") ? rendered : `${rendered}\n`;
+  const parts = [`Job: ${jobId}`];
+  if (eventsPath) parts.push(`Events: ${eventsPath}`);
+  if (monitorCommand) parts.push(`Monitor: ${monitorCommand}`);
+  return `${base}\n${parts.join(" · ")}\n`;
+}
+
 function buildMonitorHint({ eventsPath, jobId, threadId }) {
   const identifier = jobId ?? threadId;
   if (!identifier) return null;
@@ -297,7 +323,7 @@ function extractItemText(item) {
 // table as the CLI contract and update it in the same commit as any flag move.
 const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -308,7 +334,7 @@ const COMMANDS = Object.freeze({
     ]
   },
   send: {
-    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--json] [prompt or file.md]",
+    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--quiet] [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task.",
     examples: [
       'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --mode default "Implement the plan."',
@@ -350,7 +376,7 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    synopsis: "status [job-id] [--all] [--wait] [--prune-orphans|--cleanup] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
     summary: "List jobs, or inspect one by id. With --wait, poll until the job reaches a terminal state.",
     examples: [
       "codex-bridge status",
@@ -617,7 +643,7 @@ async function handleSetup(argv) {
   });
 }
 
-const BRIDGE_VERSION = "1.2.3";
+const BRIDGE_VERSION = packageJson.version;
 const BRIDGE_SCHEMA_VERSION = "1.0";
 const BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -1260,9 +1286,16 @@ function buildReviewJobMetadata(reviewName, target) {
 
 function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   if (!resumeLast && String(prompt ?? "").includes(STOP_REVIEW_TASK_MARKER)) {
+    // The stop-gate-review job is the only "rescue" surface: it's spawned by
+    // the session-stop hook to verify the prior Claude turn before exit.
+    // Pre-1.2.5 this label was applied to every user task as well, which
+    // misled agents reading `status` into thinking the job was auto-created
+    // to recover from something. Post-1.2.5 only stop-gate jobs carry
+    // `kindLabel: "rescue-review"`; normal user tasks carry "task".
     return {
       title: "Codex Stop Gate Review",
-      summary: "Stop-gate review of previous Claude turn"
+      summary: "Stop-gate review of previous Claude turn",
+      kindLabel: "rescue-review"
     };
   }
 
@@ -1270,6 +1303,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   const fallbackSummary = resumeLast ? DEFAULT_CONTINUE_PROMPT : "Task";
   return {
     title,
+    kindLabel: "task",
     summary: shorten(prompt || fallbackSummary)
   };
 }
@@ -1282,14 +1316,18 @@ function getJobKindLabel(kind, jobClass) {
   if (kind === "adversarial-review") {
     return "adversarial-review";
   }
-  return jobClass === "review" ? "review" : "rescue";
+  if (jobClass === "review") return "review";
+  if (jobClass === "task") return "task";
+  // Historical fallthrough — callers pass a kindLabel explicitly now. This
+  // only triggers for legacy job records that predate 1.2.5.
+  return "job";
 }
 
-function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false }) {
+function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, kindLabel, summary, write = false }) {
   return createJobRecord({
     id: generateJobId(prefix),
     kind,
-    kindLabel: getJobKindLabel(kind, jobClass),
+    kindLabel: kindLabel ?? getJobKindLabel(kind, jobClass),
     title,
     workspaceRoot,
     jobClass,
@@ -1320,12 +1358,18 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
     title: taskMetadata.title,
     workspaceRoot,
     jobClass: "task",
+    kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
     write
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId, mode }) {
+function buildTaskRequest({
+  cwd, model, effort, prompt, write, resumeLast, jobId, mode,
+  idleTimeoutMs, noPipeline,
+  turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs
+}) {
+  const opt = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null);
   return {
     cwd,
     model,
@@ -1334,7 +1378,14 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     write,
     resumeLast,
     jobId,
-    mode: mode ?? null
+    mode: mode ?? null,
+    idleTimeoutMs: opt(idleTimeoutMs),
+    turnPlanMs: opt(turnPlanMs),
+    turnDefaultMs: opt(turnDefaultMs),
+    pipelineStageMs: opt(pipelineStageMs),
+    pipelineTotalMs: opt(pipelineTotalMs),
+    questionAnswerMs: opt(questionAnswerMs),
+    noPipeline: Boolean(noPipeline)
   };
 }
 
@@ -1376,6 +1427,27 @@ function requireTaskRequest(prompt, resumeLast) {
       "Example: `codex-bridge task --write \"Fix the auth bug\"`"
     );
   }
+}
+
+// Parse a positive-milliseconds CLI flag. Returns null when unset (so callers
+// fall through to config → built-in default). Throws `usage` (exit 2) on a
+// malformed value rather than silently ignoring it, so users notice typos
+// immediately. The flag name is baked into the error message for grep-ability.
+function parsePositiveMsOption(flagName, raw) {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw usageError(
+      `${flagName} must be a positive number of milliseconds, got ${JSON.stringify(raw)}`
+    );
+  }
+  return n;
+}
+
+// Back-compat shim so callers that still reference the old helper keep
+// working. Delete in a future version once all call sites migrate.
+function parseIdleTimeoutMsOption(raw) {
+  return parsePositiveMsOption("--idle-timeout-ms", raw);
 }
 
 async function runForegroundCommand(job, runner, options = {}) {
@@ -1649,8 +1721,21 @@ async function runBridgeTask(request) {
       config
     ),
     effort: isPlanMode ? "xhigh" : (request.effort ?? config.effort ?? "high"),
-    turnTimeoutMs: isPlanMode ? 300_000 : 600_000,
-    idleTimeoutMs: 120_000,
+    // Turn timeout resolution (most specific wins): CLI flag → config.yaml
+    // key → built-in default. Plan and execute turns use separate budgets
+    // because plan is a bounded reasoning exercise while execute spans the
+    // actual code changes. Pre-1.2.5 these were hard-coded (300 000 / 600 000);
+    // large scaffolds legitimately needed more than 10 min of execute time
+    // and were getting interrupted.
+    turnTimeoutMs: isPlanMode
+      ? (request.turnPlanMs ?? (Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : 300_000))
+      : (request.turnDefaultMs ?? (Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : 600_000)),
+    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
+    // → 300_000 fallback. 300s default covers reasoning-heavy turns between
+    // `item.completed` notifications; see config.mjs DEFAULT_CONFIG comment.
+    idleTimeoutMs: Number(request.idleTimeoutMs) > 0
+      ? Number(request.idleTimeoutMs)
+      : (Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 300_000),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
       // Reset per-turn circuit-breaker state. A fresh turn starts with no
@@ -1765,7 +1850,11 @@ async function runBridgeTask(request) {
       // Poll for response file (blocks until respond CLI writes it or timeout).
       // Pass `internalId` so stale responses from a previous question on this
       // thread are discarded instead of delivered to the new RPC request.
-      waitForResponse(sessionDir, threadId, 300_000, internalId).then((response) => {
+      // Resolution: --question-timeout-ms flag → config.question_answer_ms →
+      // 300 000 ms default. Request carries the resolved override.
+      const questionTimeoutMs = request.questionAnswerMs
+        ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : 300_000);
+      waitForResponse(sessionDir, threadId, questionTimeoutMs, internalId).then((response) => {
         clearPendingRequest(sessionDir, threadId);
         if (response && response.payload) {
           // Send response on the SAME connection that received the request
@@ -1789,11 +1878,29 @@ async function runBridgeTask(request) {
 
   // Ready-to-paste Monitor hint — computed once, attached to every setPhase
   // branch below so synchronous callers never have to assemble one.
+  const computedEventsPath = result.threadId ? path.join(sessionDir, `${result.threadId}.events`) : null;
   const monitor = buildMonitorHint({
-    eventsPath: result.threadId ? path.join(sessionDir, `${result.threadId}.events`) : null,
+    eventsPath: computedEventsPath,
     jobId: request.jobId ?? null,
     threadId: result.threadId ?? null
   });
+
+  // Non-JSON foreground footer. Append a single handle-advertising line so
+  // agents reading the rendered output in stdout see the canonical jobId +
+  // events path + ready-to-paste Monitor command, instead of reaching for the
+  // threadId pattern-matched from `[codex] Thread ready (…)` stderr lines.
+  // Pre-1.2.5 the rendered output was just Codex's finalMessage, with no
+  // handle surfaced — round-1 and round-2 delegations both showed agents
+  // grabbing the thread UUID from stderr progress because nothing else stood
+  // out. Prepending a trailing footer gives the orchestrator the right id
+  // without having to run `--json` + `jq`.
+  if (request.jobId && result.rendered && typeof result.rendered === "string") {
+    result.rendered = appendTaskFooter(result.rendered, {
+      jobId: request.jobId,
+      eventsPath: computedEventsPath,
+      monitorCommand: monitor?.command ?? null
+    });
+  }
 
   // Log turn completion. Note: `result` here is executeTaskRun's return, which
   // exposes the upstream turn status as `exitStatus` and puts `touchedFiles`
@@ -1808,11 +1915,19 @@ async function runBridgeTask(request) {
   // V10.1: every return branch decorates `result.payload` with `phase` and
   // `next_action` so a synchronous `task --json` caller knows what to do next
   // without tailing `.events`.
+  //
+  // 1.2.5 additionally promotes `eventsPath` and `jobId` to payload
+  // top-level. Previously the events file location was only reachable by
+  // regex-parsing `payload.monitor.command`, which forced scripts to
+  // string-slice CLI strings to find their own session-log file. Promoting
+  // saves every caller the regex (see D6 in plan).
   const setPhase = (phase, nextAction, extras = {}) => {
     result.payload = {
       ...result.payload,
       phase,
       next_action: nextAction,
+      eventsPath: computedEventsPath,
+      jobId: request.jobId ?? null,
       ...extras
     };
   };
@@ -1881,8 +1996,16 @@ async function runBridgeTask(request) {
     return { ...result, session, planPath };
   }
 
-  // If execution completed (not plan), run auto-pipeline
-  if (result.exitStatus === 0 && (config.auto_review || config.post_task_prompt)) {
+  // If execution completed (not plan), run auto-pipeline. `--no-pipeline`
+  // from the caller short-circuits the pipeline entirely — useful when the
+  // orchestrator owns completion checking or simply wants a single-turn
+  // execute with no silent review/fix passes behind it. Equivalent to
+  // setting auto_review:false AND post_task_prompt:"" for this one run,
+  // without requiring a config.yaml edit.
+  if (request.noPipeline) {
+    logNdjson(session, "PIPELINE_SKIPPED", null, { reason: "--no-pipeline flag" });
+  }
+  if (result.exitStatus === 0 && !request.noPipeline && (config.auto_review || config.post_task_prompt)) {
     const pipelineResult = await runAutoPipeline({
       session,
       threadId: result.threadId,
@@ -1893,6 +2016,14 @@ async function runBridgeTask(request) {
       runAppServerTurn,
       runAppServerReview,
       jobId: request.jobId ?? null,
+      // Timeouts: CLI flag → config.yaml → built-in default, same pattern as
+      // the turn/idle budgets. runAutoPipeline treats `null` as "use your own
+      // resolution order" so we only pass resolved numbers when we have
+      // them.
+      stageTimeoutMs: request.pipelineStageMs
+        ?? (Number(config.pipeline_stage_ms) > 0 ? Number(config.pipeline_stage_ms) : null),
+      totalTimeoutMs: request.pipelineTotalMs
+        ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null),
     });
     if (pipelineResult?.complete === false) {
       // Branch on whether the pipeline FINISHED incomplete (Codex's check
@@ -1959,8 +2090,14 @@ function extractPlanSteps(planText) {
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "mode"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    valueOptions: [
+      "model", "effort", "cwd", "prompt-file", "mode",
+      "idle-timeout-ms",
+      "turn-plan-ms", "turn-default-ms",
+      "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
+      "question-timeout-ms"
+    ],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
     aliasMap: {
       m: "model"
     }
@@ -1970,6 +2107,19 @@ async function handleTask(argv) {
   if (options.mode != null && !VALID_MODES.has(options.mode)) {
     throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
+
+  // Resolve every timeout-flag up front so callers see usage errors for
+  // malformed values instead of silent fallback. Every unset flag is null,
+  // letting runBridgeTask / runAutoPipeline fall through to config.yaml →
+  // built-in default.
+  const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
+  const turnPlanOverride = parsePositiveMsOption("--turn-plan-ms", options["turn-plan-ms"]);
+  const turnDefaultOverride = parsePositiveMsOption("--turn-default-ms", options["turn-default-ms"]);
+  const pipelineStageOverride = parsePositiveMsOption("--pipeline-stage-timeout-ms", options["pipeline-stage-timeout-ms"]);
+  const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
+  const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
+  const noPipeline = Boolean(options["no-pipeline"]);
+  const quietMode = Boolean(options.quiet);
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
@@ -2006,7 +2156,14 @@ async function handleTask(argv) {
       write,
       resumeLast,
       jobId: job.id,
-      mode: options.mode ?? null
+      mode: options.mode ?? null,
+      idleTimeoutMs: idleTimeoutOverride,
+      turnPlanMs: turnPlanOverride,
+      turnDefaultMs: turnDefaultOverride,
+      pipelineStageMs: pipelineStageOverride,
+      pipelineTotalMs: pipelineTotalOverride,
+      questionAnswerMs: questionTimeoutOverride,
+      noPipeline
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -2029,7 +2186,17 @@ async function handleTask(argv) {
         resumeLast,
         jobId: job.id,
         mode: options.mode ?? null,
-        onProgress: progress
+        idleTimeoutMs: idleTimeoutOverride,
+        turnPlanMs: turnPlanOverride,
+        turnDefaultMs: turnDefaultOverride,
+        pipelineStageMs: pipelineStageOverride,
+        pipelineTotalMs: pipelineTotalOverride,
+        questionAnswerMs: questionTimeoutOverride,
+        noPipeline,
+        // `--quiet` suppresses the stderr `[codex] …` progress stream so
+        // agents don't pattern-match a thread UUID out of it. Monitor /
+        // `events --follow` remain the canonical in-run observation surface.
+        onProgress: quietMode ? null : progress
       }),
     { json: options.json, startedAt, command: "task" }
   );
@@ -2099,10 +2266,28 @@ async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "all", "wait"]
+    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup"]
   });
 
   const cwd = resolveCommandCwd(options);
+
+  // --prune-orphans / --cleanup: reap state-file ghosts (status:"running" or
+  // "queued" with a dead PID). Rescue rings accumulated in the stop-gate era
+  // required manual SQL-style edits; this subcommand drains them idempotently.
+  // See unexpected-bridge-observations/06-stop-gate-review-accumulates-orphaned-running-tasks.md
+  // for the original observation. Uses `process.kill(pid, 0)` as the liveness
+  // probe — throws ESRCH when the pid no longer resolves, EPERM when it
+  // does but we can't signal. Either outcome means "pid exists (or did)";
+  // only ESRCH is a clear reap signal.
+  if (options["prune-orphans"] || options.cleanup) {
+    const pruneReport = pruneOrphanedJobs(cwd);
+    emitSuccess("status", pruneReport, renderPruneOrphansReport(pruneReport), {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+
   const reference = positionals[0] ?? "";
   if (reference) {
     const snapshot = options.wait
@@ -2127,6 +2312,85 @@ async function handleStatus(argv) {
     json: options.json,
     startedAt
   });
+}
+
+// Reaps state-file ghost jobs (status:"running" or "queued" with a pid that
+// no longer resolves). Marks each with status:"orphaned" and an explanatory
+// errorMessage. Idempotent; safe to call repeatedly. Returns a summary
+// suitable for both JSON and rendered output.
+function pruneOrphanedJobs(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = listJobs(workspaceRoot);
+  const reaped = [];
+  const skipped = [];
+  const ts = new Date().toISOString();
+  for (const job of jobs) {
+    const isActive = job.status === "running" || job.status === "queued";
+    if (!isActive) continue;
+    const pid = Number(job.pid);
+    if (!Number.isFinite(pid) || pid <= 0) {
+      // Active status with no recorded PID — almost certainly a ghost.
+      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "no-pid"));
+      continue;
+    }
+    let alive = false;
+    try {
+      process.kill(pid, 0);
+      alive = true;
+    } catch (err) {
+      if (err && err.code === "EPERM") {
+        // PID exists, signal denied — treat as alive. Conservative: don't
+        // reap something we merely can't signal.
+        alive = true;
+      }
+    }
+    if (alive) {
+      skipped.push({ id: job.id, pid, reason: "pid-alive" });
+    } else {
+      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "dead-pid"));
+    }
+  }
+  return { workspaceRoot, reaped, skipped, reapedCount: reaped.length, skippedCount: skipped.length, ts };
+}
+
+function finalizeOrphan(workspaceRoot, job, ts, reason) {
+  const record = {
+    ...job,
+    status: "orphaned",
+    phase: "orphaned",
+    pid: null,
+    completedAt: ts,
+    errorMessage: `Reaped by status --prune-orphans at ${ts} (${reason}).`
+  };
+  writeJobFile(workspaceRoot, job.id, record);
+  upsertJob(workspaceRoot, {
+    id: job.id,
+    status: "orphaned",
+    phase: "orphaned",
+    pid: null,
+    completedAt: ts,
+    errorMessage: record.errorMessage
+  });
+  return { id: job.id, previousStatus: job.status, reason, pid: job.pid ?? null };
+}
+
+function renderPruneOrphansReport(report) {
+  if (report.reapedCount === 0 && report.skippedCount === 0) {
+    return "No active jobs to inspect — state is clean.\n";
+  }
+  const lines = [];
+  if (report.reapedCount === 0) {
+    lines.push(`No orphans: ${report.skippedCount} active job(s), all backed by live PIDs.`);
+  } else {
+    lines.push(`Reaped ${report.reapedCount} orphan(s) (status:"running"/"queued" with dead PIDs):`);
+    for (const entry of report.reaped) {
+      lines.push(`  - ${entry.id} (was ${entry.previousStatus}, ${entry.reason}, pid=${entry.pid ?? "null"})`);
+    }
+    if (report.skippedCount > 0) {
+      lines.push(`Kept ${report.skippedCount} active job(s) backed by live PIDs.`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function handleResult(argv) {
@@ -2382,6 +2646,16 @@ async function handleEvents(argv) {
 
   // Tail mode — follow appends until a terminal tag or the timeout.
   let timedOut = false;
+  // Capture the terminal tag line so the end-of-stream envelope can report
+  // which event actually closed the stream (DONE / ERROR / INCOMPLETE).
+  // Pre-1.2.5 the envelope only said `timedOut: true/false`, which
+  // under-determined Monitor's "stream ended" signal — callers couldn't
+  // tell happy-path [DONE] from an error-closure without re-reading the
+  // file. The terminalTag field closes that gap.
+  let terminalTag = null;
+  let terminalLine = null;
+  const followStartMs = Date.now();
+
   await new Promise((resolve) => {
     let offset = initial.length;
     let watcher = null;
@@ -2418,7 +2692,11 @@ async function handleEvents(argv) {
         const line = lines[i];
         if (!line) continue;
         if (passes(line)) process.stdout.write(line + "\n");
-        if (TERMINAL.test(line)) return finish("terminal");
+        if (TERMINAL.test(line)) {
+          terminalTag = TERMINAL.exec(line)[1];
+          terminalLine = line;
+          return finish("terminal");
+        }
       }
     };
 
@@ -2477,7 +2755,15 @@ async function handleEvents(argv) {
       eventsPath,
       followed: true,
       filter: options.filter ?? null,
-      timedOut
+      timedOut,
+      // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
+      // distinguish happy-path closure from timeout without re-reading the
+      // file. terminalTag is one of DONE / ERROR / INCOMPLETE on success,
+      // or null when the stream ended via timeout. elapsedMs measures
+      // follow duration only (not total job elapsed time).
+      terminalTag,
+      terminalLine,
+      elapsedMs: Date.now() - followStartMs
     },
     "",
     { json: options.json, startedAt }
@@ -2611,8 +2897,13 @@ function resolvePromptInput(options, positionals, cwd) {
 
 async function handleSend(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["mode", "effort", "cwd"],
-    booleanOptions: ["json", "wait"],
+    valueOptions: [
+      "mode", "effort", "cwd",
+      "idle-timeout-ms",
+      "turn-timeout-ms",
+      "question-timeout-ms"
+    ],
+    booleanOptions: ["json", "wait", "quiet"],
     aliasMap: { m: "mode" }
   });
 
@@ -2620,6 +2911,14 @@ async function handleSend(argv) {
   if (options.mode != null && !VALID_MODES.has(options.mode)) {
     throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
+
+  const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
+  // `send` doesn't distinguish plan vs default (the mode is already fixed by
+  // the resumed thread), so one --turn-timeout-ms flag covers it. It maps
+  // onto whichever of turn_plan_ms / turn_default_ms the resolved mode picks.
+  const turnTimeoutOverride = parsePositiveMsOption("--turn-timeout-ms", options["turn-timeout-ms"]);
+  const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
+  const quietMode = Boolean(options.quiet);
 
   const startedAt = Date.now();
   const rawThreadId = positionals[0];
@@ -2643,6 +2942,7 @@ async function handleSend(argv) {
 
   const sessionDir = resolveSessionDir(config.session_dir);
 
+  const sendIsPlanMode = modeOverride === "plan";
   const turnOptions = {
     resumeThreadId: threadId,
     prompt,
@@ -2650,7 +2950,19 @@ async function handleSend(argv) {
     effort: normalizeReasoningEffort(options.effort ?? config.effort),
     sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : undefined,
     onProgress: null,
-    idleTimeoutMs: 120_000,
+    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
+    // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
+    idleTimeoutMs: idleTimeoutOverride != null
+      ? idleTimeoutOverride
+      : (Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 300_000),
+    // Turn timeout: per-invocation override > the mode-appropriate config key
+    // (turn_plan_ms for plan-mode sends, turn_default_ms otherwise) > built-in
+    // default. `send` gets a single --turn-timeout-ms flag that maps onto the
+    // right budget based on the resolved mode.
+    turnTimeoutMs: turnTimeoutOverride
+      ?? (sendIsPlanMode
+        ? (Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : 300_000)
+        : (Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : 600_000)),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
       logNdjson(s, "TURN_PARAMS", "turn/start", {
@@ -2945,6 +3257,67 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   events: handleEvents,
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel
+});
+
+// Node's default SIGPIPE handling terminates the process when a downstream
+// reader closes the pipe (e.g. `codex-bridge task | head -10`). For the
+// foreground `task` / `send` / `review` paths that emit streaming progress to
+// stdout, this kills the wrapper mid-turn and orphans the Codex thread — the
+// app-server keeps running but our supervisor process is gone, leaving jobs
+// stuck in `orphaned` state. Background workers are immune (they use
+// `stdio:"ignore"`); this guard makes every foreground command path equally
+// tolerant of downstream pipe closure. See `fix/three-live-bugs` plan.
+process.on("SIGPIPE", () => {});
+process.stdout.on("error", (err) => {
+  if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+  throw err;
+});
+process.stderr.on("error", (err) => {
+  if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+  throw err;
+});
+
+// Crash-report trap. Prior to v1.2.5 an unhandled rejection or uncaught
+// exception between "detached worker spawned" and "envelope emitted" could
+// silently exit the wrapper with status 1 while the worker kept running —
+// the user saw "launcher exit 1, detached job healthy" with no diagnostic.
+// Any such event now writes a JSON dump to ~/.codex-bridge/crashes/<ts>-<pid>.log
+// and emits a single stderr line pointing at it. We still propagate the
+// process exit (not going to swallow real crashes), but the trail closes the
+// "exit 1 without explanation" observability gap.
+function writeCrashLog(kind, error) {
+  try {
+    const crashDir = path.join(os.homedir(), ".codex-bridge", "crashes");
+    fs.mkdirSync(crashDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const file = path.join(crashDir, `${ts}-${process.pid}.log`);
+    const payload = {
+      kind,
+      ts,
+      pid: process.pid,
+      argv: process.argv,
+      cwd: process.cwd(),
+      nodeVersion: process.version,
+      bridgeVersion: packageJson.version,
+      error: error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack, code: error.code }
+        : { raw: String(error) }
+    };
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2));
+    try {
+      process.stderr.write(
+        `[codex-bridge] internal ${kind}: ${error?.message ?? error} — crash report at ${file}\n`
+      );
+    } catch { /* stderr already closed; file is enough */ }
+  } catch { /* best-effort; never throw from the trap */ }
+}
+process.on("unhandledRejection", (reason) => {
+  writeCrashLog("unhandledRejection", reason);
+  process.exitCode = process.exitCode || 1;
+});
+process.on("uncaughtException", (err) => {
+  writeCrashLog("uncaughtException", err);
+  process.exit(process.exitCode || 1);
 });
 
 async function main() {

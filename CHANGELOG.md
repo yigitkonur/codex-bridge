@@ -9,6 +9,202 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.2.5] — 2026-04-19
+
+Round-2 follow-ups after 1.2.4 landed in production. The acute bridge
+bugs in 1.2.4 are gone (no more orphaned foreground jobs, no more false
+120s stalls, no more JOB_NOT_FOUND on thread UUIDs for live jobs), but
+three more derailment classes showed up under real use:
+
+  1. release hygiene — 1.2.4 itself shipped with a hard-coded
+     `BRIDGE_VERSION = "1.2.3"` and a SKILL.md frontmatter reading
+     "1.2.3", so `version --json` reported a stale number and three
+     doc sites still taught the old 120s watchdog;
+  2. UX steering — agents reading stderr `[codex] Thread ready (…)`
+     progress lines grabbed the thread UUID as a job handle and hit
+     JOB_NOT_FOUND on Monitor; the canonical SKILL.md example did
+     nothing to discourage this;
+  3. pipeline visibility — `[PIPELINE:*]` only had start-tags, so an
+     orchestrator seeing `[DONE]` couldn't tell whether the auto-fix
+     stage was still writing to the repo; round-3 spent 15 min blindly
+     reconciling a phantom "pipeline rewrote my files" diff.
+
+### Fixed
+
+- **Version drift (R1/R2/R3):** single source of truth — `BRIDGE_VERSION`
+  is imported from `package.json` at build time via
+  `import … with { type: "json" }` and esbuild inlines it. Pre-1.2.5
+  the constant was hard-coded in `src/codex-bridge.mjs:620` and drifted
+  whenever `package.json` was bumped without a corresponding src edit.
+  `skill/SKILL.md` frontmatter and doc references to "120 s watchdog"
+  are swept.
+- **`[PIPELINE:*]` start-tags had no matching done-tags (P1/P3):** every
+  pipeline stage (`diff`, `review`, `fix`, `check`) now emits both
+  `[PIPELINE:<stage>]` (start) and `[PIPELINE:<stage>:done]` (end) to
+  the events file. The fix stage's done-tag carries a
+  `files=[…]` detail listing exactly which files the pipeline wrote
+  (computed from a `git diff --name-only HEAD` before/after snapshot).
+  Terminal `[PIPELINE:done]` / `[PIPELINE:failed]` closes out the
+  whole pipeline. `result.pipeline.touchedFiles` surfaces the fix list
+  on `task --json` for scripted consumers.
+- **`kindLabel: "rescue"` for every user task (U3):** misleading — the
+  historical "rescue" label was stop-gate-review-only and made
+  orchestrators think every `status` entry was an auto-recovery job.
+  `buildTaskRunMetadata` now sets `kindLabel: "task"` for user tasks
+  and `kindLabel: "rescue-review"` for stop-gate jobs; legacy state
+  records without an explicit `kindLabel` fall through to `"task"`
+  instead of `"rescue"`.
+
+### Added
+
+- **Foreground-task footer (U2):** non-JSON `task`/`send` rendered
+  output ends with `Job: <id> · Events: <path> · Monitor: <command>`.
+  Single line, canonical jobId — orchestrators no longer need to run
+  `--json | jq` or pattern-match the threadId from stderr to get the
+  handle that `status`/`result`/`events` accept.
+- **`--no-pipeline` flag (P2)** on `task` / `send` — per-invocation
+  override for `auto_review:false` + `post_task_prompt:""`. Agents
+  orchestrating their own completion checks no longer have to edit
+  `config.yaml`.
+- **Configurable turn / pipeline / question timeouts (T1–T4):**
+  `--turn-plan-ms`, `--turn-default-ms`, `--pipeline-stage-timeout-ms`,
+  `--pipeline-total-timeout-ms`, `--question-timeout-ms` on `task`
+  (plus a single `--turn-timeout-ms` on `send`). All five new config
+  keys in `DEFAULT_CONFIG`: `turn_plan_ms`, `turn_default_ms`,
+  `pipeline_stage_ms`, `pipeline_total_ms`, `question_answer_ms`.
+  Resolution flag → config → default; malformed values throw usage
+  (exit 2). Same pattern as the 1.2.4 `--idle-timeout-ms` fix.
+- **`--quiet` flag (D1)** on `task` / `send` — suppresses the
+  `[codex] …` stderr progress stream. Eliminates the threadId-grab
+  vector entirely for agents that tail Monitor / `events --follow`.
+- **`events --follow --json` final envelope adds `terminalTag`,
+  `terminalLine`, `elapsedMs` (D3):** Monitor can now distinguish
+  `[DONE]` close from timeout without re-reading the file.
+- **`status --prune-orphans` / `--cleanup` subcommand (D4):** walks
+  `state.jobs` for `status:"running"|"queued"` with dead PIDs
+  (`process.kill(pid, 0) → ESRCH`), transitions each to
+  `status:"orphaned"` with a reap-note. Idempotent. Closes the
+  observation/06 fix list.
+- **`result.eventsPath` and `result.jobId` at payload top level (D6):**
+  previously agents had to regex `result.monitor.command` to extract
+  the events path. Now they read a typed field.
+- **Crash-log trap (A3):** `process.on("unhandledRejection")` and
+  `process.on("uncaughtException")` handlers write a JSON dump to
+  `~/.codex-bridge/crashes/<ts>-<pid>.log` and emit a single stderr
+  pointer line before the process exits. Does not swallow the crash
+  — exit code still non-zero — but closes the
+  "launcher exit 1 with no explanation" observability gap (the
+  reported circuit-breaker suspicion was incorrect: the breaker
+  only logs `WARNING`/ndjson and leaves exit code alone).
+
+### Changed
+
+- **SKILL.md canonical example (U1):** rewritten to use `--json` and
+  paste `result.monitor.tool_hint` into Claude Code's Monitor tool.
+  Steers agents away from grabbing the thread UUID out of stderr
+  progress lines — the single strongest derailment signal in the
+  round-1 and round-2 logs.
+- **"When NOT to use Monitor" section (S1)** in
+  `skill/references/monitor-patterns.md` — Monitor is only for
+  codex-bridge `.events` files. `xcodebuild` / `npm test` / `pytest`
+  should use `Bash` with `run_in_background`. The transcript's 9
+  Monitor invocations on a single `xcodebuild` run is the exact
+  anti-pattern.
+- **"Post-[DONE] checklist" (S2/S3)** in
+  `skill/references/orchestration-flows.md` — don't edit files Codex
+  just wrote; don't use a generator (xcodegen / protoc / prisma /
+  etc.) as verification for its own output (ordering is
+  non-deterministic); verify on the committed tree, not the working
+  copy. Addresses round-3's regeneration-noise reconciliation.
+- **DerivedData note (S4)** in
+  `skill/references/error-recovery.md` — in Claude Code on macOS,
+  Xcode's `build.db` fails if DerivedData lives inside the workspace.
+  Use `-derivedDataPath /tmp/<project>-dd …`.
+
+### Docs
+
+- New gherkin scenarios under `gherkin-tests-v2/`:
+  - `03-config/XX-version-source-of-truth.md`
+  - `06-artifacts/XX-pipeline-done-tags-on-events.md`
+  - `05-ambiguities/XX-task-kindlabel-not-rescue.md`
+  - `01-lifecycle/XX-turn-timeout-configurable.md`
+  - `07-orchestration/XX-status-prune-orphans.md`
+  - `04-errors/XX-uncaught-exception-leaves-crash-log.md`
+  - `07-orchestration/XX-events-json-final-envelope.md`
+  - `06-artifacts/XX-foreground-task-footer.md`
+  - `07-orchestration/XX-no-pipeline-flag.md`
+
+### Pushback on A3 (circuit breaker → exit 1)
+
+The user's suspicion that v1.2.3's `fix(wrapper-regex)` circuit breaker
+trips exit 1 on some invocation pattern does not hold up against the
+code. `src/codex-bridge.mjs:1706-1754` shows the breaker only writes
+a `[WARNING]` event + `CIRCUIT_BREAKER` ndjson record, and sets
+`turnInterrupted:false`. It never mutates exit code. Could not
+reproduce the reported exit-1 in a live smoke (`task --write
+--background 2>&1 | tee | head`, `task … > /tmp/log 2>&1`, etc., all
+exit 0). Instead of a speculative pattern-tightening that would risk
+false-negatives on the legitimate Codex-wrapper detection, 1.2.5
+installs an uncaughtException / unhandledRejection trap that records
+a crash log next time an unexplained exit-1 occurs. That trail will
+identify the real source — whatever it turns out to be.
+
+### Architectural follow-ups (still out of scope)
+
+Still deferred (round-1 list still valid): fg/bg unification, broker-
+socket liveness as the idle signal, typed JSON-RPC pushback replacing
+tag-on-stdout, supervisor daemon.
+
+## [1.2.4] — 2026-04-19
+
+Three bugs surfaced during a live Claude→Codex delegation. All three
+were bridge-side, not caller error.
+
+### Fixed
+
+- **Foreground `task` no longer dies on EPIPE.** Installing `task` output
+  through a closed pipe (`bridge task … | tee … | head -N`) previously
+  killed the wrapper Node process mid-turn and left the Codex-side job
+  `orphaned` while the app-server was still healthy. `main()` now ignores
+  `SIGPIPE` and swallows `EPIPE` / `ERR_STREAM_DESTROYED` on stdout and
+  stderr (`src/codex-bridge.mjs` top-level guards). Background workers
+  were already immune via `stdio:"ignore"`; this brings foreground paths
+  to parity.
+- **`events <thread-id>` now works for running jobs.** `resolveResultJob`
+  previously checked `job.threadId` only in the terminal-status branch,
+  so a thread UUID passed to `events`/`wait` for a still-running job
+  fell through to `JOB_NOT_FOUND`. The active-match block now also
+  compares `job.threadId`, restoring the "either id works" contract
+  advertised in `SKILL.md:77` for all job states.
+
+### Changed
+
+- **Idle-timeout watchdog is now configurable; default raised from
+  120s to 300s.** Reasoning-heavy Codex turns (e.g. planning across
+  many files between `item.completed` notifications) could legitimately
+  exceed the prior 120s gap and false-positive as "stuck." Three
+  resolution layers now apply (most specific wins):
+  - `--idle-timeout-ms <ms>` flag on `task` and `send`
+  - `idle_timeout_ms` in any config.yaml layer
+  - Built-in default `300_000` in `DEFAULT_CONFIG` (`src/lib/config.mjs`)
+  A malformed flag value throws `usage` (exit 2) rather than silently
+  falling back — callers notice the typo. Idle-timeout error message
+  reworded from "(possible stuck)" to "(idle timeout)." — the regex
+  in `src/lib/cli-errors.mjs:171` still matches both.
+
+### Docs
+
+- New gherkin scenarios:
+  - `04-errors/06-foreground-task-survives-epipe.md`
+  - `01-lifecycle/04-idle-timeout-configurable.md`
+  - `07-orchestration/09-events-accepts-thread-id-for-running-job.md`
+
+### Root-cause trace
+
+Broader architectural follow-ups (fg/bg unification, broker-socket
+liveness, typed identifier resolver, feature-flag orthogonalization)
+are scoped for a separate release.
+
 ## [1.2.3] — 2026-04-19
 
 Wrapper-regex widening. v1.2.2's `isFailureHidingWrapper` matched
