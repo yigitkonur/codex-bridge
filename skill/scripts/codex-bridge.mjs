@@ -7425,7 +7425,7 @@ async function handleSetup(argv) {
     startedAt
   });
 }
-var BRIDGE_VERSION = "1.2.2";
+var BRIDGE_VERSION = "1.2.3";
 var BRIDGE_SCHEMA_VERSION = "1.0";
 var BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -8231,7 +8231,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   };
   const isFailureHidingWrapper = (command) => {
     if (typeof command !== "string") return false;
-    return /&\s*(sleep\s+\d+\s*;\s*)?kill\b/.test(command) || /\|\|\s*(true|exit\s+0)\b/.test(command) || /;\s*true\s*['"]?\s*$/.test(command);
+    return /(?:^|[^&])&(?![&])[\s\S]{0,200}?\bkill\b/.test(command) || /\|\|\s*(true|exit\s+0)\b/.test(command) || /;\s*true\s*['"]?\s*$/.test(command);
   };
   const bridgeRequest = {
     ...request,

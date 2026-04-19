@@ -95,7 +95,7 @@ const detectCommandFamily = (command) => {
 const isFailureHidingWrapper = (command) => {
   if (typeof command !== "string") return false;
   return (
-    /&\s*(sleep\s+\d+\s*;\s*)?kill\b/.test(command) ||
+    /(?:^|[^&])&(?![&])[\s\S]{0,200}?\bkill\b/.test(command) ||
     /\|\|\s*(true|exit\s+0)\b/.test(command) ||
     /;\s*true\s*['"]?\s*$/.test(command)
   );
@@ -180,6 +180,20 @@ if (!p8) fail++;
 const p9 = DEFAULT_CONFIG.command_failure_circuit_breaker === true;
 console.log((p9?"PASS":"FAIL")+" s9 shipped-default");
 if (!p9) fail++;
+
+// s10: real observed wrapper form with pid="\$!" between & and kill (v1.2.3)
+const realForm = "osascript -e 'display dialog \"probe-1\"' & pid=\"\$!\"; sleep 2; kill -INT \$pid; wait \$pid";
+const s10 = simulate([ok(realForm), ok(realForm.replace("probe-1","probe-2")), ok(realForm.replace("probe-1","probe-3"))], { command_failure_circuit_breaker: true });
+const p10 = s10.tripped && s10.lastRecord.wrapperDetected === true;
+console.log((p10?"PASS":"FAIL")+" s10 real-wrapper-form");
+if (!p10) fail++;
+
+// s11: "foo && kill bar" is NOT a failure-hiding wrapper (v1.2.3 regression guard)
+// The && means "after success" — kill is intentional. unmonitored family so
+// won't trip regardless, but the regex must not match the pattern.
+const p11 = !isFailureHidingWrapper("foo && kill bar") && !isFailureHidingWrapper("some_task && kill -HUP 12345");
+console.log((p11?"PASS":"FAIL")+" s11 double-amp-not-wrapper");
+if (!p11) fail++;
 
 process.exit(fail === 0 ? 0 : 1);
 EOF

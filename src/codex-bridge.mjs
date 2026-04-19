@@ -617,7 +617,7 @@ async function handleSetup(argv) {
   });
 }
 
-const BRIDGE_VERSION = "1.2.2";
+const BRIDGE_VERSION = "1.2.3";
 const BRIDGE_SCHEMA_VERSION = "1.0";
 const BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -1619,8 +1619,14 @@ async function runBridgeTask(request) {
   // commands are impossible.
   const isFailureHidingWrapper = (command) => {
     if (typeof command !== "string") return false;
+    // `& ... kill` widened: real Codex wrapper forms include
+    // `... & pid="$!"; sleep 2; kill -TERM $pid; wait $pid` — there can
+    // be a `pid=...;` assignment between the `&` and the `kill`. Regex:
+    // single `&` (not `&&`), then up to 200 chars of anything, then a
+    // `kill` word. Excludes `foo && kill bar` (double-ampersand means
+    // "after success" — `kill` is intentional, not hiding a failure).
     return (
-      /&\s*(sleep\s+\d+\s*;\s*)?kill\b/.test(command) ||
+      /(?:^|[^&])&(?![&])[\s\S]{0,200}?\bkill\b/.test(command) ||
       /\|\|\s*(true|exit\s+0)\b/.test(command) ||
       /;\s*true\s*['"]?\s*$/.test(command)
     );
