@@ -618,7 +618,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
         clearInterval(idleInterval);
         idleInterval = null;
         const seconds = Math.round(idleTimeoutMs / 1000);
-        state.error = { message: `No events received for ${seconds}s (possible stuck)` };
+        state.error = { message: `No events received for ${seconds}s (idle timeout).` };
         emitProgress(state.onProgress, state.error.message, "failed");
         if (typeof options.onIdleTimeout === "function") {
           try {

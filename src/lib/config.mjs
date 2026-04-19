@@ -40,6 +40,14 @@ const DEFAULT_CONFIG = {
   // config-reference.md for the threshold, family list, and enhancement
   // candidates.
   command_failure_circuit_breaker: true,
+  // Max wall-clock gap between app-server notifications before a turn is
+  // declared stuck and failed with `ClientTimeout`. The prior 120s hard-code
+  // was tuned for execute-heavy turns and would false-positive during
+  // reasoning-heavy windows (e.g. Codex planning across many files between
+  // `item.completed` notifications). 300s covers observed reasoning gaps
+  // without masking genuine stalls. Override per-project in config.yaml;
+  // per-invocation override via `--idle-timeout-ms <ms>` on `task` / `send`.
+  idle_timeout_ms: 300_000,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 

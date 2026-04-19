@@ -297,7 +297,7 @@ function extractItemText(item) {
 // table as the CLI contract and update it in the same commit as any flag move.
 const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--idle-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -308,7 +308,7 @@ const COMMANDS = Object.freeze({
     ]
   },
   send: {
-    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--json] [prompt or file.md]",
+    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--idle-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task.",
     examples: [
       'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --mode default "Implement the plan."',
@@ -1325,7 +1325,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId, mode }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId, mode, idleTimeoutMs }) {
   return {
     cwd,
     model,
@@ -1334,7 +1334,10 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     write,
     resumeLast,
     jobId,
-    mode: mode ?? null
+    mode: mode ?? null,
+    idleTimeoutMs: Number.isFinite(Number(idleTimeoutMs)) && Number(idleTimeoutMs) > 0
+      ? Number(idleTimeoutMs)
+      : null
   };
 }
 
@@ -1376,6 +1379,20 @@ function requireTaskRequest(prompt, resumeLast) {
       "Example: `codex-bridge task --write \"Fix the auth bug\"`"
     );
   }
+}
+
+// Parse the --idle-timeout-ms CLI flag. Returns null when unset (so callers
+// fall through to config.idle_timeout_ms → built-in default). Throws on a
+// malformed value rather than silently ignoring it, so users notice typos.
+function parseIdleTimeoutMsOption(raw) {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw usageError(
+      `--idle-timeout-ms must be a positive number of milliseconds, got ${JSON.stringify(raw)}`
+    );
+  }
+  return n;
 }
 
 async function runForegroundCommand(job, runner, options = {}) {
@@ -1650,7 +1667,12 @@ async function runBridgeTask(request) {
     ),
     effort: isPlanMode ? "xhigh" : (request.effort ?? config.effort ?? "high"),
     turnTimeoutMs: isPlanMode ? 300_000 : 600_000,
-    idleTimeoutMs: 120_000,
+    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
+    // → 300_000 fallback. 300s default covers reasoning-heavy turns between
+    // `item.completed` notifications; see config.mjs DEFAULT_CONFIG comment.
+    idleTimeoutMs: Number(request.idleTimeoutMs) > 0
+      ? Number(request.idleTimeoutMs)
+      : (Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 300_000),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
       // Reset per-turn circuit-breaker state. A fresh turn starts with no
@@ -1959,7 +1981,7 @@ function extractPlanSteps(planText) {
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "mode"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "mode", "idle-timeout-ms"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
@@ -1970,6 +1992,10 @@ async function handleTask(argv) {
   if (options.mode != null && !VALID_MODES.has(options.mode)) {
     throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
+
+  // Surface bad --idle-timeout-ms up front so callers see a usage error, not
+  // a silent fallback to the config default.
+  const idleTimeoutOverride = parseIdleTimeoutMsOption(options["idle-timeout-ms"]);
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
@@ -2006,7 +2032,8 @@ async function handleTask(argv) {
       write,
       resumeLast,
       jobId: job.id,
-      mode: options.mode ?? null
+      mode: options.mode ?? null,
+      idleTimeoutMs: idleTimeoutOverride
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -2029,6 +2056,7 @@ async function handleTask(argv) {
         resumeLast,
         jobId: job.id,
         mode: options.mode ?? null,
+        idleTimeoutMs: idleTimeoutOverride,
         onProgress: progress
       }),
     { json: options.json, startedAt, command: "task" }
@@ -2611,7 +2639,7 @@ function resolvePromptInput(options, positionals, cwd) {
 
 async function handleSend(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["mode", "effort", "cwd"],
+    valueOptions: ["mode", "effort", "cwd", "idle-timeout-ms"],
     booleanOptions: ["json", "wait"],
     aliasMap: { m: "mode" }
   });
@@ -2620,6 +2648,8 @@ async function handleSend(argv) {
   if (options.mode != null && !VALID_MODES.has(options.mode)) {
     throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
+
+  const idleTimeoutOverride = parseIdleTimeoutMsOption(options["idle-timeout-ms"]);
 
   const startedAt = Date.now();
   const rawThreadId = positionals[0];
@@ -2650,7 +2680,11 @@ async function handleSend(argv) {
     effort: normalizeReasoningEffort(options.effort ?? config.effort),
     sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : undefined,
     onProgress: null,
-    idleTimeoutMs: 120_000,
+    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
+    // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
+    idleTimeoutMs: idleTimeoutOverride != null
+      ? idleTimeoutOverride
+      : (Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 300_000),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
       logNdjson(s, "TURN_PARAMS", "turn/start", {
