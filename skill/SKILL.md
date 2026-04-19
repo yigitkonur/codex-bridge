@@ -16,7 +16,7 @@ compatibility: Requires Node.js 22+ and the Codex CLI on $PATH (npm i -g @openai
 license: MIT
 allowed-tools: Bash Monitor
 metadata:
-  version: "1.2.6"
+  version: "1.2.7"
   homepage: "https://github.com/yigitkonur/codex-bridge"
 ---
 
@@ -306,6 +306,16 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs status --prune-orphans --json
 ls -lt ~/.codex-bridge/crashes/ | head -5
 # Each file is a JSON dump of the unhandled rejection / exception that
 # produced the exit, including argv, cwd, nodeVersion, and the error stack.
+
+# "codex-bridge is up to date" when you know it isn't?
+# `update` probes the GitHub releases API. For private repos, unauthenticated
+# requests get 404. The bridge tries direct HTTPS first (uses GH_TOKEN or
+# GITHUB_TOKEN if set), then `gh api` (uses your authenticated gh session).
+# Re-run with --force and non-JSON to see which path failed.
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs update --force
+# "Update check failed … reason: direct-http-404+gh-not-installed" means
+# both the HTTPS path (no token) and the gh fallback (no gh on PATH) gave up.
+# Fix: `brew install gh && gh auth login`, or export GH_TOKEN / GITHUB_TOKEN.
 ```
 
 When a command fails, **read `$?` first**. Exit 4 means re-auth; exit 7 means retry with backoff (check `error.code` — `ClientTimeout` branches by `origin:` per [references/error-recovery.md](references/error-recovery.md#clienttimeout)); exit 2/6 means fix the invocation before anything else.
