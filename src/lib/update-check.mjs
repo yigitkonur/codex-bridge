@@ -22,8 +22,14 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+// 1 hour cache — aligns with the auto-apply rate-limit window so a freshly
+// released version lands on user installs within ~60 min of publication.
+// Previously 24 h, which was fine for detection-only UX but too slow for
+// the 1.2.9 hot-path auto-apply (users would wait up to a day after a fix
+// shipped before their install caught up).
+const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000; // 1 h
 const DEFAULT_FETCH_TIMEOUT_MS = 2500;
+export const APPLY_ATTEMPT_WINDOW_MS = 60 * 60 * 1000; // 1 h
 const GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest";
 const USER_AGENT = "codex-bridge-update-check";
 
@@ -54,6 +60,35 @@ function writeCache(entry) {
     fs.writeFileSync(p, JSON.stringify(entry, null, 2));
   } catch {
     // Silent — cache write failure must never propagate.
+  }
+}
+
+// Rate-limit gate for the hot-path auto-apply. Returns `true` only when
+// there's been no apply attempt (or no cache at all) within the window.
+// The in-flight auto-apply marker is written by `markApplyAttempted`
+// BEFORE the installer spawns so concurrent invocations don't all try to
+// install — the first one wins the slot, the rest no-op.
+export function shouldAttemptApply(windowMs = APPLY_ATTEMPT_WINDOW_MS) {
+  const cache = readCache();
+  if (!cache || !cache.lastApplyAttempt) return true;
+  return Date.now() - cache.lastApplyAttempt > windowMs;
+}
+
+// Records an apply attempt in the cache file so subsequent invocations
+// within the window won't re-spawn the installer. Preserves existing
+// `checkedAt` / `latestVersion` so the 1 h detection TTL stays intact.
+// Silent on write failure — a lost marker just means we'll re-attempt
+// on the next invocation, not a correctness problem.
+export function markApplyAttempted(targetVersion) {
+  try {
+    const existing = readCache() ?? {};
+    writeCache({
+      ...existing,
+      lastApplyAttempt: Date.now(),
+      lastApplyTargetVersion: targetVersion,
+    });
+  } catch {
+    // Silent.
   }
 }
 
