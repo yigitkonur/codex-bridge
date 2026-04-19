@@ -7425,7 +7425,7 @@ async function handleSetup(argv) {
     startedAt
   });
 }
-var BRIDGE_VERSION = "1.2.1";
+var BRIDGE_VERSION = "1.2.2";
 var BRIDGE_SCHEMA_VERSION = "1.0";
 var BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -8212,9 +8212,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   const activeMode = isPlanMode ? "plan" : "default";
   const developerInstructions = loadDeveloperInstructions(activeMode);
   const CIRCUIT_BREAKER_THRESHOLD = 3;
+  const CIRCUIT_BREAKER_WINDOW = 5;
   const breakerState = {
-    lastFamily: null,
-    consecutiveFailures: 0,
+    recent: [],
+    // [{family, failed}] ring, trimmed to WINDOW entries
     tripped: false
   };
   const detectCommandFamily = (command) => {
@@ -8227,6 +8228,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
     if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
     return null;
+  };
+  const isFailureHidingWrapper = (command) => {
+    if (typeof command !== "string") return false;
+    return /&\s*(sleep\s+\d+\s*;\s*)?kill\b/.test(command) || /\|\|\s*(true|exit\s+0)\b/.test(command) || /;\s*true\s*['"]?\s*$/.test(command);
   };
   const bridgeRequest = {
     ...request,
@@ -8245,8 +8250,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     idleTimeoutMs: 12e4,
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
-      breakerState.lastFamily = null;
-      breakerState.consecutiveFailures = 0;
+      breakerState.recent.length = 0;
       breakerState.tripped = false;
       logNdjson(s, "TURN_PARAMS", "turn/start", {
         model: info.turnParams.model,
@@ -8270,23 +8274,17 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       if (!config.command_failure_circuit_breaker || breakerState.tripped || item?.type !== "commandExecution") {
         return;
       }
-      const failed = item.status !== "completed" || typeof item.exitCode === "number" && item.exitCode !== 0;
-      if (!failed) {
-        breakerState.lastFamily = null;
-        breakerState.consecutiveFailures = 0;
-        return;
-      }
       const family = detectCommandFamily(item.command);
-      if (!family) {
-        return;
+      if (!family) return;
+      const rawFailed = item.status !== "completed" || typeof item.exitCode === "number" && item.exitCode !== 0;
+      const wrappedFailed = !rawFailed && isFailureHidingWrapper(item.command);
+      const failed = rawFailed || wrappedFailed;
+      breakerState.recent.push({ family, failed });
+      if (breakerState.recent.length > CIRCUIT_BREAKER_WINDOW) {
+        breakerState.recent.shift();
       }
-      if (family === breakerState.lastFamily) {
-        breakerState.consecutiveFailures += 1;
-      } else {
-        breakerState.lastFamily = family;
-        breakerState.consecutiveFailures = 1;
-      }
-      if (breakerState.consecutiveFailures < CIRCUIT_BREAKER_THRESHOLD) return;
+      const familyFails = breakerState.recent.filter((r) => r.family === family && r.failed).length;
+      if (familyFails < CIRCUIT_BREAKER_THRESHOLD) return;
       breakerState.tripped = true;
       logEvent(s, formatWarningEvent(s, {
         reason: "command-family-circuit-breaker-tripped",
@@ -8298,7 +8296,9 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       logNdjson(s, "CIRCUIT_BREAKER", null, {
         family,
         threshold: CIRCUIT_BREAKER_THRESHOLD,
-        consecutiveFailures: breakerState.consecutiveFailures,
+        windowSize: CIRCUIT_BREAKER_WINDOW,
+        failsInWindow: familyFails,
+        wrapperDetected: wrappedFailed,
         turnInterrupted: false
       });
     }

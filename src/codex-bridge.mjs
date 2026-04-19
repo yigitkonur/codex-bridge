@@ -617,7 +617,7 @@ async function handleSetup(argv) {
   });
 }
 
-const BRIDGE_VERSION = "1.2.1";
+const BRIDGE_VERSION = "1.2.2";
 const BRIDGE_SCHEMA_VERSION = "1.0";
 const BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
@@ -1573,18 +1573,26 @@ async function runBridgeTask(request) {
   const developerInstructions = loadDeveloperInstructions(activeMode);
 
   // Circuit-breaker state for headless-environment probe loops. The user's
-  // swift-vibescroll session captured 24 consecutive osascript/display-dialog
-  // attempts before manual kill; bridge-side convergence is the only
-  // observation point outside the Codex ReAct loop. Tracks consecutive
-  // same-family failures; on threshold, writes a [WARNING] to `.events` so
-  // an orchestrator tailing via Monitor can cancel/steer. Auto-interrupt
-  // would require a new post-turn-start hook that exposes `turnId`; logging
-  // the trip point is the low-risk primitive today. Config-gated via
+  // swift-vibescroll session captured 24 osascript/display-dialog attempts
+  // before manual kill; bridge-side convergence is the only observation
+  // point outside the Codex ReAct loop. Config-gated via
   // `command_failure_circuit_breaker`.
+  //
+  // v1.2.2: sliding-window + wrapper-detection. Pre-1.2.2 "3 consecutive
+  // same-family failures" missed real Codex flailing because Codex wraps
+  // failing commands in `& sleep N; kill -TERM $!` constructs that exit 0
+  // — the consecutive counter reset on every wrapper and never reached
+  // the threshold (see `07-orchestration/07` scenario 7+). The fix:
+  //   A. Sliding window — count fails of the current family within the
+  //      last WINDOW_SIZE commandExecutions (same or different family).
+  //   B. Wrapper detector — if the command matches a monitored family AND
+  //      the shell text contains a known failure-hiding construct
+  //      (`& kill`, `|| true`, `|| exit 0`, `; true` at end), count it as
+  //      failed regardless of exit code.
   const CIRCUIT_BREAKER_THRESHOLD = 3;
+  const CIRCUIT_BREAKER_WINDOW = 5;
   const breakerState = {
-    lastFamily: null,
-    consecutiveFailures: 0,
+    recent: [],  // [{family, failed}] ring, trimmed to WINDOW entries
     tripped: false,
   };
   const detectCommandFamily = (command) => {
@@ -1594,15 +1602,28 @@ async function runBridgeTask(request) {
     // Order-sensitive: **content-based** patterns first so that a payload
     // like `osascript -e 'display dialog "…"'` is recognized as its most
     // specific family (`applescript-dialog`) rather than the broader
-    // `osascript` umbrella. Without this ordering, the two applescript
-    // subfamilies would be unreachable for the most common invocation
-    // form — AppleScript is almost always run *via* `osascript -e`.
+    // `osascript` umbrella. AppleScript is almost always run *via*
+    // `osascript -e`, so without this ordering the subfamilies would be
+    // unreachable.
     if (/\bdisplay dialog\b|\bdisplay notification\b/i.test(trimmed)) return "applescript-dialog";
     if (/\bSystem Events\b|\btell application\b/i.test(trimmed)) return "applescript-system";
     if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
     if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
     if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
     return null;
+  };
+  // True if the command looks like it's hiding a failure in the underlying
+  // invocation. Scoped tight so ordinary `cp foo bar || true` (unmonitored
+  // family) doesn't trigger — this is only consulted after `detectCommand-
+  // Family` returns a monitored family, so false positives on unrelated
+  // commands are impossible.
+  const isFailureHidingWrapper = (command) => {
+    if (typeof command !== "string") return false;
+    return (
+      /&\s*(sleep\s+\d+\s*;\s*)?kill\b/.test(command) ||
+      /\|\|\s*(true|exit\s+0)\b/.test(command) ||
+      /;\s*true\s*['"]?\s*$/.test(command)
+    );
   };
 
   const bridgeRequest = {
@@ -1629,8 +1650,7 @@ async function runBridgeTask(request) {
       // Reset per-turn circuit-breaker state. A fresh turn starts with no
       // failure history; a previous turn's tripped state should not carry
       // across (e.g. a plan turn that tripped then an execute turn).
-      breakerState.lastFamily = null;
-      breakerState.consecutiveFailures = 0;
+      breakerState.recent.length = 0;
       breakerState.tripped = false;
       logNdjson(s, "TURN_PARAMS", "turn/start", {
         model: info.turnParams.model,
@@ -1665,28 +1685,28 @@ async function runBridgeTask(request) {
       ) {
         return;
       }
-      const failed = item.status !== "completed" || (typeof item.exitCode === "number" && item.exitCode !== 0);
-      if (!failed) {
-        // Successful command — reset the counter. Circuit breaker only fires
-        // on CONSECUTIVE failures; one green execution clears the history.
-        breakerState.lastFamily = null;
-        breakerState.consecutiveFailures = 0;
-        return;
-      }
+      // Only monitored families enter the sliding window. An unmonitored
+      // failure (e.g. `npm test` between two osascript probes) neither
+      // resets nor shields the breaker — it's simply ignored.
       const family = detectCommandFamily(item.command);
-      if (!family) {
-        // Failure was in an unmonitored command family (normal dev command,
-        // test run, etc.) — don't reset; a failing `npm test` between two
-        // osascript probes should not shield the breaker. Do nothing.
-        return;
+      if (!family) return;
+
+      const rawFailed = item.status !== "completed" || (typeof item.exitCode === "number" && item.exitCode !== 0);
+      // Wrapper detection: a monitored-family command that exits 0 but
+      // contains a failure-hiding construct is treated as failed. This
+      // catches Codex's `osascript ... & sleep 2; kill -TERM $!` pattern
+      // observed live — the shell exits 0 because the `kill` succeeds,
+      // but the underlying AppleScript still failed.
+      const wrappedFailed = !rawFailed && isFailureHidingWrapper(item.command);
+      const failed = rawFailed || wrappedFailed;
+
+      breakerState.recent.push({ family, failed });
+      if (breakerState.recent.length > CIRCUIT_BREAKER_WINDOW) {
+        breakerState.recent.shift();
       }
-      if (family === breakerState.lastFamily) {
-        breakerState.consecutiveFailures += 1;
-      } else {
-        breakerState.lastFamily = family;
-        breakerState.consecutiveFailures = 1;
-      }
-      if (breakerState.consecutiveFailures < CIRCUIT_BREAKER_THRESHOLD) return;
+
+      const familyFails = breakerState.recent.filter(r => r.family === family && r.failed).length;
+      if (familyFails < CIRCUIT_BREAKER_THRESHOLD) return;
 
       breakerState.tripped = true;
       logEvent(s, formatWarningEvent(s, {
@@ -1699,7 +1719,9 @@ async function runBridgeTask(request) {
       logNdjson(s, "CIRCUIT_BREAKER", null, {
         family,
         threshold: CIRCUIT_BREAKER_THRESHOLD,
-        consecutiveFailures: breakerState.consecutiveFailures,
+        windowSize: CIRCUIT_BREAKER_WINDOW,
+        failsInWindow: familyFails,
+        wrapperDetected: wrappedFailed,
         turnInterrupted: false
       });
     }
