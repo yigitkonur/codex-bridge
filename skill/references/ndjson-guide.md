@@ -20,14 +20,24 @@ NDJSON captures a curated slice of the run — **not every wire-level notificati
 | `STEER` | `steer` CLI sent mid-turn guidance | `turnId`, `prompt` (120-char preview) | `handleSteer` |
 | `ERROR` | Turn failed with a Codex-reported error (`will_retry: false`) | `errorCode`, `message`, `origin` (`turn` or `pipeline:<stage>`) | `src/codex-bridge.mjs` |
 | `PIPELINE_STAGE` | Auto-pipeline entered a stage | `stage` ∈ `{diff, review, fix, check}`, optionally `findingCount` | `src/lib/auto-pipeline.mjs` |
-| `PIPELINE_COMPLETE` | Auto-pipeline finished cleanly | `completedStages`, `duration`, `complete` | `src/lib/auto-pipeline.mjs` |
-| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `duration`, `error`, `origin` (`pipeline:<stage>`) | `src/lib/auto-pipeline.mjs` |
+| `PIPELINE_COMPLETE` | Auto-pipeline finished cleanly (on-disk counterpart to `[PIPELINE:done]`) | `completedStages`, `duration`, `complete`, `touchedFiles` (files the fix stage wrote) | `src/lib/auto-pipeline.mjs` |
+| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `duration`, `error`, `origin` (`pipeline:<stage>`), `touchedFiles` | `src/lib/auto-pipeline.mjs` |
+| `PIPELINE_SKIPPED` | Run launched with `--no-pipeline` (pipeline stages never ran) | `reason` (`"--no-pipeline flag"`) | `runBridgeTask` |
+| `CIRCUIT_BREAKER` | Command-family circuit breaker tripped (on-disk counterpart to `[WARNING]`) | `family`, `threshold`, `windowSize`, `failsInWindow`, `wrapperDetected`, `turnInterrupted` | `runBridgeTask::onItemCompleted` |
 
 `ITEM_COMPLETED` is emitted for `task` and `send` turns. The `runAppServerReview` path (standalone `review` / `adversarial-review`) does **not** emit it — review output goes to stdout and the rendered markdown instead.
 
 Tags not listed above (`THREAD_STARTED`, `TURN_STARTED`, `ITEM_STARTED`, `PLAN`, `REVIEW_START`, `REVIEW_END`, `DIFF`, `TIMEOUT`, `NOTIFICATION`) are **not** written by the current bridge. Don't grep for them.
 
-In practice, a completed non-interactive task often has `TURN_PARAMS` + several `ITEM_COMPLETED` + `TURN_COMPLETED` + `PIPELINE_STAGE*` + `PIPELINE_COMPLETE` (or `PIPELINE_ERROR`). Questions, steers, and errors are optional.
+In practice, a completed non-interactive task often has `TURN_PARAMS` + several `ITEM_COMPLETED` + `TURN_COMPLETED` + `PIPELINE_STAGE*` + `PIPELINE_COMPLETE` (or `PIPELINE_ERROR`). Questions, steers, errors, and circuit-breaker trips are optional.
+
+### Finding a `<turn-id>` for `steer`
+
+The `steer` subcommand takes `<turn-id>` as a positional. Three ways to find it:
+
+1. **`[PLAN]` notification line in `.events`** includes `{threadId} {turnId}` — parse the second UUID.
+2. **`TURN_PARAMS` or `TURN_COMPLETED` NDJSON records** both carry `data.turnId`.
+3. **Stderr progress** — a `Turn started (<turn-id>).` line is emitted when a turn begins (absent with `--quiet`).
 
 ## File layout
 
@@ -94,7 +104,7 @@ less ~/.codex-bridge/sessions/<thread-id>.events
 
 | | `.ndjson` | `.events` |
 |--|---------|---------|
-| Content | Turn params + turn-end + questions + steers + errors + pipeline stages (see table above) | Actionable tags emitted today: `[DONE]` `[ERROR]` `[INCOMPLETE]` `[QUESTION]` `[PLAN]` `[CONFIRMED]` `[PIPELINE:diff|review|fix|check]`. (`[REVIEW]` and `[PHASE]` have helpers in `session-log.mjs` but no caller.) |
+| Content | Turn params + turn-end + questions + steers + errors + pipeline stages + circuit-breaker trips (see table above) | Actionable tags: `[DONE]` `[ERROR]` `[INCOMPLETE]` `[QUESTION]` `[PLAN]` `[CONFIRMED]` `[WARNING]` `[PIPELINE:diff\|review\|fix\|check]` plus `:done` pairs, terminal `[PIPELINE:done]` / `[PIPELINE:failed]`. (`[REVIEW]` and `[PHASE]` have helpers in `session-log.mjs` but no caller.) |
 | Format | JSON objects, one per line | Human-readable text blocks |
 | Use | Retrospective query (jq) | Monitor (`tail -f`) |
-| Size | Small–medium (one per turn + one per question/steer/stage) | Small (2–5 blocks per task) |
+| Size | Small–medium (one per turn + one per question/steer/stage) | Small (4–12 blocks per task with 1.2.5 pipeline `:done` pairs) |

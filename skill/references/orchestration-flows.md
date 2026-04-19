@@ -8,7 +8,7 @@ When a run terminates with `[DONE]` / `result.phase: "done"`, the pipeline has f
 2. **Read the pipeline's touchedFiles list.** `result.pipeline.touchedFiles` (and the `[PIPELINE:fix:done] files=[…]` event) names exactly what the auto-fix stage wrote. If that list is empty, no pipeline writes happened and the entire diff is Codex's own work from the execute turn. If it's non-empty, inspect each file before accepting — *do not* blind-accept pipeline-applied changes.
 3. **Do not edit files Codex just wrote in this turn.** If you ask Codex to scaffold an Xcode/SPM project and then immediately modify one of its outputs, you'll fight Codex's internal model of the repo on the next `send`. Commit first, then edit if needed, in a separate conversation.
 4. **Prefer compile-level verification over regeneration.** If you just wrote files whose contents depend on a generator (xcodegen / prisma / protoc / `cargo generate` …), do **not** re-run the generator as your verification step. The second run's output is non-deterministic for anything order-dependent (e.g. XcodeGen's `project.pbxproj` file-ordering) and will invalidate your diff. Use the compiler (`xcodebuild`, `cargo build`, `tsc`) against the committed tree instead, or `git stash` any uncommitted changes, regenerate, and diff.
-5. **Verify on the committed tree, not the working copy.** Before asserting "it builds," commit your intended changes and re-run the build from a clean working tree. Round-3's 15-minute reconciliation happened because a late pipeline turn had rewritten a file between the initial green build and the commit — the clean-tree build caught it.
+5. **Verify on the committed tree, not the working copy.** Before asserting "it builds," commit your intended changes and re-run the build from a clean working tree. A prior incident burned 15 min on reconciliation because a late pipeline turn had rewritten a file between the initial green build and the commit — only a clean-tree rebuild caught it.
 
 ## Sync Task — one call, self-sufficient
 
@@ -51,7 +51,7 @@ task --mode default --write "Trivial typo fix"
   → [DONE] notification
 ```
 
-Foreground-only. `task --background --mode default` stores the override in the job record but the detached worker still uses `config.mode` — prefer the foreground path when you need the override to take effect, or set `config.mode: "default"` in `config.yaml` before launching background tasks.
+Available on both foreground and background paths — the override flows through `buildTaskRequest` → the stored job record → the detached worker's `runBridgeTask` call, where `effectiveMode = request.mode ?? config.mode ?? "plan"`. Post-1.2.1 the background path honors `--mode` like the foreground path; earlier releases dropped it silently.
 
 ## Simple Task (no questions)
 

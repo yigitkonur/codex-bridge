@@ -11,7 +11,7 @@ Bridge config is layered. Each layer overrides the one above it (lowest → high
 
 If any file is missing or malformed, that layer is skipped silently — the next layer's values apply. The system never crashes on config errors.
 
-**Workspace-root + cwd overrides are new (2026-04-18, v1.1.0 added cwd override, v1.1.1 adds the workspace-root layer).** Before v1.1.0, only the skill config was read; a `config.yaml` sitting next to your project was silently ignored. See `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md` for the original derailment.
+All four layers are honored. Before 1.1.0, only the skill config layer was read — a `config.yaml` sitting next to your project was silently ignored. See `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md` for the original derailment.
 
 **Quick check**: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs config show` prints the effective merged config plus which of the four source files actually exist. `*` marks keys that differ from `DEFAULT_CONFIG`. Use `--json` for programmatic consumption. This is the authoritative answer to "why isn't my config taking effect?"
 
@@ -30,6 +30,14 @@ If any file is missing or malformed, that layer is skipped silently — the next
 | `sandbox_policy` | string | `"danger-full-access"` | Sandbox profile. One of `"danger-full-access"`, `"workspace-write"`, `"read-only"`. See below. |
 | `skip_meta_skills` | boolean | `true` | Prepend a directive telling Codex to skip its internal planning/ceremony skills (`using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`). See below. |
 | `command_failure_circuit_breaker` | boolean | `true` | Emit `[WARNING]` when 3 of the last 5 same-family command executions fail (with wrapper-pattern detection). See below. |
+| `idle_timeout_ms` | integer | `300000` | No-event idle watchdog: max wall-clock gap between app-server notifications before a turn is failed with `ClientTimeout`. CLI override: `--idle-timeout-ms`. |
+| `turn_plan_ms` | integer | `300000` | Per-turn timeout for plan turns. CLI override: `--turn-plan-ms` (task) / `--turn-timeout-ms` (send when `--mode plan`). |
+| `turn_default_ms` | integer | `600000` | Per-turn timeout for execute turns (also covers send turns in default mode). CLI override: `--turn-default-ms` (task) / `--turn-timeout-ms` (send). |
+| `pipeline_stage_ms` | integer | `300000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
+| `pipeline_total_ms` | integer | `900000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
+| `question_answer_ms` | integer | `300000` | How long `requestUserInput` waits for a response before auto-answering `{answers: {}}`. CLI override: `--question-timeout-ms`. |
+
+Every `*_ms` key validates as a positive integer. Malformed CLI flag values (`--*-ms notanumber` / `0` / negative) throw `USAGE_ERROR` (exit 2) rather than silent fallback to the default — callers notice typos immediately. Resolution order for every timeout: CLI flag → `config.yaml` key → built-in default.
 
 ### `skip_meta_skills`
 
@@ -122,6 +130,24 @@ codex_bridge:
     3. TypeScript strict mode passes
     Report any violations.
 ```
+
+### Large scaffold — raised turn + pipeline budgets
+```yaml
+codex_bridge:
+  turn_default_ms: 1800000       # 30 min per execute turn
+  pipeline_stage_ms: 600000      # 10 min per review/fix/check stage
+  pipeline_total_ms: 1800000     # 30 min total pipeline cap
+```
+
+Use for multi-file bootstrap tasks (Xcode/SPM projects, large migrations). Per-invocation alternative: pass `--turn-default-ms 1800000 --pipeline-stage-timeout-ms 600000 --pipeline-total-timeout-ms 1800000` on `task` instead of editing the config.
+
+### Human-in-the-loop questions (slow answering)
+```yaml
+codex_bridge:
+  question_answer_ms: 1800000    # 30 min for a human to answer
+```
+
+Default 5 min is tight if the answer requires deliberation. Per-invocation: `--question-timeout-ms 1800000` on `task` / `send`.
 
 ## Resetting to Defaults
 

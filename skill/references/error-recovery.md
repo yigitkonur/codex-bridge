@@ -69,8 +69,18 @@ Authentication failed.
 - **Do:** Run `setup` command. Re-authenticate with `codex login`.
 
 ### ClientTimeout
-Our client-side timeout fired (no app-server timeout exists).
-- **Do:** Check if Codex is actually stuck. Cancel if needed, retry with simpler prompt.
+
+A client-side timeout fired. There are **five independent origins** — each has a different first-response action. Read the `[ERROR]` event's `origin:` line in `.events` (or `result.pipeline.error` on the sync `task --json` envelope) to pick the right one.
+
+| Origin (from `[ERROR]` line) | What timed out | First-response action |
+|---|---|---|
+| `origin: turn` + message mentions "No events received for…" | No-event idle watchdog (`idle_timeout_ms` / `--idle-timeout-ms`, default 300 s) | Re-run with `--idle-timeout-ms 600000` if the task is reasoning-heavy; otherwise suspect real stall → `cancel <id>` |
+| `origin: turn` + message mentions "turn exceeded" | Per-turn ceiling (`turn_plan_ms` / `turn_default_ms`, `--turn-plan-ms` / `--turn-default-ms`) | Re-run with a larger `--turn-default-ms` (e.g. `1800000` for large scaffolds) |
+| `origin: pipeline:review` / `pipeline:fix` / `pipeline:check` | Per-stage pipeline timeout (`pipeline_stage_ms`, `--pipeline-stage-timeout-ms`, default 5 min) | Re-run with larger `--pipeline-stage-timeout-ms`, or pass `--no-pipeline` if you want to own completion checking |
+| `origin: pipeline:*` + message "Auto-pipeline exceeded …" | Total pipeline budget (`pipeline_total_ms`, `--pipeline-total-timeout-ms`, default 15 min) | Re-run with larger `--pipeline-total-timeout-ms`, or `--no-pipeline` |
+| `QUESTION_TIMEOUT` ndjson entry (`question_answer_ms`, `--question-timeout-ms`, default 5 min) | Human/orchestrator didn't answer `requestUserInput` in time; bridge sent `{}` | If the answer was slow rather than missing, re-run with `--question-timeout-ms 1800000` |
+
+All five surface as `ClientTimeout` in the events tag; `origin:` is the only way to disambiguate before retrying.
 
 ### ProcessDeath
 Codex app-server process exited unexpectedly.
@@ -84,7 +94,11 @@ Codex app-server process exited unexpectedly.
   ├── ContextWindowExceeded → new task, shorter prompt
   ├── Unauthorized → setup, re-auth
   ├── UsageLimitExceeded → wait, retry
-  ├── ClientTimeout → check if stuck, cancel + retry
+  ├── ClientTimeout → branch by origin: line
+  │     ├── origin: turn (idle)        → raise --idle-timeout-ms
+  │     ├── origin: turn (turn-budget) → raise --turn-default-ms
+  │     ├── origin: pipeline:<stage>   → raise --pipeline-stage-timeout-ms (or --no-pipeline)
+  │     └── QUESTION_TIMEOUT (ndjson)  → raise --question-timeout-ms
   ├── ProcessDeath → verify installation, restart
   └── Other → read result log, assess
 ```
