@@ -62,8 +62,8 @@ This pins the shipped default: new installs get no sandbox blocker. Users who wa
 
 ```bash
 REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-cat > /tmp/cb-sandbox.mjs <<'EOF'
-import { buildSandboxPolicy } from 'file://REPO/src/lib/config.mjs';
+cat > /tmp/cb-sandbox.mjs <<EOF
+import { DEFAULT_CONFIG, buildSandboxPolicy } from 'file://${REPO_ROOT}/src/lib/config.mjs';
 const cases = [
   { name: 'plan-unset',      args: ['plan', {}],                                    expect: { type: 'readOnly' } },
   { name: 'default-unset',   args: ['default', {}],                                 expect: { type: 'workspaceWrite' } },
@@ -76,14 +76,6 @@ const cases = [
   { name: 'default+null',    args: ['default', null],                               expect: { type: 'workspaceWrite' } },
   { name: 'default+noarg',   args: ['default'],                                     expect: { type: 'workspaceWrite' } },
 ];
-// Scenario 6: shipped default pinning — imports DEFAULT_CONFIG and asserts the key + resolution.
-import('file://REPO/src/lib/config.mjs').then(({ DEFAULT_CONFIG, buildSandboxPolicy }) => {
-  const cfgHasDefault = DEFAULT_CONFIG.sandbox_policy === 'danger-full-access';
-  const planResolvesToDanger = buildSandboxPolicy('plan', DEFAULT_CONFIG).type === 'dangerFullAccess';
-  const execResolvesToDanger = buildSandboxPolicy('default', DEFAULT_CONFIG).type === 'dangerFullAccess';
-  const ok = cfgHasDefault && planResolvesToDanger && execResolvesToDanger;
-  console.log((ok ? 'PASS' : 'FAIL') + ' shipped-default cfg=' + DEFAULT_CONFIG.sandbox_policy + ' plan=' + planResolvesToDanger + ' exec=' + execResolvesToDanger);
-});
 let fail = 0;
 for (const c of cases) {
   const r = buildSandboxPolicy(...c.args);
@@ -91,9 +83,15 @@ for (const c of cases) {
   console.log((ok ? 'PASS' : 'FAIL') + ' ' + c.name + ' => ' + r.type);
   if (!ok) fail++;
 }
+// Scenario 6: shipped default pinning — synchronous so it contributes to the exit code.
+const cfgHasDefault = DEFAULT_CONFIG.sandbox_policy === 'danger-full-access';
+const planResolvesToDanger = buildSandboxPolicy('plan', DEFAULT_CONFIG).type === 'dangerFullAccess';
+const execResolvesToDanger = buildSandboxPolicy('default', DEFAULT_CONFIG).type === 'dangerFullAccess';
+const ok6 = cfgHasDefault && planResolvesToDanger && execResolvesToDanger;
+console.log((ok6 ? 'PASS' : 'FAIL') + ' shipped-default cfg=' + DEFAULT_CONFIG.sandbox_policy + ' plan=' + planResolvesToDanger + ' exec=' + execResolvesToDanger);
+if (!ok6) fail++;
 process.exit(fail === 0 ? 0 : 1);
 EOF
-sed -i '' "s|file://REPO|file://${REPO_ROOT}|" /tmp/cb-sandbox.mjs
 node /tmp/cb-sandbox.mjs
 ```
 

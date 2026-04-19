@@ -7870,6 +7870,13 @@ async function executeTaskRun(request) {
     model: request.model,
     effort: request.effort,
     sandbox: request.write ? "workspace-write" : "read-only",
+    sandboxPolicy: request.sandboxPolicy ?? null,
+    collaborationMode: request.collaborationMode ?? null,
+    turnTimeoutMs: request.turnTimeoutMs ?? null,
+    idleTimeoutMs: request.idleTimeoutMs ?? null,
+    onTurnStart: request.onTurnStart ?? null,
+    onItemCompleted: request.onItemCompleted ?? null,
+    onServerRequest: request.onServerRequest ?? null,
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -8261,8 +8268,9 @@ ${config.prompt_footer}` : request.prompt;
     }));
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin: "turn" });
     if (codexErrorInfo === "SandboxError" && touchedFiles.length > 0) {
+      const cwdArg = JSON.stringify(request.cwd);
       setPhase("workspace-dirty", {
-        command: `git -C ${request.cwd} add -A && git -C ${request.cwd} commit -m "<subject>"`,
+        command: `git -C ${cwdArg} add -A && git -C ${cwdArg} commit -m "<subject>"`,
         description: "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
       }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
       return { ...result, session, exitStatus: 0, error: null };
@@ -8962,12 +8970,13 @@ async function handleSend(argv) {
       });
     }
   };
+  const resolvedSandboxMode = modeOverride === "default" ? "default" : "plan";
+  turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
   if (modeOverride) {
     turnOptions.collaborationMode = buildCollaborationMode(modeOverride, config, {
       effort: options.effort,
       developerInstructions: loadDeveloperInstructions(modeOverride)
     });
-    turnOptions.sandboxPolicy = buildSandboxPolicy(modeOverride, config);
   }
   ensureCodexAvailable(cwd2);
   const workspaceRoot = resolveCommandWorkspace(options);

@@ -1180,6 +1180,15 @@ async function executeTaskRun(request) {
     );
   }
 
+  // Forward every bridge-level field onto runAppServerTurn. Historically this
+  // call only passed a small subset (`resumeThreadId, prompt, model, effort,
+  // sandbox, onProgress, persistThread, threadName`) which silently dropped
+  // `sandboxPolicy`, `collaborationMode`, `turnTimeoutMs`, `idleTimeoutMs`,
+  // `onTurnStart`, `onItemCompleted`, `onServerRequest` whenever
+  // `runBridgeTask` populated them — meaning `config.sandbox_policy`, the
+  // plan-mode developer instructions, the 120 s idle watchdog, and the
+  // `[QUESTION]` event pipeline were all inert on the `task` path. Forward
+  // explicitly so the runBridgeTask → executeTaskRun contract is real.
   const result = await runAppServerTurn(workspaceRoot, {
     resumeThreadId,
     prompt: request.prompt,
@@ -1187,6 +1196,13 @@ async function executeTaskRun(request) {
     model: request.model,
     effort: request.effort,
     sandbox: request.write ? "workspace-write" : "read-only",
+    sandboxPolicy: request.sandboxPolicy ?? null,
+    collaborationMode: request.collaborationMode ?? null,
+    turnTimeoutMs: request.turnTimeoutMs ?? null,
+    idleTimeoutMs: request.idleTimeoutMs ?? null,
+    onTurnStart: request.onTurnStart ?? null,
+    onItemCompleted: request.onItemCompleted ?? null,
+    onServerRequest: request.onServerRequest ?? null,
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -1672,8 +1688,12 @@ async function runBridgeTask(request) {
     // emits a success envelope carrying the phase — a sandbox-blocked commit
     // is actionable state, not a terminal failure.
     if (codexErrorInfo === "SandboxError" && touchedFiles.length > 0) {
+      // JSON.stringify for shell-safe quoting of the cwd path (matches the
+      // pattern used in buildMonitorHint). Paths with spaces would otherwise
+      // break the suggested command.
+      const cwdArg = JSON.stringify(request.cwd);
       setPhase("workspace-dirty", {
-        command: `git -C ${request.cwd} add -A && git -C ${request.cwd} commit -m "<subject>"`,
+        command: `git -C ${cwdArg} add -A && git -C ${cwdArg} commit -m "<subject>"`,
         description:
           "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
       }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
@@ -2491,12 +2511,21 @@ async function handleSend(argv) {
     }
   };
 
+  // `sandboxPolicy` must honor `config.sandbox_policy` regardless of whether
+  // the caller passed `--mode`. Previously the override only applied inside
+  // the `if (modeOverride)` block, so a plain `send <tid> "prompt"` silently
+  // dropped `sandbox_policy: danger-full-access` and inherited the thread's
+  // original (read-only) sandbox — defeating the user's explicit config.
+  // Resolve through `buildSandboxPolicy` with a mode derived from the
+  // override (if set) or from the turn's thread semantics (read-only when
+  // nothing narrows it, widened only if the config explicitly says so).
+  const resolvedSandboxMode = modeOverride === "default" ? "default" : "plan";
+  turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
   if (modeOverride) {
     turnOptions.collaborationMode = buildCollaborationMode(modeOverride, config, {
       effort: options.effort,
       developerInstructions: loadDeveloperInstructions(modeOverride),
     });
-    turnOptions.sandboxPolicy = buildSandboxPolicy(modeOverride, config);
   }
 
   ensureCodexAvailable(cwd);
