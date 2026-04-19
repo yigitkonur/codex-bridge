@@ -804,14 +804,20 @@ async function handleUpdate(argv) {
     current_version: BRIDGE_VERSION,
     latest_version: update.latestVersion ?? null,
     has_update: Boolean(update.hasUpdate),
+    source: update.source ?? null,
     check_skipped: Boolean(update.skipped),
     check_skip_reason: update.reason ?? null,
+    fetch_reason: update.fetchReason ?? null,
+    fetch_status: update.fetchStatus ?? null,
     install_command: installCommand,
   };
 
   let rendered;
   if (update.skipped && !update.latestVersion) {
-    rendered = `Update check skipped (${update.reason}). Try again in a moment.\n`;
+    // Surface the real reason the check failed, especially the
+    // private-repo-no-auth signature that Was silently producing
+    // "no update available, latest: null" pre-1.2.7.
+    rendered = renderUpdateFailureHint(update, BRIDGE_VERSION);
   } else if (update.hasUpdate) {
     rendered =
       `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).\n` +
@@ -821,6 +827,33 @@ async function handleUpdate(argv) {
   }
 
   emitSuccess("update", payload, rendered, { json: options.json, startedAt });
+}
+
+// Renders a diagnostic hint for the "couldn't reach upstream" path. The
+// most common failure mode is a private repo hit unauthenticated — that
+// returns HTTP 404 with no body hint. Pre-1.2.7 the CLI just said
+// "Update check skipped (fetch-failed-no-cache)" which offered no
+// actionable recovery.
+function renderUpdateFailureHint(update, currentVersion) {
+  const reason = update.fetchReason ?? update.reason ?? "unknown";
+  const lines = [`Update check failed (current: ${currentVersion}, reason: ${reason}).`];
+  if (update.fetchStatus === 404 && !update.authHeader) {
+    // Classic private-repo-no-auth signature. Give the user two
+    // concrete paths.
+    lines.push("Upstream returned 404 without an auth header — the repo may be private.");
+    lines.push("Fix one of:");
+    lines.push("  - Install gh (`brew install gh` or equivalent) and run `gh auth login` — the bridge will use it on its next check.");
+    lines.push("  - Or export GH_TOKEN / GITHUB_TOKEN with a token that has `repo` read access before running `update`.");
+  } else if (reason?.startsWith("direct-http-404+gh-")) {
+    // gh was tried and failed. Point at gh auth specifically.
+    lines.push("HTTPS returned 404 and the gh CLI fallback also failed.");
+    lines.push("Verify: `gh auth status` and `gh api repos/yigitkonur/codex-bridge` should both succeed.");
+  } else if (reason === "timeout" || reason === "network" || reason?.includes("network")) {
+    lines.push("Network error reaching api.github.com. Retry in a moment.");
+  } else {
+    lines.push("Retry with `--force`; if it persists, check gh auth and network connectivity.");
+  }
+  return lines.join("\n") + "\n";
 }
 
 async function handleAuthStatus(argv) {
