@@ -29,7 +29,7 @@ If any file is missing or malformed, that layer is skipped silently — the next
 | `session_dir` | string | `"~/.codex-bridge/sessions"` | Where session logs are stored. `~` expands to home directory. |
 | `sandbox_policy` | string | `"danger-full-access"` | Sandbox profile. One of `"danger-full-access"`, `"workspace-write"`, `"read-only"`. See below. |
 | `skip_meta_skills` | boolean | `true` | Prepend a directive telling Codex to skip its internal planning/ceremony skills (`using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`). See below. |
-| `command_failure_circuit_breaker` | boolean | `true` | Emit `[WARNING]` after 3 consecutive same-family command failures (osascript, open -a, display dialog, computer-use, AppleScript). See below. |
+| `command_failure_circuit_breaker` | boolean | `true` | Emit `[WARNING]` when 3 of the last 5 same-family command executions fail (with wrapper-pattern detection). See below. |
 
 ### `skip_meta_skills`
 
@@ -39,9 +39,11 @@ With `skip_meta_skills: true` (shipped default), every prompt is prefixed with a
 
 ### `command_failure_circuit_breaker`
 
-When Codex's ReAct loop attempts a command family that is structurally unavailable (e.g. `osascript` on a headless box, `display dialog` without a GUI, `computer-use/get_app_state` in a sandboxed env), it doesn't converge — each failure generates a new variant. The observed worst case is 24 consecutive attempts over 3 minutes before external intervention.
+When Codex's ReAct loop attempts a command family that is structurally unavailable (e.g. `osascript` on a headless box, `display dialog` without a GUI, `computer-use/get_app_state` in a sandboxed env), it doesn't converge — each failure generates a new variant. The observed worst case is 24 attempts over 3 minutes before external intervention.
 
-With this flag on (shipped default), the bridge counts consecutive failures of the same command family from `item.type === "commandExecution"` completions. After **3** consecutive failures, it writes a `[WARNING]` event to `.events` with:
+With this flag on (shipped default), the bridge tracks same-family command executions in a **sliding window of size 5** and trips when **3 of those 5 are failures**. In addition to raw non-zero exits, a **wrapper-pattern detector** counts monitored-family commands as failed even when the shell exits 0 if the command contains a known failure-hiding construct (`& kill`, `|| true`, `|| exit 0`, `; true` at end). This catches Codex's observed behavior of wrapping failing AppleScript in `osascript … & sleep 2; kill -TERM $!` to mask the underlying failure.
+
+On trip, the bridge writes a `[WARNING]` event to `.events`:
 
 ```
 [WARNING] <threadId> command-family-circuit-breaker-tripped
@@ -50,6 +52,10 @@ With this flag on (shipped default), the bridge counts consecutive failures of t
   sample: /bin/zsh -lc "osascript -e 'tell application …'"
   turnInterrupted: no
 ```
+
+The NDJSON `CIRCUIT_BREAKER` record also carries `failsInWindow` (3-5), `windowSize` (5), and `wrapperDetected` (bool) so downstream tooling can distinguish "true structural failure" from "Codex hiding the failure behind a wrapper".
+
+**Pre-v1.2.2 behavior:** counter was "3 strictly consecutive same-family fails" and had no wrapper detection. A retest under v1.2.1 found Codex routinely bypasses that threshold by interleaving successful wrappers between raw failures — v1.2.2 upgrades to the sliding window + wrapper detection to catch this.
 
 Monitored families: `osascript`, `applescript-dialog`, `applescript-system`, `open-app`, `computer-use`. A successful command **resets** the counter (consecutive means consecutive). Unmonitored-family failures are ignored so a failing `npm test` between probes does not shield the breaker.
 
@@ -70,6 +76,8 @@ Opt into a stricter profile by editing `config.yaml`:
 The setting applies to `task` and `send` turns and to the auto-pipeline's **fix** stage. The **completion-check** stage stays `read-only` regardless, because the check must not mutate the workspace while evaluating it.
 
 Unknown values silently fall back to the mode-derived default (`plan → read-only`, `default → workspace-write`). A typo cannot widen permissions beyond the mode-derived floor.
+
+**macOS caveat for `workspace-write`:** Apple seatbelt's enforcement of `workspace-write` depends on the Codex binary version and the OS rev — in some combinations `.git/` writes under the cwd succeed, in others they're denied. Do not rely on the sandbox to block `.git/` writes on macOS; if a task needs the **`workspace-dirty`** phase to be triggerable (e.g. for automated handback testing), verify with a scripted Codex run on your exact OS+Codex combo. The phase only fires when upstream Codex raises `SandboxError`; a permissive seatbelt lets the commit go through and the run finishes as `phase: "done"`. Linux sandboxes (bubblewrap/user-namespaces) are more consistently restrictive.
 
 ## Default post_task_prompt
 

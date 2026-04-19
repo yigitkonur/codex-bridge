@@ -9,7 +9,46 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
-## [1.2.1] — 2026-04-19
+## [1.2.2] — 2026-04-19
+
+Circuit-breaker behavioral upgrade. The v1.2.0 "3 strictly consecutive
+same-family fails" threshold survived the v1.2.1 regression retest only
+in spec; a live retest (T4) showed Codex routinely bypasses the
+threshold by wrapping failing commands in `& sleep N; kill -TERM $!`
+constructs that exit 0 — the consecutive counter reset on every wrapper
+and never reached 3. v1.2.2 upgrades the detector.
+
+### Changed
+
+- **`command_failure_circuit_breaker` now uses a sliding window + wrapper
+  detection.** Same-family failures are counted within a window of the
+  last 5 commandExecutions; `[WARNING]` fires when 3 of those 5 are
+  failures. Successful commands DO enter the window (not ignored), so
+  interleaved successes no longer shield flailing. In addition,
+  monitored-family commands that exit 0 but contain a known
+  failure-hiding construct (`& kill`, `|| true`, `|| exit 0`,
+  `; true` at end) are counted as failed regardless of exit code.
+- NDJSON `CIRCUIT_BREAKER` record now carries `failsInWindow` (3-5),
+  `windowSize` (5), and `wrapperDetected` (bool) so downstream tooling
+  can distinguish raw structural failure from masked-by-wrapper failure.
+
+### Docs
+
+- `skill/references/config-reference.md` `command_failure_circuit_breaker`
+  section rewritten to describe the sliding-window + wrapper semantics
+  and reference the v1.2.2 behavior upgrade.
+- `sandbox_policy` section gains a **macOS caveat** documenting that
+  Apple seatbelt's `workspace-write` enforcement is best-effort: on some
+  OS+Codex combinations `.git/` writes succeed, so the `workspace-dirty`
+  phase is not guaranteed triggerable on macOS. Linux sandboxes are more
+  consistently restrictive. This addresses the T3 "inconclusive" finding
+  from the v1.2.1 retest.
+- `07-orchestration/07-circuit-breaker-trips-on-repeated-family.md`
+  rewritten: 6 scenarios → 9, covering sliding window, wrapper
+  detection, window age-out, and the existing regression guards.
+  Predicate 9/9 passes offline.
+
+
 
 Hot-fix release. v1.2.0 introduced three opt-out-by-config defenses driven
 by `runBridgeTask` (session-logging hooks, `skip_meta_skills` directive,
