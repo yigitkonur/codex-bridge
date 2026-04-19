@@ -1136,8 +1136,18 @@ export async function runAppServerTurn(cwd, options = {}) {
           promptLength: prompt.length,
           promptPreview: prompt.slice(0, 200)
         });
-      } catch {
-        // Pre-turn diagnostics must not block the turn.
+      } catch (err) {
+        // Pre-turn diagnostics must not block the turn — but silencing the
+        // error category entirely is what let the v1.2.0 background-path
+        // regression ship without detection. Surface through `onProgress`
+        // so the per-job `.log` (and therefore the job record) captures
+        // whatever the hook threw. Detached workers with `stdio: "ignore"`
+        // depend on this path for visibility.
+        emitProgress(
+          options.onProgress,
+          `onTurnStart threw: ${err?.message ?? err}`,
+          null
+        );
       }
     }
 

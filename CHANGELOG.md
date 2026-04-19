@@ -9,7 +9,47 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
-## [1.2.0] — 2026-04-18
+## [1.2.1] — 2026-04-19
+
+Hot-fix release. v1.2.0 introduced three opt-out-by-config defenses driven
+by `runBridgeTask` (session-logging hooks, `skip_meta_skills` directive,
+`sandbox_policy` resolution, `command_failure_circuit_breaker`). Live
+retesting discovered that the detached `task-worker` on the background
+path called `executeTaskRun` directly, bypassing `runBridgeTask` entirely
+— so `task --background` completed turns successfully (assistant output
+captured, job record transitioned to `completed`) but produced **zero
+session artifacts**. `wait $jobId` timed out with `WAIT_TIMEOUT`, `events
+--follow` had nothing to tail, and the async+Monitor contract documented
+in `skill/SKILL.md` silently broke for every background caller.
+
+### Fixed
+
+- **`task --background` now produces `.events`, `.ndjson`, and `.diff`
+  session files.** `handleTaskWorker` at `src/codex-bridge.mjs:2054` now
+  calls `runBridgeTask` instead of `executeTaskRun` — identical contract
+  to the foreground path, including `onTurnStart`/`onItemCompleted`/
+  `onServerRequest` hooks, prompt decoration (`skip_meta_skills`,
+  `prompt_footer`), config-aware sandbox-policy resolution, `[QUESTION]`
+  handling, and the auto-pipeline. The foreground path was always
+  correct; only the detached worker was stripped.
+- **`onTurnStart` no longer swallows exceptions silently.** The empty
+  `catch {}` at `src/lib/codex.mjs:1140` is replaced with
+  `emitProgress(options.onProgress, …)` so any throw from
+  `findSession` / `initSession` / `logNdjson` lands in the per-job `.log`
+  and the job record instead of vanishing. This is the observability
+  primitive that would have caught the v1.2.0 regression in testing.
+- **Detached worker stderr is now captured.** `spawnDetachedTaskWorker`
+  used `stdio: "ignore"` which swallowed every uncaught exception in the
+  detached child. v1.2.1 redirects fd 2 to `${logFile}.worker.err` — an
+  empty file on the happy path, a readable stacktrace on crashes.
+
+### Docs
+
+- New gherkin spec: `07-orchestration/08-background-path-produces-session-files.md`
+  pinning the foreground/background parity invariant live. This test
+  would have failed on v1.2.0 and caught the regression pre-ship.
+
+
 
 Session-derailment defenses release. Closes the full five-bug user report
 covering a swift-vibescroll session where Codex (a) flailed on sandbox-
