@@ -1,5 +1,5 @@
 // src/codex-bridge.mjs
-import { spawn as spawn3 } from "node:child_process";
+import { spawn as spawn3, spawnSync as spawnSync3 } from "node:child_process";
 import fs13 from "node:fs";
 import os6 from "node:os";
 import path11 from "node:path";
@@ -9,7 +9,7 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "1.2.7",
+  version: "1.2.8",
   description: "Claude Code skill that orchestrates Codex via Monitor tool notifications",
   type: "module",
   scripts: {
@@ -6988,14 +6988,12 @@ function withTimeout(promise, timeoutMs, label) {
 }
 
 // src/lib/update-check.mjs
-import { spawnSync as spawnSync3 } from "node:child_process";
 import fs12 from "node:fs";
 import path10 from "node:path";
 import os5 from "node:os";
 var DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
 var DEFAULT_FETCH_TIMEOUT_MS = 2500;
-var GH_API_PATH = "repos/yigitkonur/codex-bridge/releases/latest";
-var GITHUB_API_URL = `https://api.github.com/${GH_API_PATH}`;
+var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest";
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const root = process.env.CLAUDE_PLUGIN_DATA ? path10.join(process.env.CLAUDE_PLUGIN_DATA, "codex-bridge-update.json") : path10.join(os5.homedir(), ".codex-bridge", "update-cache.json");
@@ -7039,64 +7037,31 @@ function compareVersions(a, b) {
   if (pb.tag === "") return -1;
   return pa.tag < pb.tag ? -1 : 1;
 }
-async function fetchLatestTagDirect(timeoutMs) {
+async function fetchLatestTag(timeoutMs) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
-  const headers = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": USER_AGENT
-  };
-  if (token) headers.Authorization = `Bearer ${token}`;
   try {
     const res = await fetch(GITHUB_API_URL, {
       signal: controller.signal,
-      headers
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": USER_AGENT
+      }
     });
     if (!res.ok) {
-      return { ok: false, status: res.status, reason: `http-${res.status}`, authHeader: Boolean(token) };
+      return { ok: false, status: res.status, reason: `http-${res.status}` };
     }
     const json2 = await res.json();
     if (typeof json2?.tag_name !== "string") {
-      return { ok: false, status: 200, reason: "bad-payload", authHeader: Boolean(token) };
+      return { ok: false, status: 200, reason: "bad-payload" };
     }
-    return { ok: true, tag: json2.tag_name.replace(/^v/i, ""), source: token ? "http-token" : "http-anon" };
+    return { ok: true, tag: json2.tag_name.replace(/^v/i, "") };
   } catch (err) {
     const aborted = err?.name === "AbortError";
-    return { ok: false, status: 0, reason: aborted ? "timeout" : "network", authHeader: Boolean(token) };
+    return { ok: false, status: 0, reason: aborted ? "timeout" : "network" };
   } finally {
     clearTimeout(t);
   }
-}
-function fetchLatestTagViaGh(timeoutMs) {
-  try {
-    const result = spawnSync3("gh", ["api", GH_API_PATH, "--jq", ".tag_name"], {
-      encoding: "utf8",
-      timeout: timeoutMs,
-      // Explicitly inherit $PATH only — we don't need stdin; stderr is
-      // captured so a missing-auth gh error doesn't leak to the user's
-      // console on every task launch.
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    if (result.error || result.status !== 0) {
-      return { ok: false, reason: result.error?.code === "ENOENT" ? "gh-not-installed" : "gh-failed" };
-    }
-    const tag = String(result.stdout || "").trim();
-    if (!tag) return { ok: false, reason: "gh-empty" };
-    return { ok: true, tag: tag.replace(/^v/i, ""), source: "gh-cli" };
-  } catch {
-    return { ok: false, reason: "gh-exception" };
-  }
-}
-async function fetchLatestTag(timeoutMs) {
-  const direct = await fetchLatestTagDirect(timeoutMs);
-  if (direct.ok) return direct;
-  if (direct.status === 404) {
-    const viaGh = fetchLatestTagViaGh(timeoutMs);
-    if (viaGh.ok) return viaGh;
-    return { ok: false, reason: `direct-${direct.reason}+${viaGh.reason}`, status: direct.status, authHeader: direct.authHeader };
-  }
-  return direct;
 }
 async function checkForUpdate({
   currentVersion,
@@ -7123,7 +7088,6 @@ async function checkForUpdate({
       reason: cache ? "fetch-failed-using-stale" : "fetch-failed-no-cache",
       fetchReason: fetchResult.reason,
       fetchStatus: fetchResult.status ?? null,
-      authHeader: fetchResult.authHeader ?? false,
       currentVersion,
       ...cache && {
         latestVersion: cache.latestVersion,
@@ -7138,14 +7102,13 @@ async function checkForUpdate({
     cached: false,
     currentVersion,
     latestVersion: fetchResult.tag,
-    source: fetchResult.source,
     hasUpdate: compareVersions(currentVersion, fetchResult.tag) < 0,
     cacheAgeMs: 0
   };
 }
 function formatUpdateNotice(result) {
   if (!result || !result.hasUpdate || !result.latestVersion) return null;
-  return `codex-bridge ${result.latestVersion} is available (you have ${result.currentVersion}). Run \`npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y\` to update.`;
+  return `codex-bridge ${result.latestVersion} is available (you have ${result.currentVersion}). Run \`npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y\` to update, or pass --apply to \`codex-bridge update\` to install automatically.`;
 }
 
 // src/codex-bridge.mjs
@@ -7387,7 +7350,7 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge version --json", "codex-bridge version --check-update --json"]
   },
   update: {
-    synopsis: "update [--force] [--json]",
+    synopsis: "update [--force] [--apply|--yes] [--json]",
     summary: "Check GitHub releases for a newer codex-bridge and print the install recipe. Does not self-modify the skill \u2014 run the printed command yourself when you want to upgrade.",
     examples: ["codex-bridge update --json", "codex-bridge update --force"]
   },
@@ -7699,23 +7662,53 @@ async function handleUpdate(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "force"]
+    booleanOptions: ["json", "force", "apply", "yes"]
   });
   const update = await checkForUpdate({
     currentVersion: BRIDGE_VERSION,
     force: options.force !== false
   });
   const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const wantApply = Boolean(options.apply || options.yes);
+  if (wantApply && update.hasUpdate && update.latestVersion) {
+    const applyResult = runSkillsAddForApply(options.json);
+    const payload2 = {
+      current_version: BRIDGE_VERSION,
+      latest_version: update.latestVersion ?? null,
+      has_update: true,
+      applied: applyResult.ok,
+      apply_exit_code: applyResult.exitCode,
+      apply_error: applyResult.error,
+      install_command: installCommand
+    };
+    const rendered2 = applyResult.ok ? `Installed codex-bridge ${update.latestVersion} (was ${BRIDGE_VERSION}). Re-invoke the skill to pick up the new files.
+` : `Attempted to install ${update.latestVersion} (from ${BRIDGE_VERSION}) but the installer exited ${applyResult.exitCode}.
+` + (applyResult.error ? `  ${applyResult.error}
+` : "") + `Re-run manually: ${installCommand}
+`;
+    if (applyResult.ok) {
+      emitSuccess("update", payload2, rendered2, { json: options.json, startedAt });
+    } else {
+      const err = new CliError(
+        `skills installer exited ${applyResult.exitCode}`,
+        { class: "dependency_failed", code: "UPDATE_APPLY_FAILED", retryable: true, suggestion: `Re-run manually: ${installCommand}` }
+      );
+      emitError(err, { json: options.json, command: "update" });
+    }
+    return;
+  }
   const payload = {
     current_version: BRIDGE_VERSION,
     latest_version: update.latestVersion ?? null,
     has_update: Boolean(update.hasUpdate),
-    source: update.source ?? null,
     check_skipped: Boolean(update.skipped),
     check_skip_reason: update.reason ?? null,
     fetch_reason: update.fetchReason ?? null,
     fetch_status: update.fetchStatus ?? null,
-    install_command: installCommand
+    install_command: installCommand,
+    // --apply was requested but nothing to install: echo back the intent
+    // so scripted callers can tell "no action taken" from "skipped".
+    applied: wantApply && !update.hasUpdate ? false : null
   };
   let rendered;
   if (update.skipped && !update.latestVersion) {
@@ -7724,6 +7717,7 @@ async function handleUpdate(argv) {
     rendered = `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).
 To update, run:
   ${installCommand}
+Or rerun with --apply to install automatically.
 `;
   } else {
     rendered = `codex-bridge is up to date (${BRIDGE_VERSION}${update.latestVersion ? `, latest ${update.latestVersion}` : ""}).
@@ -7731,21 +7725,43 @@ To update, run:
   }
   emitSuccess("update", payload, rendered, { json: options.json, startedAt });
 }
+function runSkillsAddForApply(jsonMode) {
+  try {
+    const result = spawnSync3(
+      "npx",
+      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+      {
+        stdio: jsonMode ? ["ignore", "pipe", "pipe"] : "inherit",
+        encoding: "utf8"
+      }
+    );
+    if (result.error) {
+      return {
+        ok: false,
+        exitCode: null,
+        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.message
+      };
+    }
+    if (result.status !== 0) {
+      const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
+      return { ok: false, exitCode: result.status, error: stderrTail || null };
+    }
+    return { ok: true, exitCode: 0, error: null };
+  } catch (err) {
+    return { ok: false, exitCode: null, error: err?.message ?? String(err) };
+  }
+}
 function renderUpdateFailureHint(update, currentVersion) {
   const reason = update.fetchReason ?? update.reason ?? "unknown";
   const lines = [`Update check failed (current: ${currentVersion}, reason: ${reason}).`];
-  if (update.fetchStatus === 404 && !update.authHeader) {
-    lines.push("Upstream returned 404 without an auth header \u2014 the repo may be private.");
-    lines.push("Fix one of:");
-    lines.push("  - Install gh (`brew install gh` or equivalent) and run `gh auth login` \u2014 the bridge will use it on its next check.");
-    lines.push("  - Or export GH_TOKEN / GITHUB_TOKEN with a token that has `repo` read access before running `update`.");
-  } else if (reason?.startsWith("direct-http-404+gh-")) {
-    lines.push("HTTPS returned 404 and the gh CLI fallback also failed.");
-    lines.push("Verify: `gh auth status` and `gh api repos/yigitkonur/codex-bridge` should both succeed.");
-  } else if (reason === "timeout" || reason === "network" || reason?.includes("network")) {
+  if (reason === "timeout" || reason === "network") {
     lines.push("Network error reaching api.github.com. Retry in a moment.");
+  } else if (update.fetchStatus === 403) {
+    lines.push("GitHub returned 403 \u2014 likely the anonymous 60/hr rate limit. Wait an hour or re-run from a different IP.");
+  } else if (update.fetchStatus === 404) {
+    lines.push("GitHub returned 404. Re-run with --force; if it persists, the release endpoint may be temporarily unreachable.");
   } else {
-    lines.push("Retry with `--force`; if it persists, check gh auth and network connectivity.");
+    lines.push("Retry with --force; if it persists, check network connectivity to api.github.com.");
   }
   return lines.join("\n") + "\n";
 }

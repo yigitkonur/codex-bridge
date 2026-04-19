@@ -9,6 +9,67 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.2.8] — 2026-04-19
+
+Repo flipped to public. Two changes follow from that: the 1.2.7 gh-CLI
+fallback and token-reading become dead code (anonymous HTTPS now works
+for every caller), and the bridge can finally do real auto-apply
+without requiring the user to copy-paste `npx skills add …` into a
+separate shell.
+
+### Removed (dead code post-public)
+
+- **`fetchLatestTagViaGh`** in `src/lib/update-check.mjs` — the
+  spawnSync-gh fallback shipped in 1.2.7 to work around private-repo
+  404s. Public repo means anonymous `https://api.github.com/repos/…/
+  releases/latest` returns `200` with the release envelope directly.
+- **`GITHUB_TOKEN` / `GH_TOKEN` env-var reading** — no longer needed
+  and staying anonymous avoids burning the user's authenticated
+  5000-req/hr budget on a probe that runs at most once per 24 h per
+  workspace. Anonymous 60/hr/IP × 24 h cache is effectively unlimited
+  for this access pattern.
+- **Two-step resolver** collapsed into a single `fetchLatestTag` that
+  does the anonymous fetch and returns `{ok:true, tag}` or
+  `{ok:false, status, reason}`.
+- **`source` envelope field** removed (the only remaining path is
+  anonymous HTTPS, so the distinguisher has no value).
+- **`renderUpdateFailureHint` gh/token branches** removed; the
+  remaining hints cover the failure modes that can still fire
+  (timeout / network / 403 rate-limit / 404 propagation lag).
+
+### Added
+
+- **`bridge update --apply` / `--yes`** — real auto-apply. When
+  `--apply` is set and a newer release exists, the bridge spawns
+  `npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y`
+  for you, inherits its terminal (or captures stdout/stderr under
+  `--json`), and reports the outcome in the envelope:
+    - Success → `result.applied: true`, exit 0, rendered message
+      tells you to re-invoke the skill to pick up the new files.
+    - Failure (installer exited non-zero, npx missing, etc.) →
+      `ok: false` error envelope with `class: dependency_failed`,
+      `code: UPDATE_APPLY_FAILED`, `retryable: true`, and the
+      manual install command in `suggestion`.
+  Default behavior (no flag) remains detect-only so scripted callers
+  don't get install side-effects they didn't ask for.
+- **`formatUpdateNotice`** copy updated to mention `--apply` as an
+  alternative to the full `npx skills add …` command.
+
+### Docs
+
+- `SKILL.md` Troubleshooting: replaced the "private repo + gh
+  fallback" recovery block with a one-liner about the anonymous
+  probe and a pointer to `update --apply`.
+
+### Verified
+
+- `env -i HOME PATH=<node-only>` (no token, no gh on PATH) →
+  `has_update: false, latest_version: "1.2.7"` — anonymous HTTPS
+  works end-to-end with zero auth plumbing.
+- Synopsis advertises `update [--force] [--apply|--yes] [--json]`.
+- `update --apply` on a current install returns `has_update: false,
+  applied: false` without invoking `npx`.
+
 ## [1.2.7] — 2026-04-19
 
 Auto-update actually works for private repos now. The 1.2.6 install test
