@@ -1,8 +1,18 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+// Single source of truth for the bridge version: package.json. esbuild inlines
+// the JSON content into the bundled distributable at build time, so the
+// installed skill/scripts/bundle stays in sync with the published version
+// without a manual string sweep. Pre-1.2.5 the version was hard-coded here at
+// line ~620 and drifted (package.json bumped to 1.2.4 while the const still
+// read "1.2.3"), causing `version --json` and the update checker to report a
+// stale number.
+import packageJson from "../package.json" with { type: "json" };
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
@@ -617,7 +627,7 @@ async function handleSetup(argv) {
   });
 }
 
-const BRIDGE_VERSION = "1.2.3";
+const BRIDGE_VERSION = packageJson.version;
 const BRIDGE_SCHEMA_VERSION = "1.0";
 const BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",
