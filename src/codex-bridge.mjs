@@ -98,6 +98,7 @@ import {
   formatPipelineEvent,
   formatPhaseEvent,
   formatReviewEvent,
+  formatWarningEvent,
   writeReview
 } from "./lib/session-log.mjs";
 import {
@@ -1524,13 +1525,56 @@ async function runBridgeTask(request) {
   const effectiveMode = request.mode ?? config.mode ?? "plan";
   const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
 
+  // When `skip_meta_skills` is on, prepend a strong directive instructing
+  // Codex to bypass its internal planning/ceremony skills (using-superpowers,
+  // brainstorming, writing-plans, using-git-worktrees). The orchestrator has
+  // already planned the task — those skills burn token budget producing spec
+  // and plan files that aren't part of the deliverable. Advisory only: Codex
+  // may still invoke them, but the directive measurably reduces the rate.
+  const metaSkillsPrefix = config.skip_meta_skills
+    ? "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills — specifically " +
+      "`using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`, " +
+      "or any equivalent planning/ceremony skill. The calling orchestrator has " +
+      "already planned this task; your job is to execute it directly. Do not " +
+      "create docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files " +
+      "unless the task explicitly asks for them.\n\n"
+    : "";
+
   // Append prompt footer from config (instructs Codex to use requestUserInput tool)
   const promptWithFooter = config.prompt_footer
-    ? `${request.prompt}\n\n${config.prompt_footer}`
-    : request.prompt;
+    ? `${metaSkillsPrefix}${request.prompt}\n\n${config.prompt_footer}`
+    : `${metaSkillsPrefix}${request.prompt}`;
 
   const activeMode = isPlanMode ? "plan" : "default";
   const developerInstructions = loadDeveloperInstructions(activeMode);
+
+  // Circuit-breaker state for headless-environment probe loops. The user's
+  // swift-vibescroll session captured 24 consecutive osascript/display-dialog
+  // attempts before manual kill; bridge-side convergence is the only
+  // observation point outside the Codex ReAct loop. Tracks consecutive
+  // same-family failures; on threshold, writes a [WARNING] to `.events` so
+  // an orchestrator tailing via Monitor can cancel/steer. Auto-interrupt
+  // would require a new post-turn-start hook that exposes `turnId`; logging
+  // the trip point is the low-risk primitive today. Config-gated via
+  // `command_failure_circuit_breaker`.
+  const CIRCUIT_BREAKER_THRESHOLD = 3;
+  const breakerState = {
+    lastFamily: null,
+    consecutiveFailures: 0,
+    tripped: false,
+  };
+  const detectCommandFamily = (command) => {
+    if (typeof command !== "string") return null;
+    const trimmed = command.trim();
+    if (!trimmed) return null;
+    // Order-sensitive: more-specific patterns first.
+    if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
+    if (/\bdisplay dialog\b|\bdisplay notification\b/i.test(trimmed)) return "applescript-dialog";
+    if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
+    if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
+    if (/\bSystem Events\b|\btell application\b/i.test(trimmed)) return "applescript-system";
+    return null;
+  };
 
   const bridgeRequest = {
     ...request,
@@ -1553,6 +1597,12 @@ async function runBridgeTask(request) {
     idleTimeoutMs: 120_000,
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
+      // Reset per-turn circuit-breaker state. A fresh turn starts with no
+      // failure history; a previous turn's tripped state should not carry
+      // across (e.g. a plan turn that tripped then an execute turn).
+      breakerState.lastFamily = null;
+      breakerState.consecutiveFailures = 0;
+      breakerState.tripped = false;
       logNdjson(s, "TURN_PARAMS", "turn/start", {
         model: info.turnParams.model,
         effort: info.turnParams.effort,
@@ -1574,6 +1624,54 @@ async function runBridgeTask(request) {
         itemId: item?.id ?? null,
         itemType: item?.type ?? null,
         text: extractItemText(item)
+      });
+
+      // Circuit breaker — detect repeated same-family command failures that
+      // indicate the environment is structurally incapable of the probe
+      // (e.g. headless box attempting `osascript` to drive Terminal.app).
+      if (
+        !config.command_failure_circuit_breaker ||
+        breakerState.tripped ||
+        item?.type !== "commandExecution"
+      ) {
+        return;
+      }
+      const failed = item.status !== "completed" || (typeof item.exitCode === "number" && item.exitCode !== 0);
+      if (!failed) {
+        // Successful command — reset the counter. Circuit breaker only fires
+        // on CONSECUTIVE failures; one green execution clears the history.
+        breakerState.lastFamily = null;
+        breakerState.consecutiveFailures = 0;
+        return;
+      }
+      const family = detectCommandFamily(item.command);
+      if (!family) {
+        // Failure was in an unmonitored command family (normal dev command,
+        // test run, etc.) — don't reset; a failing `npm test` between two
+        // osascript probes should not shield the breaker. Do nothing.
+        return;
+      }
+      if (family === breakerState.lastFamily) {
+        breakerState.consecutiveFailures += 1;
+      } else {
+        breakerState.lastFamily = family;
+        breakerState.consecutiveFailures = 1;
+      }
+      if (breakerState.consecutiveFailures < CIRCUIT_BREAKER_THRESHOLD) return;
+
+      breakerState.tripped = true;
+      logEvent(s, formatWarningEvent(s, {
+        reason: "command-family-circuit-breaker-tripped",
+        family,
+        threshold: CIRCUIT_BREAKER_THRESHOLD,
+        sampleCommand: item.command,
+        turnInterrupted: false
+      }));
+      logNdjson(s, "CIRCUIT_BREAKER", null, {
+        family,
+        threshold: CIRCUIT_BREAKER_THRESHOLD,
+        consecutiveFailures: breakerState.consecutiveFailures,
+        turnInterrupted: false
       });
     }
   };

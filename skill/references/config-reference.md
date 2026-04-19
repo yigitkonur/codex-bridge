@@ -28,6 +28,32 @@ If any file is missing or malformed, that layer is skipped silently — the next
 | `allow_questions` | boolean | `true` | Allow Codex to ask questions in Default mode. Always enabled in Plan mode. |
 | `session_dir` | string | `"~/.codex-bridge/sessions"` | Where session logs are stored. `~` expands to home directory. |
 | `sandbox_policy` | string | `"danger-full-access"` | Sandbox profile. One of `"danger-full-access"`, `"workspace-write"`, `"read-only"`. See below. |
+| `skip_meta_skills` | boolean | `true` | Prepend a directive telling Codex to skip its internal planning/ceremony skills (`using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`). See below. |
+| `command_failure_circuit_breaker` | boolean | `true` | Emit `[WARNING]` after 3 consecutive same-family command failures (osascript, open -a, display dialog, computer-use, AppleScript). See below. |
+
+### `skip_meta_skills`
+
+Codex ships with opinionated meta-skills that, by default, run before execution: `using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`. When the bridge is already orchestrating — the orchestrator has decided the plan, the workspace, and the intent — those skills routinely burn ~10 minutes producing spec and plan files under `docs/superpowers/` that aren't part of the deliverable.
+
+With `skip_meta_skills: true` (shipped default), every prompt is prefixed with an `[ORCHESTRATOR DIRECTIVE]` line instructing Codex to execute directly and not to create those files. This is **advisory** — Codex can still invoke the skills — but in practice it cuts the ceremony overhead sharply. Set to `false` if you want Codex's full default behavior (e.g. when running without an orchestrator).
+
+### `command_failure_circuit_breaker`
+
+When Codex's ReAct loop attempts a command family that is structurally unavailable (e.g. `osascript` on a headless box, `display dialog` without a GUI, `computer-use/get_app_state` in a sandboxed env), it doesn't converge — each failure generates a new variant. The observed worst case is 24 consecutive attempts over 3 minutes before external intervention.
+
+With this flag on (shipped default), the bridge counts consecutive failures of the same command family from `item.type === "commandExecution"` completions. After **3** consecutive failures, it writes a `[WARNING]` event to `.events` with:
+
+```
+[WARNING] <threadId> command-family-circuit-breaker-tripped
+  family: osascript
+  threshold: 3 consecutive failures
+  sample: /bin/zsh -lc "osascript -e 'tell application …'"
+  turnInterrupted: no
+```
+
+Monitored families: `osascript`, `applescript-dialog`, `applescript-system`, `open-app`, `computer-use`. A successful command **resets** the counter (consecutive means consecutive). Unmonitored-family failures are ignored so a failing `npm test` between probes does not shield the breaker.
+
+The current implementation logs only — it does not auto-interrupt the turn. An orchestrator tailing `.events` via Monitor can catch the warning and decide to `cancel <jobId>` or `steer <tid> <turn-id> "environment is headless, move on"`. Auto-interrupt would require a new `onTurnReady(turnId)` hook from `codex.mjs` and is tracked as an enhancement candidate in `07-orchestration/07-circuit-breaker-trips-on-repeated-family.md`.
 
 ### `sandbox_policy`
 

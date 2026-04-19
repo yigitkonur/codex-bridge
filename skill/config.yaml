@@ -32,6 +32,22 @@ codex_bridge:
   # In Plan mode, questions are always enabled
   allow_questions: true
 
+  # When true, prepend a strong orchestrator directive telling Codex not to
+  # invoke its internal meta-skills (using-superpowers, brainstorming,
+  # writing-plans, using-git-worktrees). Codex's default skill chain can burn
+  # ~10 minutes producing docs/superpowers/specs/*.md and plans/*.md files
+  # that are not part of the deliverable when the bridge is already
+  # orchestrating. Advisory: Codex may still invoke them, but the directive
+  # measurably reduces the rate.
+  skip_meta_skills: true
+
+  # Watch repeated same-family command failures (osascript, open -a, display
+  # dialog, computer-use/*, AppleScript) and emit a [WARNING] event after N=3
+  # consecutive failures. Gives an orchestrator tailing via Monitor a chance
+  # to cancel/steer before Codex burns token budget iterating over headless-
+  # environment probes. Set false to disable.
+  command_failure_circuit_breaker: true
+
   # Sandbox policy. Shipped default is "danger-full-access" so Codex can
   # commit its own work without the `workspace-write` sandbox blocking
   # `.git/` writes. This matches `codex --dangerously-bypass-approvals-and-

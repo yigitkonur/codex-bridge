@@ -23,6 +23,19 @@ const DEFAULT_CONFIG = {
   // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
   // sandbox`. See skill/references/config-reference.md for the full matrix.
   sandbox_policy: "danger-full-access",
+  // When true, prepend a strong orchestrator directive telling Codex to skip
+  // its internal planning/ceremony skills (using-superpowers, brainstorming,
+  // writing-plans, using-git-worktrees). Codex's default skill chain routinely
+  // spends ~10 minutes writing docs/superpowers/specs/*.md and plans/*.md
+  // files that are not part of the deliverable when the bridge is already
+  // orchestrating the task. Advisory — Codex may ignore the directive.
+  skip_meta_skills: true,
+  // When true, monitor repeated same-family command failures (osascript,
+  // open -a, display dialog, computer-use/*) and steer the turn with a
+  // structural-impossibility message once the threshold is hit. Prevents
+  // Codex from burning token budget iterating over headless-environment
+  // probes. See config-reference.md for the threshold and family list.
+  command_failure_circuit_breaker: true,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 
