@@ -9,6 +9,72 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.2.6] — 2026-04-19
+
+Docs-only follow-up after the 1.2.5 audit. Zero code changes — every fix
+is in `skill/SKILL.md` or under `skill/references/`. Goal: close the gap
+between "what 1.2.5 code actually does" and "what SKILL.md / references
+teach agents to do." SKILL.md is the only guaranteed-read doc, and the
+audit found ~20 derailment-risk items that never propagated from the
+1.2.5 code commits into the reader-facing text.
+
+### Fixed (contradictions + stale claims in SKILL.md)
+
+- **Canonical Monitor filter** — extended to `DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING`. Pre-1.2.6 the canonical example used a narrower filter; agents pasting it missed the `[PIPELINE:*:done]` signals shipped in 1.2.5 and every `[WARNING]` from the circuit breaker.
+- **"~5 minutes is stuck"** at `SKILL.md:77` was nonsense after 1.2.5 raised the idle watchdog default to 300 s (= 5 min). The watchdog already fires at the 5-min mark; the threshold is now expressed as "past the relevant timeout plus a buffer" with the full matrix inlined.
+- **Auto-pipeline "silent"** at `SKILL.md:70` was pre-1.2.5 text. Rewritten to name the observable tags (`[PIPELINE:<stage>]` + `:done` + terminal `[PIPELINE:done|failed]`) plus `result.pipeline.touchedFiles`.
+- **"Do not use threadId" vs "accept either"** — three separate lines contradicted each other (`SKILL.md:77` / `:106` / `:146`). Replaced with a single framing: both accept either, prefer jobId because it's deterministic, reserve threadId for `send`/`steer`.
+- **Pre-1.2.5 async section** at `SKILL.md:115-131` with `THREAD_ID=<from output>` placeholders deleted — it was literally the "parse stderr" anti-pattern the canonical block warns against.
+- **`:146` "accept either" list** now includes `events` and `wait` (previously only named status/result/cancel).
+- **Session-files tag list** updated to include `[PIPELINE:*:done]`, terminal `[PIPELINE:done|failed]`, and `[WARNING]`.
+- **`SKILL.md:255` "Not currently produced"** framing reversed — lead with what IS produced, mention reserved-but-not-emitted as a brief addendum.
+- **`orchestration-flows.md` `Round-3` internal-incident vocabulary** generalized to "a prior incident".
+- **`orchestration-flows.md:44` fg/bg mode caveat** corrected — `--background --mode default` is honored post-1.2.1; prior text claimed the override was silently dropped. SKILL.md and orchestration-flows now agree.
+- **`command-reference.md:23` exit code 8** removed — the table listed "partial success" but no code path emits it.
+
+### Added (1.2.5 capabilities now surfaced in always-read and reference docs)
+
+- **`SKILL.md` identifier primer** at the top — first thing an agent reads. Names the derailment (threadId-grab from stderr) and the canonical handles.
+- **`SKILL.md` "Timeout budgets" table** inlined — all six configurable timeouts (idle / turn-plan / turn-default / pipeline-stage / pipeline-total / question-answer) with flag + config key + default in one place.
+- **`SKILL.md` "Task-launch flags" table** — lists `--no-pipeline`, `--quiet`, every timeout override, with a worked scaffold example.
+- **`SKILL.md` `[PIPELINE:*:done]` and `[WARNING]` response sections** under "Responding to Events" — tells agents what the symmetric `:done` tags mean and how to react to circuit-breaker warnings.
+- **`SKILL.md` Post-[DONE] checklist** lifted into the `[DONE]` section (previously only in `orchestration-flows.md`). Five bullets: confirm pipeline stopped / read touchedFiles / don't edit files Codex just wrote / don't use a generator as its own verification / verify on the committed tree.
+- **`SKILL.md` workspace-dirty phase** documented (previously only in orchestration-flows.md).
+- **`SKILL.md` shipped defaults that change Codex's behavior** — `sandbox_policy: "danger-full-access"` and `skip_meta_skills: true` called out in "How It Works" with one-line explanations each.
+- **`SKILL.md` "When NOT to use Monitor"** lifted from `monitor-patterns.md` — addresses the round-2/3 derailment where Monitor was re-armed 9× on `xcodebuild`.
+- **`SKILL.md` Troubleshooting** — added `config show`, `status --prune-orphans`, `~/.codex-bridge/crashes/`, and the Claude Code + Xcode DerivedData gotcha.
+- **`command-reference.md` `task`/`send`/`status`/`events` tables** — every 1.2.5 flag added (`--no-pipeline`, `--quiet`, all `--*-ms` timeouts, `--prune-orphans` / `--cleanup`). `events --json --follow` return-envelope shape documented (`terminalTag`, `terminalLine`, `elapsedMs`).
+- **`command-reference.md` `status --prune-orphans` body section** added (subcommand was previously unmentioned in prose).
+- **`config-reference.md` Options table** — six new timeout keys added: `idle_timeout_ms`, `turn_plan_ms`, `turn_default_ms`, `pipeline_stage_ms`, `pipeline_total_ms`, `question_answer_ms`.
+- **`config-reference.md` Examples** — added "large scaffold with raised budgets" and "slow human-in-the-loop answering" examples.
+- **`notification-format.md` `[PIPELINE:*]` section** rewritten to include `:done` pairs, terminal `[PIPELINE:done|failed]`, and the `files=[…]` format on `[PIPELINE:fix:done]`.
+- **`monitor-patterns.md` Preset A** — final-envelope shape documented; `run_in_background: true` note corrected (it returns a handle, doesn't block).
+- **`ndjson-guide.md`** — added `PIPELINE_SKIPPED` (1.2.5 `--no-pipeline`) and `CIRCUIT_BREAKER` rows; `PIPELINE_COMPLETE` carries `touchedFiles`; new section "Finding a `<turn-id>` for `steer`".
+- **`error-recovery.md` ClientTimeout branch** — 5 origins now spelled out individually with first-response actions (idle / turn / pipeline-stage / pipeline-total / question) since all five surface under the same `ClientTimeout` tag.
+- **`prompt-writing.md` bridge-specifics** — what Codex actually reads (the `[ORCHESTRATOR DIRECTIVE]` preamble + `prompt_footer`), plan-mode vs execute-mode expectations, effort/sandbox implications.
+
+### Changed (attention-budget pruning in SKILL.md)
+
+- **jobId/threadId guidance** was restated 9× across `SKILL.md`. Consolidated into a single top-level "Identifiers" section.
+- **Monitor command pattern** appeared 3× (canonical / async / streaming). Collapsed to one canonical block + a pointer from "Advanced".
+- **Heartbeat shell one-liner** (~150 chars) moved out of always-read SKILL.md to `monitor-patterns.md` Preset C (where it already lived; duplication removed).
+- **"Advanced" section** reduced to bullet pointers; steer / wait / events-streaming / retrospective / heartbeat details now live in the references only.
+- **Session Files section** shrunk; "Not currently produced" disclaimer moved inline.
+- **Configuration section** rewritten around load-bearing keys (`sandbox_policy`, `skip_meta_skills`, `command_failure_circuit_breaker`) alongside the runtime-tuned ones.
+- **Sync quick-start example** replaced "What is 2+2?" with a realistic rename prompt. The trivial-math example contradicted the very next paragraph's warning that sync stalls on trivial prompts.
+- **"Non-JSON shortcut (for humans at a shell)"** reframed as "Fallback when jq isn't available" — LLM agents were skipping a section titled "for humans."
+- **Footer example** reframed from a shell-comment block to an explicit "printed verbatim after Codex's output" label.
+
+### Hygiene
+
+- **`allowed-tools` frontmatter** broadened from `Bash(node *) Monitor` to `Bash Monitor` — examples legitimately use `jq`, `git`, `pgrep`, `tail`, `test`.
+- **`${CLAUDE_SKILL_DIR}` fallback note** added once at the top of SKILL.md ("substitute the install path if the variable isn't set") — previously 22 examples referenced the variable with no fallback guidance.
+- **`config-reference.md`** dropped the "v1.1.0 / v1.1.1 new" framing in favor of describing current behavior.
+
+### Architectural follow-ups (still out of scope)
+
+Unchanged from prior rounds: fg/bg unification, broker-socket liveness as the idle signal, typed JSON-RPC pushback replacing tag-on-stdout, supervisor daemon, startup-time automatic orphan reaper (the manual `status --prune-orphans` in 1.2.5 covers the 90% case).
+
 ## [1.2.5] — 2026-04-19
 
 Round-2 follow-ups after 1.2.4 landed in production. The acute bridge
