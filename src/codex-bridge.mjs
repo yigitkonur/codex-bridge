@@ -2947,6 +2947,24 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   cancel: handleCancel
 });
 
+// Node's default SIGPIPE handling terminates the process when a downstream
+// reader closes the pipe (e.g. `codex-bridge task | head -10`). For the
+// foreground `task` / `send` / `review` paths that emit streaming progress to
+// stdout, this kills the wrapper mid-turn and orphans the Codex thread — the
+// app-server keeps running but our supervisor process is gone, leaving jobs
+// stuck in `orphaned` state. Background workers are immune (they use
+// `stdio:"ignore"`); this guard makes every foreground command path equally
+// tolerant of downstream pipe closure. See `fix/three-live-bugs` plan.
+process.on("SIGPIPE", () => {});
+process.stdout.on("error", (err) => {
+  if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+  throw err;
+});
+process.stderr.on("error", (err) => {
+  if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+  throw err;
+});
+
 async function main() {
   const startedAt = Date.now();
   const rawArgv = process.argv.slice(2);
