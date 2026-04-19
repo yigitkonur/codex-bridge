@@ -1,5 +1,15 @@
 # Orchestration Flows
 
+## Post-[DONE] checklist (post-1.2.5)
+
+When a run terminates with `[DONE]` / `result.phase: "done"`, the pipeline has finished touching the repo. Before you take your next step:
+
+1. **Confirm the pipeline really stopped.** Filter the events file for `[PIPELINE:…:done]` (or the terminal `[PIPELINE:done]`/`[PIPELINE:failed]` pair emitted in 1.2.5). If the `:done` tags are present, no further bridge-side writes are coming. Pre-1.2.5 only a start-tag was emitted and orchestrators had to guess.
+2. **Read the pipeline's touchedFiles list.** `result.pipeline.touchedFiles` (and the `[PIPELINE:fix:done] files=[…]` event) names exactly what the auto-fix stage wrote. If that list is empty, no pipeline writes happened and the entire diff is Codex's own work from the execute turn. If it's non-empty, inspect each file before accepting — *do not* blind-accept pipeline-applied changes.
+3. **Do not edit files Codex just wrote in this turn.** If you ask Codex to scaffold an Xcode/SPM project and then immediately modify one of its outputs, you'll fight Codex's internal model of the repo on the next `send`. Commit first, then edit if needed, in a separate conversation.
+4. **Prefer compile-level verification over regeneration.** If you just wrote files whose contents depend on a generator (xcodegen / prisma / protoc / `cargo generate` …), do **not** re-run the generator as your verification step. The second run's output is non-deterministic for anything order-dependent (e.g. XcodeGen's `project.pbxproj` file-ordering) and will invalidate your diff. Use the compiler (`xcodebuild`, `cargo build`, `tsc`) against the committed tree instead, or `git stash` any uncommitted changes, regenerate, and diff.
+5. **Verify on the committed tree, not the working copy.** Before asserting "it builds," commit your intended changes and re-run the build from a clean working tree. Round-3's 15-minute reconciliation happened because a late pipeline turn had rewritten a file between the initial green build and the commit — the clean-tree build caught it.
+
 ## Sync Task — one call, self-sufficient
 
 Use when the task is short, self-contained, and you don't need interim progress updates. The envelope's `result.phase` + `result.next_action` tells you what to do next.

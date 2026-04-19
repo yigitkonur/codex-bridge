@@ -16,7 +16,7 @@ compatibility: Requires Node.js 22+ and the Codex CLI on $PATH (npm i -g @openai
 license: MIT
 allowed-tools: Bash(node *) Monitor
 metadata:
-  version: "1.2.3"
+  version: "1.2.5"
   homepage: "https://github.com/yigitkonur/codex-bridge"
 ---
 
@@ -74,25 +74,43 @@ A synchronous `task --json` call returns the same lifecycle outcome as a single 
 
 **Important:** Codex has its own internal skills that may override plan mode behavior. It may skip planning and go directly to execution, or ask questions via text instead of the `requestUserInput` tool. If `[PLAN]` never arrives and `[DONE]` appears instead, Codex executed without planning — review the diff and send follow-ups as needed.
 
-**Timeout:** The bridge has a 120 s idle watchdog — if no app-server events arrive for that long, an `[ERROR] … | ClientTimeout` is written and Monitor self-terminates. If Monitor is silent and `status <id>` shows `running` for more than ~2 minutes, the task is stuck. `cancel <id>` recovers. (`status`/`result`/`cancel` accept either a job id or the thread UUID; `send`/`steer` take thread ids. Run `status` with no argument to see the latest job id.)
+**Timeout:** The bridge has a configurable idle watchdog (default **300 s**; `idle_timeout_ms` in `config.yaml` or `--idle-timeout-ms <ms>` per-invocation on `task`/`send`). If no app-server events arrive for that long, an `[ERROR] … | ClientTimeout` is written and Monitor self-terminates. If Monitor is silent and `status <id>` shows `running` for more than ~5 minutes, the task is stuck. `cancel <id>` recovers. (`status`/`result`/`cancel`/`events` accept either a job id or the thread UUID; `send`/`steer` take thread ids. Run `status` with no argument to see the latest job id.)
 
 **Heads up — `[ERROR]` is ambiguous:** the events-file `[ERROR]` fires for *any* turn-level failure, including an auto-pipeline sub-stage timeout, while the sync `task --json` envelope for the same run can still report `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` populated. Monitor self-terminates either way; treat `[ERROR]` as "something broke, read the pipeline field before retrying".
 
 ## Starting a Task
 
+**Canonical pattern (recommended):** launch with `--json`, paste the ready-to-paste Monitor command straight from the envelope. The envelope is the only place the bridge guarantees you see the correct `jobId` — *not* the thread UUID that appears in `[codex] Thread ready (…)` stderr progress. Grabbing the thread UUID from stderr is a historical derailment pattern — do not do it.
+
 ```bash
-node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write "your prompt here"
-node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --prompt-file prompt.md
+LAUNCH=$(node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --mode default --json "your prompt here")
+JOB_ID=$(echo "$LAUNCH" | jq -r '.result.jobId')
+EVENTS_FILE=$(echo "$LAUNCH" | jq -r '.result.eventsPath')
+MONITOR_CMD=$(echo "$LAUNCH" | jq -r '.result.monitor.tool_hint.command')
+# Then hand MONITOR_CMD (or the tool_hint object) to Claude Code's Monitor tool.
+```
+
+**Non-JSON shortcut (for humans at a shell):** rendered output now ends with a one-line footer that prints the jobId, events path, and Monitor command. Copy/paste the footer — do not reach into the stderr progress lines.
+
+```bash
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --mode default "your prompt here"
+# …Codex's final message…
+#
+# Job: task-mo5xxxxx-yyyyyy · Events: /Users/you/.codex-bridge/sessions/<threadId>.events · Monitor: node … events task-mo5xxxxx-yyyyyy --follow --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION --timeout-ms 600000
 ```
 
 The positional form takes **text**, not a path; use `--prompt-file` to load from disk.
 
 **`--write` is not enough to enable file writing on the first turn.** With the default `mode: plan`, the task runs against a `readOnly` sandbox and `--write` has no effect until a `send <thread-id> --mode default …` approves the plan. To go straight to execution, pass `--mode default` on the `task` invocation — the flag overrides `config.mode` for that single run. Foreground only: `task --background --mode default` stores the override in the job record but the detached worker still reads `config.mode`. Config remains the session-wide default.
 
-The task starts in plan mode by default. Output includes:
-- Thread ID — UUID v7, e.g. `019d9a86-1c8a-7f41-8032-6c76bbe730a1` (not `thr_abc…`; do not pattern-match on a prefix)
-- Events file path (for Monitor)
-- NDJSON log path (for retrospective analysis — records turn params, turn completion, questions, confirmations, steers, errors, and pipeline stages; does not capture every wire-level item. See `references/ndjson-guide.md` for the full writer vocabulary.)
+**Do not use the thread UUID as a job handle for `status` / `result` / `wait` / `events` / `cancel`.** Those commands accept either a jobId or a thread UUID, but the canonical handle is the jobId (`task-mo…` / `review-mo…`). Reserve the thread UUID for `send` and `steer`, which must use it.
+
+The task starts in plan mode by default. The success envelope (or, for non-JSON, the footer) includes:
+- **jobId** — the primary handle. Use this for `status`/`result`/`wait`/`events`/`cancel`.
+- **threadId** — UUID v7, used by `send` and `steer` only. Avoid pattern-matching a prefix.
+- **eventsPath** — full path to the `.events` file, promoted to top-level of the envelope in 1.2.5.
+- **monitor** — `{command, tool_hint, shell_fallback, terminal_tags, timeout_ms}`. Paste `tool_hint` straight into Claude Code's Monitor tool.
+- NDJSON log path — for retrospective analysis. Records turn params, turn completion, questions, confirmations, steers, errors, and pipeline stages; does not capture every wire-level item. See `references/ndjson-guide.md` for the full writer vocabulary.
 
 ### Async launch + Monitor setup
 
