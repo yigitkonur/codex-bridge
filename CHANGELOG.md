@@ -9,7 +9,34 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
-## [1.2.2] — 2026-04-19
+## [1.2.3] — 2026-04-19
+
+Wrapper-regex widening. v1.2.2's `isFailureHidingWrapper` matched
+`... & [optional sleep]; kill` but missed the real form observed in
+Codex logs: `... & pid="$!"; sleep 2; kill -INT $pid; wait $pid` — the
+`pid=` assignment between the `&` and the `kill` broke the old regex.
+v1.2.3 widens the `&-kill` arm to `(?:^|[^&])&(?![&])[\s\S]{0,200}?\bkill\b`
+which (a) catches the real Codex pattern and (b) correctly *excludes*
+`foo && kill bar` where `&&` + `kill` is a legitimate "after success"
+construct (bonus false-positive fix over v1.2.2).
+
+### Fixed
+
+- `isFailureHidingWrapper` regex widened to catch the observed real
+  Codex wrapper form `... & pid="$!"; sleep N; kill -TERM $pid`. The
+  v1.2.2 regex expected `kill` to directly follow the `&` (possibly
+  after a `sleep`); the new single-`&`-then-anything-then-`kill` form
+  catches any shell background-and-kill idiom within 200 chars.
+- `foo && kill bar` no longer matches the wrapper detector (the v1.2.2
+  version did — bonus false-positive elimination).
+
+### Docs
+
+- `07-orchestration/07` predicate gains two scenarios: `s10` pins the
+  real-form wrapper detection, `s11` is the `&&` regression guard.
+  Predicate 11/11 passes offline.
+
+
 
 Circuit-breaker behavioral upgrade. The v1.2.0 "3 strictly consecutive
 same-family fails" threshold survived the v1.2.1 regression retest only
