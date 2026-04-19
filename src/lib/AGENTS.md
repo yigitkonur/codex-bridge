@@ -158,14 +158,14 @@ Derived from `codex-rs/app-server/README.md`, `codex-rs/app-server-protocol/src/
 
 ### Sandbox policy (upstream camelCase)
 
-| Our JS | Upstream type name |
-|---|---|
-| `{ type: "readOnly" }` | `SandboxPolicy::ReadOnly` |
-| `{ type: "workspaceWrite" }` | `SandboxPolicy::WorkspaceWrite { writableRoots, networkAccess }` |
-| n/a | `SandboxPolicy::DangerFullAccess` |
-| n/a | `SandboxPolicy::ExternalSandbox { networkAccess }` |
+| Our JS | Upstream type name | When emitted |
+|---|---|---|
+| `{ type: "readOnly" }` | `SandboxPolicy::ReadOnly` | plan mode default; `sandbox_policy: "read-only"` |
+| `{ type: "workspaceWrite" }` | `SandboxPolicy::WorkspaceWrite { writableRoots, networkAccess }` | default-mode + `--write`; `sandbox_policy: "workspace-write"` |
+| `{ type: "dangerFullAccess" }` | `SandboxPolicy::DangerFullAccess` | `sandbox_policy: "danger-full-access"` (the shipped default). See `config.mjs::buildSandboxPolicy`. |
+| n/a | `SandboxPolicy::ExternalSandbox { networkAccess }` | never emitted |
 
-We do not use `dangerFullAccess` or `externalSandbox`. Adding them requires UX for the elevated trust prompt — upstream silently persists `trust_level="trusted"` in `~/.codex/config.toml` when a workspace is trusted via elevated sandbox (tested in `thread_start.rs::thread_start_with_elevated_sandbox_*`).
+`dangerFullAccess` is the **shipped default** as of v1.2.0. Earlier revisions of this doc said "we do not use dangerFullAccess"; that was true until the default was flipped to unblock `.git/` writes (the user's direct instruction, and the fix for the reported `osascript` / `display dialog` derailment when Codex hit sandbox errors mid-turn). Users opt into `workspace-write` or `read-only` via `config.yaml` for stricter profiles. We still do not emit `externalSandbox`; adding it would require UX for the elevated trust prompt — upstream silently persists `trust_level="trusted"` in `~/.codex/config.toml` when a workspace is trusted via elevated sandbox (tested in `thread_start.rs::thread_start_with_elevated_sandbox_*`).
 
 ### Notifications in the `ServerNotification` enum (from `protocol/common.rs`)
 

@@ -55,8 +55,8 @@ Then `class === "auth"`, `retryable === false`, `exitCode === 4` (the typed tabl
 
 ```bash
 REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-cat > /tmp/cb-classifier.mjs <<'EOF'
-import { classifyError } from 'file://REPO/src/lib/cli-errors.mjs';
+cat > /tmp/cb-classifier.mjs <<EOF
+import { classifyError } from 'file://${REPO_ROOT}/src/lib/cli-errors.mjs';
 const cases = [
   { name: 'ws-drop-text', err: { message: 'stream disconnected before completion: Upstream websocket closed before response.completed: no close frame received or sent' }, expect: { class: 'network', code: 'UPSTREAM_STREAM_DISCONNECTED', retryable: true, exitCode: 7 } },
   { name: 'codexErrorInfo', err: { message: 'x', codexErrorInfo: 'ResponseStreamDisconnected' }, expect: { class: 'network', retryable: true, exitCode: 7 } },
@@ -74,7 +74,6 @@ for (const c of cases) {
 }
 process.exit(fail === 0 ? 0 : 1);
 EOF
-sed -i '' "s|file://REPO|file://${REPO_ROOT}|" /tmp/cb-classifier.mjs
 node /tmp/cb-classifier.mjs
 ```
 
