@@ -617,7 +617,7 @@ async function handleSetup(argv) {
   });
 }
 
-const BRIDGE_VERSION = "1.1.1";
+const BRIDGE_VERSION = "1.2.0";
 const BRIDGE_SCHEMA_VERSION = "1.0";
 const BRIDGE_CAPABILITIES = Object.freeze([
   "plan-mode",

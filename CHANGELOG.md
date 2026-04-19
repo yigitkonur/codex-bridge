@@ -9,7 +9,121 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
-## [1.1.1] — 2026-04-18
+## [1.2.0] — 2026-04-18
+
+Session-derailment defenses release. Closes the full five-bug user report
+covering a swift-vibescroll session where Codex (a) flailed on sandbox-
+blocked `.git/` writes, (b) looped on `osascript` / `display dialog`
+probes against a headless environment, (c) had upstream WebSocket drops
+misclassified as non-retryable, (d) burned ~10 min on internal meta-skill
+ceremony producing spec/plan files that were not part of the deliverable,
+and (e) produced committable diffs but could not finalize them.
+
+### Added
+
+- **`sandbox_policy` config key** — `"danger-full-access"` (new shipped
+  default), `"workspace-write"`, `"read-only"`. `"danger-full-access"`
+  maps to upstream `SandboxPolicy::DangerFullAccess` and mirrors
+  `codex --dangerously-bypass-approvals-and-sandbox`, lifting the
+  workspace-write restriction on `.git/` metadata. Users who want a
+  stricter profile opt into `"workspace-write"` or `"read-only"`.
+  Unknown values silently fall back to the mode-derived default so a
+  typo cannot widen permissions.
+- **`workspace-dirty` phase** for `task --json` envelopes. Emitted when
+  Codex produced file changes but the turn ended with
+  `codexErrorInfo: "SandboxError"`. Returns a success envelope (exit 0)
+  with a ready-to-run `git -C <cwd> add -A && git commit` next-action
+  instead of the previous misleading `phase:"error"` with
+  "retry with adjusted prompt" guidance.
+- **`skip_meta_skills` config key** (default `true`). Prepends a
+  mode-aware `[ORCHESTRATOR DIRECTIVE]` to every prompt instructing
+  Codex to skip its internal planning/ceremony skills
+  (`using-superpowers`, `brainstorming`, `writing-plans`,
+  `using-git-worktrees`). Plan-mode turns get "produce a concise inline
+  [PLAN] and stop"; execute-mode turns get "execute it directly".
+- **`command_failure_circuit_breaker` config key** (default `true`).
+  Counts consecutive same-family command failures across
+  `osascript`, `applescript-dialog`, `applescript-system`, `open-app`,
+  `computer-use`. Emits a `[WARNING]` event to `.events` after `N=3`
+  consecutive failures so an orchestrator tailing via Monitor can
+  cancel/steer. Logging-only today; auto-interrupt is documented as
+  an enhancement candidate.
+- **`[WARNING]` notification tag** — first non-terminal info tag in the
+  emitted vocabulary. `events --follow` does NOT self-terminate on it
+  (the TERMINAL regex at `src/codex-bridge.mjs` still matches only
+  `DONE|ERROR|INCOMPLETE`). Matching NDJSON writer: `CIRCUIT_BREAKER`.
+- **`formatWarningEvent`** in `src/lib/session-log.mjs`.
+- Gherkin specs: `03-config/04` (sandbox), `03-config/05` (skip_meta_skills),
+  `03-config/06` (circuit-breaker config), `04-errors/05` (upstream
+  disconnect classifier), `07-orchestration/06` (workspace-dirty),
+  `07-orchestration/07` (circuit-breaker behavior). Each ships with an
+  offline pass/fail predicate — no Codex spawn required.
+
+### Fixed
+
+- Upstream WebSocket drops mid-turn now classify as
+  `{class:"network", code:"UPSTREAM_STREAM_DISCONNECTED", retryable:true,
+  exit:7}`, unblocking the orchestrator's automatic retry for this
+  textbook transient. Two layers: (a) the `turn/completed` handler in
+  `src/lib/codex.mjs` now merges `turn.error` into `state.error` when
+  the turn didn't complete, so `codexErrorInfo` tags reach
+  `classifyError`; (b) `src/lib/cli-errors.mjs` gains a regex fallback
+  for transport drops that never produce a terminal `turn/completed`
+  (`stream disconnected | websocket closed | no close frame |
+  ECONNRESET | ETIMEDOUT | socket hang up`). The typed
+  `CODEX_ERROR_INFO` table runs first so correctly-tagged errors
+  (`Unauthorized`, `SandboxError`, etc.) keep their specific
+  classification.
+- **`executeTaskRun` no longer drops seven `runBridgeTask`-built fields**.
+  Pre-fix, `sandboxPolicy`, `collaborationMode`, `turnTimeoutMs`,
+  `idleTimeoutMs`, `onTurnStart`, `onItemCompleted`, and
+  `onServerRequest` were silently discarded at `executeTaskRun`'s
+  `runAppServerTurn` call site — defeating `config.sandbox_policy`,
+  plan-mode developer instructions, the 120 s idle watchdog, NDJSON
+  logging hooks, and the `[QUESTION]` pipeline on the `task` path.
+  Forward all fields explicitly.
+- `handleSend` without `--mode` now honors `config.sandbox_policy`.
+  Previously `sandboxPolicy` was only set inside the
+  `if (modeOverride)` block, so a plain `send <tid> "prompt"` silently
+  ignored the config.
+- `workspace-dirty` `next_action.command` shell-quotes `request.cwd`
+  via `JSON.stringify()` (matches the `buildMonitorHint` pattern). Paths
+  with spaces no longer break the suggested git command.
+- `detectCommandFamily` reordered so content-based patterns
+  (`display dialog`, `System Events`, `tell application`) run before
+  invocation umbrellas (`osascript`, `open -a`). `osascript -e 'display
+  dialog "…"'` — the most common invocation form — now correctly
+  classifies as `applescript-dialog` instead of the broad `osascript`.
+  Pre-fix, the `applescript-dialog` and `applescript-system` families
+  were unreachable for AppleScript run via `osascript -e`.
+- `skip_meta_skills` directive is mode-aware. The original wording
+  included "execute it directly" in **every** mode, which contradicted
+  plan mode's "plan first, don't execute yet" intent.
+
+### Changed
+
+- **Default sandbox is now `danger-full-access`** (was mode-derived
+  `workspace-write`). This is the practical fix for the reported
+  derailment where Codex misinterpreted `.git/` write denials as puzzles
+  to solve (attempting `osascript` / `display dialog` to reach a
+  human-operated Terminal). Users who relied on the pre-v1.2.0 strict
+  default can set `sandbox_policy: "workspace-write"` in their
+  `config.yaml`.
+- `src/lib/AGENTS.md` sandbox-policy table updated to reflect the new
+  default. The prior "we do not use `dangerFullAccess`" invariant was a
+  reflection of then-current behavior, not a permanent architectural
+  constraint.
+
+### Docs
+
+- `skill/references/config-reference.md` — three new config keys
+  documented with their full matrices.
+- `skill/references/notification-format.md` — `[WARNING]` tag added
+  with format template, emission conditions, non-terminal semantics.
+- `skill/references/orchestration-flows.md` — `workspace-dirty` phase
+  row added to the phase table.
+
+
 
 Audit-driven cleanup release. Resolves `unexpected-bridge-observations/`
 entries 06 and 08 end-to-end, completes the remaining 2 of 5 fixes for
