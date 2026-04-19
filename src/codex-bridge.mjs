@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -421,7 +421,7 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge version --json", "codex-bridge version --check-update --json"]
   },
   update: {
-    synopsis: "update [--force] [--json]",
+    synopsis: "update [--force] [--apply|--yes] [--json]",
     summary: "Check GitHub releases for a newer codex-bridge and print the install recipe. Does not self-modify the skill — run the printed command yourself when you want to upgrade.",
     examples: ["codex-bridge update --json", "codex-bridge update --force"]
   },
@@ -790,7 +790,7 @@ async function handleUpdate(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "force"]
+    booleanOptions: ["json", "force", "apply", "yes"]
   });
 
   const update = await checkForUpdate({
@@ -799,29 +799,64 @@ async function handleUpdate(argv) {
   });
 
   const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const wantApply = Boolean(options.apply || options.yes);
+
+  // --apply path: detect newer → actually install via npx skills-add.
+  // Default behavior (no flag) remains detect-only, so callers that
+  // depend on the envelope shape don't see install side-effects they
+  // didn't ask for.
+  if (wantApply && update.hasUpdate && update.latestVersion) {
+    const applyResult = runSkillsAddForApply(options.json);
+    const payload = {
+      current_version: BRIDGE_VERSION,
+      latest_version: update.latestVersion ?? null,
+      has_update: true,
+      applied: applyResult.ok,
+      apply_exit_code: applyResult.exitCode,
+      apply_error: applyResult.error,
+      install_command: installCommand,
+    };
+    const rendered = applyResult.ok
+      ? `Installed codex-bridge ${update.latestVersion} (was ${BRIDGE_VERSION}). Re-invoke the skill to pick up the new files.\n`
+      : `Attempted to install ${update.latestVersion} (from ${BRIDGE_VERSION}) but the installer exited ${applyResult.exitCode}.\n` +
+        (applyResult.error ? `  ${applyResult.error}\n` : "") +
+        `Re-run manually: ${installCommand}\n`;
+    if (applyResult.ok) {
+      emitSuccess("update", payload, rendered, { json: options.json, startedAt });
+    } else {
+      // Non-zero install exit surfaces as a dependency_failed error so
+      // callers can branch on $? without parsing stdout.
+      const err = new CliError(
+        `skills installer exited ${applyResult.exitCode}`,
+        { class: "dependency_failed", code: "UPDATE_APPLY_FAILED", retryable: true, suggestion: `Re-run manually: ${installCommand}` }
+      );
+      emitError(err, { json: options.json, command: "update" });
+    }
+    return;
+  }
 
   const payload = {
     current_version: BRIDGE_VERSION,
     latest_version: update.latestVersion ?? null,
     has_update: Boolean(update.hasUpdate),
-    source: update.source ?? null,
     check_skipped: Boolean(update.skipped),
     check_skip_reason: update.reason ?? null,
     fetch_reason: update.fetchReason ?? null,
     fetch_status: update.fetchStatus ?? null,
     install_command: installCommand,
+    // --apply was requested but nothing to install: echo back the intent
+    // so scripted callers can tell "no action taken" from "skipped".
+    applied: wantApply && !update.hasUpdate ? false : null,
   };
 
   let rendered;
   if (update.skipped && !update.latestVersion) {
-    // Surface the real reason the check failed, especially the
-    // private-repo-no-auth signature that Was silently producing
-    // "no update available, latest: null" pre-1.2.7.
     rendered = renderUpdateFailureHint(update, BRIDGE_VERSION);
   } else if (update.hasUpdate) {
     rendered =
       `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).\n` +
-      `To update, run:\n  ${installCommand}\n`;
+      `To update, run:\n  ${installCommand}\n` +
+      `Or rerun with --apply to install automatically.\n`;
   } else {
     rendered = `codex-bridge is up to date (${BRIDGE_VERSION}${update.latestVersion ? `, latest ${update.latestVersion}` : ""}).\n`;
   }
@@ -829,29 +864,55 @@ async function handleUpdate(argv) {
   emitSuccess("update", payload, rendered, { json: options.json, startedAt });
 }
 
-// Renders a diagnostic hint for the "couldn't reach upstream" path. The
-// most common failure mode is a private repo hit unauthenticated — that
-// returns HTTP 404 with no body hint. Pre-1.2.7 the CLI just said
-// "Update check skipped (fetch-failed-no-cache)" which offered no
-// actionable recovery.
+// Spawns `npx -y skills@latest add yigitkonur/codex-bridge -a claude-code
+// -g -y` to install the latest release. Blocks until exit. stdout/stderr
+// inherit the current terminal unless --json was requested, in which case
+// they're captured and any progress is discarded (installer chatter would
+// corrupt the JSON envelope). Returns the exit-code shape the caller
+// branches on.
+function runSkillsAddForApply(jsonMode) {
+  try {
+    const result = spawnSync(
+      "npx",
+      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+      {
+        stdio: jsonMode ? ["ignore", "pipe", "pipe"] : "inherit",
+        encoding: "utf8",
+      }
+    );
+    if (result.error) {
+      return {
+        ok: false,
+        exitCode: null,
+        error: result.error.code === "ENOENT"
+          ? "npx not found on PATH; install Node.js to get npx"
+          : result.error.message,
+      };
+    }
+    if (result.status !== 0) {
+      const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
+      return { ok: false, exitCode: result.status, error: stderrTail || null };
+    }
+    return { ok: true, exitCode: 0, error: null };
+  } catch (err) {
+    return { ok: false, exitCode: null, error: err?.message ?? String(err) };
+  }
+}
+
+// Renders a diagnostic hint for "couldn't reach upstream" failures. With
+// a public repo and anonymous-only fetch, the remaining failure modes
+// are network hiccups and GitHub rate-limit blips — both transient.
 function renderUpdateFailureHint(update, currentVersion) {
   const reason = update.fetchReason ?? update.reason ?? "unknown";
   const lines = [`Update check failed (current: ${currentVersion}, reason: ${reason}).`];
-  if (update.fetchStatus === 404 && !update.authHeader) {
-    // Classic private-repo-no-auth signature. Give the user two
-    // concrete paths.
-    lines.push("Upstream returned 404 without an auth header — the repo may be private.");
-    lines.push("Fix one of:");
-    lines.push("  - Install gh (`brew install gh` or equivalent) and run `gh auth login` — the bridge will use it on its next check.");
-    lines.push("  - Or export GH_TOKEN / GITHUB_TOKEN with a token that has `repo` read access before running `update`.");
-  } else if (reason?.startsWith("direct-http-404+gh-")) {
-    // gh was tried and failed. Point at gh auth specifically.
-    lines.push("HTTPS returned 404 and the gh CLI fallback also failed.");
-    lines.push("Verify: `gh auth status` and `gh api repos/yigitkonur/codex-bridge` should both succeed.");
-  } else if (reason === "timeout" || reason === "network" || reason?.includes("network")) {
+  if (reason === "timeout" || reason === "network") {
     lines.push("Network error reaching api.github.com. Retry in a moment.");
+  } else if (update.fetchStatus === 403) {
+    lines.push("GitHub returned 403 — likely the anonymous 60/hr rate limit. Wait an hour or re-run from a different IP.");
+  } else if (update.fetchStatus === 404) {
+    lines.push("GitHub returned 404. Re-run with --force; if it persists, the release endpoint may be temporarily unreachable.");
   } else {
-    lines.push("Retry with `--force`; if it persists, check gh auth and network connectivity.");
+    lines.push("Retry with --force; if it persists, check network connectivity to api.github.com.");
   }
   return lines.join("\n") + "\n";
 }

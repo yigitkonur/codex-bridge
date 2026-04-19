@@ -5,21 +5,26 @@
 //     or a rate-limit hit just means "no update info this time."
 //   - Cheap. One HTTPS call per 24 h per workspace (cache file). The GitHub
 //     REST API allows 60 requests/hour/IP unauthenticated — well under that
-//     budget even if every single invocation triggers a check.
+//     budget since the cache holds for 24 h.
 //   - Zero-dependency. Node 22+ has fetch built in; no axios, no node-fetch.
+//   - Anonymous. codex-bridge is a public repo; unauthenticated `/releases/
+//     latest` returns the data we need, and staying anonymous keeps the
+//     bridge from burning the user's authenticated rate-limit budget
+//     (5000/hr per user) on something that doesn't need it. The gh-CLI
+//     fallback and GITHUB_TOKEN / GH_TOKEN reading that 1.2.7 added for
+//     the private-repo case are gone — the repo went public in 1.2.8 and
+//     those paths can no longer fire.
 //
 // Returns a plain object so callers can render whatever they want:
 //   { skipped: boolean, reason?: string, currentVersion, latestVersion?, hasUpdate?, cacheAgeMs? }
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
 const DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 const DEFAULT_FETCH_TIMEOUT_MS = 2500;
-const GH_API_PATH = "repos/yigitkonur/codex-bridge/releases/latest";
-const GITHUB_API_URL = `https://api.github.com/${GH_API_PATH}`;
+const GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest";
 const USER_AGENT = "codex-bridge-update-check";
 
 function cachePath() {
@@ -77,96 +82,42 @@ export function compareVersions(a, b) {
   return pa.tag < pb.tag ? -1 : 1;
 }
 
-// Direct HTTPS fetch. Succeeds for public repos unauthenticated, and for
-// private repos when a token env var is set. Returns the tag string on
-// success, or a structured failure describing the status code so callers
-// can decide whether the gh-CLI fallback is worth trying.
-async function fetchLatestTagDirect(timeoutMs) {
+// Single anonymous fetch. Returns `{ok:true, tag}` on success or
+// `{ok:false, status, reason}` on failure. The caller decides what to
+// render for each failure mode.
+async function fetchLatestTag(timeoutMs) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
-  // If the repo is private, unauthenticated requests return 404. Pick up
-  // the standard token env vars if set (GITHUB_TOKEN is what Actions
-  // workflows expose, GH_TOKEN is the `gh` CLI convention).
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
-  const headers = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": USER_AGENT,
-  };
-  if (token) headers.Authorization = `Bearer ${token}`;
   try {
     const res = await fetch(GITHUB_API_URL, {
       signal: controller.signal,
-      headers,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": USER_AGENT,
+      },
     });
     if (!res.ok) {
-      return { ok: false, status: res.status, reason: `http-${res.status}`, authHeader: Boolean(token) };
+      return { ok: false, status: res.status, reason: `http-${res.status}` };
     }
     const json = await res.json();
     if (typeof json?.tag_name !== "string") {
-      return { ok: false, status: 200, reason: "bad-payload", authHeader: Boolean(token) };
+      return { ok: false, status: 200, reason: "bad-payload" };
     }
-    return { ok: true, tag: json.tag_name.replace(/^v/i, ""), source: token ? "http-token" : "http-anon" };
+    return { ok: true, tag: json.tag_name.replace(/^v/i, "") };
   } catch (err) {
     const aborted = err?.name === "AbortError";
-    return { ok: false, status: 0, reason: aborted ? "timeout" : "network", authHeader: Boolean(token) };
+    return { ok: false, status: 0, reason: aborted ? "timeout" : "network" };
   } finally {
     clearTimeout(t);
   }
-}
-
-// gh-CLI fallback. When the direct fetch 404s on a private repo and no
-// token env var was set, `gh api …` uses the user's authenticated gh
-// session — the install path (`npx skills add …`) already requires this,
-// so there's no new credential surface. Silent on failure (missing gh,
-// unauthenticated gh, wrong host, etc.): same "no update info" result
-// as a failed direct fetch.
-function fetchLatestTagViaGh(timeoutMs) {
-  try {
-    const result = spawnSync("gh", ["api", GH_API_PATH, "--jq", ".tag_name"], {
-      encoding: "utf8",
-      timeout: timeoutMs,
-      // Explicitly inherit $PATH only — we don't need stdin; stderr is
-      // captured so a missing-auth gh error doesn't leak to the user's
-      // console on every task launch.
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    if (result.error || result.status !== 0) {
-      return { ok: false, reason: result.error?.code === "ENOENT" ? "gh-not-installed" : "gh-failed" };
-    }
-    const tag = String(result.stdout || "").trim();
-    if (!tag) return { ok: false, reason: "gh-empty" };
-    return { ok: true, tag: tag.replace(/^v/i, ""), source: "gh-cli" };
-  } catch {
-    return { ok: false, reason: "gh-exception" };
-  }
-}
-
-// Two-step resolver: direct HTTPS first (cheapest, works for public repos
-// and private-with-token), fall through to gh CLI if direct came back with
-// a 404 (the private-repo-no-token signature). Other failure reasons
-// (network / timeout / bad payload) skip the gh fallback — they'd likely
-// hit the same problem.
-async function fetchLatestTag(timeoutMs) {
-  const direct = await fetchLatestTagDirect(timeoutMs);
-  if (direct.ok) return direct;
-  // Only retry via gh for the specific failure signature that gh can fix:
-  // 404 without a token (repo private, caller unauthenticated over HTTPS).
-  // A 404 with a token means the token doesn't grant access — gh won't
-  // help either, but trying is still cheap and falls through cleanly.
-  if (direct.status === 404) {
-    const viaGh = fetchLatestTagViaGh(timeoutMs);
-    if (viaGh.ok) return viaGh;
-    return { ok: false, reason: `direct-${direct.reason}+${viaGh.reason}`, status: direct.status, authHeader: direct.authHeader };
-  }
-  return direct;
 }
 
 // The main entry. Returns a plain object; never throws.
 //
 //   checkForUpdate({ currentVersion, force?, cacheTtlMs?, fetchTimeoutMs? })
 //
-// `force: true` bypasses the cache (used by `bridge update --force` or a
-// future `--no-cache` flag). Otherwise fresh cache hits return immediately.
+// `force: true` bypasses the cache (used by `bridge update --force`).
+// Otherwise fresh cache hits return immediately.
 export async function checkForUpdate({
   currentVersion,
   force = false,
@@ -194,7 +145,6 @@ export async function checkForUpdate({
       reason: cache ? "fetch-failed-using-stale" : "fetch-failed-no-cache",
       fetchReason: fetchResult.reason,
       fetchStatus: fetchResult.status ?? null,
-      authHeader: fetchResult.authHeader ?? false,
       currentVersion,
       ...(cache && {
         latestVersion: cache.latestVersion,
@@ -210,7 +160,6 @@ export async function checkForUpdate({
     cached: false,
     currentVersion,
     latestVersion: fetchResult.tag,
-    source: fetchResult.source,
     hasUpdate: compareVersions(currentVersion, fetchResult.tag) < 0,
     cacheAgeMs: 0,
   };
@@ -224,6 +173,7 @@ export function formatUpdateNotice(result) {
   return (
     `codex-bridge ${result.latestVersion} is available ` +
     `(you have ${result.currentVersion}). ` +
-    `Run \`npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y\` to update.`
+    `Run \`npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y\` to update, ` +
+    `or pass --apply to \`codex-bridge update\` to install automatically.`
   );
 }
