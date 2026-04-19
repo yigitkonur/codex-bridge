@@ -40,6 +40,17 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 
 `[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:review` + `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` in tooling.
 
+### [WARNING]
+```
+[WARNING] {threadId} {reason}
+  family: {family}
+  threshold: {N} consecutive failures
+  sample: {truncatedCommand}
+  turnInterrupted: {yes|no}
+```
+
+Emitted when `command_failure_circuit_breaker: true` (shipped default) detects `N=3` consecutive same-family command failures. `{family}` is one of `osascript`, `applescript-dialog`, `applescript-system`, `open-app`, `computer-use`. `{reason}` is `command-family-circuit-breaker-tripped`. `turnInterrupted: no` today — logging-only (see `config-reference.md#command_failure_circuit_breaker`). Monitor picks this up as non-terminal: `[WARNING]` does **not** self-terminate a following `events --follow` stream; the orchestrator decides whether to `cancel` or `send` a steer based on the family. Counter resets on the next turn and on any successful command. Matching NDJSON tag: `CIRCUIT_BREAKER`.
+
 ### [INCOMPLETE]
 ```
 [INCOMPLETE] {threadId} | {diffStat}

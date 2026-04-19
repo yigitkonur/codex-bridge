@@ -15,25 +15,39 @@ REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 
 And `npm run build` has been run since the last `src/` edit.
 
-### Scenario 1: `skip_meta_skills: true` prepends the directive (shipped default)
+### Scenario 1: plan-mode directive does NOT say "execute directly"
 
-Given a request `{ prompt: "fix the retry logic" }` and `config.skip_meta_skills = true`
+Given a request `{ prompt: "fix the retry logic" }`, `config.skip_meta_skills = true`, and `isPlanMode = true`
 When `runBridgeTask` builds `promptWithFooter`
 Then the result starts with `"[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills"`
-And contains each of: `using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`
+And contains `"produce a concise inline [PLAN]"`
+And does **not** contain `"execute it directly"` — that wording would contradict plan mode's "plan, don't execute yet" intent (regression against the original shipped wording)
 And ends with the config's `prompt_footer` (unchanged semantics)
-And the original `"fix the retry logic"` appears verbatim between the directive and the footer
 
-### Scenario 2: `skip_meta_skills: false` leaves the prompt untouched (regression guard)
+### Scenario 2: execute-mode directive DOES say "execute directly"
+
+Given the same request with `isPlanMode = false`
+Then the result starts with the same `[ORCHESTRATOR DIRECTIVE]` preamble
+And contains `"execute it directly"`
+And does **not** contain `"[PLAN]"` (plan-mode wording must not leak into execute turns)
+
+### Scenario 3: `skip_meta_skills: false` leaves the prompt untouched (regression guard, mode-agnostic)
 
 Given `config.skip_meta_skills = false`
 Then `promptWithFooter` does **not** start with `"[ORCHESTRATOR DIRECTIVE]"`
 And exactly matches the pre-flag composition: `${request.prompt}\n\n${config.prompt_footer}`
+And this holds for both `isPlanMode = true` and `isPlanMode = false`
 
-### Scenario 3: shipped `DEFAULT_CONFIG.skip_meta_skills === true`
+### Scenario 4: shipped `DEFAULT_CONFIG.skip_meta_skills === true`
 
 Given `DEFAULT_CONFIG` is imported from `src/lib/config.mjs`
 Then `DEFAULT_CONFIG.skip_meta_skills === true`
+
+### Scenario 5: shared preamble (mode-aware wording is the trailing clause only)
+
+Given both plan-mode and execute-mode composed prompts
+Then both start with the same opening preamble `"[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills"`
+And only the trailing clause after the preamble differs between modes
 
 ### Pass / fail predicate
 
@@ -42,15 +56,18 @@ REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cat > /tmp/cb-meta-skills.mjs <<EOF
 import { DEFAULT_CONFIG } from 'file://${REPO_ROOT}/src/lib/config.mjs';
 
-// Reproduce the prefix-composition branch from src/codex-bridge.mjs:1527-1548.
-const compose = (request, config) => {
+// Reproduce the mode-aware prefix composition from src/codex-bridge.mjs.
+const compose = (request, config, { isPlanMode }) => {
+  const metaSkillsPreamble =
+    "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills — specifically " +
+    "\`using-superpowers\`, \`brainstorming\`, \`writing-plans\`, \`using-git-worktrees\`, " +
+    "or any equivalent planning/ceremony skill. Do not create " +
+    "docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files unless " +
+    "the task explicitly asks for them.";
   const metaSkillsPrefix = config.skip_meta_skills
-    ? "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills — specifically " +
-      "\`using-superpowers\`, \`brainstorming\`, \`writing-plans\`, \`using-git-worktrees\`, " +
-      "or any equivalent planning/ceremony skill. The calling orchestrator has " +
-      "already planned this task; your job is to execute it directly. Do not " +
-      "create docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files " +
-      "unless the task explicitly asks for them.\n\n"
+    ? (isPlanMode
+        ? \`\${metaSkillsPreamble} The calling orchestrator is already driving the plan/execute loop; produce a concise inline [PLAN] and stop — the orchestrator approves before execution.\n\n\`
+        : \`\${metaSkillsPreamble} The calling orchestrator has already planned this task; your job is to execute it directly.\n\n\`)
     : "";
   return config.prompt_footer
     ? \`\${metaSkillsPrefix}\${request.prompt}\n\n\${config.prompt_footer}\`
@@ -61,29 +78,31 @@ let fail = 0;
 const footer = "FOOTER";
 const prompt = "fix the retry logic";
 
-// Scenario 1: skip_meta_skills = true
-const s1 = compose({ prompt }, { skip_meta_skills: true, prompt_footer: footer });
-const ok1 =
-  s1.startsWith("[ORCHESTRATOR DIRECTIVE]") &&
-  s1.includes("using-superpowers") &&
-  s1.includes("brainstorming") &&
-  s1.includes("writing-plans") &&
-  s1.includes("using-git-worktrees") &&
-  s1.endsWith(footer) &&
-  s1.includes(prompt);
-console.log((ok1 ? "PASS" : "FAIL") + " s1 — prefix + preserved prompt + footer");
+const s1 = compose({ prompt }, { skip_meta_skills: true, prompt_footer: footer }, { isPlanMode: true });
+const ok1 = s1.startsWith("[ORCHESTRATOR DIRECTIVE]") && s1.includes("produce a concise inline [PLAN]") && !s1.includes("execute it directly") && s1.endsWith(footer);
+console.log((ok1 ? "PASS" : "FAIL") + " s1 — plan-mode directive");
 if (!ok1) fail++;
 
-// Scenario 2: skip_meta_skills = false
-const s2 = compose({ prompt }, { skip_meta_skills: false, prompt_footer: footer });
-const ok2 = !s2.startsWith("[ORCHESTRATOR") && s2 === prompt + "\n\n" + footer;
-console.log((ok2 ? "PASS" : "FAIL") + " s2 — untouched composition");
+const s2 = compose({ prompt }, { skip_meta_skills: true, prompt_footer: footer }, { isPlanMode: false });
+const ok2 = s2.startsWith("[ORCHESTRATOR DIRECTIVE]") && s2.includes("execute it directly") && !s2.includes("[PLAN]") && s2.endsWith(footer);
+console.log((ok2 ? "PASS" : "FAIL") + " s2 — execute-mode directive");
 if (!ok2) fail++;
 
-// Scenario 3: shipped default
-const ok3 = DEFAULT_CONFIG.skip_meta_skills === true;
-console.log((ok3 ? "PASS" : "FAIL") + " s3 — DEFAULT_CONFIG.skip_meta_skills = " + DEFAULT_CONFIG.skip_meta_skills);
+const s3p = compose({ prompt }, { skip_meta_skills: false, prompt_footer: footer }, { isPlanMode: true });
+const s3e = compose({ prompt }, { skip_meta_skills: false, prompt_footer: footer }, { isPlanMode: false });
+const expected = prompt + "\n\n" + footer;
+const ok3 = s3p === expected && s3e === expected;
+console.log((ok3 ? "PASS" : "FAIL") + " s3 — disabled path untouched (both modes)");
 if (!ok3) fail++;
+
+const ok4 = DEFAULT_CONFIG.skip_meta_skills === true;
+console.log((ok4 ? "PASS" : "FAIL") + " s4 — shipped-default=" + DEFAULT_CONFIG.skip_meta_skills);
+if (!ok4) fail++;
+
+const preamble = "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills";
+const ok5 = s1.startsWith(preamble) && s2.startsWith(preamble);
+console.log((ok5 ? "PASS" : "FAIL") + " s5 — shared-preamble");
+if (!ok5) fail++;
 
 process.exit(fail === 0 ? 0 : 1);
 EOF
