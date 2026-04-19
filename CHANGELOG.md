@@ -9,6 +9,51 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.2.7] — 2026-04-19
+
+Auto-update actually works for private repos now. The 1.2.6 install test
+surfaced a silent failure: `bridge update` reported "you're on the latest"
+on a 1.2.3 install three versions behind, because the update checker
+hits `https://api.github.com/repos/…/releases/latest` which 404s on
+private repos without an `Authorization` header. The 404 was swallowed
+as "no update info this time" with no user-visible signal.
+
+### Fixed
+
+- **`update` gh-CLI fallback** — `src/lib/update-check.mjs::fetchLatestTag`
+  is now a two-step resolver: direct HTTPS first (cheapest, works for
+  public repos and private-with-token), then `gh api repos/…/releases/
+  latest` via `spawnSync` when the direct call returns 404. The gh
+  fallback uses the user's existing authenticated gh session — same
+  credentials the install path (`npx skills add …`) already needs — so
+  no new secret surface. Silent on failure (missing gh, unauthenticated
+  gh, wrong host): same "no update info" result as a failed direct fetch.
+- **`update` failure diagnostic** — non-JSON `update --force` now prints
+  an actionable hint when the fetch fails, instead of the pre-1.2.7
+  opaque `Update check skipped (fetch-failed-no-cache)`. The message
+  names the failure signature (e.g. `direct-http-404+gh-not-installed`)
+  and suggests the concrete fix: install gh + `gh auth login`, or
+  export `GH_TOKEN` / `GITHUB_TOKEN`.
+- **`--json` envelope** now surfaces `result.source` on success
+  (`"http-token"` / `"http-anon"` / `"gh-cli"`) and
+  `result.fetch_reason` + `result.fetch_status` on failure so scripts
+  can branch on which path the checker took.
+
+### Docs
+
+- `SKILL.md` Troubleshooting: added the "auto-update silently says
+  up-to-date" recovery flow.
+
+### Verified
+
+- `env -i HOME PATH=<node-dir-only>` reproduced the silent failure from the
+  1.2.6 install test: pre-1.2.7 returned `latest_version: null`; post-1.2.7
+  returns an actionable hint naming `direct-http-404+gh-not-installed`.
+- With `gh` on `$PATH` (no token), `update --json` returns
+  `source: "gh-cli"` and the correct latest version.
+- With `GH_TOKEN` in env, `source: "http-token"` (unchanged behavior).
+- For public repos (unauthenticated direct fetch succeeds), `source: "http-anon"` — no change to hot path.
+
 ## [1.2.6] — 2026-04-19
 
 Docs-only follow-up after the 1.2.5 audit. Zero code changes — every fix
