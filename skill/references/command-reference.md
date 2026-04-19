@@ -310,17 +310,22 @@ Known gap: when the target thread never writes an events file (e.g. a cancelled-
 Stream the target's `.events` file to stdout, with optional tag filter and follow mode. Steers agents toward a line-delimited event stream without the need for a hand-rolled `tail -f` pipeline.
 
 ```
-codex-bridge events <job-id-or-thread-id> [--follow] [--filter <tags>] [--timeout-ms <ms>] [--json]
+codex-bridge events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclude <tags>] [--timeout-ms <ms>] [--json]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--follow` | Keep watching for appended lines; self-terminates on any terminal tag (even if already present in the initial dump). |
-| `--filter <tags>` | Comma-separated tag prefixes; only matching lines are emitted. `PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, `[PIPELINE:review:done]`, etc. Case-insensitive. |
-| `--timeout-ms <ms>` | Deadline for `--follow`; default 600000. |
+| `--follow` | Keep watching for appended lines; self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`) — even if already present in the initial dump. |
+| `--filter <tags>` | **Inclusion** list. Only lines whose head tag is in the comma-separated list pass. `PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix:done]`, etc. Case-insensitive. Narrow views only — **not forward-compatible** (any new tag a future bridge version emits is silently dropped). |
+| `--exclude <tags>` | **Exclusion** list (v1.4.0, default for Monitor). Every line passes *except* those whose head tag is in the list. Future tags pass through automatically — forward-compatible. Mutually exclusive with `--filter`. |
+| `--timeout-ms <ms>` | Deadline for `--follow`; default 1 800 000 (30 min — matches the raised turn-budget default in 1.3.0). |
 | `--json` | Emits a trailing success envelope (see shape below) after streaming lines. |
 
-Without `--follow`, the command dumps existing lines (filtered) and exits 0. Line stream is verbatim text; `--json` does not convert line format — consumers parse the `[TAG]` prefix themselves or pair with `summary` for structured output.
+`--filter` and `--exclude` are mutually exclusive; passing both exits `2 USAGE_ERROR` before any file read. Neither flag is required — without either, every line passes through.
+
+Multi-line block handling: the tag regex `/^\[([^\]]+)\]/` extracts the head tag from a block's first line (`[CHECKPOINT] …`); subsequent indented continuation lines (no bracketed tag) inherit that block's inclusion decision. This ensures an included `[CHECKPOINT]` block ships whole (header + `assistant:`, `tools:`, `diff:` body), and an excluded `[HEARTBEAT]` block is fully elided (not just its header). Pre-1.4.0 continuation lines were dropped independently — a known bug the v1.4.0 predicate fixes.
+
+Without `--follow`, the command dumps existing lines (filtered/excluded) and exits 0. Line stream is verbatim text; `--json` does not convert line format — consumers parse the `[TAG]` prefix themselves or pair with `summary` for structured output.
 
 **Final-envelope shape with `--json --follow`:**
 
@@ -332,7 +337,8 @@ Without `--follow`, the command dumps existing lines (filtered) and exits 0. Lin
     "threadId": "019d…",
     "eventsPath": "/abs/path/to/events",
     "followed": true,
-    "filter": "DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING",
+    "filter": null,
+    "exclude": "HEARTBEAT",
     "timedOut": false,
     "terminalTag": "DONE",
     "terminalLine": "[DONE] 019d… completed in 4s | 1 files | +2 -0",
@@ -341,9 +347,9 @@ Without `--follow`, the command dumps existing lines (filtered) and exits 0. Lin
 }
 ```
 
-`terminalTag` is one of `DONE` / `ERROR` / `INCOMPLETE` on happy-path close, or `null` when the stream closed via `--timeout-ms`. `elapsedMs` measures follow duration only (not total job elapsed time). This envelope matches `wait`'s return shape so Monitor / orchestrators can switch on the same fields.
+Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutual-exclusion CLI rule). `terminalTag` is one of `DONE` / `ERROR` / `INCOMPLETE` on happy-path close, or `null` when the stream closed via `--timeout-ms`. `elapsedMs` measures follow duration only (not total job elapsed time). This envelope matches `wait`'s return shape so Monitor / orchestrators can switch on the same fields.
 
-**Recommended filter:** `DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING` — surfaces the full 1.2.5 pipeline visibility (start + `:done` tags) plus circuit-breaker warnings. Dropping `PIPELINE` or `WARNING` hides real signals; do it only when you explicitly want a narrower stream.
+**Recommended shape:** `--exclude HEARTBEAT`. Every tag the bridge emits passes except the 60-s liveness pulse that would flood an LLM orchestrator's context. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
 
 ## setup
 

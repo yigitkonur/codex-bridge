@@ -4,7 +4,7 @@
 
 Your prompt is not sent verbatim. Two bridge-side additions modify what Codex reads:
 
-1. **`[ORCHESTRATOR DIRECTIVE]` preamble** (when `skip_meta_skills: true`, the shipped default). Roughly: "Don't invoke your own meta-skills — `using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`. Don't create `docs/superpowers/specs/*.md` or `docs/superpowers/plans/*.md` files unless the task explicitly asks for them." Plan-mode turns get a "produce a concise inline [PLAN] and stop" tail; execute turns get "execute directly." Set `skip_meta_skills: false` in `config.yaml` if you specifically want Codex's default meta-skill ceremony.
+1. **`[ORCHESTRATOR DIRECTIVE]` preamble** (when `skip_meta_skills: true`, the shipped default). Framework-agnostic — roughly: "Don't invoke your own planning, brainstorming, ceremony, or meta-skill chains before execution. Don't create scaffold documents (specs, plans, design memos) under paths like `docs/`, `plans/`, `specs/`, or similar before touching the deliverable — unless the task explicitly asks for such an artifact as its output." Plan-mode turns get a "produce a concise inline [PLAN] and stop" tail; execute turns get "execute directly." Set `skip_meta_skills: false` in `config.yaml` if you're running without an orchestrator and specifically want Codex's default chain to run.
 2. **`prompt_footer`** (shipped default tells Codex to ask questions via the `requestUserInput` tool with distinct options rather than plain-text prose). If you disable this, Codex often asks mid-task questions as assistant text instead, and `[QUESTION]` events never fire. Customize in `config.yaml`.
 
 So Codex actually reads: `[ORCHESTRATOR DIRECTIVE] …\n\n<your prompt>\n\n<prompt_footer>`. Write your prompt knowing those bookends already exist — don't repeat the directive; don't fight the footer.
@@ -13,8 +13,8 @@ Plan-mode vs execute-mode changes what Codex expects:
 
 | Mode | Codex expects | Tuning |
 |---|---|---|
-| `--mode plan` (default) | Analyze, ask questions, produce a `[PLAN]` — no file writes | `effort: "xhigh"` forced; sandbox read-only; `turn_plan_ms` = 5 min default |
-| `--mode default` | Execute directly; produce a diff; may still ask questions via `requestUserInput` | `effort` from `config.effort` (or `--effort`); sandbox per `sandbox_policy`; `turn_default_ms` = 10 min default |
+| `--mode plan` (default) | Analyze, ask questions, produce a `[PLAN]` — no file writes | `effort: "xhigh"` forced; sandbox read-only; `turn_plan_ms` = 15 min default |
+| `--mode default` | Execute directly; produce a diff; may still ask questions via `requestUserInput` | `effort` from `config.effort` (shipped default `xhigh`) or `--effort`; sandbox per `sandbox_policy`; `turn_default_ms` = 30 min default |
 
 ## Every Prompt Should Answer
 

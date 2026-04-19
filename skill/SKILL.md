@@ -16,7 +16,7 @@ compatibility: Requires Node.js 22+ and the Codex CLI on $PATH (npm i -g @openai
 license: MIT
 allowed-tools: Bash Monitor
 metadata:
-  version: "1.2.9"
+  version: "1.4.0"
   homepage: "https://github.com/yigitkonur/codex-bridge"
 ---
 
@@ -89,7 +89,7 @@ A synchronous `task --json` call returns the same lifecycle outcome as a single 
 Two shipped defaults affect what Codex does — know them before reading Codex output:
 
 - **`sandbox_policy: "danger-full-access"`** — Codex runs **without a sandbox** by default. It can write anywhere in the filesystem, including `.git/` (so Codex can commit its own work). Opt into stricter profiles via `config.yaml` (`workspace-write` restricts to cwd; `read-only` forbids writes). Pre-1.2.0 default was `workspace-write`, which routinely triggered Codex to interpret sandbox denials as puzzles (e.g. osascript probes to reach a human terminal).
-- **`skip_meta_skills: true`** — a `[ORCHESTRATOR DIRECTIVE]` is auto-prepended to every prompt telling Codex to skip its internal `using-superpowers` / `brainstorming` / `writing-plans` / `using-git-worktrees` meta-skills. Without this, Codex typically spends ~10 min producing spec/plan files under `docs/superpowers/` that aren't part of the deliverable. Set `skip_meta_skills: false` if you specifically want that ceremony.
+- **`skip_meta_skills: true`** — an `[ORCHESTRATOR DIRECTIVE]` is auto-prepended to every prompt telling Codex to skip any internal planning / ceremony / meta-skill chain it would normally walk before execution. Framework-agnostic: covers any skill chain that produces spec or plan scaffolding under paths like `docs/`, `plans/`, `specs/`, or similar before touching the deliverable. Without this, Codex can spend many minutes on that ceremony when the bridge is already orchestrating. Set `skip_meta_skills: false` if you're running without an orchestrator and specifically want that chain to run.
 
 ### Timeout budgets (every layer is configurable)
 
@@ -97,14 +97,45 @@ Six independent timeout budgets, each resolved `CLI flag → config.yaml key →
 
 | Phase | Default | Config key | CLI flag |
 |---|---|---|---|
-| Plan turn | 5 min | `turn_plan_ms` | `--turn-plan-ms` |
-| Execute turn (also send turns in default mode) | 10 min | `turn_default_ms` | `--turn-default-ms` (task) / `--turn-timeout-ms` (send) |
+| Plan turn | 15 min | `turn_plan_ms` | `--turn-plan-ms` |
+| Execute turn (also send turns in default mode) | 30 min | `turn_default_ms` | `--turn-default-ms` (task) / `--turn-timeout-ms` (send) |
 | Per-stage pipeline (review/fix/check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
 | Pipeline total | 15 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
 | Question unanswered (auto-answers `{answers:{}}`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | No-event idle (per turn) | 5 min | `idle_timeout_ms` | `--idle-timeout-ms` |
 
 Idle fires a `[ERROR] … | ClientTimeout` with `origin: turn`; pipeline-stage timeouts fire with `origin: pipeline:<stage>`. If Monitor goes silent and `status <id>` still reports `running` past the relevant timeout plus ~60 s buffer, the task is genuinely stuck — `cancel <id>` recovers.
+
+### Observability guarantee (v1.3.0)
+
+The `.events` file is **never silent for more than ~60 s** during a running turn, and an orchestrator always sees a rich summary at least every 5 min.
+
+- **`[HEARTBEAT]` every ~60 s** (override: `CODEX_BRIDGE_HEARTBEAT_MS`). Non-terminal liveness pulse carrying elapsed time, phase, pid, last-item, budget remaining, and a re-attach tail command. Silence past ~90 s means the bridge wrapper is dead — investigate the pid, don't keep waiting.
+- **`[CHECKPOINT]` every ~5 min** (override: `CODEX_BRIDGE_CHECKPOINT_MS`). Non-terminal rich summary: the last assistant message in full, every tool call in the interval with compact parameter previews (Read/Write/Edit paths, commands), git commits landed in that window, a `--shortstat` diff since the previous checkpoint, and a cumulative since-start diff. Designed so an orchestrator dropping in on a long-running task can catch up from one block instead of scrolling the entire ndjson.
+- **Stall detection.** Three consecutive barren checkpoints (default: 15 min with zero commandExecution / fileChange / plan items — Codex alive but not progressing) fires a terminal `[ERROR] | StallDetected`. Monitor self-terminates; the orchestrator cancels or steers. Override the threshold with `CODEX_BRIDGE_STALL_CHECKPOINTS` (integer ≥ 2).
+- **Finally-backstop.** A top-level `finally` block in `runBridgeTask` verifies a terminal tag landed before the turn returns or throws. If not, it synthesizes `[ERROR] | UnhandledExit`. That marker is itself a bug report — a turn exited past every instrumented branch; file an issue with the jobId and the events file.
+
+**Raw-tail escape hatch.** The `Events dir:` / `Events file:` lines printed in the footer (and `result.eventsDir` / `result.eventsPath` in `--json`) are canonical paths you can `tail -f` directly, bypassing every bridge subcommand. Useful when the bridge CLI itself is behaving oddly — the file keeps being written as long as the wrapper process is alive.
+
+### Interrupts vs progress signals (v1.4.0)
+
+Tags in the stream fall into two semantic buckets. Orchestrators should handle them differently:
+
+**Interrupts — act now.** Appear immediately, demand a response:
+
+- `[QUESTION]` — Codex is blocked waiting for an answer; respond via `respond <request-id> --answer …`.
+- `[PLAN]` — plan-mode turn produced a plan; approve via `send <thread-id> --mode default "Implement the plan."` or revise.
+- `[DONE]` / `[ERROR]` / `[INCOMPLETE]` — terminal, Monitor self-closes. Branch on the origin line and `result.phase`.
+
+**Progress — periodic scan.** Informational; safe to process in batches:
+
+- `[CHECKPOINT]` — primary LLM-facing digest (every ~5 min): last assistant message, tool calls with parameter previews, git commits, diff since last checkpoint. Read these for "what is Codex doing."
+- `[HEARTBEAT]` — 60-s liveness pulse. **Excluded from Monitor by default** (would flood LLM context); still written to the `.events` file for raw-tail users and the 90-s liveness heuristic.
+- `[PIPELINE:*]` / `[PIPELINE:*:done]` — auto-pipeline stage markers. Matter for "did the pipeline finish touching files" before you commit or verify.
+- `[WARNING]` — circuit-breaker hit (e.g. headless-env osascript loop); cancel/steer if needed.
+- `[CONFIRMED]` — a `[QUESTION]` got an answer; no action, just lifecycle trace.
+
+**Unknown tags pass through.** v1.4.0's default is `--exclude HEARTBEAT`, so any tag a future bridge version emits reaches the orchestrator verbatim. Your code should tolerate tags beyond this list — if you see `[FUTURE_TAG_V1_5] …`, show it and move on; don't assume the vocabulary is closed.
 
 **Heads up — `[ERROR]` is ambiguous:** the events-file `[ERROR]` fires for *any* turn-level failure, including an auto-pipeline sub-stage timeout, while the sync `task --json` envelope for the same run can still report `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` populated. Monitor self-terminates either way; treat `[ERROR]` as "something broke — read `origin:` on the error line and `result.pipeline.error` in the envelope before retrying." Full triage in [references/error-recovery.md](references/error-recovery.md).
 
@@ -129,7 +160,7 @@ The positional form takes **text**, not a path; use `--prompt-file` to load from
 **Fallback when `jq` isn't available.** Rendered (non-JSON) output ends with a one-line footer printed verbatim after Codex's final message:
 
 ```
-Job: task-mo5xxxxx-yyyyyy · Events: /Users/you/.codex-bridge/sessions/<threadId>.events · Monitor: node … events task-mo5xxxxx-yyyyyy --follow --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING --timeout-ms 600000
+Job: task-mo5xxxxx-yyyyyy · Events: /Users/you/.codex-bridge/sessions/<threadId>.events · Monitor: node … events task-mo5xxxxx-yyyyyy --follow --exclude HEARTBEAT --timeout-ms 1800000
 ```
 
 That footer is your source of truth — do **not** pattern-match the `Thread ready (019d…)` line from stderr progress. The footer's `Job:` field is the `jobId`.
@@ -223,7 +254,7 @@ Each `[ERROR]` block carries an `origin:` line: `origin: turn` for main-turn fai
 
 ## When NOT to use Monitor
 
-Monitor is bound specifically to codex-bridge `.events` files and their terminal-tag vocabulary (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[PIPELINE:*]`, `[WARNING]`). Re-arming Monitor on a foreign process whose stdout doesn't emit those tags will only ever time out — the filter never matches, Monitor waits the full `timeout_ms`, then reports `stream ended`. This wastes orchestrator turns and teaches the agent nothing.
+Monitor is bound specifically to codex-bridge `.events` files and their tag vocabulary (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[PIPELINE:*]`, `[WARNING]`, `[HEARTBEAT]`, `[CHECKPOINT]`). Re-arming Monitor on a foreign process whose stdout doesn't emit those tags will only ever time out — the filter never matches, Monitor waits the full `timeout_ms`, then reports `stream ended`. This wastes orchestrator turns and teaches the agent nothing.
 
 | Situation | Use this |
 |---|---|
@@ -248,7 +279,7 @@ Day-to-day work rarely needs these; the references have full details.
 
 - **Mid-turn steering:** `steer <thread-id> <turn-id> "…"` — see [references/command-reference.md](references/command-reference.md#steer). Find `<turn-id>` in the `[PLAN]` line or the `TURN_PARAMS` / `TURN_COMPLETED` NDJSON records.
 - **Block on terminal tags without streaming:** `wait <job-id> --timeout-ms 600000 --json` returns `{jobId, threadId, terminalTag, lastEventLine, elapsedMs, eventsPath}`. Exit 7 `WAIT_TIMEOUT` on deadline.
-- **Stream events with filters:** `events <job-id> --follow --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING --timeout-ms 600000`. Filter is prefix-aware. With `--json`, the closing envelope carries the same `{terminalTag, terminalLine, elapsedMs}` shape as `wait` so Monitor can distinguish happy-path close from timeout.
+- **Stream events with filters:** default shape is `events <job-id> --follow --exclude HEARTBEAT --timeout-ms 1800000`. Exclusion-based filter (v1.4.0) means any new tag future bridge versions emit passes through automatically — an inclusion-based `--filter X,Y,Z` silently drops unknown tags and is *not* forward-compatible. `--filter` and `--exclude` are mutually exclusive. Filter is prefix-aware on the head tag (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix:done]`, …). Continuation lines of multi-line blocks inherit the header's decision, so an included `[CHECKPOINT]` block ships whole (not just its header). With `--json`, the closing envelope carries `{terminalTag, terminalLine, elapsedMs, filter, exclude}` so Monitor can distinguish happy-path close from timeout.
 - **Retrospective analysis:** `summary <thread-id>` produces a markdown transcript from the NDJSON log.
 - **Heartbeat monitor** (session-long commit tracking): see `references/monitor-patterns.md` Preset C.
 
@@ -261,7 +292,7 @@ Edit `${CLAUDE_SKILL_DIR}/config.yaml` to customize behavior. The keys you're mo
 | `mode` | `"plan"` | Set to `"default"` to always skip the plan turn |
 | `auto_review` | `true` | Set to `false` to skip the auto-review/fix/check pipeline |
 | `sandbox_policy` | `"danger-full-access"` | Tighten to `"workspace-write"` or `"read-only"` for stricter runs |
-| `skip_meta_skills` | `true` | Set to `false` to re-enable Codex's `using-superpowers` / `brainstorming` / `writing-plans` / `using-git-worktrees` meta-skills |
+| `skip_meta_skills` | `true` | Set to `false` to let Codex run its own planning / ceremony / meta-skill chain before execution (framework-agnostic — any scaffold-producing chain) |
 | `command_failure_circuit_breaker` | `true` | Controls whether `[WARNING]` fires on osascript / open-app / computer-use flailing |
 
 **Six timeout keys** (`idle_timeout_ms`, `turn_plan_ms`, `turn_default_ms`, `pipeline_stage_ms`, `pipeline_total_ms`, `question_answer_ms`) — see the matrix in the "Timeout budgets" section above, or [references/error-recovery.md](references/error-recovery.md#timeout-values) for the full flag-to-config mapping.
@@ -274,7 +305,7 @@ Full documentation: [references/config-reference.md](references/config-reference
 
 Each task writes artifacts to `~/.codex-bridge/sessions/` (or `config.session_dir`):
 
-- `{threadId}.events` — Monitor tails this. Tags emitted: `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[WARNING]`, `[PIPELINE:diff|review|fix|check]` with matching `:done` pair, and terminal `[PIPELINE:done]` or `[PIPELINE:failed]`.
+- `{threadId}.events` — Monitor tails this. Tags emitted: `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[WARNING]`, `[HEARTBEAT]` (every ~60 s during any running turn — non-terminal liveness pulse), `[CHECKPOINT]` (every ~5 min — non-terminal rich summary: last assistant message, tool calls, git delta, commits since last checkpoint), `[PIPELINE:diff|review|fix|check]` with matching `:done` pair, and terminal `[PIPELINE:done]` or `[PIPELINE:failed]`. A `[ERROR] | UnhandledExit` block indicates the bridge's finally-backstop fired — the turn exited without any other error branch emitting a terminal tag. A `[ERROR] | StallDetected` block indicates 3 consecutive checkpoints (15 min by default) had zero actionable items — Codex is alive but not progressing; orchestrator should cancel or steer.
 - `{threadId}.ndjson` — Curated retrospective log (turn params, item completions, questions, errors, pipeline stages). Not a full wire mirror. See [references/ndjson-guide.md](references/ndjson-guide.md).
 - `{threadId}.diff` — `git diff HEAD` snapshot captured by the pipeline.
 - `{threadId}.plan.md` — Written when Codex emits a structured `item/completed` with `type: "plan"`.
