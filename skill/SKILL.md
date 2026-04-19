@@ -16,7 +16,7 @@ compatibility: Requires Node.js 22+ and the Codex CLI on $PATH (npm i -g @openai
 license: MIT
 allowed-tools: Bash Monitor
 metadata:
-  version: "1.2.7"
+  version: "1.2.8"
   homepage: "https://github.com/yigitkonur/codex-bridge"
 ---
 
@@ -308,14 +308,16 @@ ls -lt ~/.codex-bridge/crashes/ | head -5
 # produced the exit, including argv, cwd, nodeVersion, and the error stack.
 
 # "codex-bridge is up to date" when you know it isn't?
-# `update` probes the GitHub releases API. For private repos, unauthenticated
-# requests get 404. The bridge tries direct HTTPS first (uses GH_TOKEN or
-# GITHUB_TOKEN if set), then `gh api` (uses your authenticated gh session).
-# Re-run with --force and non-JSON to see which path failed.
+# `update` hits the anonymous GitHub releases API for this public repo
+# (60 req/hr/IP, cached 24 h — effectively unlimited for bridge usage).
+# Re-run with --force to bypass the cache and see the fresh result.
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs update --force
-# "Update check failed … reason: direct-http-404+gh-not-installed" means
-# both the HTTPS path (no token) and the gh fallback (no gh on PATH) gave up.
-# Fix: `brew install gh && gh auth login`, or export GH_TOKEN / GITHUB_TOKEN.
+
+# Ready to actually install the newer version? `--apply` spawns the
+# canonical installer for you (same command as npx skills@latest add …).
+# Default remains detect-only; --apply is opt-in so you never self-replace
+# a running script by accident.
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs update --apply
 ```
 
 When a command fails, **read `$?` first**. Exit 4 means re-auth; exit 7 means retry with backoff (check `error.code` — `ClientTimeout` branches by `origin:` per [references/error-recovery.md](references/error-recovery.md#clienttimeout)); exit 2/6 means fix the invocation before anything else.
