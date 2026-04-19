@@ -9,20 +9,22 @@ test -f "$EVENTS_FILE" && echo "ready" || echo "waiting"
 
 If not ready, wait 1-2 seconds and check again. The events file is created when the task starts.
 
-## Preset A: `events --follow` (default, preferred)
+## Preset A: `events --follow --exclude HEARTBEAT` (default, preferred)
 
-Use for every task. Self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`), even if the tag was already present in the initial dump. Handles file rotation; filter is prefix-aware (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, `[PIPELINE:review:done]`, …).
+Use for every task. Self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`), even if the tag was already present in the initial dump. Handles file rotation; filter is prefix-aware on the head tag (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, `[PIPELINE:review:done]`, …). Continuation lines of multi-line blocks inherit the header's decision, so an included `[CHECKPOINT]` block ships whole.
 
 ```bash
 node "$SCRIPT_PATH" events "$JOB_ID" --follow \
-  --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING --timeout-ms 600000
+  --exclude HEARTBEAT --timeout-ms 1800000
 ```
 
-**Filter choice:** include `PIPELINE` so you see the symmetric `[PIPELINE:*:done]` tags (1.2.5) — without it you can't tell whether the auto-fix stage has stopped writing. Include `WARNING` so the circuit breaker's `[WARNING] … command-family-circuit-breaker-tripped` event isn't silently dropped.
+**Why exclusion, not inclusion (v1.4.0).** Pre-1.4.0 the canonical shape was `--filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING` — an explicit inclusion list. Any tag the bridge emitted that *wasn't* on that list was silently dropped at the filter boundary, which meant adding a new tag in a future bridge version would make existing orchestrators deaf to it. The v1.4.0 default flips to `--exclude HEARTBEAT`: every tag passes through except the high-frequency liveness pulse that would flood LLM context. Future tags reach the orchestrator by default; noise stays out.
 
-Monitor params: `persistent: false, timeout_ms: 600000` (10 min). Match `--timeout-ms` on the subcommand to the Monitor tool's outer deadline so they expire together — they're the same kind of safety net.
+**When to use `--filter` instead (rare).** You specifically want a narrow view — e.g. only terminal tags during a quick sanity check: `--filter DONE,ERROR,INCOMPLETE`. Passing both `--filter` and `--exclude` exits 2 with `USAGE_ERROR`.
 
-Every `task --json` launch returns `result.monitor.tool_hint` — an object with exactly the shape the `Monitor` tool expects (`description`, `command`, `timeout_ms`, `persistent`). Paste it verbatim instead of re-templating.
+Monitor params: `persistent: false, timeout_ms: 1800000` (30 min — matches the raised turn-budget default). Match the `--timeout-ms` on the subcommand to the Monitor tool's outer deadline so they expire together.
+
+Every `task --json` launch returns `result.monitor.tool_hint` — an object with exactly the shape the `Monitor` tool expects (`description`, `command`, `timeout_ms`, `persistent`). Paste it verbatim instead of re-templating; the shipped hint already uses `--exclude HEARTBEAT`.
 
 ### Final-envelope shape with `--json --follow`
 
@@ -36,7 +38,8 @@ When `--json --follow` closes the stream, `events` emits a terminal envelope so 
     "threadId": "019d…",
     "eventsPath": "/abs/path/to/events",
     "followed": true,
-    "filter": "DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING",
+    "filter": null,
+    "exclude": "HEARTBEAT",
     "timedOut": false,
     "terminalTag": "DONE",
     "terminalLine": "[DONE] 019d… completed in 4s | 1 files | +2 -0",
@@ -45,10 +48,9 @@ When `--json --follow` closes the stream, `events` emits a terminal envelope so 
 }
 ```
 
-`terminalTag` is `"DONE"` / `"ERROR"` / `"INCOMPLETE"` on happy-path close, `null` on `--timeout-ms` expiry. Same field shape as `wait --json` (Preset D), so orchestrators can use identical branching logic for either.
+`terminalTag` is `"DONE"` / `"ERROR"` / `"INCOMPLETE"` on happy-path close, `null` on `--timeout-ms` expiry. Same field shape as `wait --json` (Preset D), so orchestrators can use identical branching logic for either. Exactly one of `filter` / `exclude` is non-null in the envelope — they're mutually exclusive by CLI contract.
 
-Events received: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[PIPELINE:*]`, `[PIPELINE:*:done]`, `[PIPELINE:done]` / `[PIPELINE:failed]`, `[WARNING]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]`.
-Typical volume: 4–12 events per task (more with the 1.2.5 pipeline `:done` pairs).
+Events received with the default exclude-HEARTBEAT shape: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[CHECKPOINT]`, `[PIPELINE:*]`, `[PIPELINE:*:done]`, `[PIPELINE:done]` / `[PIPELINE:failed]`, `[WARNING]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]`, and any future tag the bridge adds. Typical volume: 1 CHECKPOINT every 5 min + a handful of interrupt tags per task.
 
 ## Preset A-raw: `tail -f` fallback
 
@@ -65,7 +67,7 @@ done
 
 ## Preset B: Progress (long tasks)
 
-Same as Preset A. The `events --follow` command with no `--filter` (or with a looser `--filter PIPELINE,PLAN,QUESTION,DONE,ERROR,INCOMPLETE` list) shows every actionable tag as it lands.
+Same as Preset A. The `events --follow --exclude HEARTBEAT` command shows every actionable tag as it lands (including any future tag added in later bridge versions). For the rare case you want even less noise, pass `--exclude HEARTBEAT,CHECKPOINT` to suppress both the liveness pulse and the 5-min digest — but that defeats the primary LLM-facing summary and is generally not recommended.
 
 ## Preset C: Heartbeat (session-long)
 
@@ -134,7 +136,7 @@ Monitor is specifically bound to **codex-bridge `.events` files and their termin
 | Codex task is running in the background, you need to know when it reaches a terminal tag | Monitor (canonical) |
 | `xcodebuild` / `npm test` / `cargo build` / `pytest` / any foreign long command | `Bash` with `run_in_background: true` (returns a task handle immediately — it does not block). Poll the handle via `BashOutput` / `TaskWait`, or just wait on it directly; do **not** wrap with Monitor. |
 | Polling a file for content (not a terminal tag) | Plain `Bash` loop (e.g. `until [ -s path ]; do sleep 1; done`) |
-| Watching the repo for diff-level changes made by pipeline | `events --follow --filter PIPELINE` (symmetric `:done` tags as of 1.2.5) |
+| Watching the repo for diff-level changes made by pipeline | `events --follow --filter PIPELINE` (narrow view of `:done` tags; inclusion filter is fine when you explicitly want to ignore everything else) |
 
 The rule: if the thing you're watching doesn't write to `~/.codex-bridge/sessions/<threadId>.events` with one of the recognized tags, Monitor is the wrong tool.
 

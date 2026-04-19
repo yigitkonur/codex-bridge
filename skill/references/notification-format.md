@@ -51,6 +51,18 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 
 Emitted when `command_failure_circuit_breaker: true` (shipped default) detects `N=3` consecutive same-family command failures. `{family}` is one of `osascript`, `applescript-dialog`, `applescript-system`, `open-app`, `computer-use`. `{reason}` is `command-family-circuit-breaker-tripped`. `turnInterrupted: no` today — logging-only (see `config-reference.md#command_failure_circuit_breaker`). Monitor picks this up as non-terminal: `[WARNING]` does **not** self-terminate a following `events --follow` stream; the orchestrator decides whether to `cancel` or `send` a steer based on the family. Counter resets on the next turn and on any successful command. Matching NDJSON tag: `CIRCUIT_BREAKER`.
 
+### [HEARTBEAT]
+```
+[HEARTBEAT] {threadId} t={elapsed} | phase={plan|execute} | pid={pid}
+  lastItem: {itemType} (age {ageSeconds})
+  budget: {remaining} remaining
+  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000
+```
+
+Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter includes `HEARTBEAT` so the stream is never silent for more than ~60 s during a running turn.
+
+Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not alive — the caller can short-circuit their wait and investigate (`kill -0 <pid>` on the heartbeat's `pid`, or `pgrep -f codex-bridge`). The `tail:` line in each block is a ready-to-paste re-attach command so an agent that lost its Monitor session can recover from the most recent events-file line alone.
+
 ### [INCOMPLETE]
 ```
 [INCOMPLETE] {threadId} | {diffStat}

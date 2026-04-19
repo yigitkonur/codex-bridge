@@ -10,6 +10,7 @@ import {
   formatErrorEvent,
   formatIncompleteEvent,
   formatPipelineEvent,
+  fmtSeconds,
 } from "./session-log.mjs";
 import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "./config.mjs";
 
@@ -21,14 +22,6 @@ import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } f
 // DEFAULT_CONFIG `pipeline_stage_ms` / `pipeline_total_ms`.
 const PIPELINE_TIMEOUT_MS_DEFAULT = 900_000; // 15 minutes total
 const STAGE_TIMEOUT_MS_DEFAULT = 300_000;    // 5 minutes per stage
-
-function fmtSeconds(ms) {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return rem === 0 ? `${m}m` : `${m}m${rem.toString().padStart(2, "0")}s`;
-}
 
 function loadExecuteInstructions(rootDir) {
   const p = path.join(rootDir, "templates", "execute-instructions.md");

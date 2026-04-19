@@ -235,6 +235,164 @@ export function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }
 
+export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null }) {
+  // Unconditional liveness pulse written to `.events` every ~60s during any
+  // running turn. Purpose: an orchestrator tailing `events --follow` can never
+  // go longer than the heartbeat interval without seeing *something* from the
+  // bridge. Silence beyond ~90s is therefore a bug by definition — either the
+  // bridge crashed without flushing a terminal tag, or the heartbeat timer
+  // was never started. The `[HEARTBEAT]` block is **non-terminal**; it does
+  // not trip `events --follow` self-termination.
+  //
+  // Each block carries a ready-to-paste re-attach command so an orchestrator
+  // that loses its Monitor can recover from the most recent events-file line
+  // alone. The pattern here mirrors formatDoneEvent's `actions:` block.
+  const lines = [
+    `[HEARTBEAT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | pid=${pid ?? "?"}`,
+  ];
+  const itemLine =
+    lastItem
+      ? `  lastItem: ${lastItem}${
+          Number.isFinite(lastItemAgeMs) ? ` (age ${fmtSeconds(lastItemAgeMs)})` : ""
+        }`
+      : "  lastItem: (none yet)";
+  lines.push(itemLine);
+  if (Number.isFinite(budgetRemainingMs) && budgetRemainingMs > 0) {
+    lines.push(`  budget: ${fmtSeconds(budgetRemainingMs)} remaining`);
+  }
+  if (scriptPath && jobId) {
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId })}`);
+  }
+  return lines.join("\n");
+}
+
+// Shared across formatHeartbeatEvent / formatCheckpointEvent. Same
+// behavior as auto-pipeline.mjs's internal fmtSeconds — consolidated as
+// the single source so `.events` time strings never drift.
+export function fmtSeconds(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m${String(rem).padStart(2, "0")}s`;
+}
+
+// Canonical terminal-tag set — the three that self-terminate
+// `events --follow`. Exported so the finally-backstop regex, Monitor's
+// `terminal_tags` array, and every future consumer agree by construction.
+export const TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE"]);
+export const TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE)\]/m;
+
+// v1.4.0 — default Monitor/`events --follow` uses EXCLUSION instead of
+// inclusion so new tags introduced by future bridge versions pass through
+// automatically. Pre-1.4.0 the default was an inclusion list that silently
+// dropped any tag not on the list — the "nothing is happening" class of
+// failure. HEARTBEAT is the only tag excluded by default (every 60 s,
+// pure liveness — would flood LLM context); CHECKPOINT and every
+// interrupt-class tag (DONE, ERROR, INCOMPLETE, PLAN, QUESTION) pass
+// through. An orchestrator who wants to also drop CHECKPOINT passes
+// `--exclude HEARTBEAT,CHECKPOINT` explicitly.
+export const DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT"]);
+
+// Canonical tail invocation — reused by every `.events` block's `tail:`
+// line and by `buildMonitorHint`. One builder so a change to the default
+// exclusion list propagates everywhere that prints a re-attach hint.
+export function formatTailCommand({ scriptPath, jobId, timeoutMs = 1_800_000, exclude = DEFAULT_MONITOR_EXCLUDE }) {
+  const excludeClause = exclude && exclude.length > 0
+    ? ` --exclude ${Array.from(exclude).join(",")}`
+    : "";
+  return `node ${scriptPath} events ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
+}
+
+// v1.3.0 — periodic rich digest of in-flight work. Emitted every 5 min (or
+// `CODEX_BRIDGE_CHECKPOINT_MS`) alongside the 60-s heartbeat. The heartbeat
+// proves liveness; the checkpoint summarizes what Codex *actually did* in
+// the last interval so an orchestrator reviewing a running run can catch up
+// from one block instead of scrolling the entire ndjson. Non-terminal.
+//
+// Sections:
+//   - latest assistant message (full text, not truncated, so a reviewer
+//     reads the same thing Codex just said — this is the most context-dense
+//     signal per checkpoint)
+//   - tools used (type + compact parameter preview; Read/Write/Edit/command
+//     get path-level detail because those are what the orchestrator most
+//     often wants to double-check before accepting work)
+//   - git delta since the previous checkpoint (diff --stat + commit list)
+//
+// Every block also ends with a ready-to-paste re-attach tail command so an
+// orchestrator that missed the preceding heartbeats can recover from the
+// most recent checkpoint alone.
+export function formatCheckpointEvent(session, {
+  elapsedMs,
+  phase,
+  intervalMs,
+  pid,
+  jobId = null,
+  lastAssistantMessage = null,
+  tools = [],
+  commits = [],
+  diffStat = null,
+  filesChangedSinceStart = null,
+  scriptPath = null,
+}) {
+  const head = `[CHECKPOINT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | interval=${fmtSeconds(intervalMs)} | pid=${pid ?? "?"}`;
+  const lines = [head];
+
+  if (lastAssistantMessage) {
+    // Cap the assistant-message slice at ~8 KB. Codex can emit single
+    // messages many KB long (full plans, long paste-of-error outputs);
+    // embedding them verbatim in `.events` bloats the file and can break
+    // naive line-based consumers. 8 KB is enough to read the intent while
+    // keeping per-checkpoint blocks bounded.
+    const MAX_ASSISTANT_MESSAGE_CHARS = 8_000;
+    const raw = String(lastAssistantMessage).trim();
+    if (raw) {
+      const truncated = raw.length > MAX_ASSISTANT_MESSAGE_CHARS
+        ? raw.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + `\n… (truncated, ${raw.length - MAX_ASSISTANT_MESSAGE_CHARS} more chars)`
+        : raw;
+      lines.push("  assistant:");
+      for (const line of truncated.split("\n")) {
+        lines.push(`    ${line}`);
+      }
+    } else {
+      lines.push("  assistant: (no new assistant message this interval)");
+    }
+  } else {
+    lines.push("  assistant: (no new assistant message this interval)");
+  }
+
+  lines.push(`  tools (${tools.length}):`);
+  if (tools.length === 0) {
+    lines.push("    (none)");
+  } else {
+    for (const t of tools) {
+      // `summary` is a short one-liner provided by the caller (e.g.
+      // "Read /path/to/file.ts lines 1-200" or "Edit src/foo.ts (+3 -1)").
+      lines.push(`    - ${t.type}${t.summary ? `: ${t.summary}` : ""}`);
+    }
+  }
+
+  if (commits && commits.length > 0) {
+    lines.push(`  commits (${commits.length}):`);
+    for (const c of commits) {
+      lines.push(`    - ${c.sha} ${c.subject}`);
+    }
+  }
+
+  if (diffStat) {
+    lines.push(`  diff-since-last-checkpoint: ${diffStat}`);
+  }
+  if (filesChangedSinceStart) {
+    lines.push(`  files-changed-since-turn-start: ${filesChangedSinceStart}`);
+  }
+
+  if (scriptPath && jobId) {
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId })}`);
+  }
+
+  return lines.join("\n");
+}
+
 export function formatPipelineEvent(session, { stage, suffix, detail }) {
   // `suffix` makes start/done pairs explicit (e.g. `[PIPELINE:fix]` at start,
   // `[PIPELINE:fix:done]` at end) so `events --filter PIPELINE` gives a

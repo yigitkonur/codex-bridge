@@ -21,18 +21,18 @@ All four layers are honored. Before 1.1.0, only the skill config layer was read 
 |-----|------|---------|-------------|
 | `mode` | string | `"plan"` | Collaboration mode: `"plan"` (plan first) or `"default"` (execute directly) |
 | `model` | string | `"gpt-5.4"` | Default model. Inherited from Codex user config if not set. |
-| `effort` | string | `"high"` | Execution reasoning effort. Plan mode always uses `"xhigh"` regardless. |
+| `effort` | string | `"xhigh"` | Execution reasoning effort. Plan mode always uses `"xhigh"` regardless. Shipped default raised from `"high"` to `"xhigh"` in 1.3.0 — live delegations consistently benefited from xhigh; set to `"high"` (or lower) or pass `--effort high` for cheaper turns. |
 | `auto_review` | boolean | `true` | Run automatic review after task execution completes |
 | `post_task_prompt` | string | (see below) | Completion check prompt. Empty string disables it. |
 | `prompt_footer` | string | (see below) | Text appended to every prompt. Used to instruct Codex to use `requestUserInput` tool for questions. |
 | `allow_questions` | boolean | `true` | Allow Codex to ask questions in Default mode. Always enabled in Plan mode. |
-| `session_dir` | string | `"~/.codex-bridge/sessions"` | Where session logs are stored. `~` expands to home directory. |
+| `session_dir` | string | `"~/.codex-bridge/sessions"` | Where session logs are stored. `~` expands to home directory. Also the canonical path to `tail -f` directly when the bridge CLI is misbehaving. |
 | `sandbox_policy` | string | `"danger-full-access"` | Sandbox profile. One of `"danger-full-access"`, `"workspace-write"`, `"read-only"`. See below. |
-| `skip_meta_skills` | boolean | `true` | Prepend a directive telling Codex to skip its internal planning/ceremony skills (`using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`). See below. |
+| `skip_meta_skills` | boolean | `true` | Prepend an `[ORCHESTRATOR DIRECTIVE]` telling Codex to skip any internal planning / ceremony / meta-skill chain before execution (framework-agnostic — any chain that produces scaffold docs under `docs/`, `plans/`, `specs/`, etc.). See below. |
 | `command_failure_circuit_breaker` | boolean | `true` | Emit `[WARNING]` when 3 of the last 5 same-family command executions fail (with wrapper-pattern detection). See below. |
 | `idle_timeout_ms` | integer | `300000` | No-event idle watchdog: max wall-clock gap between app-server notifications before a turn is failed with `ClientTimeout`. CLI override: `--idle-timeout-ms`. |
-| `turn_plan_ms` | integer | `300000` | Per-turn timeout for plan turns. CLI override: `--turn-plan-ms` (task) / `--turn-timeout-ms` (send when `--mode plan`). |
-| `turn_default_ms` | integer | `600000` | Per-turn timeout for execute turns (also covers send turns in default mode). CLI override: `--turn-default-ms` (task) / `--turn-timeout-ms` (send). |
+| `turn_plan_ms` | integer | `900000` | Per-turn timeout for plan turns. Raised from 300 000 in 1.3.0 — prior ceiling prematurely killed legitimate plan windows. CLI override: `--turn-plan-ms` (task) / `--turn-timeout-ms` (send when `--mode plan`). |
+| `turn_default_ms` | integer | `1800000` | Per-turn timeout for execute turns (also covers send turns in default mode). Raised from 600 000 in 1.3.0 — prior 10-min ceiling interrupted multi-file ports that were still actively writing. CLI override: `--turn-default-ms` (task) / `--turn-timeout-ms` (send). |
 | `pipeline_stage_ms` | integer | `300000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
 | `pipeline_total_ms` | integer | `900000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
 | `question_answer_ms` | integer | `300000` | How long `requestUserInput` waits for a response before auto-answering `{answers: {}}`. CLI override: `--question-timeout-ms`. |
@@ -41,9 +41,9 @@ Every `*_ms` key validates as a positive integer. Malformed CLI flag values (`--
 
 ### `skip_meta_skills`
 
-Codex ships with opinionated meta-skills that, by default, run before execution: `using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`. When the bridge is already orchestrating — the orchestrator has decided the plan, the workspace, and the intent — those skills routinely burn ~10 minutes producing spec and plan files under `docs/superpowers/` that aren't part of the deliverable.
+Codex ships with opinionated skill chains that, by default, run before execution — planning skills, brainstorming skills, worktree-management skills, and any equivalent ceremony framework. When the bridge is already orchestrating — the orchestrator has decided the plan, the workspace, and the intent — those chains routinely burn many minutes producing spec and plan scaffolding under paths like `docs/`, `plans/`, `specs/`, or similar that isn't part of the deliverable.
 
-With `skip_meta_skills: true` (shipped default), every prompt is prefixed with an `[ORCHESTRATOR DIRECTIVE]` line instructing Codex to execute directly and not to create those files. This is **advisory** — Codex can still invoke the skills — but in practice it cuts the ceremony overhead sharply. Set to `false` if you want Codex's full default behavior (e.g. when running without an orchestrator).
+With `skip_meta_skills: true` (shipped default), every prompt is prefixed with an `[ORCHESTRATOR DIRECTIVE]` line instructing Codex to execute directly and not to create such scaffolding. The directive is framework-agnostic — it targets the *behavior* (producing scaffold docs before touching the deliverable), not a specific skill name, so it stays effective as Codex's upstream skill chain evolves. This is **advisory** — Codex can still invoke its own skills — but in practice it cuts the ceremony overhead sharply. Set to `false` if you want Codex's full default behavior (e.g. when running without an orchestrator).
 
 ### `command_failure_circuit_breaker`
 

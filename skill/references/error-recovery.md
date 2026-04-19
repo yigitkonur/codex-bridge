@@ -109,11 +109,25 @@ Every budget is configurable. Resolution order for each: CLI flag → `config.ya
 
 | Phase | Default | Config key | CLI flag |
 |-------|---------|------------|----------|
-| Plan turn | 5 min (300 000 ms) | `turn_plan_ms` | `--turn-plan-ms` |
-| Execution turn | 10 min (600 000 ms) | `turn_default_ms` | `--turn-default-ms` |
+| Plan turn | 15 min (900 000 ms, raised from 5 min in 1.3.0) | `turn_plan_ms` | `--turn-plan-ms` |
+| Execution turn | 30 min (1 800 000 ms, raised from 10 min in 1.3.0) | `turn_default_ms` | `--turn-default-ms` |
 | Question unanswered (auto-answers with `{answers: {}}`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | Auto-pipeline per-stage (review / fix / check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
 | Auto-pipeline total | 15 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
 | No-event idle (per-turn) | 5 min (300 000 ms) | `idle_timeout_ms` | `--idle-timeout-ms` |
 
 A timeout fires a `ClientTimeout` error to the events file as `[ERROR] {threadId} failed | ClientTimeout`. The rendered message uses seconds/minutes (`Xs` under 60 s, `Xm` for whole minutes, `XmYYs` for mixed — e.g. `auto-review exceeded 5m`, `auto-fix exceeded 7m30s`). The underlying `TimeoutError` instance preserves the raw `timeoutMs` integer as a field — machine consumers should read `.timeoutMs` rather than parse the string. Every `[ERROR]` block also carries an `origin:` line (`turn` or `pipeline:<stage>`); pipeline-origin timeouts may coexist with a success envelope whose `phase: "incomplete"`.
+
+## `UnhandledExit` — the finally-backstop marker (1.3.0)
+
+If an events file ends with `[ERROR] … | UnhandledExit` plus `origin: bridge`, the bridge's top-level `finally` block synthesized it after noticing the turn exited without any explicit branch emitting a terminal tag. That's an **observability bug, not a task bug** — some error path (new or pre-existing) escaped the instrumented branches. Callers should:
+
+1. **Not retry the same prompt** under the assumption the task failed — the task state is whatever it was; the `[ERROR]` marker is synthesized, not causal.
+2. **File an issue** with the jobId, the full events file, and (if present) the contents of `~/.codex-bridge/crashes/`.
+3. **Separately act on the underlying task state** (run `result <jobId>` and inspect the diff — Codex may have completed most of the work before the bridge exit happened).
+
+The marker's whole point is that it's *itself* the bug report: silence is impossible, so every failure path is diagnosable.
+
+## `[HEARTBEAT]` — liveness pulse (1.3.0, non-terminal)
+
+Non-terminal tag emitted every ~60 s during any running turn. Each block carries elapsed time, current phase, last item type, pid, turn-budget remaining, and a ready-to-paste re-attach command. Monitor's default filter includes `HEARTBEAT` so agents see liveness without opting in. If `[HEARTBEAT]` lines stop arriving for more than ~90 s, the bridge wrapper process is not alive — check `kill -0 <pid>` on the heartbeat's pid, or `pgrep -f codex-bridge`. A stale heartbeat pid with no process is the fastest way to confirm a silent crash.

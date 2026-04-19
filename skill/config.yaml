@@ -13,8 +13,11 @@ codex_bridge:
   # model: "gpt-5.4"
 
   # Execution reasoning effort: none | minimal | low | medium | high | xhigh
-  # Plan mode always uses xhigh regardless of this setting
-  effort: "high"
+  # Plan mode always uses xhigh regardless of this setting. Shipped default
+  # is xhigh (changed in 1.3.0) — live delegations on non-trivial work
+  # consistently benefited from xhigh; callers who want a cheaper turn can
+  # set this to high or lower, or pass --effort high at the CLI.
+  effort: "xhigh"
 
   # Run automatic review after task completion
   auto_review: true
@@ -33,12 +36,14 @@ codex_bridge:
   allow_questions: true
 
   # When true, prepend a strong orchestrator directive telling Codex not to
-  # invoke its internal meta-skills (using-superpowers, brainstorming,
-  # writing-plans, using-git-worktrees). Codex's default skill chain can burn
-  # ~10 minutes producing docs/superpowers/specs/*.md and plans/*.md files
-  # that are not part of the deliverable when the bridge is already
-  # orchestrating. Advisory: Codex may still invoke them, but the directive
-  # measurably reduces the rate.
+  # invoke any internal planning / ceremony / meta-skill chain before
+  # execution (framework-agnostic — covers any skill chain that produces
+  # spec or plan scaffolding under `docs/`, `plans/`, `specs/` or similar
+  # paths before touching the deliverable). Codex's default skill chains
+  # can burn many minutes producing such artifacts when an orchestrator is
+  # already driving the plan/execute loop. Advisory: Codex may still invoke
+  # them, but the directive measurably reduces the rate. Users who run
+  # without an orchestrator should set this to false.
   skip_meta_skills: true
 
   # Watch repeated same-family command failures (osascript, open -a, display
