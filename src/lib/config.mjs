@@ -31,10 +31,14 @@ const DEFAULT_CONFIG = {
   // orchestrating the task. Advisory — Codex may ignore the directive.
   skip_meta_skills: true,
   // When true, monitor repeated same-family command failures (osascript,
-  // open -a, display dialog, computer-use/*) and steer the turn with a
-  // structural-impossibility message once the threshold is hit. Prevents
-  // Codex from burning token budget iterating over headless-environment
-  // probes. See config-reference.md for the threshold and family list.
+  // open -a, display dialog, computer-use/*, AppleScript) and emit a
+  // [WARNING] event to `.events` once the threshold (N=3 consecutive) is
+  // hit. An orchestrator tailing via Monitor can catch the warning and
+  // decide to cancel/steer before Codex burns token budget iterating over
+  // headless-environment probes. Logging-only today; auto-interrupt would
+  // require a new post-turn-start hook exposing `turnId`. See
+  // config-reference.md for the threshold, family list, and enhancement
+  // candidates.
   command_failure_circuit_breaker: true,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };

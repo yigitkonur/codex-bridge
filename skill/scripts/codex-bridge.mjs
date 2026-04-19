@@ -6220,10 +6220,14 @@ var DEFAULT_CONFIG = {
   // orchestrating the task. Advisory — Codex may ignore the directive.
   skip_meta_skills: true,
   // When true, monitor repeated same-family command failures (osascript,
-  // open -a, display dialog, computer-use/*) and steer the turn with a
-  // structural-impossibility message once the threshold is hit. Prevents
-  // Codex from burning token budget iterating over headless-environment
-  // probes. See config-reference.md for the threshold and family list.
+  // open -a, display dialog, computer-use/*, AppleScript) and emit a
+  // [WARNING] event to `.events` once the threshold (N=3 consecutive) is
+  // hit. An orchestrator tailing via Monitor can catch the warning and
+  // decide to cancel/steer before Codex burns token budget iterating over
+  // headless-environment probes. Logging-only today; auto-interrupt would
+  // require a new post-turn-start hook exposing `turnId`. See
+  // config-reference.md for the threshold, family list, and enhancement
+  // candidates.
   command_failure_circuit_breaker: true,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
@@ -8176,7 +8180,12 @@ async function runBridgeTask(request) {
   const sessionDir = resolveSessionDir(config.session_dir);
   const effectiveMode = request.mode ?? config.mode ?? "plan";
   const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
-  const metaSkillsPrefix = config.skip_meta_skills ? "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills \u2014 specifically `using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`, or any equivalent planning/ceremony skill. The calling orchestrator has already planned this task; your job is to execute it directly. Do not create docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files unless the task explicitly asks for them.\n\n" : "";
+  const metaSkillsPreamble = "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills \u2014 specifically `using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`, or any equivalent planning/ceremony skill. Do not create docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files unless the task explicitly asks for them.";
+  const metaSkillsPrefix = config.skip_meta_skills ? isPlanMode ? `${metaSkillsPreamble} The calling orchestrator is already driving the plan/execute loop; produce a concise inline [PLAN] and stop \u2014 the orchestrator approves before execution.
+
+` : `${metaSkillsPreamble} The calling orchestrator has already planned this task; your job is to execute it directly.
+
+` : "";
   const promptWithFooter = config.prompt_footer ? `${metaSkillsPrefix}${request.prompt}
 
 ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
@@ -8192,11 +8201,11 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     if (typeof command !== "string") return null;
     const trimmed = command.trim();
     if (!trimmed) return null;
-    if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
     if (/\bdisplay dialog\b|\bdisplay notification\b/i.test(trimmed)) return "applescript-dialog";
-    if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
-    if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
     if (/\bSystem Events\b|\btell application\b/i.test(trimmed)) return "applescript-system";
+    if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
+    if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
+    if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
     return null;
   };
   const bridgeRequest = {

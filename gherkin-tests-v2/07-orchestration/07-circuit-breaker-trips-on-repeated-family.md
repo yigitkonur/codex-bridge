@@ -62,11 +62,11 @@ const detectCommandFamily = (command) => {
   if (typeof command !== "string") return null;
   const trimmed = command.trim();
   if (!trimmed) return null;
-  if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
   if (/\bdisplay dialog\b|\bdisplay notification\b/i.test(trimmed)) return "applescript-dialog";
-  if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
-  if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
   if (/\bSystem Events\b|\btell application\b/i.test(trimmed)) return "applescript-system";
+  if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
+  if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
+  if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
   return null;
 };
 

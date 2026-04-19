@@ -1525,19 +1525,24 @@ async function runBridgeTask(request) {
   const effectiveMode = request.mode ?? config.mode ?? "plan";
   const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
 
-  // When `skip_meta_skills` is on, prepend a strong directive instructing
-  // Codex to bypass its internal planning/ceremony skills (using-superpowers,
-  // brainstorming, writing-plans, using-git-worktrees). The orchestrator has
-  // already planned the task — those skills burn token budget producing spec
-  // and plan files that aren't part of the deliverable. Advisory only: Codex
-  // may still invoke them, but the directive measurably reduces the rate.
+  // When `skip_meta_skills` is on, prepend a directive instructing Codex to
+  // bypass its internal planning/ceremony skills (using-superpowers,
+  // brainstorming, writing-plans, using-git-worktrees). These routinely
+  // burn token budget producing docs/superpowers/specs/*.md and plans/*.md
+  // files that are not part of the deliverable. Mode-aware: plan-mode
+  // turns keep the "produce a concise plan" intent (the directive must not
+  // contradict it); execute turns get the full "execute directly" wording.
+  // Advisory only — Codex may still invoke the skills.
+  const metaSkillsPreamble =
+    "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills — specifically " +
+    "`using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`, " +
+    "or any equivalent planning/ceremony skill. Do not create " +
+    "docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files unless " +
+    "the task explicitly asks for them.";
   const metaSkillsPrefix = config.skip_meta_skills
-    ? "[ORCHESTRATOR DIRECTIVE] Do not invoke your own meta-skills — specifically " +
-      "`using-superpowers`, `brainstorming`, `writing-plans`, `using-git-worktrees`, " +
-      "or any equivalent planning/ceremony skill. The calling orchestrator has " +
-      "already planned this task; your job is to execute it directly. Do not " +
-      "create docs/superpowers/specs/*.md or docs/superpowers/plans/*.md files " +
-      "unless the task explicitly asks for them.\n\n"
+    ? (isPlanMode
+        ? `${metaSkillsPreamble} The calling orchestrator is already driving the plan/execute loop; produce a concise inline [PLAN] and stop — the orchestrator approves before execution.\n\n`
+        : `${metaSkillsPreamble} The calling orchestrator has already planned this task; your job is to execute it directly.\n\n`)
     : "";
 
   // Append prompt footer from config (instructs Codex to use requestUserInput tool)
@@ -1567,12 +1572,17 @@ async function runBridgeTask(request) {
     if (typeof command !== "string") return null;
     const trimmed = command.trim();
     if (!trimmed) return null;
-    // Order-sensitive: more-specific patterns first.
-    if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
+    // Order-sensitive: **content-based** patterns first so that a payload
+    // like `osascript -e 'display dialog "…"'` is recognized as its most
+    // specific family (`applescript-dialog`) rather than the broader
+    // `osascript` umbrella. Without this ordering, the two applescript
+    // subfamilies would be unreachable for the most common invocation
+    // form — AppleScript is almost always run *via* `osascript -e`.
     if (/\bdisplay dialog\b|\bdisplay notification\b/i.test(trimmed)) return "applescript-dialog";
-    if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
-    if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
     if (/\bSystem Events\b|\btell application\b/i.test(trimmed)) return "applescript-system";
+    if (/^computer-use\/|^tool:\s*computer-use/i.test(trimmed)) return "computer-use";
+    if (/^\s*open\s+-a\b/i.test(trimmed)) return "open-app";
+    if (/^\/bin\/zsh.*osascript\b|^osascript\b|\bosascript\s+-[eJl]\b/i.test(trimmed)) return "osascript";
     return null;
   };
 
