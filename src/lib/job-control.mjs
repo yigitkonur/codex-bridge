@@ -36,13 +36,19 @@ function getJobTypeLabel(job) {
     return "review";
   }
   if (job.jobClass === "task") {
-    return "rescue";
+    // Pre-1.2.5 this returned "rescue" for every task (user-launched or
+    // stop-gate). Current callers set `kindLabel` explicitly ("task" or
+    // "rescue-review") in buildTaskRunMetadata, so this fallback is only
+    // reached for legacy state-file records that predate the rename.
+    // Defaulting legacy task records to "task" is safer — it matches what
+    // a user-launched task should have read all along.
+    return "task";
   }
   if (job.kind === "review") {
     return "review";
   }
   if (job.kind === "task") {
-    return "rescue";
+    return "task";
   }
   return "job";
 }

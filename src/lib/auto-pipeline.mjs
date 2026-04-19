@@ -13,8 +13,14 @@ import {
 } from "./session-log.mjs";
 import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "./config.mjs";
 
-const PIPELINE_TIMEOUT_MS = 900_000; // 15 minutes total
-const STAGE_TIMEOUT_MS = 300_000;    // 5 minutes per stage
+// Default budgets. Runtime callers may override via `stageTimeoutMs` /
+// `totalTimeoutMs` on runAutoPipeline options, which in turn resolve from
+// CLI flag → config.yaml → these defaults. Pre-1.2.5 both were constants
+// with no escape hatch; large diffs that legitimately needed >5 min review
+// time had no recourse short of editing the source. See config.mjs
+// DEFAULT_CONFIG `pipeline_stage_ms` / `pipeline_total_ms`.
+const PIPELINE_TIMEOUT_MS_DEFAULT = 900_000; // 15 minutes total
+const STAGE_TIMEOUT_MS_DEFAULT = 300_000;    // 5 minutes per stage
 
 function fmtSeconds(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -44,17 +50,33 @@ export async function runAutoPipeline(options) {
     runAppServerTurn,
     runAppServerReview,
     jobId = null,
+    stageTimeoutMs = null,
+    totalTimeoutMs = null,
   } = options;
+
+  // Resolve per-stage and total budgets: caller override → built-in default.
+  // Caller already did flag→config resolution, so passing `null` here means
+  // "use the built-in default".
+  const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
+  const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
 
   const completedStages = [];
   const startTime = Date.now();
   const executeInstructions = loadExecuteInstructions(rootDir);
 
   const checkPipelineTimeout = () => {
-    if (Date.now() - startTime > PIPELINE_TIMEOUT_MS) {
-      throw new PipelineTimeoutError(completedStages);
+    if (Date.now() - startTime > totalMs) {
+      throw new PipelineTimeoutError(completedStages, totalMs);
     }
   };
+
+  // Pipeline-level accumulators for the end-of-run summary event and the
+  // `result.pipeline.touchedFiles` payload. `fixFilesTouched` records which
+  // files the fix stage itself wrote; it's distinct from `finalDiff.files`
+  // (which is the cumulative diff since the pipeline started). Pre-1.2.5
+  // nothing exposed the per-stage file set, so an orchestrator that saw
+  // pipeline changes after a [DONE] had to blind-accept or diff by hand.
+  let fixFilesTouched = [];
 
   try {
     // Stage 1: Capture initial git diff
@@ -62,6 +84,7 @@ export async function runAutoPipeline(options) {
     logNdjson(session, "PIPELINE_STAGE", null, { stage: "diff" });
     const diff1 = captureGitDiff(cwd, session);
     completedStages.push("diff");
+    logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
     checkPipelineTimeout();
 
     // Stage 2: Auto-review (if configured)
@@ -79,7 +102,7 @@ export async function runAutoPipeline(options) {
             target: { type: "uncommittedChanges" },
             model: config.model,
           }),
-          STAGE_TIMEOUT_MS,
+          stageMs,
           "auto-review"
         );
 
@@ -93,11 +116,22 @@ export async function runAutoPipeline(options) {
           reviewFindings = parsed.findings;
           reviewFindingCount = reviewFindings.length;
         }
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "review",
+          suffix: "done",
+          detail: `verdict=${reviewVerdict} findings=${reviewFindingCount}`
+        }));
 
         // Stage 2b: Fix findings (if any)
         if (reviewFindings.length > 0) {
           logEvent(session, formatPipelineEvent(session, { stage: "fix" }));
           logNdjson(session, "PIPELINE_STAGE", null, { stage: "fix", findingCount: reviewFindings.length });
+
+          // Snapshot the tree before the fix turn so we can subtract and
+          // report exactly which files the fix stage wrote (distinct from
+          // Codex's own earlier writes).
+          const diffBeforeFix = captureGitDiff(cwd, session);
+          const filesBeforeFix = new Set(diffBeforeFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]));
 
           const fixPrompt = buildFixPrompt(reviewFindings);
           await withTimeout(
@@ -111,15 +145,26 @@ export async function runAutoPipeline(options) {
               }),
               sandboxPolicy: buildSandboxPolicy("default", config),
             }),
-            STAGE_TIMEOUT_MS,
+            stageMs,
             "auto-fix"
           );
 
           completedStages.push("fix");
           checkPipelineTimeout();
 
-          // Capture diff after fix
-          captureGitDiff(cwd, session);
+          // Capture diff after fix; derive the exact file list the fix
+          // stage touched.
+          const diffAfterFix = captureGitDiff(cwd, session);
+          const filesAfterFix = diffAfterFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]);
+          fixFilesTouched = filesAfterFix.filter((f) => !filesBeforeFix.has(f));
+
+          logEvent(session, formatPipelineEvent(session, {
+            stage: "fix",
+            suffix: "done",
+            detail: fixFilesTouched.length
+              ? `files=${JSON.stringify(fixFilesTouched.slice(0, 10))}${fixFilesTouched.length > 10 ? ` (+${fixFilesTouched.length - 10} more)` : ""}`
+              : "files=[]"
+          }));
         }
       } catch (error) {
         if (error instanceof TimeoutError) {
@@ -127,6 +172,11 @@ export async function runAutoPipeline(options) {
         }
         // Review failed but not a timeout — log and continue
         logNdjson(session, "PIPELINE_ERROR", null, { stage: "review", error: error.message });
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "review",
+          suffix: "failed",
+          detail: error.message ?? "review failed"
+        }));
         completedStages.push("review-failed");
       }
     }
@@ -151,11 +201,14 @@ export async function runAutoPipeline(options) {
             sandboxPolicy: { type: "readOnly" },
             outputSchema: COMPLETION_CHECK_SCHEMA,
           }),
-          STAGE_TIMEOUT_MS,
+          stageMs,
           "completion-check"
         );
 
         completedStages.push("check");
+        // Completion check result tag is emitted below after completionResult
+        // is finalized (line ~204 in the pre-1.2.5 file), since the complete
+        // bit depends on parsing checkResult.finalMessage.
 
         // Treat a failed completion-check turn as "incomplete" with a
         // diagnostic item, rather than silently falling through to `complete`.
@@ -186,11 +239,25 @@ export async function runAutoPipeline(options) {
             summary: "completion-check inconclusive",
           };
         }
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "check",
+          suffix: "done",
+          detail: `complete=${Boolean(completionResult.complete)}${
+            Array.isArray(completionResult.missing_items) && completionResult.missing_items.length
+              ? ` missing=${completionResult.missing_items.length}`
+              : ""
+          }`
+        }));
       } catch (error) {
         if (error instanceof TimeoutError) {
           throw error;
         }
         logNdjson(session, "PIPELINE_ERROR", null, { stage: "check", error: error.message });
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "check",
+          suffix: "failed",
+          detail: error.message ?? "check failed"
+        }));
         completedStages.push("check-failed");
       }
     }
@@ -225,20 +292,31 @@ export async function runAutoPipeline(options) {
       completedStages,
       duration,
       complete: completionResult.complete,
+      touchedFiles: fixFilesTouched,
     });
+
+    // Symmetric terminal tag so `events --filter PIPELINE` sees both edges of
+    // the pipeline lifecycle. Orchestrators can now wait for [PIPELINE:done]
+    // before assuming the bridge has stopped writing to the workspace.
+    logEvent(session, formatPipelineEvent(session, {
+      stage: "pipeline",
+      suffix: "done",
+      detail: `stages=${completedStages.join(",")} complete=${Boolean(completionResult.complete)} touched=${fixFilesTouched.length}`
+    }));
 
     return {
       complete: completionResult.complete,
       completedStages,
       duration,
       diff: finalDiff,
+      touchedFiles: fixFilesTouched,
     };
 
   } catch (error) {
     const duration = Math.round((Date.now() - startTime) / 1000);
     const errorCode = error instanceof TimeoutError ? "ClientTimeout" : "PipelineError";
     const errorMessage = error instanceof PipelineTimeoutError
-      ? `Auto-pipeline exceeded ${fmtSeconds(PIPELINE_TIMEOUT_MS)}. Completed stages: ${completedStages.join(", ")}`
+      ? `Auto-pipeline exceeded ${fmtSeconds(totalMs)}. Completed stages: ${completedStages.join(", ")}`
       : error.message;
 
     // Capture whatever diff exists
@@ -265,13 +343,21 @@ export async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       origin,
+      touchedFiles: fixFilesTouched,
     });
+
+    logEvent(session, formatPipelineEvent(session, {
+      stage: "pipeline",
+      suffix: "failed",
+      detail: `at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+    }));
 
     return {
       complete: false,
       completedStages,
       duration,
       error: errorMessage,
+      touchedFiles: fixFilesTouched,
     };
   }
 }
@@ -313,8 +399,8 @@ export class TimeoutError extends Error {
 }
 
 class PipelineTimeoutError extends TimeoutError {
-  constructor(completedStages) {
-    super("auto-pipeline", PIPELINE_TIMEOUT_MS);
+  constructor(completedStages, timeoutMs = PIPELINE_TIMEOUT_MS_DEFAULT) {
+    super("auto-pipeline", timeoutMs);
     this.completedStages = completedStages;
   }
 }

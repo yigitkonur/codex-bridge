@@ -235,8 +235,17 @@ export function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }
 
-export function formatPipelineEvent(session, { stage }) {
-  return `[PIPELINE:${stage}] ${new Date().toISOString().slice(11, 19)}`;
+export function formatPipelineEvent(session, { stage, suffix, detail }) {
+  // `suffix` makes start/done pairs explicit (e.g. `[PIPELINE:fix]` at start,
+  // `[PIPELINE:fix:done]` at end) so `events --filter PIPELINE` gives a
+  // symmetric stream an orchestrator can reason about. Pre-1.2.5 only the
+  // start tag was written and callers of `events --follow` couldn't tell
+  // whether the pipeline had actually stopped touching the repo — a
+  // round-3 live delegation spent 15 min reconciling "did pipeline still run
+  // after my commit?" because the bridge emitted nothing on completion.
+  const head = suffix ? `PIPELINE:${stage}:${suffix}` : `PIPELINE:${stage}`;
+  const ts = new Date().toISOString().slice(11, 19);
+  return detail ? `[${head}] ${ts} ${detail}` : `[${head}] ${ts}`;
 }
 
 export function formatWarningEvent(session, { reason, family, threshold, sampleCommand, turnInterrupted }) {
