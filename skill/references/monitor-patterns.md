@@ -11,19 +11,44 @@ If not ready, wait 1-2 seconds and check again. The events file is created when 
 
 ## Preset A: `events --follow` (default, preferred)
 
-Use for every task. Self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`), even if the tag was already present in the initial dump. Handles file rotation; filter is prefix-aware (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, …).
+Use for every task. Self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`), even if the tag was already present in the initial dump. Handles file rotation; filter is prefix-aware (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, `[PIPELINE:review:done]`, …).
 
 ```bash
 node "$SCRIPT_PATH" events "$JOB_ID" --follow \
-  --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION --timeout-ms 600000
+  --filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING --timeout-ms 600000
 ```
 
-Monitor params: `persistent: false, timeout_ms: 3600000` (the `events` subcommand has its own `--timeout-ms` that the Monitor's outer deadline can still interrupt).
+**Filter choice:** include `PIPELINE` so you see the symmetric `[PIPELINE:*:done]` tags (1.2.5) — without it you can't tell whether the auto-fix stage has stopped writing. Include `WARNING` so the circuit breaker's `[WARNING] … command-family-circuit-breaker-tripped` event isn't silently dropped.
+
+Monitor params: `persistent: false, timeout_ms: 600000` (10 min). Match `--timeout-ms` on the subcommand to the Monitor tool's outer deadline so they expire together — they're the same kind of safety net.
 
 Every `task --json` launch returns `result.monitor.tool_hint` — an object with exactly the shape the `Monitor` tool expects (`description`, `command`, `timeout_ms`, `persistent`). Paste it verbatim instead of re-templating.
 
-Events received: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[PIPELINE:*]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]`.
-Typical volume: 2–5 events per task.
+### Final-envelope shape with `--json --follow`
+
+When `--json --follow` closes the stream, `events` emits a terminal envelope so the caller can distinguish happy-path close from timeout without re-reading the events file:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "jobId": "task-…",
+    "threadId": "019d…",
+    "eventsPath": "/abs/path/to/events",
+    "followed": true,
+    "filter": "DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING",
+    "timedOut": false,
+    "terminalTag": "DONE",
+    "terminalLine": "[DONE] 019d… completed in 4s | 1 files | +2 -0",
+    "elapsedMs": 3214
+  }
+}
+```
+
+`terminalTag` is `"DONE"` / `"ERROR"` / `"INCOMPLETE"` on happy-path close, `null` on `--timeout-ms` expiry. Same field shape as `wait --json` (Preset D), so orchestrators can use identical branching logic for either.
+
+Events received: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[PIPELINE:*]`, `[PIPELINE:*:done]`, `[PIPELINE:done]` / `[PIPELINE:failed]`, `[WARNING]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]`.
+Typical volume: 4–12 events per task (more with the 1.2.5 pipeline `:done` pairs).
 
 ## Preset A-raw: `tail -f` fallback
 
@@ -107,7 +132,7 @@ Monitor is specifically bound to **codex-bridge `.events` files and their termin
 | Situation | Use this |
 |---|---|
 | Codex task is running in the background, you need to know when it reaches a terminal tag | Monitor (canonical) |
-| `xcodebuild` / `npm test` / `cargo build` / `pytest` / any foreign long command | `Bash` with `run_in_background: true` + block on exit, or `Bash` with a reasonable `timeout` |
+| `xcodebuild` / `npm test` / `cargo build` / `pytest` / any foreign long command | `Bash` with `run_in_background: true` (returns a task handle immediately — it does not block). Poll the handle via `BashOutput` / `TaskWait`, or just wait on it directly; do **not** wrap with Monitor. |
 | Polling a file for content (not a terminal tag) | Plain `Bash` loop (e.g. `until [ -s path ]; do sleep 1; done`) |
 | Watching the repo for diff-level changes made by pipeline | `events --follow --filter PIPELINE` (symmetric `:done` tags as of 1.2.5) |
 

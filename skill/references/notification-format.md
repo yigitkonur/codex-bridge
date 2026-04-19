@@ -97,15 +97,37 @@ actions:
 [CONFIRMED] {threadId} {requestId} | codex resumed
 ```
 
-### [PIPELINE:*]
+### [PIPELINE:*] — Auto-pipeline stage progress
+
+Every pipeline stage emits both a **start tag** and a matching **`:done`** tag so an orchestrator tailing `events --filter PIPELINE` can tell exactly when each stage stops writing to the repo. Pre-1.2.5 only start tags existed, forcing agents to guess when the pipeline was hands-off.
+
 ```
-[PIPELINE:review] HH:MM:SS
-[PIPELINE:fix] HH:MM:SS
-[PIPELINE:check] HH:MM:SS
-[PIPELINE:diff] HH:MM:SS
+[PIPELINE:diff] HH:MM:SS                           # stage start
+[PIPELINE:diff:done] HH:MM:SS 2 files | +23 -5     # stage end (:done pair)
+
+[PIPELINE:review] HH:MM:SS                         # stage start
+[PIPELINE:review:done] HH:MM:SS verdict=approve findings=0
+
+[PIPELINE:fix] HH:MM:SS                            # stage start (only when review returned structured findings)
+[PIPELINE:fix:done] HH:MM:SS files=["a.ts","b.ts"] # stage end carries the list of files the fix stage wrote
+
+[PIPELINE:check] HH:MM:SS                          # stage start
+[PIPELINE:check:done] HH:MM:SS complete=true missing=0
 ```
 
-`[PIPELINE:fix]` fires only when a structured review populated `reviewFindings` (e.g. an adversarial-review result fed back in). The default native auto-review returns plain text, so `reviewFindings` is empty and `[PIPELINE:fix]` does not appear on the normal `auto_review: true` path. See `orchestration-flows.md`.
+Then exactly one terminal pipeline tag closes the whole pipeline:
+
+```
+[PIPELINE:done] HH:MM:SS stages=diff,review,check complete=true touched=0
+# or, if a stage threw:
+[PIPELINE:failed] HH:MM:SS at=review stages=diff,review touched=0
+```
+
+After `[PIPELINE:done]` / `[PIPELINE:failed]`, no further bridge-side writes are coming to the workspace — safe for the orchestrator to commit / inspect. The `touched=N` summary is the count of files in `[PIPELINE:fix:done] files=[…]`; on `task --json` it's also available as `result.pipeline.touchedFiles`.
+
+`[PIPELINE:fix]` only fires when a structured review populated `reviewFindings` (e.g. an adversarial-review result fed back in). The default native auto-review returns plain text, so `reviewFindings` is empty and `[PIPELINE:fix]` does not appear on the normal `auto_review: true` path. Even then, `[PIPELINE:review:done]` still appears with `findings=0`. See `orchestration-flows.md` for lifecycle.
+
+`--no-pipeline` on `task` / `send` skips the pipeline entirely; the events file sees no `[PIPELINE:*]` lines, and the ndjson log carries a `PIPELINE_SKIPPED` entry.
 
 ### [REVIEW] (reserved — not emitted by the current build)
 ```
