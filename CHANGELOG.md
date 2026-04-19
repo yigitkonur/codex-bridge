@@ -9,6 +9,122 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-04-19
+
+Forward-compatible Monitor contract. The v1.3.0 observability work
+(heartbeat, checkpoint, finally-backstop, 30-min turn budgets)
+eliminated silent-failure modes but exposed a deeper architectural
+flaw: the Monitor filter was an inclusion list. An orchestrator
+passing `--filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,…`
+silently dropped any tag not on that list — including tags future
+bridge versions would emit. v1.4.0 flips the contract.
+
+### Added
+
+- **`events --exclude <tags>` flag.** Drops listed tags, passes
+  everything else. Mutually exclusive with `--filter`; passing both
+  exits `2 USAGE_ERROR` before any file read.
+- **`DEFAULT_MONITOR_EXCLUDE = ["HEARTBEAT"]`** exported from
+  `src/lib/session-log.mjs` as the single source of truth for the
+  default exclusion list. `buildMonitorHint`, `formatTailCommand`,
+  and every re-attach hint inside `[HEARTBEAT]` / `[CHECKPOINT]`
+  blocks consume it.
+- **Unknown-tag forward-compat.** Under the default exclusion
+  filter, any tag a future bridge version emits (e.g.
+  `[NETWORK-STALL]`, `[FUTURE_TAG_V15]`) reaches the orchestrator
+  verbatim. `tagOf` regex widened from `[A-Za-z:]+` to `[^\]]+`
+  so digits / hyphens / underscores in tag names register as
+  headers rather than silently-dropped continuation lines.
+- **Multi-line block filter inheritance.** Continuation lines of
+  a block (e.g. the `assistant:`, `tools:`, `diff:` body of
+  a `[CHECKPOINT]` block) now inherit the header's inclusion
+  decision. Pre-1.4.0 each line was filtered independently, so
+  an included `[CHECKPOINT]` header shipped without its body — a
+  latent bug since v1.3.0 introduced multi-line blocks.
+- **Interrupt vs progress classification** in `skill/SKILL.md`
+  and references: act-now tags (`[QUESTION]`, `[PLAN]`, `[DONE]`,
+  `[ERROR]`, `[INCOMPLETE]`) vs periodic-scan tags
+  (`[CHECKPOINT]`, `[PIPELINE:*]`, `[WARNING]`, `[CONFIRMED]`).
+  Guides LLM orchestrators toward CHECKPOINT as the primary
+  summary surface.
+
+### Changed
+
+- **Default Monitor hint uses `--exclude HEARTBEAT`** instead of
+  a long inclusion list. Every `task --json` launch payload,
+  `task --background` detached launch, and every `tail:` line
+  printed inside `[HEARTBEAT]` / `[CHECKPOINT]` blocks now ship
+  the forward-compatible shape by default. Orchestrators that
+  paste `result.monitor.tool_hint` verbatim pick up the new
+  default automatically.
+- **`result.monitor.command` timeout raised to 1 800 000 ms**
+  (30 min) to match the v1.3.0 turn-budget default.
+- **Final-envelope shape** from `events --json --follow` now
+  includes both `filter` and `exclude` fields — exactly one is
+  non-null per invocation, per the mutual-exclusion CLI rule.
+- **`DEFAULT_EVENTS_FILTER` removed** from
+  `src/lib/session-log.mjs` (replaced by
+  `DEFAULT_MONITOR_EXCLUDE`).
+
+### Fixed
+
+- **Inclusion filter dropped continuation lines of multi-line
+  blocks.** Pre-1.4.0 the per-line filter predicate ran `tagOf`
+  on each line; continuation lines (indented, no bracketed tag)
+  returned `null` and were dropped. The new predicate tracks the
+  most recent header's decision and applies it to subsequent
+  continuation lines until the next header.
+- **`tagOf` regex missed tags with digits / hyphens /
+  underscores.** Widened to `[^\]]+` — the closing bracket is
+  the only delimiter that can't appear inside a tag.
+
+### Compatibility
+
+- **Backward-compatible at the CLI.** Callers who explicitly
+  pass `--filter <tags>` get pre-1.4.0 inclusion behavior
+  unchanged. Only the *default* Monitor hint shape moved.
+- **Orchestrators using `result.monitor.tool_hint` verbatim**
+  pick up v1.4.0 transparently — the hint is now
+  exclusion-based.
+- **Hand-rolled `--filter` strings** in orchestrator code keep
+  working but are forward-incompatible; update to
+  `--exclude HEARTBEAT` to get future tags automatically.
+
+### Docs
+
+- `skill/SKILL.md` — non-JSON footer example, "Observability
+  guarantee" section, new "Interrupts vs progress signals"
+  subsection.
+- `skill/references/monitor-patterns.md` — Preset A rewritten
+  for exclusion default; Preset B, final-envelope shape,
+  situation table updated.
+- `skill/references/command-reference.md` — `events` synopsis,
+  flag table, final-envelope example, recommended shape.
+- `skill/references/notification-format.md` — `[HEARTBEAT]`
+  block tail hint.
+- `skill/references/orchestration-flows.md` — flow diagram,
+  new "Handling unknown tags" forward-compat subsection.
+
+### New gherkin scenarios
+
+- `07-orchestration/10-events-exclude-flag.md`
+- `07-orchestration/11-events-filter-exclude-mutually-exclusive.md`
+- `07-orchestration/12-events-unknown-tag-passes-through.md`
+- `01-lifecycle/05-monitor-default-excludes-heartbeat.md`
+
+### Deferred to a future plan
+
+Called out in the v1.4.0 plan so they aren't forgotten:
+- Backpressure / ack protocol between bridge and Monitor.
+- `events --since <tsMs>` cursor primitive for cheap re-attach.
+- Splitting `[HEARTBEAT]` into a separate
+  `<threadId>.heartbeat` file.
+- Digest-only delivery (replacing streaming with a new
+  `bridge digest` subcommand).
+- `[ERROR]` disambiguation via a `final: { kind, action }`
+  envelope field.
+- fg/bg unification, supervisor daemon, typed JSON-RPC pushback.
+
 ## [1.2.9] — 2026-04-19
 
 Hot-path auto-apply. Every `bridge task` / `send` / `result` / other
