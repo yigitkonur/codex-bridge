@@ -27,18 +27,31 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 [ERROR] {threadId} failed | {errorCode}
   {errorMessage}
   origin: {origin}
+  failing_stage: {stage}        # only on pipeline origins when a TimeoutError triggered the failure
   phase: {currentPhase}
   actions:
-    retry: node {scriptPath} send {threadId} "<revised prompt>"
-    log:   node {scriptPath} result {jobId}
-    cancel: node {scriptPath} cancel {jobId}
+    … cause-aware lines (see below) …
+    see: skill/references/error-recovery.md#<anchor>
 ```
 
 `{errorCode}` is the raw Codex `codexErrorInfo` variant (e.g. `ClientTimeout`, `ResponseTooManyFailedAttempts`, `ActiveTurnNotSteerable`, `Unauthorized`) — not a shortened alias. Exit codes follow the mapping in `error-recovery.md`.
 
-`{origin}` is `turn` for main-turn failures and `pipeline:<stage>` (where `<stage>` is the last completed pipeline stage — `diff`, `review`, `fix`, or `check`) for auto-pipeline sub-stage failures. The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) also carry `data.origin` with the same values.
+`{origin}` is one of the canonical tokens actually emitted by the bridge today (v1.4.1):
 
-`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:review` + `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` in tooling.
+| Origin | Cause |
+|---|---|
+| `idle` | Idle watchdog fired: no events from Codex for the configured window. Message: `No events received for Ns`. |
+| `upstream:compact-proxy` | The remote compact endpoint returned 502 ("Proxy request budget exhausted"). Typical on reading-heavy turns that trigger mid-turn context compaction. |
+| `upstream:transport` | Upstream stream/socket disconnected before `turn/completed` — websocket closed, `ECONNRESET`, `ETIMEDOUT`, etc. Workspace unchanged; safe to retry. |
+| `turn` | Every other turn-level failure: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget exhaustion, etc. Distinguish by `{errorCode}`. |
+| `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. `<lastCompleted>` is the last stage that *finished* — see `failing_stage:` for the one that actually stalled. |
+| `bridge:*` | Bridge-layer safety net tripped (`bridge:stall`, `bridge:unhandled-exit`). Indicates a bridge bug; treat as a bug report. |
+
+The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) carry `data.origin` with the same values plus `data.failing_stage` when applicable.
+
+`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:diff` + `failing_stage: review` + `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` vs `origin: upstream:*` in tooling.
+
+The `actions:` block is **cause-aware**: an idle-timeout `[ERROR]` suggests `relaunch: … --idle-timeout-ms 900000 …`, a compact-proxy 502 suggests narrowing required-reads + a shorter follow-up `send`, a pipeline sub-stage failure points at `rerun-review` rather than retrying the whole task, and so on. Every block ends with a `see:` line deep-linking into `skill/references/error-recovery.md` for the full recipe.
 
 ### [WARNING]
 ```
@@ -59,7 +72,7 @@ Emitted when `command_failure_circuit_breaker: true` (shipped default) detects `
   tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000
 ```
 
-Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter includes `HEARTBEAT` so the stream is never silent for more than ~60 s during a running turn.
+Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter **excludes** `HEARTBEAT` (see `DEFAULT_MONITOR_EXCLUDE` in `src/lib/session-log.mjs`) so pure-liveness pulses don't flood LLM context; pass `--include HEARTBEAT` (or drop the default exclude) explicitly when you *do* want to see the pulse.
 
 Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not alive — the caller can short-circuit their wait and investigate (`kill -0 <pid>` on the heartbeat's `pid`, or `pgrep -f codex-bridge`). The `tail:` line in each block is a ready-to-paste re-attach command so an agent that lost its Monitor session can recover from the most recent events-file line alone.
 
@@ -108,6 +121,15 @@ actions:
 ```
 [CONFIRMED] {threadId} {requestId} | codex resumed
 ```
+
+### [DIRECTIVES]
+```
+[DIRECTIVES] {threadId} | mode={plan|default} | effort={none|minimal|low|medium|high|xhigh} | sandbox={readOnly|workspaceWrite|dangerFullAccess} | quiet={true|false} | skip_meta_skills={true|false} | pipeline={review,check|none} | model={model}
+```
+
+Emitted once per turn at `turn/started`, before any `[HEARTBEAT]` / `[CHECKPOINT]` cadence. Surfaces the **effective** runtime config — what the bridge actually resolved after merging CLI flags, `config.yaml`, and built-in defaults. Resolves the invisible-directive problem for keys like `skip_meta_skills` that shape the prompt but otherwise emit nothing observable. Non-terminal.
+
+`pipeline=` reflects the enabled auto-pipeline stages for this run (`review`, `check`, or a comma-joined subset). `pipeline=none` means `--no-pipeline` was passed or the config disabled both stages.
 
 ### [PIPELINE:*] — Auto-pipeline stage progress
 

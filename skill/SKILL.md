@@ -104,7 +104,7 @@ Six independent timeout budgets, each resolved `CLI flag → config.yaml key →
 | Question unanswered (auto-answers `{answers:{}}`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | No-event idle (per turn) | 5 min | `idle_timeout_ms` | `--idle-timeout-ms` |
 
-Idle fires a `[ERROR] … | ClientTimeout` with `origin: turn`; pipeline-stage timeouts fire with `origin: pipeline:<stage>`. If Monitor goes silent and `status <id>` still reports `running` past the relevant timeout plus ~60 s buffer, the task is genuinely stuck — `cancel <id>` recovers.
+Idle fires a `[ERROR] … | ClientTimeout` with `origin: idle` (v1.4.1+; pre-1.4.1 this collapsed to `origin: turn`); pipeline-stage timeouts fire with `origin: pipeline:<lastCompleted>` and a separate `failing_stage: <actualStage>` field. If Monitor goes silent and `status <id>` still reports `running` past the relevant timeout plus ~60 s buffer, the task is genuinely stuck — `cancel <id>` recovers.
 
 ### Observability guarantee (v1.3.0)
 
@@ -250,11 +250,24 @@ Emitted when `command_failure_circuit_breaker: true` (default) detects 3 of 5 sa
 
 ### [ERROR] — Something failed
 
-Each `[ERROR]` block carries an `origin:` line: `origin: turn` for main-turn failures, `origin: pipeline:<stage>` for auto-pipeline sub-stage failures. A pipeline-origin error can coexist with a `task --json` success envelope whose `result.phase: "incomplete"` and `result.pipeline.error` are set — read the envelope before retrying. All five `ClientTimeout` origins (idle / turn / pipeline-stage / pipeline-total / question-answer) surface through this same `[ERROR]` tag; the recovery action depends on the origin. Full triage in [references/error-recovery.md](references/error-recovery.md).
+Each `[ERROR]` block carries an `origin:` line. The canonical vocabulary actually emitted today:
+
+| `origin:` | Cause | First action |
+|---|---|---|
+| `idle` | No events from Codex for the idle window (upstream silent mid-turn). | `relaunch` with a larger `--idle-timeout-ms`. |
+| `upstream:compact-proxy` | Remote compact proxy returned 502 ("Proxy request budget exhausted"). | Narrow required-reads, shorten follow-ups. |
+| `upstream:transport` | Upstream WS/stream disconnected before `turn/completed`. Workspace unchanged. | `send` the same prompt; reasoning is lost but safe to retry. |
+| `turn` | Every other turn-level failure. Distinguish by `errorCode`: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget, etc. | See [error-recovery.md](references/error-recovery.md). |
+| `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. Check `failing_stage:` for the stage that actually stalled; the main task may still have succeeded. | `inspect` with `result`, then `rerun-review`. |
+| `bridge:stall` / `bridge:unhandled-exit` | Bridge safety net fired — indicates a bridge bug. | File a report with the jobId + events file. |
+
+A pipeline-origin `[ERROR]` can coexist with a `task --json` success envelope whose `result.phase: "incomplete"` and `result.pipeline.error` are set — read the envelope before retrying. The `actions:` block inside each `[ERROR]` is cause-aware and always ends with a `see:` line pointing to the right anchor in [references/error-recovery.md](references/error-recovery.md).
 
 ## When NOT to use Monitor
 
 Monitor is bound specifically to codex-bridge `.events` files and their tag vocabulary (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[PIPELINE:*]`, `[WARNING]`, `[HEARTBEAT]`, `[CHECKPOINT]`). Re-arming Monitor on a foreign process whose stdout doesn't emit those tags will only ever time out — the filter never matches, Monitor waits the full `timeout_ms`, then reports `stream ended`. This wastes orchestrator turns and teaches the agent nothing.
+
+**Monitor is single-job.** One Monitor call tails one `.events` file and self-terminates on one terminal tag. For N > 1 parallel Codex jobs, do **not** stack N Monitor calls — use `status --watch` for a live table view of all tracked jobs, or `await-artifact` to block on the specific file each job will produce. See "Running N jobs in parallel" below and `references/orchestration-flows.md` for the full fan-out / fan-in pattern.
 
 | Situation | Use this |
 |---|---|
@@ -264,6 +277,33 @@ Monitor is bound specifically to codex-bridge `.events` files and their tag voca
 | Watching pipeline's diff-level changes | `events --follow --filter PIPELINE` (symmetric `:done` tags as of 1.2.5) |
 
 Rule: if the thing you're watching doesn't write to `~/.codex-bridge/sessions/<threadId>.events` with one of the listed tags, Monitor is the wrong tool.
+
+## Running N jobs in parallel
+
+When the orchestrator is fanning out more than one Codex job at a time, Monitor is the wrong primitive (it self-terminates on the first terminal tag of one stream). The right pattern is **async-first: launch N background tasks, then block on either `status --watch` for a live table or `await-artifact` for a specific file per job**.
+
+```bash
+# 1. Launch N jobs in background; collect their jobIds.
+for prompt in prompts/*.md; do
+  node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --mode default --background --json \
+    --prompt-file "$prompt" \
+    | jq -r '.result.jobId' >> .jobs.txt
+done
+
+# 2a. OPTION A — watch all jobs in one live table (exits when every tracked job is terminal).
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs status --watch --interval 10s
+
+# 2b. OPTION B — block on the specific artifact each job produces.
+while read -r job; do
+  node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs await-artifact "$job" "out/${job}.md" --timeout-ms 900000 --json
+done < .jobs.txt
+```
+
+Rules:
+- One `result` call per job to read the structured outcome (`jq '.result.phase'`).
+- Don't try to stack N Monitor calls — stream ownership belongs to a single tail per `.events` file, and the LLM context can't reason about N parallel streams cleanly.
+- `status --watch` is the fan-in view; `await-artifact` is the success-gate per job.
+- Worked walkthrough with interleaved outputs in [references/orchestration-flows.md](references/orchestration-flows.md#running-n-jobs-in-parallel).
 
 ## Standalone Review
 

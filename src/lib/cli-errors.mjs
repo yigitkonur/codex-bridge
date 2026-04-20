@@ -287,3 +287,53 @@ export function detectHelpFlag(argv) {
   }
   return false;
 }
+
+// Classify the *origin* of a turn-level failure so the events-file renderer and
+// `.ndjson` log can emit something more specific than the legacy `origin: "turn"`.
+// The returned string is the canonical `origin:` token that also keys the
+// cause-aware actions dispatch in `session-log.mjs::formatErrorEvent`.
+//
+// Vocabulary (what actually emits, truthful — do not add without wiring):
+//   - `idle`                   — the no-event idle watchdog fired (message carries
+//                                 "No events received for Ns").
+//   - `upstream:compact-proxy` — the remote compact endpoint returned 502 with a
+//                                 "Proxy request budget exhausted" message. Seen
+//                                 when a reading-heavy turn hits OpenAI's
+//                                 context-compaction proxy mid-turn.
+//   - `upstream:transport`     — the upstream stream disconnected / socket reset
+//                                 before `turn/completed`. The workspace is
+//                                 unchanged; safe to retry the same prompt.
+//   - `turn`                   — every other turn-level failure (turn budget
+//                                 exhausted, Codex-classified variants like
+//                                 ContextWindowExceeded / Unauthorized / …).
+//
+// Pre-1.4.1 every turn-level failure emitted `origin: "turn"`, collapsing
+// idle / compact-proxy 502 / transport drops / real turn-budget exhaustion
+// into one bucket — unreadable for an orchestrator trying to pick a recovery
+// move. See `unexpected-bridge-observations/` + the session transcript at
+// `.codex-bridge/sessions/019dac1b-0ab0-7f53-bc87-2f9f54431ac5.events` for
+// the motivating evidence.
+export function classifyTurnErrorOrigin(error) {
+  const message = String(error?.message ?? error ?? "");
+
+  // Idle watchdog — matches the synthesized string from `codex.mjs`'s
+  // `onIdleTimeout` path; distinct from Codex's own `ClientTimeout`
+  // codexErrorInfo (which we still treat as a turn-level classifier below).
+  if (/No events received for \d+s/.test(message)) return "idle";
+
+  // Upstream compact-proxy 502. Signature: the "compact" URL from the
+  // `.../backend-api/codex/responses/compact` endpoint, or the explicit
+  // "Proxy request budget exhausted" phrase. Either one alone is sufficient.
+  if (/responses\/compact|Proxy request budget exhausted|Error running remote compact task/i.test(message)) {
+    return "upstream:compact-proxy";
+  }
+
+  // Upstream transport drops — websocket/stream disconnects, socket resets,
+  // and the text aliases our own classifier already recognizes. Keeps parity
+  // with the `UPSTREAM_STREAM_DISCONNECTED` branch in `classifyError` above.
+  if (/stream disconnected|websocket closed|no close frame|ECONNRESET|ETIMEDOUT|socket hang up/i.test(message)) {
+    return "upstream:transport";
+  }
+
+  return "turn";
+}

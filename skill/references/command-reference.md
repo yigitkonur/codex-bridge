@@ -106,7 +106,7 @@ codex-bridge task [--write] [--effort <level>] [--mode <plan|default>] [-m <mode
 
 | Flag | Description |
 |------|-------------|
-| `--write` | Enable file writing (workspace-write sandbox when the turn is in default mode) |
+| `--write` | Enable file writing (workspace-write sandbox when the turn is in default mode). **First-turn caveat:** with the default `mode: plan`, the first task runs against a `readOnly` sandbox and `--write` has **no effect** until a `send <thread-id> --mode default …` approves the plan. To enable writes on turn 1 pass `--mode default` on `task`. |
 | `--effort <level>` | Reasoning effort: none, minimal, low, medium, high, xhigh |
 | `--mode <plan\|default>` | Override `config.mode` for this single run. Honored on both foreground and background paths. Rejected with `USAGE_ERROR` (exit 2) for any other value. |
 | `-m, --model <name>` | Upstream model; `spark` resolves to `gpt-5.3-codex-spark` |
@@ -115,7 +115,7 @@ codex-bridge task [--write] [--effort <level>] [--mode <plan|default>] [-m <mode
 | `--fresh` | Start a new thread even if a resumable one exists |
 | `--background` | Detached worker; returns immediately with a job id |
 | `--no-pipeline` | Skip the auto-review/fix/check pipeline for this single run (overrides `auto_review` / `post_task_prompt` from config). Ndjson carries a `PIPELINE_SKIPPED` entry. |
-| `--quiet` | Suppress the `[codex] …` stderr progress stream so agents don't pattern-match the threadId out of progress lines |
+| `--quiet` | Suppress the `[codex] …` stderr progress stream so agents don't pattern-match the threadId out of progress lines. **`--json` implies `--quiet`** (v1.4.1) unless `--quiet=false` is passed explicitly: when the envelope is consumed by a machine, the stderr UUID trap would otherwise derail it. |
 | `--idle-timeout-ms <ms>` | Override no-event idle watchdog (default `idle_timeout_ms = 300000`) |
 | `--turn-plan-ms <ms>` | Override per-turn timeout for plan turns (default `turn_plan_ms = 300000`) |
 | `--turn-default-ms <ms>` | Override per-turn timeout for execute turns (default `turn_default_ms = 600000`) |

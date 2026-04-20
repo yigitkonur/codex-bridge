@@ -25,7 +25,8 @@ import {
   validationError,
   notFoundError,
   conflictError,
-  invalidThreadIdError
+  invalidThreadIdError,
+  classifyTurnErrorOrigin
 } from "./lib/cli-errors.mjs";
 import { isThreadId } from "./lib/thread-id.mjs";
 import {
@@ -111,6 +112,7 @@ import {
   formatPhaseEvent,
   formatReviewEvent,
   formatWarningEvent,
+  formatDirectivesEvent,
   formatTailCommand,
   TERMINAL_TAGS,
   DEFAULT_MONITOR_EXCLUDE,
@@ -465,12 +467,14 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--prune-orphans|--cleanup] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
-    summary: "List jobs, or inspect one by id. With --wait, poll until the job reaches a terminal state.",
+    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
       "codex-bridge status task-abc --wait --timeout-ms 600000",
-      "codex-bridge status --all --json"
+      "codex-bridge status --all --json",
+      "codex-bridge status --watch --interval 5s",
+      "codex-bridge status --watch --all --json"
     ]
   },
   result: {
@@ -499,6 +503,14 @@ const COMMANDS = Object.freeze({
     synopsis: "cancel [job-id] [--json]",
     summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
     examples: ["codex-bridge cancel task-abc"]
+  },
+  "await-artifact": {
+    synopsis: "await-artifact <job-id> <path> [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "Block until <path> exists and is stable (size unchanged across consecutive polls), or the target job reaches a terminal state, or timeout. Primitive for multi-job orchestration when success = 'artifact exists at path'. Exit 7 on timeout or job-terminal-without-artifact.",
+    examples: [
+      "codex-bridge await-artifact task-abc report.md --timeout-ms 600000",
+      "codex-bridge await-artifact 019d9a86-1c8a-7f41-8032-6c76bbe730a1 ./out/summary.json --json"
+    ]
   },
   setup: {
     synopsis: "setup [--json] [--enable-review-gate | --disable-review-gate]",
@@ -1634,6 +1646,33 @@ function parseIdleTimeoutMsOption(raw) {
   return parsePositiveMsOption("--idle-timeout-ms", raw);
 }
 
+// Accept either a bare millisecond integer (e.g. `5000`) or a human-friendly
+// duration suffix (`5s`, `1500ms`, `2m`). Returns milliseconds. Used by the
+// `--interval` flag on `status --watch` and the `--timeout-ms` flag on
+// `await-artifact` so operators don't have to mentally convert "10 seconds"
+// to "10000" every time. Bare integers are treated as milliseconds for
+// backward compatibility with the rest of the CLI.
+function parseDurationOption(flagName, raw, { defaultMs = null } = {}) {
+  if (raw == null || raw === "") return defaultMs;
+  const str = String(raw).trim();
+  const match = /^(\d+(?:\.\d+)?)(ms|s|m)?$/i.exec(str);
+  if (!match) {
+    throw usageError(
+      `${flagName} must be a positive duration (e.g. "500ms", "10s", "2m"), got ${JSON.stringify(raw)}`
+    );
+  }
+  const n = Number(match[1]);
+  const unit = (match[2] ?? "ms").toLowerCase();
+  const multiplier = unit === "m" ? 60_000 : unit === "s" ? 1_000 : 1;
+  const ms = n * multiplier;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw usageError(
+      `${flagName} must be a positive duration, got ${JSON.stringify(raw)}`
+    );
+  }
+  return ms;
+}
+
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile
@@ -1963,6 +2002,29 @@ async function runBridgeTask(request) {
         promptLength: info.promptLength,
         promptPreview: info.promptPreview
       });
+      // First-event surface for the *effective* runtime config — lets a
+      // reviewer answer "what config did this run actually use?" from the
+      // events file alone, without tailing ndjson. Critical for invisible
+      // directives like `skip_meta_skills` that shape the prompt but
+      // otherwise emit nothing.
+      try {
+        const sandboxType = info.turnParams.sandboxPolicy?.type ?? "unknown";
+        const pipelineEnabled = [];
+        if (config.auto_review) pipelineEnabled.push("review");
+        if (config.post_task_prompt) pipelineEnabled.push("check");
+        if (request.noPipeline) pipelineEnabled.length = 0;
+        logEvent(s, formatDirectivesEvent(s, {
+          mode: isPlanMode ? "plan" : "default",
+          effort: info.turnParams.effort ?? "?",
+          sandbox: sandboxType,
+          quiet: request.onProgress == null,
+          skipMetaSkills: Boolean(config.skip_meta_skills),
+          pipelineEnabled,
+          model: info.turnParams.model ?? null,
+        }));
+      } catch {
+        // Never let an observability event kill the turn.
+      }
     },
     onItemCompleted: (item, { threadId }) => {
       // Persist a minimal record per completed item so `summary` can replay
@@ -2519,20 +2581,23 @@ async function runBridgeTask(request) {
 
   if (result.exitStatus !== 0 && result.error) {
     const errorMessage = String(result.error.message ?? result.error);
-    const isIdleTimeout = errorMessage.includes("No events received for");
+    const origin = classifyTurnErrorOrigin(result.error);
     const codexErrorInfo =
       result.error.codexErrorInfo ?? result.error.codex_error_info ?? null;
-    const errorCode = isIdleTimeout ? "ClientTimeout" : (codexErrorInfo ?? "CodexError");
+    // ClientTimeout stays the error code for the idle-watchdog branch so
+    // downstream classifiers/exit-code mapping keep working; codexErrorInfo
+    // still wins when the upstream classifier tagged the failure.
+    const errorCode = origin === "idle" ? "ClientTimeout" : (codexErrorInfo ?? "CodexError");
     const touchedFiles = result.payload?.touchedFiles ?? [];
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
       phase: isPlanMode ? "plan" : "execution",
-      origin: "turn",
+      origin,
       scriptPath: SCRIPT_PATH,
       jobId: request.jobId ?? null,
     }));
-    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin: "turn" });
+    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin });
     markTerminalEmitted();
 
     // `workspace-dirty` phase: Codex produced a diff but the sandbox blocked
@@ -2769,7 +2834,13 @@ async function handleTask(argv) {
   const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
   const noPipeline = Boolean(options["no-pipeline"]);
-  const quietMode = Boolean(options.quiet);
+  // `--json` implies `--quiet` unless the caller explicitly passes `--quiet=false`.
+  // Rationale: `--json` signals machine consumption; the stderr `[codex] Thread
+  // ready (<uuid>)` progress line is a UUID-trap that agents regex-match out
+  // and then target with `send/respond`, confusing the returned threadId.
+  // Explicit `--quiet=false` preserves a human-watching-json flow if anyone
+  // actually wants it.
+  const quietMode = Boolean(options.quiet) || (Boolean(options.json) && options.quiet !== false);
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
@@ -2915,11 +2986,36 @@ async function handleTaskWorker(argv) {
 async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup"]
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms"],
+    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch"]
   });
 
   const cwd = resolveCommandCwd(options);
+
+  // `--watch`: repeatedly render the multi-job status table until every
+  // tracked job reaches a terminal state (or the overall timeout expires, or
+  // Ctrl-C). The primitive the critique author had to hand-roll as `poll.sh`
+  // — ships it in-bridge so N-job orchestration doesn't require shell glue.
+  // JSON mode emits one NDJSON snapshot per tick (forward-compatible: new
+  // keys in a future bridge version pass through unchanged).
+  if (options.watch) {
+    if (positionals[0]) {
+      throw usageError("`status --watch` does not take a job-id argument; it watches ALL tracked jobs.");
+    }
+    if (options["prune-orphans"] || options.cleanup || options.wait) {
+      throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
+    }
+    const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 10_000 });
+    const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
+    await runStatusWatch(cwd, {
+      intervalMs,
+      overallTimeoutMs,
+      all: options.all,
+      json: options.json,
+      startedAt,
+    });
+    return;
+  }
 
   // --prune-orphans / --cleanup: reap state-file ghosts (status:"running" or
   // "queued" with a dead PID). Rescue rings accumulated in the stop-gate era
@@ -2962,6 +3058,201 @@ async function handleStatus(argv) {
     json: options.json,
     startedAt
   });
+}
+
+// v1.4.1 — live multi-job status view. The sync fan-in primitive for N>1
+// orchestration. Exits when every tracked job is terminal
+// (status !== "queued" && !== "running"), on overall timeout, or on
+// Ctrl-C. Returns a summary envelope via emitSuccess once stable.
+async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json, startedAt }) {
+  const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
+  let ticks = 0;
+  let interrupted = false;
+  const onSigint = () => { interrupted = true; };
+  process.on("SIGINT", onSigint);
+
+  try {
+    while (true) {
+      ticks += 1;
+      const snapshot = buildStatusSnapshot(cwd, { all });
+      const activeCount = snapshot.running?.length ?? 0;
+      const tickEntry = {
+        schema_version: "1.0",
+        tick: ticks,
+        ts: new Date().toISOString(),
+        activeCount,
+        running: (snapshot.running ?? []).map((j) => ({
+          id: j.id,
+          status: j.status,
+          phase: j.phase ?? null,
+          threadId: j.threadId ?? null,
+          kind: j.kindLabel ?? j.kind ?? null,
+        })),
+      };
+      if (json) {
+        process.stdout.write(`${JSON.stringify(tickEntry)}\n`);
+      } else {
+        process.stdout.write(`\x1b[2J\x1b[H`); // clear + home
+        process.stdout.write(`watch tick #${ticks} · ${tickEntry.ts} · active=${activeCount}\n\n`);
+        process.stdout.write(renderStatusReport(snapshot));
+      }
+
+      if (activeCount === 0) {
+        const summary = {
+          terminated: true,
+          reason: "all-terminal",
+          ticks,
+          final: snapshot,
+        };
+        // On the final tick the rendered view is already on screen; emit the
+        // structured envelope only in --json mode (else it would clobber the
+        // table).
+        if (json) {
+          emitSuccess("status", summary, null, { json: true, startedAt });
+        }
+        return;
+      }
+      if (interrupted) {
+        const summary = { terminated: false, reason: "sigint", ticks, final: snapshot };
+        if (json) emitSuccess("status", summary, null, { json: true, startedAt });
+        return;
+      }
+      if (deadline && Date.now() >= deadline) {
+        const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
+        if (json) emitSuccess("status", summary, null, { json: true, startedAt });
+        else process.stdout.write(`\nwatch timed out after ${ticks} ticks with ${activeCount} active job(s).\n`);
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  } finally {
+    process.off("SIGINT", onSigint);
+  }
+}
+
+// v1.4.1 — block on a file produced by a Codex job. The success-gate primitive
+// for the most common multi-job pattern ("success = an artifact at <path>").
+// Three terminal conditions:
+//   1. The file exists and its size is stable across one poll interval.
+//   2. The job itself reaches a terminal state (completed/failed/cancelled/
+//      orphaned). Returns `{exists:false, terminated:true, reason:"<status>"}`.
+//   3. The overall timeout expires. Returns `{exists:false, terminated:false,
+//      reason:"timeout"}`.
+async function handleAwaitArtifact(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+    booleanOptions: ["json"],
+  });
+
+  const jobRef = positionals[0];
+  const artifactPath = positionals[1];
+  if (!jobRef || !artifactPath) {
+    throw usageError("`await-artifact <job-id> <path>` requires both a job reference and a file path.");
+  }
+
+  const cwd = resolveCommandCwd(options);
+  const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 900_000 });
+  const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2_000 });
+
+  const resolvedPath = path.isAbsolute(artifactPath)
+    ? artifactPath
+    : path.resolve(cwd, artifactPath);
+
+  const deadline = Date.now() + timeoutMs;
+  let prevSize = null;
+
+  while (true) {
+    // Job-terminal check first — if the job died without producing the
+    // artifact, fail-fast rather than waiting the full timeout.
+    let jobSnapshot;
+    try {
+      jobSnapshot = buildSingleJobSnapshot(cwd, jobRef);
+    } catch (e) {
+      if (e && e.code === "JOB_NOT_FOUND") {
+        throw e;
+      }
+      throw e;
+    }
+    const jobStatus = jobSnapshot.job?.status ?? "unknown";
+    const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
+
+    let statInfo = null;
+    try {
+      statInfo = fs.statSync(resolvedPath);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+
+    if (statInfo) {
+      if (prevSize != null && prevSize === statInfo.size) {
+        const payload = {
+          exists: true,
+          path: resolvedPath,
+          size: statInfo.size,
+          terminated: jobTerminal,
+          jobStatus,
+          elapsedMs: Date.now() - startedAt,
+        };
+        emitSuccess("await-artifact", payload, `artifact ready: ${resolvedPath} (${statInfo.size} bytes)\n`, {
+          json: options.json,
+          startedAt,
+        });
+        return;
+      }
+      prevSize = statInfo.size;
+    }
+
+    if (jobTerminal) {
+      // Job finished but artifact never appeared — one last chance on the
+      // next loop iteration is redundant (job can't write after terminal),
+      // so exit with `exists:false`.
+      const payload = {
+        exists: Boolean(statInfo),
+        path: resolvedPath,
+        size: statInfo?.size ?? null,
+        terminated: true,
+        reason: `job-${jobStatus}`,
+        jobStatus,
+        elapsedMs: Date.now() - startedAt,
+      };
+      // Exit 7 (transient) when artifact missing after job ended — matches
+      // `wait` semantics for WAIT_TIMEOUT.
+      if (!statInfo) {
+        process.exitCode = 7;
+        emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}\n`, {
+          json: options.json,
+          startedAt,
+        });
+        return;
+      }
+      emitSuccess("await-artifact", payload, `artifact present: ${resolvedPath} (${statInfo.size} bytes, job ${jobStatus})\n`, {
+        json: options.json,
+        startedAt,
+      });
+      return;
+    }
+
+    if (Date.now() >= deadline) {
+      const payload = {
+        exists: false,
+        path: resolvedPath,
+        terminated: false,
+        reason: "timeout",
+        jobStatus,
+        elapsedMs: Date.now() - startedAt,
+      };
+      process.exitCode = 7;
+      emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})\n`, {
+        json: options.json,
+        startedAt,
+      });
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
 }
 
 // Reaps state-file ghost jobs (status:"running" or "queued" with a pid that
@@ -3610,7 +3901,9 @@ async function handleSend(argv) {
   // onto whichever of turn_plan_ms / turn_default_ms the resolved mode picks.
   const turnTimeoutOverride = parsePositiveMsOption("--turn-timeout-ms", options["turn-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
-  const quietMode = Boolean(options.quiet);
+  // See handleTask: --json implies --quiet so orchestrators consuming the
+  // envelope don't also have to filter the stderr UUID trap.
+  const quietMode = Boolean(options.quiet) || (Boolean(options.json) && options.quiet !== false);
 
   const startedAt = Date.now();
   const rawThreadId = positionals[0];
@@ -3948,7 +4241,8 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   wait: handleWait,
   events: handleEvents,
   "task-resume-candidate": handleTaskResumeCandidate,
-  cancel: handleCancel
+  cancel: handleCancel,
+  "await-artifact": handleAwaitArtifact
 });
 
 // Node's default SIGPIPE handling terminates the process when a downstream

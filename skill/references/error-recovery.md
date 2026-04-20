@@ -68,19 +68,67 @@ App-server exhausted its own retries — classified as `internal` / exit 1 becau
 Authentication failed.
 - **Do:** Run `setup` command. Re-authenticate with `codex login`.
 
-### ClientTimeout
+### ClientTimeout {#clienttimeout}
 
-A client-side timeout fired. There are **five independent origins** — each has a different first-response action. Read the `[ERROR]` event's `origin:` line in `.events` (or `result.pipeline.error` on the sync `task --json` envelope) to pick the right one.
+A client-side timeout fired. The canonical `origin:` vocabulary actually emitted by the bridge (v1.4.1):
 
 | Origin (from `[ERROR]` line) | What timed out | First-response action |
 |---|---|---|
-| `origin: turn` + message mentions "No events received for…" | No-event idle watchdog (`idle_timeout_ms` / `--idle-timeout-ms`, default 300 s) | Re-run with `--idle-timeout-ms 600000` if the task is reasoning-heavy; otherwise suspect real stall → `cancel <id>` |
-| `origin: turn` + message mentions "turn exceeded" | Per-turn ceiling (`turn_plan_ms` / `turn_default_ms`, `--turn-plan-ms` / `--turn-default-ms`) | Re-run with a larger `--turn-default-ms` (e.g. `1800000` for large scaffolds) |
-| `origin: pipeline:review` / `pipeline:fix` / `pipeline:check` | Per-stage pipeline timeout (`pipeline_stage_ms`, `--pipeline-stage-timeout-ms`, default 5 min) | Re-run with larger `--pipeline-stage-timeout-ms`, or pass `--no-pipeline` if you want to own completion checking |
-| `origin: pipeline:*` + message "Auto-pipeline exceeded …" | Total pipeline budget (`pipeline_total_ms`, `--pipeline-total-timeout-ms`, default 15 min) | Re-run with larger `--pipeline-total-timeout-ms`, or `--no-pipeline` |
-| `QUESTION_TIMEOUT` ndjson entry (`question_answer_ms`, `--question-timeout-ms`, default 5 min) | Human/orchestrator didn't answer `requestUserInput` in time; bridge sent `{}` | If the answer was slow rather than missing, re-run with `--question-timeout-ms 1800000` |
+| `origin: idle` | No-event idle watchdog (`idle_timeout_ms` / `--idle-timeout-ms`, default 300 s). See [#idle-timeout](#idle-timeout). | Re-run with `--idle-timeout-ms 900000` if the task is reasoning-heavy; otherwise suspect real stall → `cancel <id>` |
+| `origin: turn` + message mentions "turn exceeded" | Per-turn ceiling (`turn_plan_ms` / `turn_default_ms`). | Re-run with a larger `--turn-default-ms` (e.g. `1800000` for large scaffolds) |
+| `origin: pipeline:<lastCompleted>` + `failing_stage: review` / `fix` / `check` | Per-stage pipeline timeout (`pipeline_stage_ms`, default 5 min). See [#pipeline-stage-timeout](#pipeline-stage-timeout). | Re-run with larger `--pipeline-stage-timeout-ms`, or `--no-pipeline` if you want to own completion checking |
+| `origin: pipeline:<lastCompleted>` + `failing_stage: pipeline-total` | Total pipeline budget (`pipeline_total_ms`, default 15 min). | Re-run with larger `--pipeline-total-timeout-ms`, or `--no-pipeline` |
+| `QUESTION_TIMEOUT` ndjson entry (`question_answer_ms`, default 5 min). Note: this does **not** emit its own `[ERROR]` event today — the bridge auto-answers `{answers:{}}` and the turn continues. | Human/orchestrator didn't answer `requestUserInput` in time. | If the answer was slow rather than missing, re-run with `--question-timeout-ms 1800000` |
 
-All five surface as `ClientTimeout` in the events tag; `origin:` is the only way to disambiguate before retrying.
+Before v1.4.1, every timeout branch collapsed to `origin: turn` with recovery tables that string-matched on the message. The vocabulary above is the emitted truth — reader code can branch on the `origin:` / `failing_stage:` fields directly.
+
+### idle-timeout {#idle-timeout}
+
+Idle watchdog fired — no events arrived from Codex for the configured idle window. Upstream may be genuinely silent mid-turn (some tool executions don't emit intermediate notifications), so the first move is to raise the budget before assuming a stall.
+
+- **Re-run:** `task --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`.
+- **If it recurs at the same elapsed time every run:** upstream is genuinely stuck; `cancel <id>` and shape the prompt differently.
+- **If workspace has partial work:** inspect with `result <jobId>` and `diff` artifact before re-running; the idle watchdog does not roll back anything.
+
+### compact-proxy-502 {#compact-proxy-502}
+
+The remote compact endpoint (`/backend-api/codex/responses/compact`) returned 502 "Proxy request budget exhausted" mid-turn. Typical trigger: a reading-heavy prompt forced mid-turn context compaction and the proxy ran out of budget. The workspace is unchanged; the turn is dead.
+
+- **Narrow required-reads** in the prompt — fewer files, fewer `Read` calls in the instruction.
+- **Split the task** into two smaller turns so the first doesn't force compaction.
+- **Resume:** `send <threadId> "<shorter follow-up>"` continues in the same thread.
+- The full error-text heuristic: `"Error running remote compact task"` / `"Proxy request budget exhausted"` / the compact URL — any one alone is sufficient to classify.
+
+### upstream-transport-drop {#upstream-transport-drop}
+
+The upstream WS/stream disconnected before `turn/completed` — WebSocket closed without a close frame, `ECONNRESET`, `ETIMEDOUT`, or similar. Workspace is unchanged; prior reasoning is lost but safe to retry.
+
+- **Retry:** `send <threadId> "<same prompt>"` — the same thread is fine, the turn just never closed cleanly.
+- **If recurring across retries:** likely a network / proxy issue between your host and OpenAI. Check `curl` to the upstream from the same host before blaming the bridge.
+
+### pipeline-stage-timeout {#pipeline-stage-timeout}
+
+An auto-pipeline sub-stage (review / fix / check) exceeded its per-stage budget. The main turn may already have succeeded — the pipeline runs **after** Codex reports the turn complete. `origin: pipeline:<lastCompleted>` names the last stage that finished; `failing_stage: <actualStage>` (v1.4.1+) names the one that actually stalled.
+
+- **Inspect:** `result <jobId>` — the main task's diff and `[DONE]` may already be in place.
+- **Rerun review only:** `review --scope working-tree` skips the full task and just re-runs the reviewer.
+- **If review is always slow:** raise `--pipeline-stage-timeout-ms 600000` or disable with `--no-pipeline`.
+
+### unauthorized {#unauthorized}
+
+See the [Unauthorized](#unauthorized) section below. First move: `codex login`, then retry.
+
+### context-window-exceeded {#context-window-exceeded}
+
+Conversation exceeded the model's context window. Do **not** retry the same turn — the window is full. Start a new `task` with a shorter prompt; fork the thread if you need continuity.
+
+### sandbox-denial {#sandbox-denial}
+
+Codex's execute turn produced a diff but the sandbox blocked the commit (e.g. `workspace-write` refuses `.git/` writes). The sync envelope typically lands as `ok:true result.phase: "workspace-dirty"` rather than an `[ERROR]` — the diff is intact. Commit on Codex's behalf, or switch `config.sandbox_policy: "danger-full-access"` (the shipped default post-1.2.0).
+
+### bridge-unhandled-exit {#bridge-unhandled-exit}
+
+The bridge's finally-backstop fired — some error path escaped every instrumented branch. Treat as a bridge bug report. See the "UnhandledExit" section below for the full triage.
 
 ### ProcessDeath
 Codex app-server process exited unexpectedly.
@@ -130,4 +178,4 @@ The marker's whole point is that it's *itself* the bug report: silence is imposs
 
 ## `[HEARTBEAT]` — liveness pulse (1.3.0, non-terminal)
 
-Non-terminal tag emitted every ~60 s during any running turn. Each block carries elapsed time, current phase, last item type, pid, turn-budget remaining, and a ready-to-paste re-attach command. Monitor's default filter includes `HEARTBEAT` so agents see liveness without opting in. If `[HEARTBEAT]` lines stop arriving for more than ~90 s, the bridge wrapper process is not alive — check `kill -0 <pid>` on the heartbeat's pid, or `pgrep -f codex-bridge`. A stale heartbeat pid with no process is the fastest way to confirm a silent crash.
+Non-terminal tag emitted every ~60 s during any running turn. Each block carries elapsed time, current phase, last item type, pid, turn-budget remaining, and a ready-to-paste re-attach command. Monitor's default filter **excludes** `HEARTBEAT` to keep pure-liveness pulses out of LLM context — agents that specifically want liveness opt in by dropping the default exclude. If `[HEARTBEAT]` lines stop arriving for more than ~90 s (raw tail on the `.events` file, since Monitor doesn't surface them), the bridge wrapper process is not alive — check `kill -0 <pid>` on the heartbeat's pid, or `pgrep -f codex-bridge`. A stale heartbeat pid with no process is the fastest way to confirm a silent crash.

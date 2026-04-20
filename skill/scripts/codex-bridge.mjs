@@ -270,6 +270,17 @@ function detectHelpFlag(argv) {
   }
   return false;
 }
+function classifyTurnErrorOrigin(error) {
+  const message = String(error?.message ?? error ?? "");
+  if (/No events received for \d+s/.test(message)) return "idle";
+  if (/responses\/compact|Proxy request budget exhausted|Error running remote compact task/i.test(message)) {
+    return "upstream:compact-proxy";
+  }
+  if (/stream disconnected|websocket closed|no close frame|ECONNRESET|ETIMEDOUT|socket hang up/i.test(message)) {
+    return "upstream:transport";
+  }
+  return "turn";
+}
 
 // src/lib/args.mjs
 var ALWAYS_BOOLEAN = /* @__PURE__ */ new Set(["help", "h"]);
@@ -6527,17 +6538,102 @@ function formatDoneEvent(session, { duration, diffStat, files, config, diffPath,
   lines.push(resultActionLine(scriptPath, jobId));
   return lines.join("\n");
 }
-function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", scriptPath, jobId = null }) {
+function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage }) {
+  const lines = ["  actions:"];
+  const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
+  if (origin === "idle") {
+    lines.push(
+      `    relaunch: node ${scriptPath} task --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
+      resultActionLine(scriptPath, jobId, "    log:   "),
+      cancelActionLine(scriptPath, jobId),
+      see("idle-timeout")
+    );
+    return lines;
+  }
+  if (origin === "upstream:compact-proxy") {
+    lines.push(
+      "    narrow:  split the task, or trim required-reads before resending (the upstream compact proxy ran out of budget mid-turn)",
+      `    resume:  node ${scriptPath} send ${threadId} "<shorter follow-up>"`,
+      resultActionLine(scriptPath, jobId, "    log:   "),
+      see("compact-proxy-502")
+    );
+    return lines;
+  }
+  if (origin === "upstream:transport") {
+    lines.push(
+      `    retry:   node ${scriptPath} send ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
+      resultActionLine(scriptPath, jobId, "    log:   "),
+      cancelActionLine(scriptPath, jobId),
+      see("upstream-transport-drop")
+    );
+    return lines;
+  }
+  if (typeof origin === "string" && origin.startsWith("pipeline:")) {
+    const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
+    lines.push(
+      `    inspect:     node ${scriptPath} result ${jobId ?? threadId}    # main task may already be done${stageLine}`,
+      `    rerun-review: node ${scriptPath} review --scope working-tree`,
+      see("pipeline-stage-timeout")
+    );
+    return lines;
+  }
+  if (typeof origin === "string" && origin.startsWith("bridge")) {
+    lines.push(
+      resultActionLine(scriptPath, jobId, "    log:    "),
+      cancelActionLine(scriptPath, jobId),
+      see("bridge-unhandled-exit")
+    );
+    return lines;
+  }
+  if (errorCode === "Unauthorized") {
+    lines.push(
+      "    login:  codex login",
+      `    retry:  node ${scriptPath} send ${threadId} "<revised prompt>"`,
+      see("unauthorized")
+    );
+    return lines;
+  }
+  if (errorCode === "ContextWindowExceeded") {
+    lines.push(
+      `    new:    node ${scriptPath} task "<shorter prompt>"    # context window full; do not retry the same turn`,
+      resultActionLine(scriptPath, jobId, "    log:   "),
+      see("context-window-exceeded")
+    );
+    return lines;
+  }
+  if (errorCode === "SandboxError") {
+    lines.push(
+      "    policy: set config.sandbox_policy: danger-full-access (or re-run with --write)",
+      `    retry:  node ${scriptPath} send ${threadId} "<revised prompt>"`,
+      see("sandbox-denial")
+    );
+    return lines;
+  }
+  lines.push(
+    `    retry: node ${scriptPath} send ${threadId} "<revised prompt>"`,
+    resultActionLine(scriptPath, jobId, "    log:   "),
+    cancelActionLine(scriptPath, jobId)
+  );
+  return lines;
+}
+function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
-    `  origin: ${origin}`,
-    `  phase: ${phase || "unknown"}`,
-    "  actions:",
-    `    retry: node ${scriptPath} send ${session.threadId} "<revised prompt>"`,
-    resultActionLine(scriptPath, jobId, "    log:   "),
-    cancelActionLine(scriptPath, jobId)
+    `  origin: ${origin}`
   ];
+  if (failingStage) {
+    lines.push(`  failing_stage: ${failingStage}`);
+  }
+  lines.push(`  phase: ${phase || "unknown"}`);
+  lines.push(...buildActionsBlock({
+    origin,
+    errorCode,
+    scriptPath,
+    threadId: session.threadId,
+    jobId,
+    failingStage
+  }));
   return lines.join("\n");
 }
 function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null }) {
@@ -6685,6 +6781,28 @@ function formatCheckpointEvent(session, {
     lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId })}`);
   }
   return lines.join("\n");
+}
+function formatDirectivesEvent(session, {
+  mode,
+  effort,
+  sandbox,
+  approval = null,
+  quiet = false,
+  skipMetaSkills = false,
+  pipelineEnabled = [],
+  model = null
+}) {
+  const parts = [
+    `mode=${mode}`,
+    `effort=${effort}`,
+    `sandbox=${sandbox}`
+  ];
+  if (approval) parts.push(`approval=${approval}`);
+  parts.push(`quiet=${quiet ? "true" : "false"}`);
+  parts.push(`skip_meta_skills=${skipMetaSkills ? "true" : "false"}`);
+  parts.push(`pipeline=${Array.isArray(pipelineEnabled) && pipelineEnabled.length > 0 ? pipelineEnabled.join(",") : "none"}`);
+  if (model) parts.push(`model=${model}`);
+  return `[DIRECTIVES] ${session.threadId} | ${parts.join(" | ")}`;
 }
 function formatPipelineEvent(session, { stage, suffix, detail }) {
   const head = suffix ? `PIPELINE:${stage}:${suffix}` : `PIPELINE:${stage}`;
@@ -7008,11 +7126,13 @@ async function runAutoPipeline(options) {
     }
     const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
     const origin = `pipeline:${lastStage}`;
+    const failingStage = error instanceof TimeoutError ? mapStageLabel(error.label) : null;
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
       phase: `pipeline (completed: ${completedStages.join(", ")})`,
       origin,
+      failingStage,
       scriptPath,
       jobId
     }));
@@ -7021,6 +7141,7 @@ async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       origin,
+      failing_stage: failingStage,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
@@ -7054,6 +7175,20 @@ function parseReviewText(reviewText) {
     verdict: hasIssues ? "needs-attention" : "approve",
     findings: []
   };
+}
+function mapStageLabel(label) {
+  switch (label) {
+    case "auto-review":
+      return "review";
+    case "auto-fix":
+      return "fix";
+    case "completion-check":
+      return "check";
+    case "auto-pipeline":
+      return "pipeline-total";
+    default:
+      return label || null;
+  }
 }
 var TimeoutError = class extends Error {
   constructor(label, timeoutMs) {
@@ -7465,12 +7600,14 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--prune-orphans|--cleanup] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
-    summary: "List jobs, or inspect one by id. With --wait, poll until the job reaches a terminal state.",
+    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
       "codex-bridge status task-abc --wait --timeout-ms 600000",
-      "codex-bridge status --all --json"
+      "codex-bridge status --all --json",
+      "codex-bridge status --watch --interval 5s",
+      "codex-bridge status --watch --all --json"
     ]
   },
   result: {
@@ -7499,6 +7636,14 @@ var COMMANDS = Object.freeze({
     synopsis: "cancel [job-id] [--json]",
     summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
     examples: ["codex-bridge cancel task-abc"]
+  },
+  "await-artifact": {
+    synopsis: "await-artifact <job-id> <path> [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "Block until <path> exists and is stable (size unchanged across consecutive polls), or the target job reaches a terminal state, or timeout. Primitive for multi-job orchestration when success = 'artifact exists at path'. Exit 7 on timeout or job-terminal-without-artifact.",
+    examples: [
+      "codex-bridge await-artifact task-abc report.md --timeout-ms 600000",
+      "codex-bridge await-artifact 019d9a86-1c8a-7f41-8032-6c76bbe730a1 ./out/summary.json --json"
+    ]
   },
   setup: {
     synopsis: "setup [--json] [--enable-review-gate | --disable-review-gate]",
@@ -8456,6 +8601,26 @@ function parsePositiveMsOption(flagName, raw) {
   }
   return n;
 }
+function parseDurationOption(flagName, raw, { defaultMs = null } = {}) {
+  if (raw == null || raw === "") return defaultMs;
+  const str2 = String(raw).trim();
+  const match = /^(\d+(?:\.\d+)?)(ms|s|m)?$/i.exec(str2);
+  if (!match) {
+    throw usageError(
+      `${flagName} must be a positive duration (e.g. "500ms", "10s", "2m"), got ${JSON.stringify(raw)}`
+    );
+  }
+  const n = Number(match[1]);
+  const unit = (match[2] ?? "ms").toLowerCase();
+  const multiplier = unit === "m" ? 6e4 : unit === "s" ? 1e3 : 1;
+  const ms = n * multiplier;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw usageError(
+      `${flagName} must be a positive duration, got ${JSON.stringify(raw)}`
+    );
+  }
+  return ms;
+}
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile
@@ -8667,6 +8832,23 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         promptLength: info.promptLength,
         promptPreview: info.promptPreview
       });
+      try {
+        const sandboxType = info.turnParams.sandboxPolicy?.type ?? "unknown";
+        const pipelineEnabled = [];
+        if (config.auto_review) pipelineEnabled.push("review");
+        if (config.post_task_prompt) pipelineEnabled.push("check");
+        if (request.noPipeline) pipelineEnabled.length = 0;
+        logEvent(s, formatDirectivesEvent(s, {
+          mode: isPlanMode ? "plan" : "default",
+          effort: info.turnParams.effort ?? "?",
+          sandbox: sandboxType,
+          quiet: request.onProgress == null,
+          skipMetaSkills: Boolean(config.skip_meta_skills),
+          pipelineEnabled,
+          model: info.turnParams.model ?? null
+        }));
+      } catch {
+      }
     },
     onItemCompleted: (item, { threadId }) => {
       const effectiveThreadId = threadId ?? null;
@@ -9032,19 +9214,19 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     };
     if (result.exitStatus !== 0 && result.error) {
       const errorMessage = String(result.error.message ?? result.error);
-      const isIdleTimeout = errorMessage.includes("No events received for");
+      const origin = classifyTurnErrorOrigin(result.error);
       const codexErrorInfo = result.error.codexErrorInfo ?? result.error.codex_error_info ?? null;
-      const errorCode = isIdleTimeout ? "ClientTimeout" : codexErrorInfo ?? "CodexError";
+      const errorCode = origin === "idle" ? "ClientTimeout" : codexErrorInfo ?? "CodexError";
       const touchedFiles = result.payload?.touchedFiles ?? [];
       logEvent(session, formatErrorEvent(session, {
         errorCode,
         message: errorMessage,
         phase: isPlanMode ? "plan" : "execution",
-        origin: "turn",
+        origin,
         scriptPath: SCRIPT_PATH,
         jobId: request.jobId ?? null
       }));
-      logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin: "turn" });
+      logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin });
       markTerminalEmitted();
       if (codexErrorInfo === "SandboxError" && touchedFiles.length > 0) {
         const cwdArg = JSON.stringify(request.cwd);
@@ -9202,7 +9384,7 @@ async function handleTask(argv) {
   const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
   const noPipeline = Boolean(options["no-pipeline"]);
-  const quietMode = Boolean(options.quiet);
+  const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
   const cwd2 = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model);
@@ -9335,10 +9517,28 @@ async function handleTaskWorker(argv) {
 async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup"]
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms"],
+    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch"]
   });
   const cwd2 = resolveCommandCwd(options);
+  if (options.watch) {
+    if (positionals[0]) {
+      throw usageError("`status --watch` does not take a job-id argument; it watches ALL tracked jobs.");
+    }
+    if (options["prune-orphans"] || options.cleanup || options.wait) {
+      throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
+    }
+    const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 1e4 });
+    const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
+    await runStatusWatch(cwd2, {
+      intervalMs,
+      overallTimeoutMs,
+      all: options.all,
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
   if (options["prune-orphans"] || options.cleanup) {
     const pruneReport = pruneOrphanedJobs(cwd2);
     emitSuccess("status", pruneReport, renderPruneOrphansReport(pruneReport), {
@@ -9367,6 +9567,173 @@ async function handleStatus(argv) {
     json: options.json,
     startedAt
   });
+}
+async function runStatusWatch(cwd2, { intervalMs, overallTimeoutMs, all, json: json2, startedAt }) {
+  const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
+  let ticks = 0;
+  let interrupted = false;
+  const onSigint = () => {
+    interrupted = true;
+  };
+  process8.on("SIGINT", onSigint);
+  try {
+    while (true) {
+      ticks += 1;
+      const snapshot = buildStatusSnapshot(cwd2, { all });
+      const activeCount = snapshot.running?.length ?? 0;
+      const tickEntry = {
+        schema_version: "1.0",
+        tick: ticks,
+        ts: (/* @__PURE__ */ new Date()).toISOString(),
+        activeCount,
+        running: (snapshot.running ?? []).map((j) => ({
+          id: j.id,
+          status: j.status,
+          phase: j.phase ?? null,
+          threadId: j.threadId ?? null,
+          kind: j.kindLabel ?? j.kind ?? null
+        }))
+      };
+      if (json2) {
+        process8.stdout.write(`${JSON.stringify(tickEntry)}
+`);
+      } else {
+        process8.stdout.write(`\x1B[2J\x1B[H`);
+        process8.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
+
+`);
+        process8.stdout.write(renderStatusReport(snapshot));
+      }
+      if (activeCount === 0) {
+        const summary = {
+          terminated: true,
+          reason: "all-terminal",
+          ticks,
+          final: snapshot
+        };
+        if (json2) {
+          emitSuccess("status", summary, null, { json: true, startedAt });
+        }
+        return;
+      }
+      if (interrupted) {
+        const summary = { terminated: false, reason: "sigint", ticks, final: snapshot };
+        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
+        return;
+      }
+      if (deadline && Date.now() >= deadline) {
+        const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
+        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
+        else process8.stdout.write(`
+watch timed out after ${ticks} ticks with ${activeCount} active job(s).
+`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  } finally {
+    process8.off("SIGINT", onSigint);
+  }
+}
+async function handleAwaitArtifact(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+    booleanOptions: ["json"]
+  });
+  const jobRef = positionals[0];
+  const artifactPath = positionals[1];
+  if (!jobRef || !artifactPath) {
+    throw usageError("`await-artifact <job-id> <path>` requires both a job reference and a file path.");
+  }
+  const cwd2 = resolveCommandCwd(options);
+  const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
+  const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
+  const resolvedPath = path11.isAbsolute(artifactPath) ? artifactPath : path11.resolve(cwd2, artifactPath);
+  const deadline = Date.now() + timeoutMs;
+  let prevSize = null;
+  while (true) {
+    let jobSnapshot;
+    try {
+      jobSnapshot = buildSingleJobSnapshot(cwd2, jobRef);
+    } catch (e) {
+      if (e && e.code === "JOB_NOT_FOUND") {
+        throw e;
+      }
+      throw e;
+    }
+    const jobStatus = jobSnapshot.job?.status ?? "unknown";
+    const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
+    let statInfo = null;
+    try {
+      statInfo = fs13.statSync(resolvedPath);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    if (statInfo) {
+      if (prevSize != null && prevSize === statInfo.size) {
+        const payload = {
+          exists: true,
+          path: resolvedPath,
+          size: statInfo.size,
+          terminated: jobTerminal,
+          jobStatus,
+          elapsedMs: Date.now() - startedAt
+        };
+        emitSuccess("await-artifact", payload, `artifact ready: ${resolvedPath} (${statInfo.size} bytes)
+`, {
+          json: options.json,
+          startedAt
+        });
+        return;
+      }
+      prevSize = statInfo.size;
+    }
+    if (jobTerminal) {
+      const payload = {
+        exists: Boolean(statInfo),
+        path: resolvedPath,
+        size: statInfo?.size ?? null,
+        terminated: true,
+        reason: `job-${jobStatus}`,
+        jobStatus,
+        elapsedMs: Date.now() - startedAt
+      };
+      if (!statInfo) {
+        process8.exitCode = 7;
+        emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
+`, {
+          json: options.json,
+          startedAt
+        });
+        return;
+      }
+      emitSuccess("await-artifact", payload, `artifact present: ${resolvedPath} (${statInfo.size} bytes, job ${jobStatus})
+`, {
+        json: options.json,
+        startedAt
+      });
+      return;
+    }
+    if (Date.now() >= deadline) {
+      const payload = {
+        exists: false,
+        path: resolvedPath,
+        terminated: false,
+        reason: "timeout",
+        jobStatus,
+        elapsedMs: Date.now() - startedAt
+      };
+      process8.exitCode = 7;
+      emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
+`, {
+        json: options.json,
+        startedAt
+      });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
 }
 function pruneOrphanedJobs(cwd2) {
   const workspaceRoot = resolveWorkspaceRoot(cwd2);
@@ -9907,7 +10274,7 @@ async function handleSend(argv) {
   const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
   const turnTimeoutOverride = parsePositiveMsOption("--turn-timeout-ms", options["turn-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
-  const quietMode = Boolean(options.quiet);
+  const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
   const startedAt = Date.now();
   const rawThreadId = positionals[0];
   if (!rawThreadId) {
@@ -10191,7 +10558,8 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   wait: handleWait,
   events: handleEvents,
   "task-resume-candidate": handleTaskResumeCandidate,
-  cancel: handleCancel
+  cancel: handleCancel,
+  "await-artifact": handleAwaitArtifact
 });
 process8.on("SIGPIPE", () => {
 });

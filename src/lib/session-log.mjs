@@ -154,17 +154,130 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
   return lines.join("\n");
 }
 
-export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", scriptPath, jobId = null }) {
+// Cause-aware actions: the recovery move depends on the *origin* of the
+// failure, not just the fact that one occurred. Pre-1.4.1 every [ERROR] block
+// printed the same retry/log/cancel triple regardless of whether the turn was
+// killed by the idle watchdog, a compact-proxy 502, a transport drop, or a
+// pipeline-stage timeout — which actively misleads the orchestrator (e.g. a
+// plain `send <threadId> "<revised prompt>"` on an idle timeout papers over
+// a likely stall instead of extending the budget).
+//
+// Every branch also emits a `see:` line deep-linking into
+// `skill/references/error-recovery.md` so an agent can pull the full recovery
+// recipe in one read without relying on memory. Anchors are kept stable; new
+// origins MUST register an anchor in error-recovery.md before landing here.
+function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage }) {
+  const lines = ["  actions:"];
+  const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
+
+  if (origin === "idle") {
+    lines.push(
+      `    relaunch: node ${scriptPath} task --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
+      resultActionLine(scriptPath, jobId, "    log:   "),
+      cancelActionLine(scriptPath, jobId),
+      see("idle-timeout"),
+    );
+    return lines;
+  }
+
+  if (origin === "upstream:compact-proxy") {
+    lines.push(
+      "    narrow:  split the task, or trim required-reads before resending (the upstream compact proxy ran out of budget mid-turn)",
+      `    resume:  node ${scriptPath} send ${threadId} "<shorter follow-up>"`,
+      resultActionLine(scriptPath, jobId, "    log:   "),
+      see("compact-proxy-502"),
+    );
+    return lines;
+  }
+
+  if (origin === "upstream:transport") {
+    lines.push(
+      `    retry:   node ${scriptPath} send ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
+      resultActionLine(scriptPath, jobId, "    log:   "),
+      cancelActionLine(scriptPath, jobId),
+      see("upstream-transport-drop"),
+    );
+    return lines;
+  }
+
+  if (typeof origin === "string" && origin.startsWith("pipeline:")) {
+    // Pipeline origin: the main task may still have succeeded; only the
+    // review/fix/check stage stalled. Guide the reader to inspect and rerun
+    // review rather than retry the whole task.
+    const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
+    lines.push(
+      `    inspect:     node ${scriptPath} result ${jobId ?? threadId}    # main task may already be done${stageLine}`,
+      `    rerun-review: node ${scriptPath} review --scope working-tree`,
+      see("pipeline-stage-timeout"),
+    );
+    return lines;
+  }
+
+  // `bridge:*` origins (stall detector, unhandled exit) — the bridge itself
+  // tripped a safety net. Action is to inspect logs + file a report.
+  if (typeof origin === "string" && origin.startsWith("bridge")) {
+    lines.push(
+      resultActionLine(scriptPath, jobId, "    log:    "),
+      cancelActionLine(scriptPath, jobId),
+      see("bridge-unhandled-exit"),
+    );
+    return lines;
+  }
+
+  // Codex classifier codes: pick a smarter default per errorCode when we can.
+  if (errorCode === "Unauthorized") {
+    lines.push(
+      "    login:  codex login",
+      `    retry:  node ${scriptPath} send ${threadId} "<revised prompt>"`,
+      see("unauthorized"),
+    );
+    return lines;
+  }
+  if (errorCode === "ContextWindowExceeded") {
+    lines.push(
+      `    new:    node ${scriptPath} task "<shorter prompt>"    # context window full; do not retry the same turn`,
+      resultActionLine(scriptPath, jobId, "    log:   "),
+      see("context-window-exceeded"),
+    );
+    return lines;
+  }
+  if (errorCode === "SandboxError") {
+    lines.push(
+      "    policy: set config.sandbox_policy: danger-full-access (or re-run with --write)",
+      `    retry:  node ${scriptPath} send ${threadId} "<revised prompt>"`,
+      see("sandbox-denial"),
+    );
+    return lines;
+  }
+
+  // Default: the legacy retry/log/cancel triple — still sensible for generic
+  // `origin: turn` failures without a more specific branch above.
+  lines.push(
+    `    retry: node ${scriptPath} send ${threadId} "<revised prompt>"`,
+    resultActionLine(scriptPath, jobId, "    log:   "),
+    cancelActionLine(scriptPath, jobId),
+  );
+  return lines;
+}
+
+export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
     `  origin: ${origin}`,
-    `  phase: ${phase || "unknown"}`,
-    "  actions:",
-    `    retry: node ${scriptPath} send ${session.threadId} "<revised prompt>"`,
-    resultActionLine(scriptPath, jobId, "    log:   "),
-    cancelActionLine(scriptPath, jobId),
   ];
+  if (failingStage) {
+    lines.push(`  failing_stage: ${failingStage}`);
+  }
+  lines.push(`  phase: ${phase || "unknown"}`);
+  lines.push(...buildActionsBlock({
+    origin,
+    errorCode,
+    scriptPath,
+    threadId: session.threadId,
+    jobId,
+    failingStage,
+  }));
   return lines.join("\n");
 }
 
@@ -391,6 +504,35 @@ export function formatCheckpointEvent(session, {
   }
 
   return lines.join("\n");
+}
+
+// v1.4.1 — first-event surface for the *effective* runtime config of the
+// current turn. Emitted at `onTurnStart`, before the 5-minute CHECKPOINT
+// cadence kicks in, so a reader who asks "what config did this run actually
+// use?" can answer from `.events` directly. Solves the `skip_meta_skills`
+// invisibility complaint: the directive influences prompt shape but emits
+// nothing observable until now. Non-terminal.
+export function formatDirectivesEvent(session, {
+  mode,
+  effort,
+  sandbox,
+  approval = null,
+  quiet = false,
+  skipMetaSkills = false,
+  pipelineEnabled = [],
+  model = null,
+}) {
+  const parts = [
+    `mode=${mode}`,
+    `effort=${effort}`,
+    `sandbox=${sandbox}`,
+  ];
+  if (approval) parts.push(`approval=${approval}`);
+  parts.push(`quiet=${quiet ? "true" : "false"}`);
+  parts.push(`skip_meta_skills=${skipMetaSkills ? "true" : "false"}`);
+  parts.push(`pipeline=${Array.isArray(pipelineEnabled) && pipelineEnabled.length > 0 ? pipelineEnabled.join(",") : "none"}`);
+  if (model) parts.push(`model=${model}`);
+  return `[DIRECTIVES] ${session.threadId} | ${parts.join(" | ")}`;
 }
 
 export function formatPipelineEvent(session, { stage, suffix, detail }) {

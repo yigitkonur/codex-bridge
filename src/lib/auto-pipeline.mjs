@@ -322,11 +322,22 @@ export async function runAutoPipeline(options) {
 
     const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
     const origin = `pipeline:${lastStage}`;
+    // `failing_stage` names the stage that *actually* stalled/errored — a
+    // separate field from `origin` (which keeps its "last-completed" semantics
+    // for backward compatibility with tooling that already filters on it).
+    // Pre-1.4.1 readers had to guess whether `origin: pipeline:diff` meant
+    // "diff failed" or "diff completed and review failed". The TimeoutError
+    // label is the authoritative source; map its label to the canonical
+    // stage token used in `completedStages`.
+    const failingStage = error instanceof TimeoutError
+      ? mapStageLabel(error.label)
+      : null;
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
       phase: `pipeline (completed: ${completedStages.join(", ")})`,
       origin,
+      failingStage,
       scriptPath,
       jobId,
     }));
@@ -336,6 +347,7 @@ export async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       origin,
+      failing_stage: failingStage,
       touchedFiles: fixFilesTouched,
     });
 
@@ -381,6 +393,18 @@ function parseReviewText(reviewText) {
     verdict: hasIssues ? "needs-attention" : "approve",
     findings: [],
   };
+}
+
+// Map a `withTimeout` label into the canonical stage token that also appears
+// in `completedStages` (so `failing_stage` and `origin` share a vocabulary).
+function mapStageLabel(label) {
+  switch (label) {
+    case "auto-review": return "review";
+    case "auto-fix": return "fix";
+    case "completion-check": return "check";
+    case "auto-pipeline": return "pipeline-total";
+    default: return label || null;
+  }
 }
 
 export class TimeoutError extends Error {

@@ -191,3 +191,67 @@ task --write "prompt"
 ```
 
 This happens when Codex's question-asking skill (whichever upstream chain is currently responsible for clarifying-question handling) routes the question through assistant text instead of the `requestUserInput` tool. The `respond` command won't work here — use `send` instead.
+
+## Running N jobs in parallel (fan-out / fan-in)
+
+Monitor is a **single-job** tool — it tails one `.events` file and self-terminates on the first terminal tag. When you need to run several independent tasks and collect their outcomes, use async primitives instead:
+
+- `task --background --json` launches a detached worker and returns the job record immediately.
+- `status --watch` renders the multi-job table on an interval and exits when every tracked job reaches a terminal state.
+- `await-artifact <job-id> <path>` blocks until a specific file materializes and stabilizes, or the job reaches a terminal state, or the timeout fires.
+
+### Fan-out / fan-in recipe
+
+```bash
+#!/usr/bin/env bash
+# Launch 5 independent tasks that each write a known artifact,
+# wait for all of them, then summarize.
+set -euo pipefail
+
+bridge() { node "$SCRIPT_PATH" "$@"; }
+
+# 1. Fan out. Capture each job id + thread id.
+declare -a JOBS=()
+for i in 1 2 3 4 5; do
+  out=$(bridge task --background --write --json \
+    --prompt-file "missions/mission-${i}.md" \
+    --mode default)
+  job_id=$(jq -r '.result.jobId' <<<"$out")
+  thread=$(jq -r '.result.threadId' <<<"$out")
+  JOBS+=("${job_id}:${thread}:missions/out/mission-${i}.md")
+done
+
+# 2. Fan in — two options.
+
+# (a) Watch the whole cohort reach terminal state:
+bridge status --watch --interval 10s --watch-timeout-ms 1800000
+
+# (b) Or block per-artifact (stricter — fail-fast on any one):
+for entry in "${JOBS[@]}"; do
+  job_id="${entry%%:*}"
+  rest="${entry#*:}"
+  artifact="${rest#*:}"
+  bridge await-artifact "$job_id" "$artifact" \
+    --timeout-ms 1800000 --json \
+    | tee -a await.log
+done
+
+# 3. Summarize outcomes.
+for entry in "${JOBS[@]}"; do
+  job_id="${entry%%:*}"
+  bridge result "$job_id" --json \
+    | jq -c '{job: .result.jobId, phase: .result.phase, touched: (.result.touchedFiles // []) | length}'
+done
+```
+
+### When to reach for which primitive
+
+| Need | Use |
+|---|---|
+| One job, interactive, need live progress | Monitor `events --follow` |
+| One job, unattended, just want the final result | Sync `task --json` |
+| N jobs, all must finish before you move on | `task --background --json` fan-out + `status --watch` |
+| N jobs, each has a known output path | `task --background --json` fan-out + `await-artifact` per job |
+| N jobs, mixed success criteria | Launch async, poll `status --all --json` on your own cadence |
+
+`status --watch --json` emits one NDJSON snapshot per tick so it's scriptable; without `--json` it re-renders a markdown table in place. Exits 0 when every tracked job is terminal; the summary payload's `reason` is `all-terminal`, `watch-timeout`, or `sigint`. `await-artifact` returns exit 7 on timeout **and** on "job terminated without producing the file"; the payload carries `exists`, `terminated`, and on non-success `reason: "timeout" | "job-<status>"` (e.g. `job-failed`, `job-cancelled`) so the caller can tell the cases apart.
