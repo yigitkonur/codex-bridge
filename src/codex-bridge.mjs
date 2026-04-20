@@ -26,7 +26,11 @@ import {
   notFoundError,
   conflictError,
   invalidThreadIdError,
-  classifyTurnErrorOrigin
+  classifyTurnErrorOrigin,
+  classifyError,
+  getUpstreamRetryPolicy,
+  buildHandoffEnvelope,
+  extractUpstreamRequestId
 } from "./lib/cli-errors.mjs";
 import { isThreadId } from "./lib/thread-id.mjs";
 import {
@@ -99,6 +103,8 @@ import {
   logNdjson,
   logEvent,
   captureGitDiff,
+  captureGitSnapshot,
+  diffGitSnapshot,
   writePlan,
   formatDoneEvent,
   formatErrorEvent,
@@ -114,6 +120,9 @@ import {
   formatWarningEvent,
   formatDirectivesEvent,
   formatTailCommand,
+  formatPartialEvent,
+  formatRetryingEvent,
+  formatHandoffEvent,
   TERMINAL_TAGS,
   DEFAULT_MONITOR_EXCLUDE,
   writeReview
@@ -2514,9 +2523,66 @@ async function runBridgeTask(request) {
 
   let result;
   let session;
+  // v1.5.0 — snapshot HEAD before the turn so the terminal-failure path can
+  // report "commits landed before the error" via [PARTIAL]. Cheap (two git
+  // spawns, 10s timeouts); silently returns an empty snapshot off a repo.
+  const turnStartSnapshot = captureGitSnapshot(request.cwd);
+  // v1.5.0 — retries recorded for the handoff envelope when the retry budget
+  // is exhausted. Each entry: { attemptIso, origin, errorCode, backoffMs, outcome }.
+  const retryHistory = [];
   try {
     // Run the task
     result = await executeTaskRun(bridgeRequest);
+
+    // v1.5.0 — upstream-failure retry loop. See UPSTREAM_RETRY_POLICY in
+    // cli-errors.mjs. Only `same-thread` strategies auto-retry in-place;
+    // `new-thread` + `none` skip directly to handoff emission (the former
+    // because an automated prompt rebase is unsafe; the latter because auth
+    // failures are deterministic).
+    while (result.exitStatus !== 0 && result.error) {
+      const origin = classifyTurnErrorOrigin(result.error);
+      const policy = getUpstreamRetryPolicy(origin);
+      if (!policy || policy.strategy !== "same-thread" || retryHistory.length >= policy.maxAttempts) break;
+
+      const attempt = retryHistory.length + 1;
+      const backoffMs = policy.backoffMs[attempt - 1] ?? 2000;
+      const errorCode = result.error?.codexErrorInfo ?? result.error?.code ?? classifyError(result.error).code;
+
+      // [RETRYING] must surface on the events file for the thread that failed.
+      // If we have a threadId, initialize or find its session and log there.
+      if (result.threadId) {
+        const retrySession = initSession(sessionDir, result.threadId);
+        logEvent(retrySession, formatRetryingEvent(retrySession, {
+          attempt,
+          maxAttempts: policy.maxAttempts,
+          backoffMs,
+          origin,
+          strategy: policy.strategy,
+          errorCode,
+          reason: String(result.error?.message ?? result.error).slice(0, 200)
+        }));
+        logNdjson(retrySession, "RETRYING", null, { attempt, maxAttempts: policy.maxAttempts, backoffMs, origin, errorCode });
+      }
+
+      retryHistory.push({
+        attemptIso: new Date().toISOString(),
+        origin,
+        errorCode,
+        backoffMs,
+        outcome: "pending"
+      });
+
+      if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
+
+      const retryResult = await executeTaskRun(bridgeRequest);
+      if (retryResult.exitStatus === 0 || !retryResult.error) {
+        retryHistory[retryHistory.length - 1].outcome = "success";
+        result = retryResult;
+        break;
+      }
+      retryHistory[retryHistory.length - 1].outcome = "failed";
+      result = retryResult;
+    }
 
     // Create session for post-processing
     session = initSession(sessionDir, result.threadId);
@@ -2589,6 +2655,97 @@ async function runBridgeTask(request) {
     // still wins when the upstream classifier tagged the failure.
     const errorCode = origin === "idle" ? "ClientTimeout" : (codexErrorInfo ?? "CodexError");
     const touchedFiles = result.payload?.touchedFiles ?? [];
+
+    // v1.5.0 — partial / handoff envelope assembly. Happens BEFORE the
+    // `[ERROR]` block so readers see `[PARTIAL] … [HANDOFF] … [ERROR]` in
+    // emission order. `[ERROR]` stays the terminal tag that trips Monitor.
+    const upstreamRequestId = extractUpstreamRequestId(errorMessage);
+    const partialDiff = diffGitSnapshot(request.cwd, turnStartSnapshot);
+    let partialForEnvelope = null;
+    if (partialDiff.commits.length > 0) {
+      partialForEnvelope = {
+        commits: partialDiff.commits,
+        currentHeadSha: partialDiff.currentHeadSha,
+        lastOkHeadSha: partialDiff.lastOkHeadSha,
+        dirtyFiles: partialDiff.dirtyFiles,
+        launchedAtIso: partialDiff.launchedAtIso,
+      };
+      logEvent(session, formatPartialEvent(session, {
+        commits: partialDiff.commits,
+        currentHeadSha: partialDiff.currentHeadSha,
+        lastOkHeadSha: partialDiff.lastOkHeadSha,
+        launchedAtIso: partialDiff.launchedAtIso,
+        dirtyFiles: partialDiff.dirtyFiles,
+        scriptPath: SCRIPT_PATH,
+        jobId: request.jobId ?? null,
+      }));
+      logNdjson(session, "PARTIAL", null, {
+        commits: partialDiff.commits,
+        currentHeadSha: partialDiff.currentHeadSha,
+        lastOkHeadSha: partialDiff.lastOkHeadSha,
+        launchedAtIso: partialDiff.launchedAtIso,
+      });
+    }
+
+    // Handoff envelope: emit when the failure is an upstream origin that
+    // either exhausted its retry budget or has `strategy: "none"` (auth).
+    // For non-upstream origins (idle, turn, pipeline:*, bridge:*), skip —
+    // the existing cause-aware actions block already guides recovery.
+    let handoffForEnvelope = null;
+    const policyForOrigin = getUpstreamRetryPolicy(origin);
+    const isUpstreamTerminal = Boolean(policyForOrigin);
+    if (isUpstreamTerminal) {
+      const eventsPath = path.join(sessionDir, `${session.threadId}.events`);
+      const diffPath = path.join(sessionDir, `${session.threadId}.diff`);
+      const planPath = path.join(sessionDir, `${session.threadId}.plan.md`);
+      const reviewPath = path.join(sessionDir, `${session.threadId}.review.json`);
+      const reason = policyForOrigin.strategy === "none"
+        ? (origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy")
+        : "upstream-retry-exhausted";
+      handoffForEnvelope = buildHandoffEnvelope({
+        classified: { origin, code: errorCode, message: errorMessage },
+        reason,
+        session: {
+          jobId: request.jobId ?? null,
+          threadId: session.threadId,
+          sessionId: session.threadId,
+        },
+        artifacts: {
+          eventsPath,
+          workerErrPath: request.logFile ? `${request.logFile}.worker.err` : null,
+          diffPath,
+          planPath,
+          reviewPath,
+        },
+        partial: partialForEnvelope,
+        prompt: {
+          original: request.prompt ?? null,
+          promptFilePath: request.promptFilePath ?? null,
+          resumeSuggestion: "Read eventsPath + diffPath; `git log --oneline <lastOkHeadSha>..HEAD`; relaunch with `task --json --mode default --prompt-file <rebuilt>` seeded with the last commit sha and remaining scope.",
+        },
+        retries: retryHistory,
+        upstreamRequestId,
+      });
+      logEvent(session, formatHandoffEvent(session, {
+        reason: handoffForEnvelope.reason,
+        origin,
+        errorCode,
+        upstreamRequestId,
+        session: { jobId: request.jobId ?? null, threadId: session.threadId },
+        artifacts: handoffForEnvelope.artifacts,
+        partial: partialForEnvelope,
+        prompt: handoffForEnvelope.prompt,
+        retries: retryHistory,
+        scriptPath: SCRIPT_PATH,
+      }));
+      logNdjson(session, "HANDOFF", null, {
+        reason: handoffForEnvelope.reason,
+        origin,
+        errorCode,
+        upstreamRequestId,
+      });
+    }
+
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
@@ -2596,9 +2753,20 @@ async function runBridgeTask(request) {
       origin,
       scriptPath: SCRIPT_PATH,
       jobId: request.jobId ?? null,
+      upstreamRequestId,
     }));
-    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin });
+    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
     markTerminalEmitted();
+
+    // Attach partial + handoff to the thrown-error surface so
+    // `runForegroundCommand`'s `emitError` → `buildErrorEnvelope` can
+    // propagate them into the JSON envelope under `error.partial` /
+    // `error.handoff`. This is the single artifact orchestrators read to
+    // continue work without tailing the events file.
+    if (result.error && typeof result.error === "object") {
+      if (partialForEnvelope) result.error.partial = partialForEnvelope;
+      if (handoffForEnvelope) result.error.handoff = handoffForEnvelope;
+    }
 
     // `workspace-dirty` phase: Codex produced a diff but the sandbox blocked
     // the final step (e.g. `workspace-write` refuses `.git/` writes so the

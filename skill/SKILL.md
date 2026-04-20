@@ -16,7 +16,7 @@ compatibility: Requires Node.js 22+ and the Codex CLI on $PATH (npm i -g @openai
 license: MIT
 allowed-tools: Bash Monitor
 metadata:
-  version: "1.4.0"
+  version: "1.5.0"
   homepage: "https://github.com/yigitkonur/codex-bridge"
 ---
 
@@ -256,12 +256,23 @@ Each `[ERROR]` block carries an `origin:` line. The canonical vocabulary actuall
 |---|---|---|
 | `idle` | No events from Codex for the idle window (upstream silent mid-turn). | `relaunch` with a larger `--idle-timeout-ms`. |
 | `upstream:compact-proxy` | Remote compact proxy returned 502 ("Proxy request budget exhausted"). | Narrow required-reads, shorten follow-ups. |
-| `upstream:transport` | Upstream WS/stream disconnected before `turn/completed`. Workspace unchanged. | `send` the same prompt; reasoning is lost but safe to retry. |
+| `upstream:transport` | Upstream WS/stream disconnected before `turn/completed`. Workspace unchanged. | `send` the same prompt; reasoning is lost but safe to retry. (Bridge auto-retries up to 3× with backoff in v1.5.0+.) |
+| `upstream:response-chain-lost` (v1.5.0) | Upstream 400 `previous_response_not_found` — the resp_id is dead. | **New task**, not `send`; seed with committed state. See [error-recovery.md#response-chain-lost](references/error-recovery.md#response-chain-lost). Paired with `[HANDOFF]`. |
+| `upstream:auth` (v1.5.0) | Upstream 401 Unauthorized (direct Codex or proxy). | Reauth the right layer (`codex login` or proxy reauth); do not retry. Paired with `[HANDOFF]`. |
+| `upstream:invalid-request` (v1.5.0) | Upstream 400 `invalid_request_error` not covered by `response-chain-lost`. | Bridge auto-retries 3× with backoff. On exhaustion: rebuild prompt, relaunch fresh task. |
 | `turn` | Every other turn-level failure. Distinguish by `errorCode`: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget, etc. | See [error-recovery.md](references/error-recovery.md). |
 | `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. Check `failing_stage:` for the stage that actually stalled; the main task may still have succeeded. | `inspect` with `result`, then `rerun-review`. |
 | `bridge:stall` / `bridge:unhandled-exit` | Bridge safety net fired — indicates a bridge bug. | File a report with the jobId + events file. |
 
 A pipeline-origin `[ERROR]` can coexist with a `task --json` success envelope whose `result.phase: "incomplete"` and `result.pipeline.error` are set — read the envelope before retrying. The `actions:` block inside each `[ERROR]` is cause-aware and always ends with a `see:` line pointing to the right anchor in [references/error-recovery.md](references/error-recovery.md).
+
+### Upstream retry + handoff (v1.5.0)
+
+For `upstream:*` origins the bridge runs an exp-backoff retry loop before surfacing the error (policy keyed by origin; see `UPSTREAM_RETRY_POLICY` in the source). Each retry attempt emits a non-terminal `[RETRYING] attempt n/max | origin=… | backoff=…ms` block so a reader watching `events --follow` can tell a slow turn apart from a stalled one.
+
+On retry exhaustion (or immediately for `upstream:auth`, which has no retry policy), the bridge emits a `[HANDOFF]` block **before** the terminal `[ERROR]`. The handoff surfaces the full continuation context — artifact paths, committed shas, retry history, upstream request id — so another agent (or a human) can pick up where the failed turn left off without hand-reconstructing state from `git log`. The same payload ships on the JSON envelope under `error.handoff`. See [references/orchestration-flows.md#recovering-from-upstream-state-loss](references/orchestration-flows.md#recovering-from-upstream-state-loss) for the consumer recipe.
+
+When commits landed before the error, a `[PARTIAL] commits=[…]` block precedes `[HANDOFF]` (and mirrors to `error.partial`). The bridge snapshots git at turn start and diffs on failure; a non-empty `partial.commits` list is the cheapest way to answer "did my turn actually do anything before it died?"
 
 ## When NOT to use Monitor
 

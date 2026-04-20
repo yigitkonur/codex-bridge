@@ -9,7 +9,7 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "1.4.0",
+  version: "1.5.0",
   description: "Claude Code skill that orchestrates Codex via Monitor tool notifications",
   type: "module",
   scripts: {
@@ -201,6 +201,37 @@ function classifyError(err) {
       exitCode: ExitCode.TRANSIENT
     };
   }
+  if (/previous_response_not_found|previous_response_id/i.test(message)) {
+    return {
+      class: "dependency_failed",
+      code: "PreviousResponseNotFound",
+      message,
+      retryable: true,
+      suggestion: "Upstream response chain is lost. Start a new task from committed state; do not `send` on the dead thread.",
+      details: { retry_strategy: "new-thread" },
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (/\b401\b.*Unauthorized|Proxy authentication must be configured/i.test(message)) {
+    return {
+      class: "auth",
+      code: "UpstreamUnauthorized",
+      message,
+      retryable: false,
+      suggestion: "Upstream returned 401. For proxy setups, reauth the proxy; for Codex login, run `codex login`. Do not retry the same thread.",
+      exitCode: ExitCode.AUTH
+    };
+  }
+  if (/invalid_request_error/i.test(message)) {
+    return {
+      class: "validation",
+      code: "UpstreamInvalidRequest",
+      message,
+      retryable: true,
+      suggestion: "Upstream rejected the request as malformed. Bridge will retry with backoff; if that fails, inspect input and relaunch.",
+      exitCode: ExitCode.VALIDATION
+    };
+  }
   return {
     class: "internal",
     code: "INTERNAL_ERROR",
@@ -209,7 +240,12 @@ function classifyError(err) {
     exitCode: ExitCode.CRASH
   };
 }
-function buildErrorEnvelope(classified, { command } = {}) {
+function extractUpstreamRequestId(message) {
+  if (!message) return null;
+  const match = /request id:\s*([0-9a-f-]{8,})/i.exec(String(message));
+  return match ? match[1] : null;
+}
+function buildErrorEnvelope(classified, { command, partial, handoff } = {}) {
   const error = {
     class: classified.class,
     code: classified.code,
@@ -219,9 +255,40 @@ function buildErrorEnvelope(classified, { command } = {}) {
   if (classified.suggestion) error.suggestion = classified.suggestion;
   if (classified.details) error.details = classified.details;
   if (classified.retryAfter != null) error.retry_after = classified.retryAfter;
+  const upstreamRequestId = extractUpstreamRequestId(classified.message);
+  if (upstreamRequestId) error.upstream_request_id = upstreamRequestId;
+  if (partial) error.partial = partial;
+  if (handoff) error.handoff = handoff;
   const envelope = { ok: false, schema_version: "1.0", error };
   if (command) envelope.command = command;
   return envelope;
+}
+var UPSTREAM_RETRY_POLICY = Object.freeze({
+  "upstream:transport": { strategy: "same-thread", maxAttempts: 3, backoffMs: [2e3, 5e3, 12e3] },
+  "upstream:compact-proxy": { strategy: "same-thread", maxAttempts: 2, backoffMs: [1e4, 3e4] },
+  "upstream:invalid-request": { strategy: "same-thread", maxAttempts: 3, backoffMs: [2e3, 5e3, 12e3] },
+  "upstream:response-chain-lost": { strategy: "new-thread", maxAttempts: 1, backoffMs: [0] },
+  "upstream:auth": { strategy: "none", maxAttempts: 0, backoffMs: [] }
+});
+function getUpstreamRetryPolicy(origin) {
+  return UPSTREAM_RETRY_POLICY[origin] ?? null;
+}
+function buildHandoffEnvelope({ classified, reason, session, artifacts, partial, prompt, retries, upstreamRequestId } = {}) {
+  const handoff = {
+    schema_version: "1.0",
+    reason: reason ?? "upstream-retry-exhausted",
+    origin: classified?.origin ?? null,
+    errorCode: classified?.code ?? null,
+    errorMessage: classified?.message ?? null
+  };
+  const reqId = upstreamRequestId ?? extractUpstreamRequestId(classified?.message);
+  if (reqId) handoff.upstream_request_id = reqId;
+  if (session) handoff.session = session;
+  if (artifacts) handoff.artifacts = artifacts;
+  if (partial) handoff.partial = partial;
+  if (prompt) handoff.prompt = prompt;
+  if (Array.isArray(retries) && retries.length > 0) handoff.retries = retries;
+  return handoff;
 }
 function emitSuccess(command, result, rendered, { json: json2 = false, startedAt = null, stdout = process2.stdout } = {}) {
   if (json2) {
@@ -240,8 +307,10 @@ function emitSuccess(command, result, rendered, { json: json2 = false, startedAt
 }
 function emitError(err, { json: json2 = false, command = null, stderr = process2.stderr, stdout = process2.stdout } = {}) {
   const classified = classifyError(err);
+  const partial = err?.partial ?? null;
+  const handoff = err?.handoff ?? null;
   if (json2) {
-    const envelope = buildErrorEnvelope(classified, { command });
+    const envelope = buildErrorEnvelope(classified, { command, partial, handoff });
     stdout.write(`${JSON.stringify(envelope)}
 `);
   } else {
@@ -278,6 +347,15 @@ function classifyTurnErrorOrigin(error) {
   }
   if (/stream disconnected|websocket closed|no close frame|ECONNRESET|ETIMEDOUT|socket hang up/i.test(message)) {
     return "upstream:transport";
+  }
+  if (/previous_response_not_found|previous_response_id/i.test(message)) {
+    return "upstream:response-chain-lost";
+  }
+  if (/\b401\b.*Unauthorized|Proxy authentication must be configured/i.test(message)) {
+    return "upstream:auth";
+  }
+  if (/invalid_request_error/i.test(message)) {
+    return "upstream:invalid-request";
   }
   return "turn";
 }
@@ -6482,6 +6560,57 @@ function writeReview(session, reviewData) {
   }
   return reviewPath;
 }
+function captureGitSnapshot(cwd2) {
+  const isoTimestamp = (/* @__PURE__ */ new Date()).toISOString();
+  try {
+    const headResult = spawnSync2("git", ["rev-parse", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    if (headResult.status !== 0 || !headResult.stdout) {
+      return { headSha: null, porcelain: null, isoTimestamp };
+    }
+    const statusResult = spawnSync2("git", ["status", "--porcelain=v1"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    return {
+      headSha: headResult.stdout.trim(),
+      porcelain: statusResult.status === 0 ? statusResult.stdout ?? "" : "",
+      isoTimestamp
+    };
+  } catch {
+    return { headSha: null, porcelain: null, isoTimestamp };
+  }
+}
+function diffGitSnapshot(cwd2, snapshot) {
+  if (!snapshot || !snapshot.headSha) {
+    return { commits: [], currentHeadSha: null, lastOkHeadSha: null, dirtyFiles: [], launchedAtIso: snapshot?.isoTimestamp ?? null };
+  }
+  let commits = [];
+  let currentHeadSha = null;
+  let dirtyFiles = [];
+  try {
+    const logResult = spawnSync2(
+      "git",
+      ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
+      { cwd: cwd2, encoding: "utf8", timeout: 1e4 }
+    );
+    if (logResult.status === 0 && logResult.stdout) {
+      commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    }
+    const headResult = spawnSync2("git", ["rev-parse", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    if (headResult.status === 0 && headResult.stdout) {
+      currentHeadSha = headResult.stdout.trim();
+    }
+    const statusResult = spawnSync2("git", ["status", "--porcelain=v1"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    if (statusResult.status === 0 && statusResult.stdout) {
+      dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    }
+  } catch {
+  }
+  return {
+    commits,
+    currentHeadSha,
+    lastOkHeadSha: snapshot.headSha,
+    dirtyFiles,
+    launchedAtIso: snapshot.isoTimestamp ?? null
+  };
+}
 function captureGitDiff(cwd2, session) {
   const numstatResult = spawnSync2("git", ["diff", "--numstat", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
   const fullResult = spawnSync2("git", ["diff", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
@@ -6541,6 +6670,33 @@ function formatDoneEvent(session, { duration, diffStat, files, config, diffPath,
 function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage }) {
   const lines = ["  actions:"];
   const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
+  if (origin === "upstream:response-chain-lost") {
+    lines.push(
+      `    new-task: node ${scriptPath} task --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
+      `    inspect:  git log --oneline <launch-iso>..HEAD    # audit what committed before the chain loss`,
+      resultActionLine(scriptPath, jobId, "    log:     "),
+      see("response-chain-lost")
+    );
+    return lines;
+  }
+  if (origin === "upstream:auth") {
+    lines.push(
+      "    reauth:  run `codex login` (or reauth your upstream proxy if one is in the path)",
+      "    do-not:  retry the same thread \u2014 auth is deterministic; the 401 will repeat",
+      resultActionLine(scriptPath, jobId, "    log:    "),
+      cancelActionLine(scriptPath, jobId),
+      see("upstream-auth-401")
+    );
+    return lines;
+  }
+  if (origin === "upstream:invalid-request") {
+    lines.push(
+      `    inspect: node ${scriptPath} result ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
+      `    new-task: node ${scriptPath} task --json --mode default "<fixed prompt>"`,
+      see("upstream-invalid-request")
+    );
+    return lines;
+  }
   if (origin === "idle") {
     lines.push(
       `    relaunch: node ${scriptPath} task --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
@@ -6616,7 +6772,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   );
   return lines;
 }
-function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null }) {
+function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
@@ -6624,6 +6780,9 @@ function formatErrorEvent(session, { errorCode, message, phase, origin = "turn",
   ];
   if (failingStage) {
     lines.push(`  failing_stage: ${failingStage}`);
+  }
+  if (upstreamRequestId) {
+    lines.push(`  upstream_request_id: ${upstreamRequestId}`);
   }
   lines.push(`  phase: ${phase || "unknown"}`);
   lines.push(...buildActionsBlock({
@@ -6634,6 +6793,66 @@ function formatErrorEvent(session, { errorCode, message, phase, origin = "turn",
     jobId,
     failingStage
   }));
+  return lines.join("\n");
+}
+function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null }) {
+  const lines = [`[PARTIAL] ${session.threadId} commits=[${commits.join(",")}]`];
+  if (currentHeadSha) lines.push(`  current_head: ${currentHeadSha}`);
+  if (lastOkHeadSha) lines.push(`  last_ok_head: ${lastOkHeadSha}`);
+  if (launchedAtIso) lines.push(`  launched_at: ${launchedAtIso}`);
+  if (dirtyFiles && dirtyFiles.length > 0) {
+    lines.push("  dirty:");
+    for (const f of dirtyFiles.slice(0, 20)) {
+      lines.push(`    - ${f}`);
+    }
+    if (dirtyFiles.length > 20) lines.push(`    ... and ${dirtyFiles.length - 20} more`);
+  }
+  if (scriptPath && jobId) {
+    lines.push(`  inspect: node ${scriptPath} result ${jobId}`);
+  }
+  return lines.join("\n");
+}
+function formatRetryingEvent(session, { attempt, maxAttempts, backoffMs, origin, strategy, errorCode, reason = null }) {
+  const lines = [
+    `[RETRYING] ${session.threadId} attempt ${attempt}/${maxAttempts} | origin=${origin} | strategy=${strategy} | backoff=${backoffMs}ms`
+  ];
+  if (errorCode) lines.push(`  last_error: ${errorCode}`);
+  if (reason) lines.push(`  reason: ${reason}`);
+  return lines.join("\n");
+}
+function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath }) {
+  const lines = [
+    `[HANDOFF] ${session.threadId} reason=${reason} | origin=${origin}${errorCode ? ` | code=${errorCode}` : ""}`
+  ];
+  if (upstreamRequestId) lines.push(`  upstream_request_id: ${upstreamRequestId}`);
+  if (sessionInfo?.jobId) lines.push(`  job_id: ${sessionInfo.jobId}`);
+  if (sessionInfo?.threadId) lines.push(`  thread_id: ${sessionInfo.threadId}`);
+  if (artifacts) {
+    lines.push("  artifacts:");
+    if (artifacts.eventsPath) lines.push(`    events: ${artifacts.eventsPath}`);
+    if (artifacts.workerErrPath) lines.push(`    worker_err: ${artifacts.workerErrPath}`);
+    if (artifacts.diffPath) lines.push(`    diff: ${artifacts.diffPath}`);
+    if (artifacts.planPath) lines.push(`    plan: ${artifacts.planPath}`);
+    if (artifacts.reviewPath) lines.push(`    review: ${artifacts.reviewPath}`);
+  }
+  if (partial && Array.isArray(partial.commits) && partial.commits.length > 0) {
+    lines.push(`  partial: commits=[${partial.commits.join(",")}] head=${partial.currentHeadSha ?? "?"} since=${partial.launchedAtIso ?? "?"}`);
+  }
+  if (prompt?.promptFilePath) {
+    lines.push(`  prompt_file: ${prompt.promptFilePath}`);
+  }
+  if (retries && retries.length > 0) {
+    lines.push(`  retries: ${retries.length} attempts logged`);
+  }
+  lines.push("  next:");
+  if (scriptPath && sessionInfo?.jobId) {
+    lines.push(`    read:     node ${scriptPath} result ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
+  }
+  if (partial?.lastOkHeadSha || partial?.currentHeadSha) {
+    lines.push(`    audit:    git log --oneline ${partial.lastOkHeadSha ?? partial.currentHeadSha}..HEAD`);
+  }
+  lines.push(`    relaunch: node ${scriptPath} task --json --mode default --prompt-file <rebased prompt>    # seed with last commit + remaining scope`);
+  lines.push("    see: skill/references/orchestration-flows.md#recovering-from-upstream-state-loss");
   return lines.join("\n");
 }
 function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null }) {
@@ -7127,6 +7346,7 @@ async function runAutoPipeline(options) {
     const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
     const origin = `pipeline:${lastStage}`;
     const failingStage = error instanceof TimeoutError ? mapStageLabel(error.label) : null;
+    const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
@@ -7134,7 +7354,8 @@ async function runAutoPipeline(options) {
       origin,
       failingStage,
       scriptPath,
-      jobId
+      jobId,
+      upstreamRequestId
     }));
     logNdjson(session, "PIPELINE_ERROR", null, {
       completedStages,
@@ -9178,8 +9399,47 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   };
   let result;
   let session;
+  const turnStartSnapshot = captureGitSnapshot(request.cwd);
+  const retryHistory = [];
   try {
     result = await executeTaskRun(bridgeRequest);
+    while (result.exitStatus !== 0 && result.error) {
+      const origin = classifyTurnErrorOrigin(result.error);
+      const policy = getUpstreamRetryPolicy(origin);
+      if (!policy || policy.strategy !== "same-thread" || retryHistory.length >= policy.maxAttempts) break;
+      const attempt = retryHistory.length + 1;
+      const backoffMs = policy.backoffMs[attempt - 1] ?? 2e3;
+      const errorCode = result.error?.codexErrorInfo ?? result.error?.code ?? classifyError(result.error).code;
+      if (result.threadId) {
+        const retrySession = initSession(sessionDir, result.threadId);
+        logEvent(retrySession, formatRetryingEvent(retrySession, {
+          attempt,
+          maxAttempts: policy.maxAttempts,
+          backoffMs,
+          origin,
+          strategy: policy.strategy,
+          errorCode,
+          reason: String(result.error?.message ?? result.error).slice(0, 200)
+        }));
+        logNdjson(retrySession, "RETRYING", null, { attempt, maxAttempts: policy.maxAttempts, backoffMs, origin, errorCode });
+      }
+      retryHistory.push({
+        attemptIso: (/* @__PURE__ */ new Date()).toISOString(),
+        origin,
+        errorCode,
+        backoffMs,
+        outcome: "pending"
+      });
+      if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      const retryResult = await executeTaskRun(bridgeRequest);
+      if (retryResult.exitStatus === 0 || !retryResult.error) {
+        retryHistory[retryHistory.length - 1].outcome = "success";
+        result = retryResult;
+        break;
+      }
+      retryHistory[retryHistory.length - 1].outcome = "failed";
+      result = retryResult;
+    }
     session = initSession(sessionDir, result.threadId);
     const computedEventsPath = result.threadId ? path11.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
@@ -9218,16 +9478,100 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       const codexErrorInfo = result.error.codexErrorInfo ?? result.error.codex_error_info ?? null;
       const errorCode = origin === "idle" ? "ClientTimeout" : codexErrorInfo ?? "CodexError";
       const touchedFiles = result.payload?.touchedFiles ?? [];
+      const upstreamRequestId = extractUpstreamRequestId(errorMessage);
+      const partialDiff = diffGitSnapshot(request.cwd, turnStartSnapshot);
+      let partialForEnvelope = null;
+      if (partialDiff.commits.length > 0) {
+        partialForEnvelope = {
+          commits: partialDiff.commits,
+          currentHeadSha: partialDiff.currentHeadSha,
+          lastOkHeadSha: partialDiff.lastOkHeadSha,
+          dirtyFiles: partialDiff.dirtyFiles,
+          launchedAtIso: partialDiff.launchedAtIso
+        };
+        logEvent(session, formatPartialEvent(session, {
+          commits: partialDiff.commits,
+          currentHeadSha: partialDiff.currentHeadSha,
+          lastOkHeadSha: partialDiff.lastOkHeadSha,
+          launchedAtIso: partialDiff.launchedAtIso,
+          dirtyFiles: partialDiff.dirtyFiles,
+          scriptPath: SCRIPT_PATH,
+          jobId: request.jobId ?? null
+        }));
+        logNdjson(session, "PARTIAL", null, {
+          commits: partialDiff.commits,
+          currentHeadSha: partialDiff.currentHeadSha,
+          lastOkHeadSha: partialDiff.lastOkHeadSha,
+          launchedAtIso: partialDiff.launchedAtIso
+        });
+      }
+      let handoffForEnvelope = null;
+      const policyForOrigin = getUpstreamRetryPolicy(origin);
+      const isUpstreamTerminal = Boolean(policyForOrigin);
+      if (isUpstreamTerminal) {
+        const eventsPath = path11.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path11.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path11.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path11.join(sessionDir, `${session.threadId}.review.json`);
+        const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
+        handoffForEnvelope = buildHandoffEnvelope({
+          classified: { origin, code: errorCode, message: errorMessage },
+          reason,
+          session: {
+            jobId: request.jobId ?? null,
+            threadId: session.threadId,
+            sessionId: session.threadId
+          },
+          artifacts: {
+            eventsPath,
+            workerErrPath: request.logFile ? `${request.logFile}.worker.err` : null,
+            diffPath,
+            planPath,
+            reviewPath
+          },
+          partial: partialForEnvelope,
+          prompt: {
+            original: request.prompt ?? null,
+            promptFilePath: request.promptFilePath ?? null,
+            resumeSuggestion: "Read eventsPath + diffPath; `git log --oneline <lastOkHeadSha>..HEAD`; relaunch with `task --json --mode default --prompt-file <rebuilt>` seeded with the last commit sha and remaining scope."
+          },
+          retries: retryHistory,
+          upstreamRequestId
+        });
+        logEvent(session, formatHandoffEvent(session, {
+          reason: handoffForEnvelope.reason,
+          origin,
+          errorCode,
+          upstreamRequestId,
+          session: { jobId: request.jobId ?? null, threadId: session.threadId },
+          artifacts: handoffForEnvelope.artifacts,
+          partial: partialForEnvelope,
+          prompt: handoffForEnvelope.prompt,
+          retries: retryHistory,
+          scriptPath: SCRIPT_PATH
+        }));
+        logNdjson(session, "HANDOFF", null, {
+          reason: handoffForEnvelope.reason,
+          origin,
+          errorCode,
+          upstreamRequestId
+        });
+      }
       logEvent(session, formatErrorEvent(session, {
         errorCode,
         message: errorMessage,
         phase: isPlanMode ? "plan" : "execution",
         origin,
         scriptPath: SCRIPT_PATH,
-        jobId: request.jobId ?? null
+        jobId: request.jobId ?? null,
+        upstreamRequestId
       }));
-      logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin });
+      logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
       markTerminalEmitted();
+      if (result.error && typeof result.error === "object") {
+        if (partialForEnvelope) result.error.partial = partialForEnvelope;
+        if (handoffForEnvelope) result.error.handoff = handoffForEnvelope;
+      }
       if (codexErrorInfo === "SandboxError" && touchedFiles.length > 0) {
         const cwdArg = JSON.stringify(request.cwd);
         setPhase("workspace-dirty", {

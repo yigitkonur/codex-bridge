@@ -206,6 +206,42 @@ export function classifyError(err) {
     };
   }
 
+  // Tier-2 string matchers for raw HTTP errors from upstream that arrive
+  // without a `codexErrorInfo` variant. These must be ordered: the
+  // response-chain-lost matcher runs before `invalid_request_error` so the
+  // more specific 400 doesn't get shadowed by the generic one.
+  if (/previous_response_not_found|previous_response_id/i.test(message)) {
+    return {
+      class: "dependency_failed",
+      code: "PreviousResponseNotFound",
+      message,
+      retryable: true,
+      suggestion: "Upstream response chain is lost. Start a new task from committed state; do not `send` on the dead thread.",
+      details: { retry_strategy: "new-thread" },
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (/\b401\b.*Unauthorized|Proxy authentication must be configured/i.test(message)) {
+    return {
+      class: "auth",
+      code: "UpstreamUnauthorized",
+      message,
+      retryable: false,
+      suggestion: "Upstream returned 401. For proxy setups, reauth the proxy; for Codex login, run `codex login`. Do not retry the same thread.",
+      exitCode: ExitCode.AUTH
+    };
+  }
+  if (/invalid_request_error/i.test(message)) {
+    return {
+      class: "validation",
+      code: "UpstreamInvalidRequest",
+      message,
+      retryable: true,
+      suggestion: "Upstream rejected the request as malformed. Bridge will retry with backoff; if that fails, inspect input and relaunch.",
+      exitCode: ExitCode.VALIDATION
+    };
+  }
+
   return {
     class: "internal",
     code: "INTERNAL_ERROR",
@@ -215,8 +251,16 @@ export function classifyError(err) {
   };
 }
 
+// Parse the upstream request id out of an error message, if present. Codex
+// passes it verbatim from the OpenAI response headers — format is a UUID.
+export function extractUpstreamRequestId(message) {
+  if (!message) return null;
+  const match = /request id:\s*([0-9a-f-]{8,})/i.exec(String(message));
+  return match ? match[1] : null;
+}
+
 // Match the success envelope schema contract (schema_version 1.0).
-export function buildErrorEnvelope(classified, { command } = {}) {
+export function buildErrorEnvelope(classified, { command, partial, handoff } = {}) {
   const error = {
     class: classified.class,
     code: classified.code,
@@ -227,9 +271,56 @@ export function buildErrorEnvelope(classified, { command } = {}) {
   if (classified.details) error.details = classified.details;
   if (classified.retryAfter != null) error.retry_after = classified.retryAfter;
 
+  const upstreamRequestId = extractUpstreamRequestId(classified.message);
+  if (upstreamRequestId) error.upstream_request_id = upstreamRequestId;
+
+  if (partial) error.partial = partial;
+  if (handoff) error.handoff = handoff;
+
   const envelope = { ok: false, schema_version: "1.0", error };
   if (command) envelope.command = command;
   return envelope;
+}
+
+// Per-origin retry policy for upstream failures (P0-4). Keyed by the origin
+// string returned by `classifyTurnErrorOrigin`. `same-thread` resends the
+// prompt on the existing thread (reuses resp_id). `new-thread` launches a
+// fresh task — the only viable recovery when the response chain is dead.
+// `none` goes straight to handoff (auth errors are deterministic; retrying
+// with the same credentials changes nothing).
+export const UPSTREAM_RETRY_POLICY = Object.freeze({
+  "upstream:transport":          { strategy: "same-thread", maxAttempts: 3, backoffMs: [2000, 5000, 12000] },
+  "upstream:compact-proxy":      { strategy: "same-thread", maxAttempts: 2, backoffMs: [10000, 30000] },
+  "upstream:invalid-request":    { strategy: "same-thread", maxAttempts: 3, backoffMs: [2000, 5000, 12000] },
+  "upstream:response-chain-lost":{ strategy: "new-thread",  maxAttempts: 1, backoffMs: [0] },
+  "upstream:auth":               { strategy: "none",        maxAttempts: 0, backoffMs: [] }
+});
+
+export function getUpstreamRetryPolicy(origin) {
+  return UPSTREAM_RETRY_POLICY[origin] ?? null;
+}
+
+// Assemble the handoff envelope emitted when the retry budget is exhausted
+// (or immediately for origins with `strategy: "none"`). This shape is the
+// single artifact another agent reads to continue the work — keep it stable
+// across versions; orchestration-flows.md#recovering-from-upstream-state-loss
+// documents the consumer contract.
+export function buildHandoffEnvelope({ classified, reason, session, artifacts, partial, prompt, retries, upstreamRequestId } = {}) {
+  const handoff = {
+    schema_version: "1.0",
+    reason: reason ?? "upstream-retry-exhausted",
+    origin: classified?.origin ?? null,
+    errorCode: classified?.code ?? null,
+    errorMessage: classified?.message ?? null
+  };
+  const reqId = upstreamRequestId ?? extractUpstreamRequestId(classified?.message);
+  if (reqId) handoff.upstream_request_id = reqId;
+  if (session) handoff.session = session;
+  if (artifacts) handoff.artifacts = artifacts;
+  if (partial) handoff.partial = partial;
+  if (prompt) handoff.prompt = prompt;
+  if (Array.isArray(retries) && retries.length > 0) handoff.retries = retries;
+  return handoff;
 }
 
 // Single chokepoint for successful --json / rendered output. Wraps `result` in
@@ -254,8 +345,15 @@ export function emitSuccess(command, result, rendered, { json = false, startedAt
 export function emitError(err, { json = false, command = null, stderr = process.stderr, stdout = process.stdout } = {}) {
   const classified = classifyError(err);
 
+  // Pick up partial/handoff fields attached to the thrown error by
+  // runBridgeTask (v1.5.0 retry + handoff path). Both flow through to the
+  // JSON envelope under `error.partial` and `error.handoff` so orchestrators
+  // can consume the handoff without tailing `.events`.
+  const partial = err?.partial ?? null;
+  const handoff = err?.handoff ?? null;
+
   if (json) {
-    const envelope = buildErrorEnvelope(classified, { command });
+    const envelope = buildErrorEnvelope(classified, { command, partial, handoff });
     stdout.write(`${JSON.stringify(envelope)}\n`);
   } else {
     stderr.write(`${classified.message}\n`);
@@ -294,18 +392,31 @@ export function detectHelpFlag(argv) {
 // cause-aware actions dispatch in `session-log.mjs::formatErrorEvent`.
 //
 // Vocabulary (what actually emits, truthful — do not add without wiring):
-//   - `idle`                   — the no-event idle watchdog fired (message carries
-//                                 "No events received for Ns").
-//   - `upstream:compact-proxy` — the remote compact endpoint returned 502 with a
-//                                 "Proxy request budget exhausted" message. Seen
-//                                 when a reading-heavy turn hits OpenAI's
-//                                 context-compaction proxy mid-turn.
-//   - `upstream:transport`     — the upstream stream disconnected / socket reset
-//                                 before `turn/completed`. The workspace is
-//                                 unchanged; safe to retry the same prompt.
-//   - `turn`                   — every other turn-level failure (turn budget
-//                                 exhausted, Codex-classified variants like
-//                                 ContextWindowExceeded / Unauthorized / …).
+//   - `idle`                         — the no-event idle watchdog fired (message
+//                                       carries "No events received for Ns").
+//   - `upstream:compact-proxy`       — the remote compact endpoint returned 502
+//                                       with a "Proxy request budget exhausted"
+//                                       message. Seen when a reading-heavy turn
+//                                       hits OpenAI's context-compaction proxy.
+//   - `upstream:transport`           — the upstream stream disconnected / socket
+//                                       reset before `turn/completed`. The
+//                                       workspace is unchanged; safe to retry
+//                                       the same prompt.
+//   - `upstream:response-chain-lost` — upstream 400 `previous_response_not_found`.
+//                                       The resp_id is dead; same-thread resend
+//                                       will repeat the 400 forever. Recovery
+//                                       requires a fresh task on committed state.
+//   - `upstream:auth`                — upstream 401 Unauthorized (direct Codex
+//                                       auth or proxy layer). Deterministic; no
+//                                       retry policy will help.
+//   - `upstream:invalid-request`     — upstream 400 `invalid_request_error` not
+//                                       covered by more specific matchers. Some
+//                                       proxy-layer 400s are transient; retry
+//                                       with backoff before surfacing.
+//   - `turn`                         — every other turn-level failure (turn
+//                                       budget exhausted, Codex-classified
+//                                       variants like ContextWindowExceeded /
+//                                       Unauthorized / …).
 //
 // Pre-1.4.1 every turn-level failure emitted `origin: "turn"`, collapsing
 // idle / compact-proxy 502 / transport drops / real turn-budget exhaustion
@@ -333,6 +444,24 @@ export function classifyTurnErrorOrigin(error) {
   // with the `UPSTREAM_STREAM_DISCONNECTED` branch in `classifyError` above.
   if (/stream disconnected|websocket closed|no close frame|ECONNRESET|ETIMEDOUT|socket hang up/i.test(message)) {
     return "upstream:transport";
+  }
+
+  // Upstream 400 with response-chain loss. Must run BEFORE the generic
+  // invalid_request_error matcher so the more-specific origin wins.
+  if (/previous_response_not_found|previous_response_id/i.test(message)) {
+    return "upstream:response-chain-lost";
+  }
+
+  // Upstream 401 / proxy-auth. Deterministic; no retry policy will help.
+  if (/\b401\b.*Unauthorized|Proxy authentication must be configured/i.test(message)) {
+    return "upstream:auth";
+  }
+
+  // Upstream 400 invalid_request_error (anything not already caught by the
+  // chain-lost matcher above). Some proxy-layer 400s are transient; we retry
+  // with backoff before surfacing.
+  if (/invalid_request_error/i.test(message)) {
+    return "upstream:invalid-request";
   }
 
   return "turn";

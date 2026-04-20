@@ -1,6 +1,6 @@
 {
   "name": "codex-bridge",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Claude Code skill that orchestrates Codex via Monitor tool notifications",
   "type": "module",
   "scripts": {

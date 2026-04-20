@@ -255,3 +255,62 @@ done
 | N jobs, mixed success criteria | Launch async, poll `status --all --json` on your own cadence |
 
 `status --watch --json` emits one NDJSON snapshot per tick so it's scriptable; without `--json` it re-renders a markdown table in place. Exits 0 when every tracked job is terminal; the summary payload's `reason` is `all-terminal`, `watch-timeout`, or `sigint`. `await-artifact` returns exit 7 on timeout **and** on "job terminated without producing the file"; the payload carries `exists`, `terminated`, and on non-success `reason: "timeout" | "job-<status>"` (e.g. `job-failed`, `job-cancelled`) so the caller can tell the cases apart.
+
+
+## Recovering from upstream state loss {#recovering-from-upstream-state-loss}
+
+Some upstream failures kill the response chain binding the bridge's thread to Codex's internal state: a 400 `previous_response_not_found` after compaction eviction, a 401 that invalidates the session, a 400 `invalid_request_error` from a proxy flap. When the bridge can't recover in-thread (see `UPSTREAM_RETRY_POLICY` in `error-recovery.md`), it emits a `[HANDOFF]` block and surfaces a handoff envelope on the JSON `error.handoff` field. This section is the consumer recipe for that envelope: the step-by-step move an orchestrator takes when `task --json` returns `ok: false` with `error.handoff` present.
+
+### Full worked recipe
+
+1. **Read the handoff envelope.** Either grep `[HANDOFF]` on `.events`, or parse `error.handoff` from the JSON envelope — both carry the same payload.
+
+   ```bash
+   bridge result "$JOB_ID" --json | jq '.error.handoff'
+   ```
+
+2. **Branch on `reason`.**
+   - `upstream-auth-requires-reauth`: stop. Reauth the right layer (`codex login` for Codex auth; proxy reauth for a gateway 401), then relaunch a brand-new task. Do **not** `send` on the dead thread — the same 401 will repeat.
+   - `upstream-retry-exhausted`: the bridge already exhausted its exp-backoff budget. Proceed to step 3.
+
+3. **Audit what committed before the error.**
+   Use `handoff.partial.commits` (mirrors `error.partial.commits`) as the authoritative list — the bridge captured a git snapshot at `turn/started` and diffed on failure:
+
+   ```bash
+   LAST_OK_SHA=$(bridge result "$JOB_ID" --json | jq -r '.error.handoff.partial.lastOkHeadSha')
+   git log --oneline ${LAST_OK_SHA}..HEAD
+   ```
+
+   Dirty (uncommitted) files live under `handoff.partial.dirtyFiles`. Decide whether to keep, discard, or fold them into the relaunch.
+
+4. **Rebuild the prompt.** Read the original prompt from `handoff.prompt.original` (or `handoff.prompt.promptFilePath` when the task was launched with `--prompt-file`). Prepend a 'what survived' preamble so Codex doesn't redo already-committed work:
+
+   ```markdown
+   The previous turn landed these commits before an upstream error:
+     ${commits}  # copy from handoff.partial.commits
+
+   Last good HEAD: ${handoff.partial.lastOkHeadSha}
+   Do not redo the work in those commits. Continue from here:
+
+   ${handoff.prompt.original}
+   ```
+
+5. **Relaunch as a fresh task** (not `send` — the old thread is dead):
+
+   ```bash
+   bridge task --json --mode default --prompt-file /tmp/rebased.md
+   ```
+
+6. **Optional: inspect the full failure trail.** `handoff.artifacts.eventsPath` and `handoff.artifacts.workerErrPath` are full paths to the events and worker-stderr for the dead thread — useful when escalating to a proxy owner (quote `handoff.upstream_request_id` as the correlation handle).
+
+### Why the bridge does not auto-rebase and relaunch
+
+The rebase step requires judgement: which commits were actually wanted, which unfinished scope the prompt should continue with, whether any uncommitted changes need curating. An automated rebase would either (a) drop the partial work silently, or (b) re-do work already committed. Neither is safe. The bridge's job ends at `[HANDOFF]`; the consumer (human, agent, or higher-level orchestrator) owns the relaunch.
+
+### Checklist when a handoff arrives
+
+- [ ] Read `error.handoff.reason` first — reauth vs. rebase needs different first moves.
+- [ ] Verify `handoff.partial.commits` against `git log` before trusting the list (the bridge's snapshot is best-effort; it can miss commits made outside the turn's cwd).
+- [ ] Capture `handoff.upstream_request_id` before discarding the envelope — if you need to escalate later, that's the only correlation handle to the upstream proxy.
+- [ ] Keep the original `handoff.prompt.promptFilePath` around: the rebased prompt supersedes it, but the original is the audit trail.
+

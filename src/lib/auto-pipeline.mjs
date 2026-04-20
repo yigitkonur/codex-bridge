@@ -13,6 +13,7 @@ import {
   fmtSeconds,
 } from "./session-log.mjs";
 import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "./config.mjs";
+import { extractUpstreamRequestId } from "./cli-errors.mjs";
 
 // Default budgets. Runtime callers may override via `stageTimeoutMs` /
 // `totalTimeoutMs` on runAutoPipeline options, which in turn resolve from
@@ -332,6 +333,7 @@ export async function runAutoPipeline(options) {
     const failingStage = error instanceof TimeoutError
       ? mapStageLabel(error.label)
       : null;
+    const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
       message: errorMessage,
@@ -340,6 +342,7 @@ export async function runAutoPipeline(options) {
       failingStage,
       scriptPath,
       jobId,
+      upstreamRequestId,
     }));
 
     logNdjson(session, "PIPELINE_ERROR", null, {

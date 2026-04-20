@@ -101,6 +101,13 @@ var CliError = class extends Error {
 function usageError(message, suggestion) {
   return new CliError(message, { class: "usage", code: "USAGE_ERROR", retryable: false, suggestion });
 }
+var UPSTREAM_RETRY_POLICY = Object.freeze({
+  "upstream:transport": { strategy: "same-thread", maxAttempts: 3, backoffMs: [2e3, 5e3, 12e3] },
+  "upstream:compact-proxy": { strategy: "same-thread", maxAttempts: 2, backoffMs: [1e4, 3e4] },
+  "upstream:invalid-request": { strategy: "same-thread", maxAttempts: 3, backoffMs: [2e3, 5e3, 12e3] },
+  "upstream:response-chain-lost": { strategy: "new-thread", maxAttempts: 1, backoffMs: [0] },
+  "upstream:auth": { strategy: "none", maxAttempts: 0, backoffMs: [] }
+});
 
 // src/lib/args.mjs
 var ALWAYS_BOOLEAN = /* @__PURE__ */ new Set(["help", "h"]);

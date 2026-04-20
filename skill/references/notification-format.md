@@ -27,7 +27,8 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 [ERROR] {threadId} failed | {errorCode}
   {errorMessage}
   origin: {origin}
-  failing_stage: {stage}        # only on pipeline origins when a TimeoutError triggered the failure
+  failing_stage: {stage}           # only on pipeline origins when a TimeoutError triggered the failure
+  upstream_request_id: {uuid}      # v1.5.0+; only when the upstream error message carried a `request id: <uuid>` correlation handle
   phase: {currentPhase}
   actions:
     … cause-aware lines (see below) …
@@ -43,6 +44,9 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 | `idle` | Idle watchdog fired: no events from Codex for the configured window. Message: `No events received for Ns`. |
 | `upstream:compact-proxy` | The remote compact endpoint returned 502 ("Proxy request budget exhausted"). Typical on reading-heavy turns that trigger mid-turn context compaction. |
 | `upstream:transport` | Upstream stream/socket disconnected before `turn/completed` — websocket closed, `ECONNRESET`, `ETIMEDOUT`, etc. Workspace unchanged; safe to retry. |
+| `upstream:response-chain-lost` (v1.5.0) | Upstream 400 `previous_response_not_found`. The resp_id is dead; same-thread `send` repeats the 400 forever. Recovery requires a fresh task on committed state. Retry policy `new-thread / maxAttempts: 1`; goes straight to `[HANDOFF]`. |
+| `upstream:auth` (v1.5.0) | Upstream 401 Unauthorized (direct Codex auth or proxy-layer). Deterministic; no retry policy will help. Policy `none / maxAttempts: 0`. `[HANDOFF]` precedes `[ERROR]` immediately. |
+| `upstream:invalid-request` (v1.5.0) | Upstream 400 `invalid_request_error` not covered by the more specific `response-chain-lost` matcher. Some proxy-layer 400s are transient; retry policy `same-thread / maxAttempts: 3 / backoffMs: [2000, 5000, 12000]` before surfacing. |
 | `turn` | Every other turn-level failure: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget exhaustion, etc. Distinguish by `{errorCode}`. |
 | `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. `<lastCompleted>` is the last stage that *finished* — see `failing_stage:` for the one that actually stalled. |
 | `bridge:*` | Bridge-layer safety net tripped (`bridge:stall`, `bridge:unhandled-exit`). Indicates a bridge bug; treat as a bug report. |
@@ -52,6 +56,90 @@ The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) carry `data.origin` with the
 `[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:diff` + `failing_stage: review` + `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` vs `origin: upstream:*` in tooling.
 
 The `actions:` block is **cause-aware**: an idle-timeout `[ERROR]` suggests `relaunch: … --idle-timeout-ms 900000 …`, a compact-proxy 502 suggests narrowing required-reads + a shorter follow-up `send`, a pipeline sub-stage failure points at `rerun-review` rather than retrying the whole task, and so on. Every block ends with a `see:` line deep-linking into `skill/references/error-recovery.md` for the full recipe.
+
+### [PARTIAL] (v1.5.0, non-terminal — pairs with [ERROR] / [HANDOFF])
+```
+[PARTIAL] {threadId} commits=[{sha1},{sha2}]
+  current_head: {sha}
+  last_ok_head: {snapshotSha}
+  launched_at: {iso}
+  dirty:
+    - M src/foo.ts
+  inspect: node {scriptPath} result {jobId}
+```
+
+Emitted **before** the terminal `[ERROR]` (and `[HANDOFF]` when present) whenever one or more commits landed during the failed turn. The bridge captures a git snapshot at the turn's start and diffs against it on any terminal failure path; a non-empty commit list means real work survived the error.
+
+Non-terminal by itself — `[ERROR]` stays the tag that trips Monitor's self-termination (see `TERMINAL_TAG_REGEX`). The JSON envelope carries the same payload under `error.partial.{commits, currentHeadSha, lastOkHeadSha, dirtyFiles, launchedAtIso}`, so consumers reading the envelope don't need to parse `.events`. See `orchestration-flows.md#recovering-from-upstream-state-loss` for the consumer recipe.
+
+Matching NDJSON tag: `PARTIAL`.
+
+### [RETRYING] (v1.5.0, non-terminal)
+```
+[RETRYING] {threadId} attempt {n}/{max} | origin={origin} | strategy={same-thread|new-thread} | backoff={ms}ms
+  last_error: {errorCode}
+  reason: {truncatedErrorMessage}
+```
+
+Emitted before the bridge sleeps through a backoff window and reattempts the turn on an `upstream:*` failure with a retryable policy. See `UPSTREAM_RETRY_POLICY` in `src/lib/cli-errors.mjs` for the per-origin table (`upstream:transport` → 3 attempts; `upstream:compact-proxy` → 2 attempts; `upstream:invalid-request` → 3 attempts; `upstream:response-chain-lost` → 1 attempt new-thread; `upstream:auth` → 0 attempts).
+
+Non-terminal: Monitor does **not** self-terminate on `[RETRYING]`. A reader that sees `[RETRYING] 1/3 …` can expect up to two more retry blocks before the final `[ERROR]` / `[HANDOFF]` pair.
+
+Matching NDJSON tag: `RETRYING`.
+
+### [HANDOFF] (v1.5.0, precedes [ERROR])
+```
+[HANDOFF] {threadId} reason={upstream-retry-exhausted|upstream-auth-requires-reauth} | origin={origin} | code={errorCode}
+  upstream_request_id: {uuid}
+  job_id: {jobId}
+  thread_id: {threadId}
+  artifacts:
+    events: {eventsPath}
+    worker_err: {workerErrPath}
+    diff: {diffPath}
+    plan: {planPath}
+    review: {reviewPath}
+  partial: commits=[{shas}] head={sha} since={iso}
+  prompt_file: {path-if-prompt-file-used}
+  retries: {N} attempts logged
+  next:
+    read:     node {scriptPath} result {jobId} --json    # full handoff envelope under .error.handoff
+    audit:    git log --oneline {lastOkHeadSha}..HEAD
+    relaunch: node {scriptPath} task --json --mode default --prompt-file <rebased prompt>
+    see: skill/references/orchestration-flows.md#recovering-from-upstream-state-loss
+```
+
+Emitted when the `UPSTREAM_RETRY_POLICY` loop exhausts its budget, or immediately for origins whose policy is `strategy: none` (today: `upstream:auth`). The block renders the handoff envelope as a human-readable summary; the same data lives under `error.handoff` in the JSON envelope. Pairs with `[ERROR]` — **`[HANDOFF]` comes first so the existing `TERMINAL_TAG_REGEX` still trips on `[ERROR]`**.
+
+Envelope shape (JSON):
+```json
+{
+  "ok": false,
+  "error": {
+    "class": "dependency_failed",
+    "code": "PreviousResponseNotFound",
+    "message": "…",
+    "retryable": true,
+    "upstream_request_id": "e42f5508-…",
+    "partial": { "commits": ["abc","def"], "currentHeadSha": "…", "lastOkHeadSha": "…", "dirtyFiles": [], "launchedAtIso": "…" },
+    "handoff": {
+      "schema_version": "1.0",
+      "reason": "upstream-retry-exhausted",
+      "origin": "upstream:response-chain-lost",
+      "errorCode": "PreviousResponseNotFound",
+      "errorMessage": "…",
+      "upstream_request_id": "e42f5508-…",
+      "session": { "jobId": "task-abc", "threadId": "019d…", "sessionId": "019d…" },
+      "artifacts": { "eventsPath": "…", "workerErrPath": "…", "diffPath": "…", "planPath": "…", "reviewPath": "…" },
+      "partial": { "commits": ["abc","def"], … },
+      "prompt": { "original": "…", "promptFilePath": "…", "resumeSuggestion": "…" },
+      "retries": [{ "attemptIso": "…", "origin": "…", "errorCode": "…", "backoffMs": 2000, "outcome": "failed" }]
+    }
+  }
+}
+```
+
+Matching NDJSON tag: `HANDOFF`. Monitor does **not** exclude `[HANDOFF]` by default.
 
 ### [WARNING]
 ```

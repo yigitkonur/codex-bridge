@@ -44,6 +44,9 @@ Task or review Codex turns may fail with a typed error from Codex itself. The br
 | `InternalServerError` | dependency_failed | 7 |
 | `ResponseTooManyFailedAttempts` | internal | 1 |
 | `ActiveTurnNotSteerable`, `Other` (fall-through) | internal | 1 |
+| `PreviousResponseNotFound` (v1.5.0; upstream 400 `previous_response_not_found`) | dependency_failed | 7 — retryable **by new task only**, not by `send` on the dead thread |
+| `UpstreamUnauthorized` (v1.5.0; string-form 401 from Codex or a proxy layer) | auth | 4 — not retryable; reauth before relaunch |
+| `UpstreamInvalidRequest` (v1.5.0; string-form `invalid_request_error`) | validation | 6 — retried with backoff automatically; escalates to handoff on exhaustion |
 
 ## Error Types and What to Do
 
@@ -99,6 +102,36 @@ The remote compact endpoint (`/backend-api/codex/responses/compact`) returned 50
 - **Resume:** `send <threadId> "<shorter follow-up>"` continues in the same thread.
 - The full error-text heuristic: `"Error running remote compact task"` / `"Proxy request budget exhausted"` / the compact URL — any one alone is sufficient to classify.
 
+### response-chain-lost {#response-chain-lost}
+
+Upstream 400 `previous_response_not_found` — the response chain bound to the `previous_response_id` was invalidated server-side (compaction, session expiry, or a proxy-layer eviction). Same-thread `send` will repeat the 400 forever against the dead resp_id; the only viable recovery is a fresh task seeded from committed state.
+
+- **Do not** `send` on the same thread. It will fail the same way on every retry.
+- **Audit what survived** before relaunching: `git log --oneline <launch-iso>..HEAD` — the bridge also emits a `[PARTIAL]` block listing commit shas that landed during the failed turn (v1.5.0+), and the JSON envelope carries the same under `error.partial.commits`.
+- **Relaunch as a fresh task:**
+  ```bash
+  node <bridge> task --json --mode default --prompt-file <rebased-prompt>
+  ```
+  The rebased prompt should seed Codex with "last good commit is `<sha>`, here's what's left to do" so it does not re-do the work already committed.
+- **Bridge retry policy:** `strategy: new-thread`, `maxAttempts: 1` — the bridge does not auto-spin a new thread (that would require an automated prompt rebase, which is unsafe). It goes straight to `[HANDOFF] reason=upstream-retry-exhausted`.
+
+### upstream-auth-401 {#upstream-auth-401}
+
+Upstream 401 Unauthorized, either from Codex's auth layer or a proxy in front of it (e.g. a Railway gateway with proxy-auth misconfigured). The error message carries the raw "`unexpected status 401 Unauthorized: …`" text. Auth is deterministic; retrying with the same credentials changes nothing.
+
+- **Reauth the right layer:**
+  - If the message mentions "Proxy authentication must be configured", reauth the proxy (talk to whoever owns the gateway).
+  - Otherwise: `codex login` (or `codex login --device-auth`).
+- **Do not** retry the same thread. The bridge's retry policy is `strategy: none` — the `[ERROR]` block is preceded by `[HANDOFF] reason=upstream-auth-requires-reauth` immediately.
+- **Use the `upstream_request_id`** (v1.5.0+) field surfaced in the `[ERROR]` / `[HANDOFF]` block when escalating to a proxy owner — it's the correlation handle.
+
+### upstream-invalid-request {#upstream-invalid-request}
+
+Upstream 400 `invalid_request_error` not covered by the more specific `response-chain-lost` matcher. Some proxy-layer 400s are transient — a budget reset, a short-lived config flap — so the bridge retries on the same thread with backoff before surfacing the error.
+
+- **Automatic retry:** `strategy: same-thread`, `maxAttempts: 3`, `backoffMs: [2000, 5000, 12000]` — you'll see `[RETRYING]` blocks before the final `[ERROR]`.
+- **On retry exhaustion:** the `[HANDOFF]` block names `reason=upstream-retry-exhausted`. Inspect `error.message` for the specific validation reason; rebuild the prompt to satisfy it; relaunch as a fresh task.
+
 ### upstream-transport-drop {#upstream-transport-drop}
 
 The upstream WS/stream disconnected before `turn/completed` — WebSocket closed without a close frame, `ECONNRESET`, `ETIMEDOUT`, or similar. Workspace is unchanged; prior reasoning is lost but safe to retry.
@@ -136,19 +169,32 @@ Codex app-server process exited unexpectedly.
 
 ## Decision Tree
 
+v1.5.0 surfaces richer origin/partial/handoff fields; branch on `origin:` first, then `error.code` / `codexErrorInfo`.
+
 ```
 [ERROR] received
   │
-  ├── ContextWindowExceeded → new task, shorter prompt
-  ├── Unauthorized → setup, re-auth
-  ├── UsageLimitExceeded → wait, retry
-  ├── ClientTimeout → branch by origin: line
-  │     ├── origin: turn (idle)        → raise --idle-timeout-ms
-  │     ├── origin: turn (turn-budget) → raise --turn-default-ms
-  │     ├── origin: pipeline:<stage>   → raise --pipeline-stage-timeout-ms (or --no-pipeline)
-  │     └── QUESTION_TIMEOUT (ndjson)  → raise --question-timeout-ms
-  ├── ProcessDeath → verify installation, restart
-  └── Other → read result log, assess
+  ├── [PARTIAL] precedes?            → real work survived; inspect commits=[…] before deciding
+  ├── [HANDOFF] precedes?            → read error.handoff in the JSON envelope; follow orchestration-flows.md#recovering-from-upstream-state-loss
+  │
+  ├── origin: upstream:response-chain-lost → new task from last commit; see #response-chain-lost
+  ├── origin: upstream:auth                → reauth (codex/proxy); see #upstream-auth-401
+  ├── origin: upstream:invalid-request     → bridge auto-retried; rebuild prompt & relaunch; see #upstream-invalid-request
+  ├── origin: upstream:transport           → same-thread retry (already attempted by bridge); see #upstream-transport-drop
+  ├── origin: upstream:compact-proxy       → narrow prompt; see #compact-proxy-502
+  ├── origin: idle                         → raise --idle-timeout-ms; see #idle-timeout
+  ├── origin: pipeline:<stage>             → raise --pipeline-stage-timeout-ms (or --no-pipeline)
+  ├── origin: bridge*                      → bridge bug; file issue; see #unhandledexit
+  │
+  ├── origin: turn + codexErrorInfo:
+  │     ├── ContextWindowExceeded     → new task, shorter prompt; see #context-window-exceeded
+  │     ├── Unauthorized              → setup, re-auth; see #unauthorized
+  │     ├── UsageLimitExceeded        → wait, retry
+  │     ├── ClientTimeout             → QUESTION_TIMEOUT / raise --turn-default-ms
+  │     ├── ProcessDeath              → verify codex install, rerun `setup`
+  │     └── SandboxError              → sync envelope carries phase: workspace-dirty; see #sandbox-denial
+  │
+  └── genuinely unclassified (last leaf) → read result log, capture repro, file issue
 ```
 
 ## Timeout Values

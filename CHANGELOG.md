@@ -9,6 +9,140 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-04-20
+
+Truthful upstream-error classification, automatic exp-backoff retry,
+and a `[PARTIAL]` + `[HANDOFF]` pair that makes mid-turn upstream
+failures recoverable instead of catastrophic. Driven by a forensic
+audit from a live Swift/SwiftUI mission where two commits landed
+before an HTTP 400 `previous_response_not_found` killed the turn —
+the v1.4.1 envelope misreported the failure as generic `internal`,
+and the caller had to hand-reconstruct workspace state from
+`git log`. v1.5.0 closes that gap end-to-end.
+
+### Added
+
+- **Tier-2 string classifiers for raw upstream HTTP errors.**
+  `src/lib/cli-errors.mjs::classifyError` now matches on message text
+  when `codexErrorInfo` is absent. Three new classes:
+  - `PreviousResponseNotFound` (`dependency_failed`, exit 7,
+    retryable via new-thread) — HTTP 400 response-chain loss from
+    compaction / session expiry.
+  - `UpstreamUnauthorized` (`auth`, exit 4, non-retryable) — raw
+    401s, including Railway proxy "Proxy authentication must be
+    configured" messages.
+  - `UpstreamInvalidRequest` (`validation`, exit 6, retryable) —
+    other 400 `invalid_request_error` cases (ordered AFTER
+    chain-lost so it doesn't shadow).
+- **Origin vocabulary extension.** `classifyTurnErrorOrigin` emits
+  three new origins: `upstream:response-chain-lost`,
+  `upstream:auth`, `upstream:invalid-request`. `.events` `origin=…`
+  fields and action-block `see:` anchors use these names.
+- **`UPSTREAM_RETRY_POLICY` + automatic exp-backoff retry.** On any
+  `upstream:*` origin, the bridge retries before surfacing the error:
+  - `upstream:transport` → same-thread × 3 @ 2s / 5s / 12s.
+  - `upstream:compact-proxy` → same-thread × 2 @ 10s / 30s.
+  - `upstream:invalid-request` → same-thread × 3 @ 2s / 5s / 12s.
+  - `upstream:response-chain-lost` → new-thread × 1 (delegates to
+    handoff; no auto-rebase).
+  - `upstream:auth` → 0 (straight to handoff; reauth is deterministic).
+  - Non-upstream origins retain pre-1.5.0 behavior (no retry).
+- **`[RETRYING]` non-terminal tag.** Each retry attempt emits
+  `[RETRYING] {threadId} attempt n/m | origin=… | strategy=… |
+  backoff=…ms | reason=…` to `.events`. Monitor does NOT
+  self-terminate on it.
+- **`[PARTIAL]` tag + `result.partial` envelope field.** Git snapshot
+  taken at `runBridgeTask` entry (`HEAD` sha + `porcelain -v1`
+  dirty set); on any terminal error path with commits-landed, emits
+  `[PARTIAL] {threadId} commits=[sha1,sha2] current={sha}
+  since={iso}` BEFORE the `[ERROR]` block. JSON envelope carries
+  `error.partial = { commits, currentHeadSha, lastOkHeadSha,
+  dirtyFiles, launchedAtIso }`. Pairs with `[ERROR]`; `[ERROR]`
+  remains the terminal signal for Monitor.
+- **`[HANDOFF]` pre-terminal tag + `result.handoff` envelope.** When
+  the retry budget is exhausted (or never existed, for
+  `upstream:auth`), the bridge emits a multi-line `[HANDOFF]` block
+  that carries everything another agent needs to continue: session
+  ids, full paths to `.events` / `.worker.err` / `.diff` / `.plan.md`
+  / `.review.json`, the original prompt (or its path), the `partial`
+  snapshot, and the retry history. JSON envelope mirrors the same
+  shape under `error.handoff`. `[HANDOFF]` precedes `[ERROR]` on the
+  wire; Monitor self-terminates on the `[ERROR]` as usual.
+- **`upstream_request_id` in `[ERROR]` blocks.**
+  `extractUpstreamRequestId(message)` parses
+  `/request id: ([0-9a-f-]{8,})/i` out of the upstream text and
+  attaches it to: the `[ERROR]` block as a new `upstream_request_id:`
+  line, the JSON envelope as `error.upstream_request_id`, and the
+  handoff envelope's `upstream_request_id` field. Closes the "caller
+  has to grep `.worker.err` to escalate to the proxy owner" gap
+  surfaced in the Railway 401 session.
+- **`job.retries[]` on `tracked-jobs`.** Each retry appends
+  `{ attemptIso, origin, errorCode, backoffMs, outcome }`; never
+  mutates prior entries. Surfaced in `status` / `result` JSON.
+
+### Changed
+
+- **`buildErrorEnvelope` signature.** Now accepts
+  `{ command, partial, handoff }` options and threads `partial` +
+  `handoff` + `upstream_request_id` onto the envelope when present.
+  Back-compatible for callers that pass no options — pre-1.5.0
+  envelopes without upstream metadata are unchanged.
+- **`formatErrorEvent` signature.** Accepts optional
+  `upstreamRequestId`; adds the line only when present, so existing
+  `[ERROR]` blocks without an upstream id are byte-identical to
+  pre-1.5.0.
+- **`error-recovery.md` decision tree** rewritten around the new
+  origin taxonomy. Branches on `origin:` first; the old dustbin
+  "Other → read result log, assess" leaf is now the last fallback,
+  not the only one. New anchors: `#response-chain-lost`,
+  `#upstream-auth-401`, `#upstream-invalid-request`.
+- **`notification-format.md` origin table** gains the three
+  `upstream:*` rows and the `upstream_request_id:` field.
+- **`SKILL.md` origin table** gains the three `upstream:*` rows plus
+  a new "Upstream retry + handoff (v1.5.0)" subsection summarizing
+  the retry / PARTIAL / HANDOFF flow.
+
+### Fixed
+
+- **Raw 401 / HTTP 400 falling into generic `internal`.** v1.4.1's
+  classifier tier-1-matched only on `codexErrorInfo`; upstream
+  proxies that deliver auth / validation errors as bare HTTP-status
+  strings fell through to the `internal` bucket with the default
+  "retry same thread" suggestion — wrong advice for auth (won't help)
+  and dangerous for `previous_response_not_found` (retry repeats the
+  400 against the dead resp_id). Tier-2 string matchers now classify
+  these truthfully.
+- **Retry-against-dead-response-chain misbehavior.** Pre-1.5.0 the
+  suggested action block on a chain loss was a same-thread `send`;
+  the only thing that works is a fresh `task` seeded from committed
+  state. Action block and retry policy both reflect that now.
+
+### Docs
+
+- `skill/references/error-recovery.md` — new rows + 3 anchors
+  + decision-tree rewrite.
+- `skill/references/notification-format.md` — `[PARTIAL]`,
+  `[RETRYING]`, `[HANDOFF]` tag sections; origin table extension;
+  `upstream_request_id:` documented inside `[ERROR]` shape.
+- `skill/references/orchestration-flows.md` — new
+  "Recovering from upstream state loss" section with a 6-step
+  worked recipe for consuming a handoff envelope.
+- `skill/SKILL.md` — origin-table rows + "Upstream retry + handoff"
+  subsection.
+
+### Notes / non-goals
+
+- **No `config.yaml` knobs for the retry policy this cycle.** Hard-
+  coded defaults in `UPSTREAM_RETRY_POLICY`. Add knobs in a follow-up
+  only when a real user reports the defaults are wrong.
+- **`[HANDOFF]` is NOT in `DEFAULT_MONITOR_EXCLUDE`.** Orchestrators
+  see it by default. It is also NOT added to `TERMINAL_TAG_REGEX` —
+  the paired `[ERROR]` remains the single terminal signal for
+  Monitor, preserving 1.4.0's exclusion-based contract.
+- **Pipeline-stage errors do not enter the retry loop.** Only
+  turn-level upstream errors are retried. Pipeline stages retain
+  their existing per-stage timeout budget.
+
 ## [1.4.0] — 2026-04-19
 
 Forward-compatible Monitor contract. The v1.3.0 observability work

@@ -80,6 +80,71 @@ export function writeReview(session, reviewData) {
   return reviewPath;
 }
 
+// v1.5.0 — cheap snapshot taken at turn/started so the terminal-failure
+// path can report "these commits landed before the error" via [PARTIAL]
+// and `result.partial`. Returns `{ headSha, porcelain, isoTimestamp }`.
+// Silently returns `{ headSha: null, ... }` when `cwd` isn't a git repo —
+// the bridge must keep running in non-repo contexts.
+export function captureGitSnapshot(cwd) {
+  const isoTimestamp = new Date().toISOString();
+  try {
+    const headResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 10000 });
+    if (headResult.status !== 0 || !headResult.stdout) {
+      return { headSha: null, porcelain: null, isoTimestamp };
+    }
+    const statusResult = spawnSync("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 10000 });
+    return {
+      headSha: headResult.stdout.trim(),
+      porcelain: statusResult.status === 0 ? (statusResult.stdout ?? "") : "",
+      isoTimestamp,
+    };
+  } catch {
+    return { headSha: null, porcelain: null, isoTimestamp };
+  }
+}
+
+// v1.5.0 — diff against a previous snapshot. Returns
+// `{ commits, currentHeadSha, lastOkHeadSha, dirtyFiles, launchedAtIso }`
+// — exactly the fields consumed by `formatPartialEvent` and the
+// `result.partial` envelope field. If the snapshot was empty (non-repo),
+// returns `{ commits: [], currentHeadSha: null, ... }` so the caller can
+// skip emitting [PARTIAL].
+export function diffGitSnapshot(cwd, snapshot) {
+  if (!snapshot || !snapshot.headSha) {
+    return { commits: [], currentHeadSha: null, lastOkHeadSha: null, dirtyFiles: [], launchedAtIso: snapshot?.isoTimestamp ?? null };
+  }
+  let commits = [];
+  let currentHeadSha = null;
+  let dirtyFiles = [];
+  try {
+    const logResult = spawnSync(
+      "git",
+      ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
+      { cwd, encoding: "utf8", timeout: 10000 }
+    );
+    if (logResult.status === 0 && logResult.stdout) {
+      commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    }
+    const headResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 10000 });
+    if (headResult.status === 0 && headResult.stdout) {
+      currentHeadSha = headResult.stdout.trim();
+    }
+    const statusResult = spawnSync("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 10000 });
+    if (statusResult.status === 0 && statusResult.stdout) {
+      dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    }
+  } catch {
+    // Swallow — partial reporting is best-effort
+  }
+  return {
+    commits,
+    currentHeadSha,
+    lastOkHeadSha: snapshot.headSha,
+    dirtyFiles,
+    launchedAtIso: snapshot.isoTimestamp ?? null,
+  };
+}
+
 export function captureGitDiff(cwd, session) {
   const numstatResult = spawnSync("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 10000 });
   const fullResult = spawnSync("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 10000 });
@@ -169,6 +234,39 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
 function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage }) {
   const lines = ["  actions:"];
   const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
+
+  if (origin === "upstream:response-chain-lost") {
+    // Chain-lost: the upstream resp_id is dead. Same-thread `send` will repeat
+    // the 400 forever. Recovery is a fresh task seeded from committed state;
+    // `git log --oneline <launch-iso>` audits what survived.
+    lines.push(
+      `    new-task: node ${scriptPath} task --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
+      `    inspect:  git log --oneline <launch-iso>..HEAD    # audit what committed before the chain loss`,
+      resultActionLine(scriptPath, jobId, "    log:     "),
+      see("response-chain-lost"),
+    );
+    return lines;
+  }
+
+  if (origin === "upstream:auth") {
+    lines.push(
+      "    reauth:  run `codex login` (or reauth your upstream proxy if one is in the path)",
+      "    do-not:  retry the same thread — auth is deterministic; the 401 will repeat",
+      resultActionLine(scriptPath, jobId, "    log:    "),
+      cancelActionLine(scriptPath, jobId),
+      see("upstream-auth-401"),
+    );
+    return lines;
+  }
+
+  if (origin === "upstream:invalid-request") {
+    lines.push(
+      `    inspect: node ${scriptPath} result ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
+      `    new-task: node ${scriptPath} task --json --mode default "<fixed prompt>"`,
+      see("upstream-invalid-request"),
+    );
+    return lines;
+  }
 
   if (origin === "idle") {
     lines.push(
@@ -260,7 +358,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   return lines;
 }
 
-export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null }) {
+export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
@@ -268,6 +366,9 @@ export function formatErrorEvent(session, { errorCode, message, phase, origin = 
   ];
   if (failingStage) {
     lines.push(`  failing_stage: ${failingStage}`);
+  }
+  if (upstreamRequestId) {
+    lines.push(`  upstream_request_id: ${upstreamRequestId}`);
   }
   lines.push(`  phase: ${phase || "unknown"}`);
   lines.push(...buildActionsBlock({
@@ -278,6 +379,88 @@ export function formatErrorEvent(session, { errorCode, message, phase, origin = 
     jobId,
     failingStage,
   }));
+  return lines.join("\n");
+}
+
+// v1.5.0 — emitted before an `[ERROR]` on any terminal failure where one or
+// more commits landed during the turn (detected via git snapshot taken at
+// `turn/started`). The `[PARTIAL]` block tells a reader "real work survived,
+// the session id above is live, here is the last commit to rebase on" — which
+// is the exact information a v1.4.1 operator had to hand-reconstruct from
+// `git log` when a chain-lost 400 dropped into the `internal` bucket.
+// Non-terminal by itself; the paired `[ERROR]` / `[HANDOFF]` is what trips
+// Monitor self-termination.
+export function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null }) {
+  const lines = [`[PARTIAL] ${session.threadId} commits=[${commits.join(",")}]`];
+  if (currentHeadSha) lines.push(`  current_head: ${currentHeadSha}`);
+  if (lastOkHeadSha) lines.push(`  last_ok_head: ${lastOkHeadSha}`);
+  if (launchedAtIso) lines.push(`  launched_at: ${launchedAtIso}`);
+  if (dirtyFiles && dirtyFiles.length > 0) {
+    lines.push("  dirty:");
+    for (const f of dirtyFiles.slice(0, 20)) {
+      lines.push(`    - ${f}`);
+    }
+    if (dirtyFiles.length > 20) lines.push(`    ... and ${dirtyFiles.length - 20} more`);
+  }
+  if (scriptPath && jobId) {
+    lines.push(`  inspect: node ${scriptPath} result ${jobId}`);
+  }
+  return lines.join("\n");
+}
+
+// v1.5.0 — emitted when the bridge is about to retry an upstream failure via
+// the `UPSTREAM_RETRY_POLICY` loop. Non-terminal. Consumers watching
+// `events --follow` see this *before* the retry fires so they know the
+// bridge is still active rather than stalled.
+export function formatRetryingEvent(session, { attempt, maxAttempts, backoffMs, origin, strategy, errorCode, reason = null }) {
+  const lines = [
+    `[RETRYING] ${session.threadId} attempt ${attempt}/${maxAttempts} | origin=${origin} | strategy=${strategy} | backoff=${backoffMs}ms`,
+  ];
+  if (errorCode) lines.push(`  last_error: ${errorCode}`);
+  if (reason) lines.push(`  reason: ${reason}`);
+  return lines.join("\n");
+}
+
+// v1.5.0 — terminal tag. Emitted when the `UPSTREAM_RETRY_POLICY` loop
+// exhausts its budget (or immediately for origins with `strategy: "none"`
+// like `upstream:auth`). The block renders the handoff envelope as a
+// human-readable summary with explicit artifact paths + a relaunch template;
+// the same data lives under `error.handoff` in the JSON envelope. Pairs with
+// `[ERROR]` — Monitor treats the pair as a terminal combo (HANDOFF first,
+// ERROR last so the existing TERMINAL_TAG_REGEX still fires on ERROR).
+export function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath }) {
+  const lines = [
+    `[HANDOFF] ${session.threadId} reason=${reason} | origin=${origin}${errorCode ? ` | code=${errorCode}` : ""}`,
+  ];
+  if (upstreamRequestId) lines.push(`  upstream_request_id: ${upstreamRequestId}`);
+  if (sessionInfo?.jobId) lines.push(`  job_id: ${sessionInfo.jobId}`);
+  if (sessionInfo?.threadId) lines.push(`  thread_id: ${sessionInfo.threadId}`);
+  if (artifacts) {
+    lines.push("  artifacts:");
+    if (artifacts.eventsPath) lines.push(`    events: ${artifacts.eventsPath}`);
+    if (artifacts.workerErrPath) lines.push(`    worker_err: ${artifacts.workerErrPath}`);
+    if (artifacts.diffPath) lines.push(`    diff: ${artifacts.diffPath}`);
+    if (artifacts.planPath) lines.push(`    plan: ${artifacts.planPath}`);
+    if (artifacts.reviewPath) lines.push(`    review: ${artifacts.reviewPath}`);
+  }
+  if (partial && Array.isArray(partial.commits) && partial.commits.length > 0) {
+    lines.push(`  partial: commits=[${partial.commits.join(",")}] head=${partial.currentHeadSha ?? "?"} since=${partial.launchedAtIso ?? "?"}`);
+  }
+  if (prompt?.promptFilePath) {
+    lines.push(`  prompt_file: ${prompt.promptFilePath}`);
+  }
+  if (retries && retries.length > 0) {
+    lines.push(`  retries: ${retries.length} attempts logged`);
+  }
+  lines.push("  next:");
+  if (scriptPath && sessionInfo?.jobId) {
+    lines.push(`    read:     node ${scriptPath} result ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
+  }
+  if (partial?.lastOkHeadSha || partial?.currentHeadSha) {
+    lines.push(`    audit:    git log --oneline ${partial.lastOkHeadSha ?? partial.currentHeadSha}..HEAD`);
+  }
+  lines.push(`    relaunch: node ${scriptPath} task --json --mode default --prompt-file <rebased prompt>    # seed with last commit + remaining scope`);
+  lines.push("    see: skill/references/orchestration-flows.md#recovering-from-upstream-state-loss");
   return lines.join("\n");
 }
 
