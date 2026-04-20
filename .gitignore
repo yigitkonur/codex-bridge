@@ -41,5 +41,4 @@ Thumbs.db
 # Local-only test / debug output
 scratch/
 tmp/
-*.log
 # ━━ end run-repo-cleanup ━━
