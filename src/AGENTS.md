@@ -41,12 +41,20 @@ Three zones, in reading order:
 
 From `src/lib/config.mjs`:
 
-| Mode | `sandboxPolicy` | `reasoning_effort` | Developer instructions file |
+| Mode | `sandboxPolicy` (source) | `reasoning_effort` | Developer instructions file |
 |---|---|---|---|
-| `plan` | `{ type: "readOnly" }` | `xhigh` (forced) | `src/templates/plan-enforcement.md` |
-| `default` (execute) | `{ type: "workspaceWrite" }` | `config.effort` (default `high`) | `src/templates/execute-instructions.md` |
+| `plan` | `{ type: "readOnly" }` (forced by mode) | `xhigh` (forced) | `src/templates/plan-enforcement.md` |
+| `default` (execute) | Resolved from `config.sandbox_policy` — shipped default `{ type: "dangerFullAccess" }`; `"workspace-write"` and `"read-only"` also accepted. | `config.effort` (default `xhigh`) | `src/templates/execute-instructions.md` |
 
-`runBridgeTask` (line ~820) selects `isPlanMode = config.mode === "plan" && !request.resumeLast`. A resumed task never re-enters plan mode. Plan-mode turn timeout is 5 min; default is 10 min; idle timeout is 120 s for both.
+`runBridgeTask` (line ~820) selects `isPlanMode = config.mode === "plan" && !request.resumeLast`. A resumed task never re-enters plan mode. Turn + idle budgets (all configurable — see `src/lib/config.mjs::DEFAULT_CONFIG` and `skill/references/config-reference.md`):
+
+- Plan turn: `turn_plan_ms` (default 30 min).
+- Execute turn: `turn_default_ms` (default 30 min).
+- Idle gap: `idle_timeout_ms` (default 5 min).
+- Question answer: `question_answer_ms` (default 5 min).
+- Pipeline stage: `pipeline_stage_ms` (default 5 min); pipeline total `pipeline_total_ms` (default 15 min).
+
+Each has a `--*-ms` CLI override on `task` / `send`. Pre-v1.3.0 the turn budgets were 5/10 min and the idle gap was 120 s; those values still show up in older session transcripts but are not current.
 
 ### How questions flow through `runBridgeTask`
 

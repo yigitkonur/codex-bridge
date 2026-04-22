@@ -52,11 +52,18 @@ Top-level key is `codex_bridge:`. Keys (all optional — defaults in `DEFAULT_CO
 
 - `mode`: `plan | default`. Default `plan`. Plan forces `effort: xhigh` regardless of the `effort` setting.
 - `model`: upstream model name (default `gpt-5.4`).
-- `effort`: `none | minimal | low | medium | high | xhigh`. Default `high`.
+- `effort`: `none | minimal | low | medium | high | xhigh`. Default `xhigh`.
 - `auto_review`: run adversarial-style review after execution. Default `true`.
 - `post_task_prompt`: prompt for the completion check stage. Empty string disables.
 - `allow_questions`: allow `requestUserInput` during execution. Default `true`. Plan mode always allows.
 - `session_dir`: where session files are written. Default `~/.codex-bridge/sessions`.
+- `sandbox_policy`: `danger-full-access | workspace-write | read-only`. Default `danger-full-access` (shipped since v1.2.0 — lets Codex commit its own work).
+- `skip_meta_skills`: prepend an orchestrator directive telling Codex to skip internal planning/ceremony skills. Default `true`.
+- `command_failure_circuit_breaker`: emit `[WARNING]` after N same-family command failures (sliding window of 5). Default `true`.
+- `idle_timeout_ms`: max gap between notifications before a turn is failed with `ClientTimeout`. Default `300_000` (5 min).
+- `turn_plan_ms` / `turn_default_ms`: per-turn wall-clock ceiling. Default `1_800_000` each (30 min).
+- `pipeline_stage_ms` / `pipeline_total_ms`: per-stage and total auto-pipeline budgets. Defaults `300_000` / `900_000` (5 min / 15 min).
+- `question_answer_ms`: how long `requestUserInput` waits for an answer. Default `300_000`.
 - `prompt_footer`: text appended to every user prompt. Default instructs Codex to use the `requestUserInput` tool for questions.
 
 When adding a new config key:

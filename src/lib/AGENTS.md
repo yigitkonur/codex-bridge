@@ -4,7 +4,7 @@ Library modules that the CLI handlers in `src/codex-bridge.mjs` compose into the
 
 > Root rules (build workflow, env vars, `workspaceRoot` vs `cwd`) live in `/AGENTS.md`. Don't restate them here.
 
-## Module map (19 files)
+## Module map (22 files)
 
 | File | One-sentence role | Cluster |
 |---|---|---|
@@ -14,12 +14,15 @@ Library modules that the CLI handlers in `src/codex-bridge.mjs` compose into the
 | `broker-endpoint.mjs` | Parse/create broker endpoint URIs (`unix:/path` or `pipe:name`). | Broker |
 | `broker-lifecycle.mjs` | Spawn, wait-for-ready, and tear down the shared broker session. | Broker |
 | `state.mjs` | Per-workspace job registry + config store (`state.json` + `jobs/*.json`). | State |
-| `session-log.mjs` | Append-only writers for `.events`, `.ndjson`, `.diff`, `.plan.md`, `.review.json`. | State |
+| `session-log.mjs` | Append-only writers for `.events`, `.ndjson`, `.diff`, `.plan.md`, `.review.json`; all event-format helpers; git-snapshot + diff helpers used by `[PARTIAL]`. | State |
 | `pending-requests.mjs` | File-based IPC for `requestUserInput` across worker and `respond` CLI. | State |
-| `tracked-jobs.mjs` | Job-record factories, progress reporter, `runTrackedJob` wrapper. | State |
+| `tracked-jobs.mjs` | Job-record factories, progress reporter, `runTrackedJob` wrapper; `job.retries[]` history. | State |
 | `job-control.mjs` | Read-side job queries: snapshots, enrichment, phase inference for `status`/`result`/`cancel`. | State |
 | `config.mjs` | Load `skill/config.yaml`, `buildCollaborationMode`, `buildSandboxPolicy`, `COMPLETION_CHECK_SCHEMA`. | Config |
 | `prompts.mjs` | `loadPromptTemplate` + `interpolateTemplate` for `{{UPPERCASE}}` placeholder substitution. | Config |
+| `cli-errors.mjs` | Exit codes, `CliError`, `classifyError` (tier-1 `codexErrorInfo` + tier-2 string matchers), `classifyTurnErrorOrigin`, `buildErrorEnvelope`, `buildHandoffEnvelope`, `UPSTREAM_RETRY_POLICY`, `extractUpstreamRequestId`, `emitSuccess` / `emitError`. | Errors |
+| `thread-id.mjs` | Thread-id shape validation + normalization (reject malformed UUIDs before the Codex call). | Errors |
+| `update-check.mjs` | Anonymous GitHub Releases probe, 1 h cache, silent hot-path auto-apply via `npx skills add …`. | Lifecycle |
 | `render.mjs` | Markdown renderers for every CLI output (review, task, status, cancel, setup). | Render |
 | `fs.mjs` | `readJsonFile`/`writeJsonFile`, `isProbablyText`, `readStdinIfPiped`. | Utility |
 | `process.mjs` | `runCommand`, `binaryAvailable`, `terminateProcessTree` (cross-platform). | Utility |
@@ -88,9 +91,9 @@ DEFAULT_CAPABILITIES = {
 
 **Why the 250 ms grace**: the upstream server sometimes emits the root `agentMessage` completion before the trailing `turn/completed` for a recently finished subagent. Without the grace period, we'd close the stream too early and miss a final `item/fileChange` update. Do not remove or shorten this without verifying against `codex-rs/app-server/tests/suite/v2/turn_start.rs`.
 
-**Idle timeout**: `setInterval` every `Math.min(5000, idleTimeoutMs)` ms checks that events are still arriving. Default 120 s. Expiring calls `onIdleTimeout` and fails the turn. Matches our need to cut hung turns; upstream has no equivalent — we add it because network stalls are user-visible.
+**Idle timeout**: `setInterval` every `Math.min(5000, idleTimeoutMs)` ms checks that events are still arriving. Default 5 min (`config.idle_timeout_ms = 300_000`). Expiring calls `onIdleTimeout` and fails the turn with `ClientTimeout`. Matches our need to cut hung turns; upstream has no equivalent — we add it because network stalls are user-visible.
 
-**Turn timeout**: caller-supplied `turnTimeoutMs` (5 min for plan, 10 min for default; 15 min pipeline total). Enforced via `Promise.race` with a reject.
+**Turn timeout**: caller-supplied `turnTimeoutMs` — default 30 min for both plan (`turn_plan_ms`) and default (`turn_default_ms`). Pre-v1.3.0 these were 5 min / 10 min and routinely killed legitimate long turns mid-task; both were raised to 30 min and made configurable in `DEFAULT_CONFIG`. Pipeline has its own budgets (`pipeline_total_ms` default 15 min total, `pipeline_stage_ms` default 5 min per stage). Enforced via `Promise.race` with a reject.
 
 **Interrupt**: `interruptAppServerTurn(cwd, { threadId, turnId })` calls `turn/interrupt` on a fresh broker connection (**not** reusing the streaming one, which is busy). Response is `{}` — the turn isn't actually done until a `turn/completed` arrives with `status: "interrupted"`. The caller must still drain the active capture; we don't short-circuit.
 
@@ -240,14 +243,39 @@ Fallback root: `os.tmpdir()/codex-companion/` when `CLAUDE_PLUGIN_DATA` isn't se
 | File | Purpose | Writer |
 |---|---|---|
 | `{threadId}.ndjson` | Full structured log (`{ts, tag, method, threadId, data}` per line). | `logNdjson` via `appendFileSync`. |
-| `{threadId}.events` | Human-readable tagged log: `[PLAN]`, `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[QUESTION]`, `[CONFIRMED]`, `[PIPELINE:*]`, `[REVIEW]`. | `logEvent` via `appendFileSync`. |
+| `{threadId}.events` | Human-readable tagged log. Full tag vocabulary below. | `logEvent` via `appendFileSync`. |
 | `{threadId}.diff` | `git diff HEAD` snapshot. | `captureGitDiff` — one shot, 10 s timeout. |
 | `{threadId}.plan.md` | Full plan text when plan mode produces one. | `writePlan`. |
 | `{threadId}.review.json` | Adversarial review JSON when pipeline review runs. | `writeReview`. |
 
+**Full `[*]` tag vocabulary (as of v1.5.0):**
+
+| Tag | Terminal? | Emitted by |
+|---|---|---|
+| `[PLAN]` | no (non-terminal; precedes user approval) | `formatPlanEvent` |
+| `[DONE]` | **yes** | `formatDoneEvent` |
+| `[INCOMPLETE]` | **yes** | `formatIncompleteEvent` |
+| `[ERROR]` | **yes** | `formatErrorEvent` (may include optional `upstream_request_id:` line) |
+| `[QUESTION]` | no | `formatQuestionEvent` |
+| `[CONFIRMED]` | no | `formatConfirmedEvent` |
+| `[PIPELINE:<stage>]` / `[PIPELINE:<stage>:done]` / `[PIPELINE:done\|failed]` | no (stage); terminal for the pipeline grouping | `formatPipelineEvent` |
+| `[HEARTBEAT]` (v1.3) | no | `formatHeartbeatEvent` — every 60 s |
+| `[CHECKPOINT]` (v1.3) | no | `formatCheckpointEvent` — every 5 min with tool-call list |
+| `[WARNING]` (v1.2) | no | `formatWarningEvent` — circuit breaker on repeated command-family failures |
+| `[DIRECTIVES]` | no | `formatDirectivesEvent` — `skip_meta_skills` preamble echo |
+| `[PARTIAL]` (v1.5) | no — precedes `[ERROR]` on error paths with commits-landed | `formatPartialEvent` |
+| `[RETRYING]` (v1.5) | no | `formatRetryingEvent` |
+| `[HANDOFF]` (v1.5) | no — precedes terminal `[ERROR]` when `UPSTREAM_RETRY_POLICY` budget exhausts | `formatHandoffEvent` |
+
+The terminal-tag regex lives at `TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE)\]/m`. Monitor self-terminates only on those three; `[HANDOFF]` pairs with `[ERROR]` rather than replacing it.
+
+`DEFAULT_MONITOR_EXCLUDE = ["HEARTBEAT"]` is the v1.4.0 default (exclusion-based; future tags pass through). See `skill/references/monitor-patterns.md` and `skill/references/notification-format.md` for the full wire format.
+
 **Append-only rule**: `appendFileSync` is the only writer. Never add async writers to `.events` or `.ndjson` — lines will interleave.
 
-**Event format helpers** (`formatDoneEvent`, `formatErrorEvent`, `formatIncompleteEvent`, `formatQuestionEvent`, `formatPlanEvent`, `formatConfirmedEvent`, `formatPipelineEvent`, `formatPhaseEvent`, `formatReviewEvent`) each return a formatted string block. Changing any format requires syncing `skill/references/notification-format.md` AND the scenarios under `gherkin-tests-v2/06-artifacts/` plus any `05-ambiguities/` entry that asserts on dual-channel event+envelope behavior. Note: `formatPhaseEvent` and `formatReviewEvent` are currently defined but have no call sites — the `[PHASE]` and `[REVIEW]` tags never emit in the live build; see `gherkin-tests-v2/06-artifacts/03-review-json-is-phantom-file.md`.
+**Format helpers** — `formatDoneEvent`, `formatErrorEvent` (accepts optional `upstreamRequestId`), `formatIncompleteEvent`, `formatQuestionEvent`, `formatPlanEvent`, `formatConfirmedEvent`, `formatPipelineEvent`, `formatHeartbeatEvent`, `formatCheckpointEvent`, `formatWarningEvent`, `formatDirectivesEvent`, `formatPartialEvent`, `formatRetryingEvent`, `formatHandoffEvent`, `formatPhaseEvent`, `formatReviewEvent`. Each returns a formatted string block. Changing any format requires syncing `skill/references/notification-format.md` AND the scenarios under `gherkin-tests-v2/06-artifacts/` plus any `05-ambiguities/` entry that asserts on dual-channel event+envelope behavior. Note: `formatPhaseEvent` and `formatReviewEvent` are defined but have no call sites — the `[PHASE]` and `[REVIEW]` tags never emit in the live build; see `gherkin-tests-v2/06-artifacts/03-review-json-is-phantom-file.md`.
+
+**Git-snapshot helpers (v1.5.0)** — `captureGitSnapshot(cwd)` returns `{headSha, porcelain, isoTimestamp}` via `spawnSync` with 10 s timeouts; `diffGitSnapshot(cwd, snapshot)` returns `{commits, currentHeadSha, lastOkHeadSha, dirtyFiles, launchedAtIso}`. `runBridgeTask` takes a snapshot at entry and diffs on any terminal error path — the diff feeds `formatPartialEvent` and the `handoff.partial` field.
 
 ### `pending-requests.mjs`
 
@@ -277,21 +305,16 @@ Read-side. `buildStatusSnapshot(cwd, { all })` returns the sorted, enriched job 
 
 ### `config.mjs`
 
-`DEFAULT_CONFIG` (lines 6-21):
-```js
-{
-  mode: "plan",
-  model: "gpt-5.4",
-  effort: "high",
-  auto_review: true,
-  post_task_prompt: "Review your own work critically:\n1. Is this task 100% complete?\n2. Are there any edge cases you missed?\n3. Did you run all relevant tests?\nList any unfinished items.",
-  allow_questions: true,
-  session_dir: "~/.codex-bridge/sessions",
-  prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
-}
-```
+`DEFAULT_CONFIG` (see `src/lib/config.mjs` for the fully commented source of truth). Summary of keys:
 
-**Plan mode forces effort `xhigh`** in `buildCollaborationMode("plan", ...)`. `buildSandboxPolicy("plan")` returns `{ type: "readOnly" }`.
+- Runtime: `mode: "plan"`, `model: "gpt-5.4"`, `effort: "xhigh"`.
+- Pipeline: `auto_review: true`, `post_task_prompt: <multi-line completion-check prompt>`.
+- Questions: `allow_questions: true`, `question_answer_ms: 300_000`.
+- Sandbox + directives (v1.2.0): `sandbox_policy: "danger-full-access"`, `skip_meta_skills: true`, `command_failure_circuit_breaker: true`.
+- Timeouts (v1.2.4 / v1.2.5 / v1.3.0): `idle_timeout_ms: 300_000`, `turn_plan_ms: 1_800_000`, `turn_default_ms: 1_800_000`, `pipeline_stage_ms: 300_000`, `pipeline_total_ms: 900_000`.
+- Paths + prompt: `session_dir: "~/.codex-bridge/sessions"`, `prompt_footer: <requestUserInput directive>`.
+
+**Plan mode forces effort `xhigh`** in `buildCollaborationMode("plan", ...)`. `buildSandboxPolicy("plan")` always returns `{ type: "readOnly" }` regardless of `config.sandbox_policy` — plan turns are read-only by contract. For `default` mode, `buildSandboxPolicy` honors `config.sandbox_policy` and maps it to the upstream type (`danger-full-access` → `dangerFullAccess`, `workspace-write` → `workspaceWrite`, `read-only` → `readOnly`; unknown values fall back to `workspaceWrite`).
 
 `COMPLETION_CHECK_SCHEMA` requires `{complete, missing_items, summary}`. Used by `auto-pipeline.mjs` as the `outputSchema` of the final completion turn.
 
@@ -349,9 +372,54 @@ Runs silently after execute-mode turns. Stages:
 3. **fix** (if structured findings present) — new turn with a synthesized prompt from the findings. Uses `execute-instructions.md`. Never applied to native-reviewer output (which is plain text, no findings structure).
 4. **check** (if `config.post_task_prompt`) — final turn with `COMPLETION_CHECK_SCHEMA` as output schema. Produces `{complete, missing_items, summary}` → maps to `[DONE]` or `[INCOMPLETE]`.
 
-Timeouts: `PIPELINE_TIMEOUT_MS = 15 min` total, `STAGE_TIMEOUT_MS = 5 min` per stage, enforced via `withTimeout(promise, ms, stageLabel)`. Timeouts throw `PipelineTimeoutError(completedStages)`; the caller logs an `[ERROR]` with a list of what completed before the stall.
+Timeouts: `PIPELINE_TIMEOUT_MS_DEFAULT = 15 min` total, `STAGE_TIMEOUT_MS_DEFAULT = 5 min` per stage — both overridable per-invocation via `pipeline_total_ms` / `pipeline_stage_ms` in config or `--pipeline-*-ms` flags on `task`. Enforced via `withTimeout(promise, ms, stageLabel)`. Timeouts throw `PipelineTimeoutError(completedStages)`; the caller logs an `[ERROR]` with a list of what completed before the stall. Pipeline-stage errors do **not** enter the `UPSTREAM_RETRY_POLICY` loop (only turn-level upstream errors do).
 
 `withTimeout` is exported because `runBridgeTask` uses it for the plan-mode/default-mode turn itself.
+
+---
+
+## Errors cluster
+
+### `cli-errors.mjs`
+
+Central classification + envelope builder. Three responsibilities:
+
+1. **`classifyError(err)`** — two tiers in strict order:
+   - **Tier 1** — `codexErrorInfo` enum match (upstream variants listed in the Error Codes section above).
+   - **Tier 2** — string matchers for raw upstream HTTP errors that arrive without `codexErrorInfo` (added v1.5.0). Order is load-bearing: `previous_response_not_found` MUST match before `invalid_request_error` (both look like 400s; the chain-lost case needs a new-thread strategy, not a retry):
+     - `/previous_response_not_found|previous_response_id/i` → `PreviousResponseNotFound` (`dependency_failed`, exit 7, retryable via new-thread).
+     - `/\b401\b.*Unauthorized|Proxy authentication must be configured/i` → `UpstreamUnauthorized` (`auth`, exit 4, non-retryable).
+     - `/invalid_request_error/i` → `UpstreamInvalidRequest` (`validation`, exit 6, retryable same-thread).
+   - Fallback → generic `internal` (exit 1).
+
+2. **`classifyTurnErrorOrigin(error)`** — returns the `origin:` string attached to `[ERROR]` blocks and action-block `see:` anchors. Recognized origins: `idle`, `turn`, `bridge:*`, `pipeline:*`, `upstream:transport`, `upstream:compact-proxy`, `upstream:invalid-request`, `upstream:response-chain-lost`, `upstream:auth`. The `upstream:response-chain-lost` matcher must sit **above** the generic `turn` fallback and **above** `upstream:invalid-request` for the same shadowing reason as tier-2 classify.
+
+3. **Envelope builders**:
+   - `buildErrorEnvelope(classified, { command, partial, handoff })` — the `ok:false` JSON envelope. Parses `upstream_request_id` out of the message via `extractUpstreamRequestId` and attaches it as `error.upstream_request_id`. Threads `partial` and `handoff` through when present.
+   - `buildHandoffEnvelope({ classified, reason, session, artifacts, partial, prompt, retries, upstreamRequestId })` — the v1.5.0 handoff shape (`schema_version: "1.0"`). Emitted alongside `[HANDOFF]` when `UPSTREAM_RETRY_POLICY` exhausts or when the policy is `none` (e.g. auth). Carries everything another agent needs: session/thread ids, full artifact paths (`.events`, `.worker.err`, `.diff`, `.plan.md`, `.review.json`), the original prompt, the partial-commit snapshot, the retry history.
+
+**`UPSTREAM_RETRY_POLICY`** (v1.5.0, frozen). Keyed by origin:
+
+| Origin | Strategy | Attempts | Backoff (ms) |
+|---|---|---|---|
+| `upstream:transport` | `same-thread` | 3 | 2000, 5000, 12000 |
+| `upstream:compact-proxy` | `same-thread` | 2 | 10000, 30000 |
+| `upstream:invalid-request` | `same-thread` | 3 | 2000, 5000, 12000 |
+| `upstream:response-chain-lost` | `new-thread` | 1 | 0 |
+| `upstream:auth` | `none` | 0 | — |
+
+`runBridgeTask` in `src/codex-bridge.mjs` wraps `executeTaskRun` in a while-loop: on any `upstream:*` origin it looks up the policy, emits `[RETRYING] attempt n/m | origin=… | backoff=…ms`, sleeps, then re-invokes for `same-thread`. `new-thread` + `none` break out immediately and fall through to the handoff emission. Retries append to `job.retries[]` in `tracked-jobs.mjs`. The policy table is hard-coded — **no `config.yaml` knobs this cycle**; revisit only if a real user reports the defaults are wrong.
+
+### `thread-id.mjs`
+
+Thread-id shape validation. Before any `send` / `steer` / `events` / `wait` call that takes a thread id, the handler calls `validateThreadId(value, source)` to reject obviously-malformed inputs (wrong length, non-hex chars) with a `usage` error (exit 2) before spending a broker request. Also the source of the `019d…` prefix convention used in progress messages.
+
+### `update-check.mjs`
+
+Anonymous GitHub Releases probe with a 1 h on-disk cache. Public-repo only (v1.2.8 stripped the gh-CLI fallback + token reading). Used for:
+
+1. `version --check-update` / `update` subcommands — surfaces `{latest_version, has_update, checked_at_age_ms}` in the envelope.
+2. **Silent hot-path auto-apply** (v1.2.9) — `maybeTriggerAutoApply` on every non-`--json` non-`update` invocation spawns `npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y` detached, fire-and-forget, with stdout/stderr routed to `~/.codex-bridge/auto-update.log`. Rate-limited to once per hour per workspace via the same cache. Opt-out: `CODEX_BRIDGE_NO_UPDATE_CHECK=1`.
 
 ---
 
