@@ -2,6 +2,14 @@
 
 ## Before Setting Up a Monitor
 
+Every example below uses `$EVENTS_FILE`. Derive it from the `task --json` envelope — it is the canonical per-thread events path under `~/.codex-bridge/sessions/`:
+
+```bash
+EVENTS_FILE="$HOME/.codex-bridge/sessions/${THREAD_ID}.events"
+# or (preferred — bypasses hand-coding the path shape):
+EVENTS_FILE=$(node "$SCRIPT_PATH" task … --json | jq -r '.result.eventsPath')
+```
+
 Always verify the events file exists before attaching a Monitor:
 ```bash
 test -f "$EVENTS_FILE" && echo "ready" || echo "waiting"
@@ -86,7 +94,7 @@ while true; do
 done
 ```
 
-Monitor params: `persistent: true, timeout_ms: 300000`
+Monitor params: `persistent: true, timeout_ms: 21600000` (6 h — true session length; the loop above is the session-long fallback if you want a stdout/journal stream of commit deltas independent of any single task). Note: the bridge already emits its own `[HEARTBEAT]` every 60 s and `[CHECKPOINT]` every 5 min on each task's `.events` file, tunable via `CODEX_BRIDGE_HEARTBEAT_MS` / `CODEX_BRIDGE_CHECKPOINT_MS`. Preset C only earns its keep when you specifically want session-wide deltas across tasks.
 
 ## Preset D: `wait` (blocking, no streaming)
 

@@ -9,11 +9,19 @@ Your prompt is not sent verbatim. Two bridge-side additions modify what Codex re
 
 So Codex actually reads: `[ORCHESTRATOR DIRECTIVE] …\n\n<your prompt>\n\n<prompt_footer>`. Write your prompt knowing those bookends already exist — don't repeat the directive; don't fight the footer.
 
+## How to deliver the prompt
+
+`readTaskPrompt` precedence: `--prompt-file <path>` wins, then positional argv (joined with single space), then piped stdin.
+
+- **Multi-paragraph markdown (the templates and any prompt with structure):** save to a file and pass `--prompt-file mission.md`. Argv positionals are joined with single spaces, **dropping every newline** — multi-paragraph prompts delivered via argv arrive at Codex squashed into one line.
+- **One-shot pipe:** `cat prompt.md | node "$SCRIPT_PATH" task --json`.
+- **Trivial single-line prompt:** bare argv is fine.
+
 Plan-mode vs execute-mode changes what Codex expects:
 
 | Mode | Codex expects | Tuning |
 |---|---|---|
-| `--mode plan` (default) | Analyze, ask questions, produce a `[PLAN]` — no file writes | `effort: "xhigh"` forced; sandbox read-only; `turn_plan_ms` = 15 min default |
+| `--mode plan` (default) | Analyze, ask questions, produce a `[PLAN]` — no file writes | `effort: "xhigh"` forced; sandbox per `sandbox_policy` (ships as `"danger-full-access"` — plan mode is a reasoning constraint, not a sandbox one); `turn_plan_ms` = 30 min default |
 | `--mode default` | Execute directly; produce a diff; may still ask questions via `requestUserInput` | `effort` from `config.effort` (shipped default `xhigh`) or `--effort`; sandbox per `sandbox_policy`; `turn_default_ms` = 30 min default |
 
 ## Every Prompt Should Answer
