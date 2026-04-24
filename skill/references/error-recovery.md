@@ -24,11 +24,15 @@ Codex-bridge maps every failure to a semantic exit code and a structured error e
 - `INVALID_THREAD_ID` — validation, exit 6. `send`/`steer` rejected a non-UUID thread id. Suggestion points at the canonical UUID v7 shape (`019d9a86-1c8a-7f41-8032-6c76bbe730a1`); no `thr_` prefix.
 - `WAIT_TIMEOUT` — timeout, exit 7. `wait` exceeded `--timeout-ms` with no terminal tag. `retryable: true` — agents may re-dispatch after checking `status <id>`.
 - `REVIEW_EMPTY_DIFF` — validation, exit 6. `review --scope working-tree` (or `--scope auto` resolving there) against a clean tree and index. No billed Codex turn is spent; make a change and retry.
-- `UNKNOWN_SUBCOMMAND` — usage, exit 2. Typo at the subcommand slot. The envelope is emitted even without `--json`; agents should fall back to `help --json` to enumerate valid subcommands.
+- `UNKNOWN_SUBCOMMAND` — usage, exit 2. Typo at the subcommand slot. Human-readable error + suggestion go to stderr; pass `--json` to receive the structured envelope. Agents should fall back to `help --json` to enumerate valid subcommands.
 
-## Codex `codexErrorInfo` → Exit Code
+## Error taxonomy — Codex-emitted vs bridge-synthesized
 
-Task or review Codex turns may fail with a typed error from Codex itself. The bridge translates:
+Two sources of typed errors flow into `error.code`:
+
+### Codex-emitted (`codexErrorInfo`)
+
+Variants Codex itself attaches to failed turns; mapped 1:1 in `CODEX_ERROR_INFO` (`src/lib/cli-errors.mjs`):
 
 | `codexErrorInfo` | Class | `$?` |
 |---|---|---|
@@ -39,14 +43,23 @@ Task or review Codex turns may fail with a typed error from Codex itself. The br
 | `UsageLimitExceeded` | rate_limit | 7 |
 | `HttpConnectionFailed` | network | 7 |
 | `ResponseStreamConnectionFailed`, `ResponseStreamDisconnected` | network | 7 |
-| `ClientTimeout` (transport went silent) | timeout | 7 |
-| `ProcessDeath` (Codex app-server exited) | dependency_failed | 7 |
 | `InternalServerError` | dependency_failed | 7 |
 | `ResponseTooManyFailedAttempts` | internal | 1 |
-| `ActiveTurnNotSteerable`, `Other` (fall-through) | internal | 1 |
-| `PreviousResponseNotFound` (v1.5.0; upstream 400 `previous_response_not_found`) | dependency_failed | 7 — retryable **by new task only**, not by `send` on the dead thread |
-| `UpstreamUnauthorized` (v1.5.0; string-form 401 from Codex or a proxy layer) | auth | 4 — not retryable; reauth before relaunch |
-| `UpstreamInvalidRequest` (v1.5.0; string-form `invalid_request_error`) | validation | 6 — retried with backoff automatically; escalates to handoff on exhaustion |
+
+`ActiveTurnNotSteerable`, `Other`, and any unrecognized variant fall through to the default classification (internal, exit 1).
+
+### Bridge-synthesized (from message shape)
+
+Codes the bridge attaches when a failure's `codexErrorInfo` is missing or too generic; each is matched by a string probe in `classifyError` (`src/lib/cli-errors.mjs`) and carries an explicit retryable flag:
+
+| `error.code` | Class | `$?` | Retryable? | Trigger |
+|---|---|---|---|---|
+| `ClientTimeout` | timeout | 7 | yes | Idle / turn / pipeline / question timer expired; `origin:` names which |
+| `ProcessDeath` | dependency_failed | 7 | depends | Codex app-server process exited before `turn/completed` |
+| `UPSTREAM_STREAM_DISCONNECTED` | network | 7 | yes | Transport drop: websocket close / ECONNRESET / socket hang up. Auto-retried by the `upstream:transport` policy before surfacing |
+| `PreviousResponseNotFound` | dependency_failed | 7 | yes, **by new task only** | Upstream 400 `previous_response_not_found` — the `previous_response_id` is dead. `send` on the same thread repeats the 400 forever |
+| `UpstreamUnauthorized` | auth | 4 | no | Upstream 401 from Codex's auth layer or a proxy in front of it. Reauth the right layer; retry accomplishes nothing |
+| `UpstreamInvalidRequest` | validation | 6 | yes (auto) | Upstream 400 `invalid_request_error` not covered by `PreviousResponseNotFound`. Auto-retried 3× with backoff before handoff |
 
 ## Error Types and What to Do
 
@@ -167,9 +180,88 @@ The bridge's finally-backstop fired — some error path escaped every instrument
 Codex app-server process exited unexpectedly.
 - **Do:** Check if Codex is installed. Run `setup` to verify.
 
+## Upstream retry policy (v1.5.0)
+
+Before surfacing an `upstream:*` failure, the bridge runs a per-origin retry loop from `UPSTREAM_RETRY_POLICY` (`src/lib/cli-errors.mjs`):
+
+| Origin | Strategy | Max attempts | Backoff (ms) |
+|---|---|---|---|
+| `upstream:transport` | same-thread | 3 | `[2000, 5000, 12000]` |
+| `upstream:compact-proxy` | same-thread | 2 | `[10000, 30000]` |
+| `upstream:invalid-request` | same-thread | 3 | `[2000, 5000, 12000]` |
+| `upstream:response-chain-lost` | new-thread | 1 | (requires prompt rebase; bridge goes straight to `[HANDOFF]`) |
+| `upstream:auth` | none | 0 | `[]` (skipped; `[HANDOFF]` preceded by `reason=upstream-auth-requires-reauth`) |
+
+During retry, each attempt emits a non-terminal `[RETRYING] attempt n/max | origin=… | backoff=…ms` block so `events --follow` readers can tell a slow turn apart from a stalled one. On exhaustion (or for `strategy: none`), a `[HANDOFF]` block lands immediately before the terminal `[ERROR]`.
+
+## Envelope shapes
+
+Every `--json` success and every CLI-boundary failure returns a uniform envelope (`src/lib/cli-errors.mjs` → `emitSuccess`, `buildErrorEnvelope`):
+
+**Success** (schema_version 1.0):
+
+```json
+{
+  "ok": true,
+  "schema_version": "1.0",
+  "command": "task",
+  "result": { /* per-subcommand shape */ },
+  "meta": { "duration_ms": 3214 }
+}
+```
+
+**Failure** (same schema_version; `error.class` maps 1:1 to exit code):
+
+```json
+{
+  "ok": false,
+  "schema_version": "1.0",
+  "command": "task",
+  "error": {
+    "class": "timeout",
+    "code": "ClientTimeout",
+    "message": "No events received for 300s",
+    "retryable": true,
+    "retry_after": 0,
+    "suggestion": "Re-run with `--idle-timeout-ms 900000`."
+  }
+}
+```
+
+Notes: `retryAfter` inside the code is serialized as `retry_after` (snake_case) at the JSON boundary — agents switching on the field name must read `retry_after`. `error.class` is one of `usage | not_found | auth | conflict | validation | rate_limit | timeout | network | dependency_failed | internal | partial_success`; the exit-code table at the top of this doc lists the mapping.
+
+### `[HANDOFF]` envelope
+
+When the upstream-retry loop gives up (or the origin has `strategy: none`), the bridge emits a `[HANDOFF]` block ahead of `[ERROR]` and attaches a handoff payload to the error envelope under `error.handoff` (`buildHandoffEnvelope` in `src/lib/cli-errors.mjs`):
+
+```json
+{
+  "ok": false,
+  "error": {
+    "class": "dependency_failed",
+    "code": "PreviousResponseNotFound",
+    "handoff": {
+      "schema_version": "1.0",
+      "reason": "upstream-retry-exhausted",   // or upstream-auth-requires-reauth / upstream-no-retry-policy
+      "origin": "upstream:response-chain-lost",
+      "errorCode": "PreviousResponseNotFound",
+      "errorMessage": "…",
+      "upstream_request_id": "e42f5508-…",
+      "session": { "jobId": "task-abc", "threadId": "019d…", "sessionId": "019d…" },
+      "artifacts": { "eventsPath": "…", "workerErrPath": "…", "diffPath": "…", "planPath": "…", "reviewPath": "…" },
+      "partial": { "commits": ["abc","def"], "currentHeadSha": "…", "lastOkHeadSha": "…", "dirtyFiles": [], "launchedAtIso": "…" },
+      "prompt": { "original": "…", "promptFilePath": "…", "resumeSuggestion": "…" },
+      "retries": [{ "attemptIso": "…", "origin": "…", "errorCode": "…", "backoffMs": 2000, "outcome": "failed" }]
+    }
+  }
+}
+```
+
+`upstream_request_id` is present only when the upstream error message contained a `request id: <hex>` correlation handle (extracted loosely by `extractUpstreamRequestId` — regex `/request id:\s*([0-9a-f-]{8,})/i`, not UUID-strict). If missing, escalate to a proxy owner with the `threadId` and the full error message instead.
+
 ## Decision Tree
 
-v1.5.0 surfaces richer origin/partial/handoff fields; branch on `origin:` first, then `error.code` / `codexErrorInfo`.
+v1.5.0 surfaces richer origin/partial/handoff fields; branch on `origin:` first, then `error.code`.
 
 ```
 [ERROR] received
@@ -184,15 +276,21 @@ v1.5.0 surfaces richer origin/partial/handoff fields; branch on `origin:` first,
   ├── origin: upstream:compact-proxy       → narrow prompt; see #compact-proxy-502
   ├── origin: idle                         → raise --idle-timeout-ms; see #idle-timeout
   ├── origin: pipeline:<stage>             → raise --pipeline-stage-timeout-ms (or --no-pipeline)
-  ├── origin: bridge*                      → bridge bug; file issue; see #unhandledexit
+                                              (* emitted by auto-pipeline.mjs, not classifyTurnErrorOrigin)
+  ├── origin: bridge                       → bridge bug; file issue; see #unhandledexit
+                                              (* emitted by the finally-backstop in codex-bridge.mjs,
+                                                 not classifyTurnErrorOrigin; distinguish sub-cases by
+                                                 error.code: `StallDetected` vs `UnhandledExit`)
   │
-  ├── origin: turn + codexErrorInfo:
+  ├── origin: turn + error.code (Codex-emitted variant):
   │     ├── ContextWindowExceeded     → new task, shorter prompt; see #context-window-exceeded
   │     ├── Unauthorized              → setup, re-auth; see #unauthorized
   │     ├── UsageLimitExceeded        → wait, retry
-  │     ├── ClientTimeout             → QUESTION_TIMEOUT / raise --turn-default-ms
-  │     ├── ProcessDeath              → verify codex install, rerun `setup`
   │     └── SandboxError              → sync envelope carries phase: workspace-dirty; see #sandbox-denial
+  │
+  ├── error.code (bridge-synthesized, regardless of origin):
+  │     ├── ClientTimeout             → QUESTION_TIMEOUT / raise --turn-default-ms / --idle-timeout-ms (branches by origin:)
+  │     └── ProcessDeath              → verify codex install, rerun `setup`
   │
   └── genuinely unclassified (last leaf) → read result log, capture repro, file issue
 ```
@@ -203,7 +301,7 @@ Every budget is configurable. Resolution order for each: CLI flag → `config.ya
 
 | Phase | Default | Config key | CLI flag |
 |-------|---------|------------|----------|
-| Plan turn | 15 min (900 000 ms, raised from 5 min in 1.3.0) | `turn_plan_ms` | `--turn-plan-ms` |
+| Plan turn | 30 min (1 800 000 ms, raised from 5 min in 1.3.0) | `turn_plan_ms` | `--turn-plan-ms` |
 | Execution turn | 30 min (1 800 000 ms, raised from 10 min in 1.3.0) | `turn_default_ms` | `--turn-default-ms` |
 | Question unanswered (auto-answers with `{answers: {}}`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | Auto-pipeline per-stage (review / fix / check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
