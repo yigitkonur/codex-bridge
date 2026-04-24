@@ -70,12 +70,12 @@ codex-bridge/
 ## Cross-cutting conventions
 
 1. **Edit `src/`, then `npm run build`, then commit both the source and the regenerated bundle.** `skill/scripts/*`, `skill/app-server-broker.mjs`, `skill/prompts/*`, `skill/schemas/*`, `skill/templates/*` are build outputs — **committed to git** so `npx skills add yigitkonur/codex-bridge` works without a build step on the user's machine. CI verifies the committed bundle matches a fresh build (see `.github/workflows/build.yml`). `skill/SKILL.md`, `skill/config.yaml`, and `skill/references/**` are hand-authored.
-2. **Two path roots.** `ROOT_DIR` in `src/codex-bridge.mjs:97-103` detects source vs. bundled layout. Any new bundled asset must be added to `esbuild.config.mjs`'s `copies` array AND referenced through `ROOT_DIR`.
+2. **Two path roots.** `ROOT_DIR` in `src/codex-bridge.mjs:235-237` detects source vs. bundled layout. Any new bundled asset must be added to `esbuild.config.mjs`'s `copies` array AND referenced through `ROOT_DIR`.
 3. **`workspaceRoot` ≠ `cwd`.** `state.mjs` hashes off the canonical workspace root (`fs.realpathSync.native` — stable across symlink layouts). Job files, logs, and the broker session are workspace-scoped; git operations and the Codex spawn environment use `cwd`. Don't cross the streams.
 4. **Session artifacts are append-only.** `src/lib/session-log.mjs`'s `appendFileSync` is the only writer to `.events` and `.ndjson`. Adding async writers will interleave lines.
 5. **No `"jsonrpc":"2.0"` on the wire.** The Codex app-server spec explicitly omits it (`codex-rs/app-server/README.md` → "Protocol"). Any JSON-RPC parser that rejects missing `jsonrpc` will break the transport. Our client in `src/lib/app-server.mjs` is already compliant.
 6. **`DEFAULT_CLIENT_INFO.name = "codex_bridge"` (`src/lib/app-server.mjs:25`) is load-bearing.** The upstream server uses it as the HTTP `originator` header (tested in `codex-rs/app-server/tests/suite/v2/initialize.rs`). ASCII only; no CR/LF/colons. Changing it breaks broker session identification and upstream model routing.
-7. **Plan mode forces `effort: "xhigh"` regardless of config.** `src/lib/config.mjs:56` at `buildCollaborationMode`. This is intentional (deep reasoning for planning) and asserted in `gherkin-tests-v2/03-config/03-plan-mode-masks-effort-config.md`.
+7. **Plan mode forces `effort: "xhigh"` regardless of config.** `src/lib/config.mjs:191-196` at `buildCollaborationMode`. This is intentional (deep reasoning for planning) and asserted in `gherkin-tests-v2/03-config/03-plan-mode-masks-effort-config.md`.
 8. **Don't guess method names.** Every JSON-RPC method sent on the wire must match the Rust `protocol/common.rs` serde-renamed name exactly. See `src/lib/AGENTS.md` for the full list.
 
 ## Environment variables
@@ -87,9 +87,13 @@ codex-bridge/
 | `CODEX_COMPANION_APP_SERVER_PID_FILE` | `src/lib/broker-lifecycle.mjs:11` | Broker PID file path (informational, for diagnostics). |
 | `CODEX_COMPANION_APP_SERVER_LOG_FILE` | `src/lib/broker-lifecycle.mjs:12` | Broker stdout/stderr log path. |
 | `CODEX_COMPANION_SESSION_ID` | `src/lib/tracked-jobs.mjs:6` (`SESSION_ID_ENV`) | Scopes job filtering to the current Claude session. |
-| `GITHUB_TOKEN` / `GH_TOKEN` | `src/lib/update-check.mjs` | Auth for GitHub Releases API when probing `bridge update`. Optional on public repos; required on private (unauth returns 404). Read in that priority order. |
-| `CODEX_BRIDGE_NO_UPDATE_CHECK` | `src/codex-bridge.mjs:128` | When set to `"1"` (strict equality), suppresses the silent per-launch "new version available" notice. |
+| `CODEX_BRIDGE_NO_UPDATE_CHECK` | `src/codex-bridge.mjs:161` | When set to `"1"` (strict equality), suppresses the silent per-launch update probe + auto-apply. |
+| `CODEX_BRIDGE_HEARTBEAT_MS` | `src/codex-bridge.mjs:2226-2227` | Per-task `[HEARTBEAT]` cadence in ms (positive integer). Default 60 000. |
+| `CODEX_BRIDGE_CHECKPOINT_MS` | `src/codex-bridge.mjs:2239-2240` | Per-task `[CHECKPOINT]` digest cadence in ms (positive integer). Default 300 000. |
+| `CODEX_BRIDGE_STALL_CHECKPOINTS` | `src/codex-bridge.mjs:2243-2244` | Consecutive barren checkpoints before `[ERROR] \| StallDetected` fires. Default 3. |
 | `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` | upstream server | Overrides `ClientInfo.name`-based originator; tested upstream. Do not set unless debugging. |
+
+Update check is anonymous-only against the public GitHub Releases API since 1.2.8; `GITHUB_TOKEN` / `GH_TOKEN` are **no longer read** (confirm via `grep -R 'GITHUB_TOKEN\|GH_TOKEN' src/` — zero hits).
 
 ## What to do when making a change
 
