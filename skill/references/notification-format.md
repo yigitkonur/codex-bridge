@@ -49,7 +49,7 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 | `upstream:invalid-request` (v1.5.0) | Upstream 400 `invalid_request_error` not covered by the more specific `response-chain-lost` matcher. Some proxy-layer 400s are transient; retry policy `same-thread / maxAttempts: 3 / backoffMs: [2000, 5000, 12000]` before surfacing. |
 | `turn` | Every other turn-level failure: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget exhaustion, etc. Distinguish by `{errorCode}`. |
 | `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. `<lastCompleted>` is the last stage that *finished* — see `failing_stage:` for the one that actually stalled. |
-| `bridge:*` | Bridge-layer safety net tripped (`bridge:stall`, `bridge:unhandled-exit`). Indicates a bridge bug; treat as a bug report. |
+| `bridge` | Bridge-layer safety net tripped. The emitted token is the bare string `bridge` (no `bridge:stall` / `bridge:unhandled-exit` sub-tokens — distinguish those two sub-cases by `{errorCode}`: `StallDetected` vs `UnhandledExit`). Indicates a bridge bug; treat as a bug report. |
 
 The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) carry `data.origin` with the same values plus `data.failing_stage` when applicable.
 
@@ -164,6 +164,22 @@ Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any run
 
 Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not alive — the caller can short-circuit their wait and investigate (`kill -0 <pid>` on the heartbeat's `pid`, or `pgrep -f codex-bridge`). The `tail:` line in each block is a ready-to-paste re-attach command so an agent that lost its Monitor session can recover from the most recent events-file line alone.
 
+### [CHECKPOINT]
+```
+[CHECKPOINT] {threadId} t={elapsed} | phase={plan|execute|?} | interval={intervalMs} | pid={pid|?}
+  assistant:                                         # OR "assistant: (no new assistant message this interval)" when none
+    {fullAssistantText capped at 8000 chars; truncated tail gets "… (truncated, N more chars)"}
+  tools (N):                                         # always present; "(none)" when N=0
+    - {type}: {summary}
+  commits (N):                                       # only when commits non-empty
+    - {sha} {subject}
+  diff-since-last-checkpoint: {diffStat}             # only when diffStat truthy
+  files-changed-since-turn-start: {summary}          # only when truthy
+  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000   # only when scriptPath + jobId both present
+```
+
+Emitted every `CODEX_BRIDGE_CHECKPOINT_MS` (default 5 min — env override) alongside the 60-s `[HEARTBEAT]`. Non-terminal; `events --follow` does **not** self-terminate on `[CHECKPOINT]`. Unlike `[HEARTBEAT]`, Monitor's default filter does **not** exclude `[CHECKPOINT]` — it's the primary LLM-facing digest during long runs. Pass `--exclude HEARTBEAT,CHECKPOINT` if you want to drop both. The assistant block is capped at 8000 chars per checkpoint; overflow gets a `… (truncated, N more chars)` tail. The stall detector (`CODEX_BRIDGE_STALL_CHECKPOINTS`, default 3) counts consecutive checkpoints with zero actionable items and fires `[ERROR] | StallDetected` on hit.
+
 ### [INCOMPLETE]
 ```
 [INCOMPLETE] {threadId} | {diffStat}
@@ -186,10 +202,13 @@ Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not
   "{questionText}"
   (a) {optionLabel} — {optionDescription}
   (b) {optionLabel} — {optionDescription}
-  [other: custom answer allowed]
-respond:
-  node {scriptPath} respond {requestId} --question-id {qId} --answer "{label}"
+  [other: custom answer allowed]                     # only when q.isOther
+respond:                                             # ONE respond line per option (pre-filled with the option's literal label):
+  node {scriptPath} respond {requestId} --question-id {qId} --answer "{labelA}"
+  node {scriptPath} respond {requestId} --question-id {qId} --answer "{labelB}"
 ```
+
+Free-form variant (no enumerated options): a single `respond:` line with `--answer "<answer>"` placeholder. Multi-question payloads iterate under a single `[QUESTION]` header — each question contributes its own option list and `respond:` fanout in sequence.
 
 ### [PLAN]
 ```
@@ -212,12 +231,12 @@ actions:
 
 ### [DIRECTIVES]
 ```
-[DIRECTIVES] {threadId} | mode={plan|default} | effort={none|minimal|low|medium|high|xhigh} | sandbox={readOnly|workspaceWrite|dangerFullAccess} | quiet={true|false} | skip_meta_skills={true|false} | pipeline={review,check|none} | model={model}
+[DIRECTIVES] {threadId} | mode={plan|default} | effort={none|minimal|low|medium|high|xhigh} | sandbox={readOnly|workspaceWrite|dangerFullAccess} [| approval={never|on-request|on-failure|untrusted}] | quiet={true|false} | skip_meta_skills={true|false} | pipeline={review,check|none} [| model={model}]
 ```
 
 Emitted once per turn at `turn/started`, before any `[HEARTBEAT]` / `[CHECKPOINT]` cadence. Surfaces the **effective** runtime config — what the bridge actually resolved after merging CLI flags, `config.yaml`, and built-in defaults. Resolves the invisible-directive problem for keys like `skip_meta_skills` that shape the prompt but otherwise emit nothing observable. Non-terminal.
 
-`pipeline=` reflects the enabled auto-pipeline stages for this run (`review`, `check`, or a comma-joined subset). `pipeline=none` means `--no-pipeline` was passed or the config disabled both stages.
+`pipeline=` reflects the enabled auto-pipeline stages for this run (`review`, `check`, or a comma-joined subset). `pipeline=none` means `--no-pipeline` was passed or the config disabled both stages. The bracketed segments (`approval=`, `model=`) appear in their fixed slots only when set — parse as `key=value` pairs split on ` | ` rather than positional indexing so future optional keys don't break consumers.
 
 ### [PIPELINE:*] — Auto-pipeline stage progress
 
@@ -259,7 +278,7 @@ After `[PIPELINE:done]` / `[PIPELINE:failed]`, no further bridge-side writes are
   actions:
     fix: node {scriptPath} task --write "fix the {n} review findings"
 ```
-`formatReviewEvent` and `writeReview` exist in `src/lib/session-log.mjs` but nothing in the standalone `review` / `adversarial-review` handlers calls them today. Neither this tag nor `{threadId}.review.json` appears on disk — the review payload is returned on stdout (or `--json`) only. Don't gate on this tag in Monitor scripts.
+`formatReviewEvent` is defined in `src/lib/session-log.mjs` but has zero call sites; the `[REVIEW]` tag never appears on `.events`. Don't gate Monitor scripts on it. Note: `writeReview` **is** called from the adversarial-review path (`src/codex-bridge.mjs`), so `{threadId}.review.json` lands on disk after a structured `adversarial-review` run — but the auto-pipeline review stage still does not call `writeReview`, so that artifact is absent on the auto-pipeline path even when `[PIPELINE:review:done]` fires.
 
 ### [PHASE] (reserved — not emitted by the current build)
 ```
