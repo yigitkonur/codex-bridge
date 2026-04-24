@@ -192,7 +192,7 @@ task --write "prompt"
 
 This happens when Codex's question-asking skill (whichever upstream chain is currently responsible for clarifying-question handling) routes the question through assistant text instead of the `requestUserInput` tool. The `respond` command won't work here — use `send` instead.
 
-## Running N jobs in parallel (fan-out / fan-in)
+## Running N jobs in parallel
 
 Monitor is a **single-job** tool — it tails one `.events` file and self-terminates on the first terminal tag. When you need to run several independent tasks and collect their outcomes, use async primitives instead:
 
@@ -257,7 +257,7 @@ done
 `status --watch --json` emits one NDJSON snapshot per tick so it's scriptable; without `--json` it re-renders a markdown table in place. Exits 0 when every tracked job is terminal; the summary payload's `reason` is `all-terminal`, `watch-timeout`, or `sigint`. `await-artifact` returns exit 7 on timeout **and** on "job terminated without producing the file"; the payload carries `exists`, `terminated`, and on non-success `reason: "timeout" | "job-<status>"` (e.g. `job-failed`, `job-cancelled`) so the caller can tell the cases apart.
 
 
-## Recovering from upstream state loss {#recovering-from-upstream-state-loss}
+## Recovering from upstream state loss
 
 Some upstream failures kill the response chain binding the bridge's thread to Codex's internal state: a 400 `previous_response_not_found` after compaction eviction, a 401 that invalidates the session, a 400 `invalid_request_error` from a proxy flap. When the bridge can't recover in-thread (see `UPSTREAM_RETRY_POLICY` in `error-recovery.md`), it emits a `[HANDOFF]` block and surfaces a handoff envelope on the JSON `error.handoff` field. This section is the consumer recipe for that envelope: the step-by-step move an orchestrator takes when `task --json` returns `ok: false` with `error.handoff` present.
 
