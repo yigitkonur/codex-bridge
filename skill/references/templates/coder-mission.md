@@ -25,3 +25,14 @@ npm test
 - Report the touched files.
 - Report the verification results.
 ```
+
+## Use it
+
+Save the markdown block above into `mission.md`, then dispatch:
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs" task \
+  --write --mode default --json --prompt-file mission.md
+```
+
+`--prompt-file` is required here — passing the multi-paragraph body as positional argv joins lines with single spaces and drops the section structure. See [prompt-writing.md](../prompt-writing.md#how-to-deliver-the-prompt).
