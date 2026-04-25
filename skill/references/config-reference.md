@@ -53,14 +53,14 @@ Run `config show` whenever a knob seems to have no effect — the output enumera
 
 ## Environment variable overrides
 
-Four `CODEX_BRIDGE_*` env vars override runtime-only knobs that are not surfaced as `config.yaml` keys or CLI flags. They are read on every bridge invocation.
+Four `CODEX_BRIDGE_*` env vars override runtime-only knobs that are not surfaced as `config.yaml` keys or CLI flags. **When they are read varies** — see the rightmost column:
 
-| Env var | Default | Purpose |
-|---|---|---|
-| `CODEX_BRIDGE_HEARTBEAT_MS` | `60000` (60 s) | Interval for `[HEARTBEAT]` events written to `.events`. Emits unconditionally regardless of Codex activity — proves the observability channel is live even during silent reasoning windows. |
-| `CODEX_BRIDGE_CHECKPOINT_MS` | `300000` (5 min) | Interval for `[CHECKPOINT]` digests (last assistant message + tool calls + git delta). Also drives the stall detector (see below). |
-| `CODEX_BRIDGE_STALL_CHECKPOINTS` | `3` | Consecutive barren checkpoints (no commands, no file changes, no plans) before the bridge emits `[ERROR] \| StallDetected` and terminates. Default stall window = `CHECKPOINT_MS × STALL_CHECKPOINTS` = 15 min. |
-| `CODEX_BRIDGE_NO_UPDATE_CHECK` | unset | Set to `"1"` (strict equality) to disable the silent auto-apply that re-installs `yigitkonur/codex-bridge` via `npx -y skills add` on non-`--json`, non-`update` invocations (rate-limited to once/hour/workspace). This is the only opt-out. |
+| Env var | Default | Read when | Purpose |
+|---|---|---|---|
+| `CODEX_BRIDGE_HEARTBEAT_MS` | `60000` (60 s) | once per `task` / `send` turn (heartbeat-loop init) | Interval for `[HEARTBEAT]` events written to `.events`. Emits unconditionally regardless of Codex activity — proves the observability channel is live even during silent reasoning windows. |
+| `CODEX_BRIDGE_CHECKPOINT_MS` | `300000` (5 min) | once per `task` / `send` turn (checkpoint-loop init) | Interval for `[CHECKPOINT]` digests (last assistant message + tool calls + git delta). Also drives the stall detector (see below). |
+| `CODEX_BRIDGE_STALL_CHECKPOINTS` | `3` | once per `task` / `send` turn (checkpoint-loop init) | Consecutive **barren** checkpoint windows (no commands, no file changes, no plans) before the bridge emits `[ERROR] \| StallDetected` and stops the heartbeat/checkpoint timers. The barren counter only starts after the first actionable item lands (grace period); default stall window = `CHECKPOINT_MS × STALL_CHECKPOINTS` = 15 min once Codex is past that grace. |
+| `CODEX_BRIDGE_NO_UPDATE_CHECK` | unset | every bridge invocation (auto-apply hot path) | Set to `"1"` (strict equality) to disable the silent auto-apply that re-installs `yigitkonur/codex-bridge` via `npx -y skills add` on non-`--json`, non-`update` invocations (rate-limited to once/hour/workspace). This is the only opt-out. |
 
 
 ### `skip_meta_skills`

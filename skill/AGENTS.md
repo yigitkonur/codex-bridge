@@ -87,9 +87,9 @@ When adding a new config key:
 | `orchestration-flows.md` | End-to-end flow diagrams for simple task, question path, review findings, incomplete result. |
 | `prompt-writing.md` | Tips for writing effective prompts to hand to Codex. |
 | `error-recovery.md` | Error type → cause → recovery mapping. Must track `codexErrorInfo` variants in `src/lib/codex.mjs`. |
-| `references/templates/coder-mission.md` | Example prompt for coder tasks. |
-| `references/templates/research-mission.md` | Example prompt for research tasks. |
-| `references/templates/test-runner.md` | Example prompt for test-automation tasks. |
+| `templates/coder-mission.md` | Example prompt for coder tasks (lives at `skill/references/templates/`). |
+| `templates/research-mission.md` | Example prompt for research tasks (lives at `skill/references/templates/`). |
+| `templates/test-runner.md` | Example prompt for test-automation tasks (lives at `skill/references/templates/`). |
 
 Cross-links within references should use relative paths (`[notification format](notification-format.md)`) — they resolve both in GitHub and in the shipped skill bundle.
 

@@ -373,14 +373,14 @@ Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutu
     "jobId": "task-…",
     "threadId": "019d…",
     "eventsPath": "/abs/path/to/events",
-    "followed": true,
+    "followed": false,
     "filter": null,
     "exclude": "HEARTBEAT"
   }
 }
 ```
 
-The early-exit branch **omits** `timedOut`, `terminalTag`, `terminalLine`, and `elapsedMs` — the watcher never ran, so there is no follow-duration or terminal-tag capture. Orchestrators that switch on `result.terminalTag` must treat it as absent/`undefined` in this case and re-read the events file (or pair with `summary`) to determine which terminal closed the run.
+`result.followed` is the boolean coercion of the `--follow` flag (`Boolean(options.follow)`) — `true` when `--follow` was passed and a terminal tag was already in the initial dump; `false` when `--follow` was omitted entirely. The early-exit branch **omits** `timedOut`, `terminalTag`, `terminalLine`, and `elapsedMs` — the watcher never ran, so there is no follow-duration or terminal-tag capture. Orchestrators that switch on `result.terminalTag` must treat it as absent/`undefined` in this case and re-read the events file (or pair with `summary`) to determine which terminal closed the run.
 
 **Recommended shape:** `--exclude HEARTBEAT`. Every tag the bridge emits passes except the 60-s liveness pulse that would flood an LLM orchestrator's context. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
 

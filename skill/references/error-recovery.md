@@ -54,8 +54,8 @@ Codes the bridge attaches when a failure's `codexErrorInfo` is missing or too ge
 
 | `error.code` | Class | `$?` | Retryable? | Trigger |
 |---|---|---|---|---|
-| `ClientTimeout` | timeout | 7 | yes | Idle / turn / pipeline / question timer expired; `origin:` names which |
-| `ProcessDeath` | dependency_failed | 7 | depends | Codex app-server process exited before `turn/completed` |
+| `ClientTimeout` | timeout | 7 | yes | Idle / turn / pipeline timer expired; `origin:` names which. (Question-answer timeouts do **not** surface as `ClientTimeout` — they auto-answer `{answers: {}}` and log a non-terminal `QUESTION_TIMEOUT` ndjson record.) |
+| `ProcessDeath` | dependency_failed | 7 | yes | Codex app-server process exited before `turn/completed`. The classifier marks this retryable unconditionally — re-run after `setup` confirms Codex is reachable. |
 | `UPSTREAM_STREAM_DISCONNECTED` | network | 7 | yes | Transport drop: websocket close / ECONNRESET / socket hang up. Auto-retried by the `upstream:transport` policy before surfacing |
 | `PreviousResponseNotFound` | dependency_failed | 7 | yes, **by new task only** | Upstream 400 `previous_response_not_found` — the `previous_response_id` is dead. `send` on the same thread repeats the 400 forever |
 | `UpstreamUnauthorized` | auth | 4 | no | Upstream 401 from Codex's auth layer or a proxy in front of it. Reauth the right layer; retry accomplishes nothing |
@@ -277,10 +277,13 @@ v1.5.0 surfaces richer origin/partial/handoff fields; branch on `origin:` first,
   ├── origin: idle                         → raise --idle-timeout-ms; see #idle-timeout
   ├── origin: pipeline:<stage>             → raise --pipeline-stage-timeout-ms (or --no-pipeline)
                                               (* emitted by auto-pipeline.mjs, not classifyTurnErrorOrigin)
-  ├── origin: bridge                       → bridge bug; file issue; see #unhandledexit
-                                              (* emitted by the finally-backstop in codex-bridge.mjs,
-                                                 not classifyTurnErrorOrigin; distinguish sub-cases by
-                                                 error.code: `StallDetected` vs `UnhandledExit`)
+  ├── origin: bridge                       → bridge safety net tripped; see #unhandledexit
+                                              (* emitted by both the stall detector and the
+                                                 finally-backstop in codex-bridge.mjs (NOT by
+                                                 classifyTurnErrorOrigin); distinguish sub-cases by
+                                                 error.code: `StallDetected` (barren-checkpoint
+                                                 threshold) vs `UnhandledExit` (turn exited past
+                                                 every instrumented branch — file an issue))
   │
   ├── origin: turn + error.code (Codex-emitted variant):
   │     ├── ContextWindowExceeded     → new task, shorter prompt; see #context-window-exceeded

@@ -2,13 +2,15 @@
 
 ## Before Setting Up a Monitor
 
-Every example below uses `$EVENTS_FILE`. Derive it from the `task --json` envelope — it is the canonical per-thread events path under `~/.codex-bridge/sessions/`:
+Every example below uses `$EVENTS_FILE`. Derive it from the `task --json` envelope (preferred — bypasses hand-coding the path shape and respects any `session_dir` config override):
 
 ```bash
-EVENTS_FILE="$HOME/.codex-bridge/sessions/${THREAD_ID}.events"
-# or (preferred — bypasses hand-coding the path shape):
 EVENTS_FILE=$(node "$SCRIPT_PATH" task … --json | jq -r '.result.eventsPath')
+# Fallback when you only have the threadId and trust the default session_dir:
+EVENTS_FILE="$HOME/.codex-bridge/sessions/${THREAD_ID}.events"
 ```
+
+`~/.codex-bridge/sessions/` is the **default** events location; `config.session_dir` overrides it. The `result.eventsPath` envelope field always reflects the effective resolved path, so `jq -r '.result.eventsPath'` is correct under any config.
 
 Always verify the events file exists before attaching a Monitor:
 ```bash

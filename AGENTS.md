@@ -93,7 +93,7 @@ codex-bridge/
 | `CODEX_BRIDGE_STALL_CHECKPOINTS` | `src/codex-bridge.mjs:2243-2244` | Consecutive barren checkpoints before `[ERROR] \| StallDetected` fires. Default 3. |
 | `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` | upstream server | Overrides `ClientInfo.name`-based originator; tested upstream. Do not set unless debugging. |
 
-Update check is anonymous-only against the public GitHub Releases API since 1.2.8; `GITHUB_TOKEN` / `GH_TOKEN` are **no longer read** (confirm via `grep -R 'GITHUB_TOKEN\|GH_TOKEN' src/` — zero hits).
+Update check is anonymous-only against the public GitHub Releases API since 1.2.8; `GITHUB_TOKEN` / `GH_TOKEN` are **no longer read** in any code path (confirm via `grep -RE "process\.env\.(GITHUB_TOKEN|GH_TOKEN)" src/` — zero hits; the names still appear in a comment in `src/lib/update-check.mjs` for historical context).
 
 ## What to do when making a change
 

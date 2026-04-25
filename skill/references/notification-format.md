@@ -166,7 +166,7 @@ Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not
 
 ### [CHECKPOINT]
 ```
-[CHECKPOINT] {threadId} t={elapsed} | phase={plan|execute|?} | interval={intervalMs} | pid={pid|?}
+[CHECKPOINT] {threadId} t={elapsed} | phase={plan|execute|?} | interval={formattedDuration} | pid={pid|?}
   assistant:                                         # OR "assistant: (no new assistant message this interval)" when none
     {fullAssistantText capped at 8000 chars; truncated tail gets "… (truncated, N more chars)"}
   tools (N):                                         # always present; "(none)" when N=0
@@ -178,7 +178,11 @@ Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not
   tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000   # only when scriptPath + jobId both present
 ```
 
-Emitted every `CODEX_BRIDGE_CHECKPOINT_MS` (default 5 min — env override) alongside the 60-s `[HEARTBEAT]`. Non-terminal; `events --follow` does **not** self-terminate on `[CHECKPOINT]`. Unlike `[HEARTBEAT]`, Monitor's default filter does **not** exclude `[CHECKPOINT]` — it's the primary LLM-facing digest during long runs. Pass `--exclude HEARTBEAT,CHECKPOINT` if you want to drop both. The assistant block is capped at 8000 chars per checkpoint; overflow gets a `… (truncated, N more chars)` tail. The stall detector (`CODEX_BRIDGE_STALL_CHECKPOINTS`, default 3) counts consecutive checkpoints with zero actionable items and fires `[ERROR] | StallDetected` on hit.
+Both `t={elapsed}` and `interval={…}` render through the same duration formatter (`fmtSeconds`) — short windows show as `Xs`, longer ones as `Xm` or `XmYYs`, never as raw milliseconds.
+
+Checked every `CODEX_BRIDGE_CHECKPOINT_MS` (default 5 min — env override) alongside the 60-s `[HEARTBEAT]`, but a `[CHECKPOINT]` block is only **written** for intervals that have something worth surfacing (an actionable item, a new assistant message, or a git delta). If an interval has no actionable items, no assistant message, and no diff, the bridge skips emitting `[CHECKPOINT]` entirely — consumers should not assume one block per interval. Non-terminal; `events --follow` does **not** self-terminate on `[CHECKPOINT]`. Unlike `[HEARTBEAT]`, Monitor's default filter does **not** exclude `[CHECKPOINT]` — it's the primary LLM-facing digest during long runs. Pass `--exclude HEARTBEAT,CHECKPOINT` if you want to drop both. The assistant block is capped at 8000 chars per checkpoint; overflow gets a `… (truncated, N more chars)` tail.
+
+The stall detector (`CODEX_BRIDGE_STALL_CHECKPOINTS`, default 3) counts consecutive **barren** checkpoint windows (zero actionable items — `commandExecution` / `fileChange` / `plan`) and fires `[ERROR] | StallDetected` on hit. **Grace period:** the barren counter only starts incrementing after the first actionable item lands; a turn that's still in its initial reasoning window won't trip the detector. Default stall window therefore = `CHECKPOINT_MS × STALL_CHECKPOINTS` once Codex has produced at least one actionable item.
 
 ### [INCOMPLETE]
 ```
