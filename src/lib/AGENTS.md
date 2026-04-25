@@ -163,7 +163,7 @@ Derived from `codex-rs/app-server/README.md`, `codex-rs/app-server-protocol/src/
 
 | Our JS | Upstream type name | When emitted |
 |---|---|---|
-| `{ type: "readOnly" }` | `SandboxPolicy::ReadOnly` | plan-mode fallback **only when `config.sandbox_policy` is unset**; `sandbox_policy: "read-only"` |
+| `{ type: "readOnly" }` | `SandboxPolicy::ReadOnly` | plan-mode fallback when `config.sandbox_policy` is unset or set to an unknown value; `sandbox_policy: "read-only"` |
 | `{ type: "workspaceWrite" }` | `SandboxPolicy::WorkspaceWrite { writableRoots, networkAccess }` | default-mode + `--write`; `sandbox_policy: "workspace-write"` |
 | `{ type: "dangerFullAccess" }` | `SandboxPolicy::DangerFullAccess` | `sandbox_policy: "danger-full-access"` (the shipped default). See `config.mjs::buildSandboxPolicy`. |
 | n/a | `SandboxPolicy::ExternalSandbox { networkAccess }` | never emitted |
