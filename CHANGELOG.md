@@ -9,6 +9,89 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+### Fixed
+- `auto-pipeline` terminal tag: `[PIPELINE:done]` / `[PIPELINE:failed]` now
+  emit the documented names (previously rendered as
+  `[PIPELINE:pipeline:done]` / `[PIPELINE:pipeline:failed]` — contradicted
+  every doc surface). Consumers expecting the literal `[PIPELINE:done]` /
+  `[PIPELINE:failed]` string in `.events` (via grep, regex, or exact-match
+  string parsers) saw nothing on the buggy build. The `events --filter
+  PIPELINE` recipe still kept matching either form, since `--filter`
+  extracts only the head tag family (`m[1].split(":")[0].toUpperCase()`,
+  `src/codex-bridge.mjs:3734`), but the closing-tag literal text was
+  wrong. Source call sites in `src/lib/auto-pipeline.mjs` now pass
+  `stage: "done"` / `stage: "failed"` directly. Orchestrators that were
+  relying on the buggy literal must switch to the documented names.
+
+### Docs (skill bundle)
+
+Skill bundle re-aligned with v1.5.0 source after an independent audit
+(73 findings verified against `src/`). No behavior changes in the
+skill/docs commits — only accuracy and coverage improvements:
+
+- `SKILL.md`: plan-turn timeout 15 min → 30 min; exit-code table adds
+  row 8 (partial success); `--write` first-turn caveat rewritten to
+  respect the shipped `danger-full-access` default; `result.next_action.command`
+  note reflects the full `node <path>` form actually written into the
+  envelope; Monitor tag-vocabulary enumeration adds `[DIRECTIVES]`,
+  `[CONFIRMED]`, `[PARTIAL]`, `[RETRYING]`, `[HANDOFF]`.
+- `references/command-reference.md`: turn-plan/turn-default defaults
+  300000/600000 → 1800000/1800000; events `--timeout-ms` default
+  1800000 → 600000 (matches handler); adds workspace-dirty phase row;
+  adds `status --watch`/`--interval`/`--watch-timeout-ms`; adds
+  `version --check-update`; adds full sections for `update`, `config`,
+  `await-artifact` (present in COMMANDS but previously undocumented);
+  adds synthesized-error-code table (UPSTREAM_STREAM_DISCONNECTED,
+  PreviousResponseNotFound, UpstreamUnauthorized, UpstreamInvalidRequest);
+  replaces stale `wait` known-gap with actual WAIT_TIMEOUT behavior;
+  adds events `--follow` early-exit envelope shape.
+- `references/config-reference.md`: `turn_plan_ms` default 900000 →
+  1800000; `allow_questions` flagged as documented-but-unread;
+  new "Validation and error handling" subsection covering all 5
+  failure modes (YAML parse, malformed `*_ms` in config vs CLI,
+  malformed `sandbox_policy`, unvalidated strings); new "Environment
+  variable overrides" subsection for `CODEX_BRIDGE_HEARTBEAT_MS`,
+  `CODEX_BRIDGE_CHECKPOINT_MS`, `CODEX_BRIDGE_STALL_CHECKPOINTS`,
+  `CODEX_BRIDGE_NO_UPDATE_CHECK`.
+- `config.yaml`: ship all six `*_ms` timeout keys as commented stubs
+  matching defaults, for visible control surface.
+- `references/error-recovery.md`: split unified codexErrorInfo table
+  into Codex-emitted (9 rows) vs bridge-synthesized (6 rows) with
+  explicit Retryable? column for the second; new UPSTREAM_RETRY_POLICY
+  table (5 rows with strategy / maxAttempts / backoff); new envelope-
+  shapes subsection (success + error + retryAfter→retry_after rename);
+  new [HANDOFF] envelope subsection; Plan-turn timeout row 15 → 30 min;
+  decision tree annotates pipeline:/bridge origins with actual emitting
+  module; ClientTimeout / ProcessDeath grouped with synthesized codes.
+- `references/notification-format.md`: `bridge:*` origin row corrected
+  to `bridge` (bare string; no `bridge:stall` / `bridge:unhandled-exit`
+  sub-tokens are emitted); new [CHECKPOINT] schema section (previously
+  zero schema documentation despite the tag shipping in 1.3.0); [QUESTION]
+  respond: fanout documented (one line per option, not one template);
+  [DIRECTIVES] schema adds conditional `approval=` and `model=` segments
+  + parse-as-key-value note; [REVIEW] reserved-status note corrected
+  re: writeReview having a caller on the adversarial-review path.
+- `references/monitor-patterns.md`: define `$EVENTS_FILE` derivation
+  up front; Preset C `timeout_ms: 300000` → `21600000` (5 min →
+  6 h, matching the "session-long" label).
+- `references/prompt-writing.md`: plan-mode sandbox framed as a
+  reasoning constraint (not a sandbox one); `turn_plan_ms` default
+  15 → 30 min; new "How to deliver the prompt" subsection documenting
+  `readTaskPrompt` precedence and the argv-newline-collapse pitfall.
+- `references/orchestration-flows.md`: drop pandoc `{#recovering-...}`
+  suffix (GFM renders literally); simplify "Running N jobs in parallel
+  (fan-out / fan-in)" → "Running N jobs in parallel" so the GFM auto-slug
+  matches SKILL.md's cross-link.
+- `references/templates/*.md`: each mission template gains a "Use it"
+  block showing the canonical `task --prompt-file mission.md` dispatch.
+- `AGENTS.md` (repo root): `ROOT_DIR` line pointer 97-103 → 235-237;
+  `buildCollaborationMode` line pointer 56 → 191-196;
+  `CODEX_BRIDGE_NO_UPDATE_CHECK` read site 128 → 161; drop stale
+  `GITHUB_TOKEN`/`GH_TOKEN` row (no longer read since 1.2.8); add
+  `CODEX_BRIDGE_HEARTBEAT_MS`/`_CHECKPOINT_MS`/`_STALL_CHECKPOINTS`.
+- `skill/AGENTS.md`: references table uses full `references/templates/`
+  prefix to disambiguate from the generated `skill/templates/` siblings.
+
 ## [1.5.0] — 2026-04-20
 
 Truthful upstream-error classification, automatic exp-backoff retry,

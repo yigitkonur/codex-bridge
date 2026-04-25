@@ -55,7 +55,7 @@ Every `--json` call returns a uniform envelope:
 { "ok": false, "schema_version": "1.0", "command": "task", "error": { "class": "auth", "code": "Unauthorized", "retryable": false, "suggestion": "…" } }
 ```
 
-`result.next_action.command` is printed as `codex-bridge <sub> …` (shorthand). Before running it, substitute the real invocation: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs <sub> …`. There is no `codex-bridge` binary on `$PATH`.
+`result.next_action.command` is already a ready-to-paste invocation in full `node /absolute/path/to/codex-bridge.mjs <sub> …` form — run it verbatim, no substitution required. The `codex-bridge <sub>` shorthand only appears in `--help` text and the printed exit-code doc; it is never written into the JSON envelope. There is no `codex-bridge` binary on `$PATH`.
 
 Exit code is the fast gate — branch on `$?` before parsing:
 
@@ -68,6 +68,7 @@ Exit code is the fast gate — branch on `$?` before parsing:
 | 5 | conflict (already running) | check state |
 | 6 | validation (bad input) | fix the input |
 | 7 | transient (timeout / network / rate-limit) | retry with backoff |
+| 8 | partial success | inspect `result` / `error.partial` for details |
 | 1 | internal crash | escalate |
 
 ## How It Works
@@ -97,7 +98,7 @@ Six independent timeout budgets, each resolved `CLI flag → config.yaml key →
 
 | Phase | Default | Config key | CLI flag |
 |---|---|---|---|
-| Plan turn | 15 min | `turn_plan_ms` | `--turn-plan-ms` |
+| Plan turn | 30 min | `turn_plan_ms` | `--turn-plan-ms` |
 | Execute turn (also send turns in default mode) | 30 min | `turn_default_ms` | `--turn-default-ms` (task) / `--turn-timeout-ms` (send) |
 | Per-stage pipeline (review/fix/check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
 | Pipeline total | 15 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
@@ -155,7 +156,7 @@ TOOL_HINT=$(echo "$LAUNCH" | jq -c '.result.monitor.tool_hint')
 
 The positional form takes **text**, not a path; use `--prompt-file` to load from disk.
 
-**`--write` alone doesn't enable file writing on the first turn.** With the default `mode: plan`, the task runs against a `readOnly` sandbox and `--write` has no effect until a `send <thread-id> --mode default …` approves the plan. Pass `--mode default` on `task` to go straight to execution. `--mode` on `task --background` is also applied — the override flows through the job record into the detached worker.
+**`--write` interacts with two layers — `sandbox_policy` override wins over the mode-derived default.** Under the shipped `sandbox_policy: "danger-full-access"` default, every turn (plan *or* default) runs with full filesystem access regardless of `--write`; plan-mode is a *reasoning* constraint, not a sandbox one. The "first turn is readOnly" behavior only applies when you've tightened `sandbox_policy` to `"read-only"` (or cleared the override so the mode-derived default kicks in) — in that configuration, a plan-mode first turn runs `readOnly` and `--write` has no effect until a `send <thread-id> --mode default …` approves the plan. Pass `--mode default` on `task` to skip the plan turn in either configuration. `--mode` on `task --background` is also applied — the override flows through the job record into the detached worker.
 
 **Fallback when `jq` isn't available.** Rendered (non-JSON) output ends with a one-line footer printed verbatim after Codex's final message:
 
@@ -276,7 +277,7 @@ When commits landed before the error, a `[PARTIAL] commits=[…]` block precedes
 
 ## When NOT to use Monitor
 
-Monitor is bound specifically to codex-bridge `.events` files and their tag vocabulary (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[PIPELINE:*]`, `[WARNING]`, `[HEARTBEAT]`, `[CHECKPOINT]`). Re-arming Monitor on a foreign process whose stdout doesn't emit those tags will only ever time out — the filter never matches, Monitor waits the full `timeout_ms`, then reports `stream ended`. This wastes orchestrator turns and teaches the agent nothing.
+Monitor is bound specifically to codex-bridge `.events` files and their tag vocabulary (`[DIRECTIVES]`, `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[PIPELINE:*]`, `[WARNING]`, `[HEARTBEAT]`, `[CHECKPOINT]`, `[PARTIAL]`, `[RETRYING]`, `[HANDOFF]`). Re-arming Monitor on a foreign process whose stdout doesn't emit those tags will only ever time out — the filter never matches, Monitor waits the full `timeout_ms`, then reports `stream ended`. This wastes orchestrator turns and teaches the agent nothing.
 
 **Monitor is single-job.** One Monitor call tails one `.events` file and self-terminates on one terminal tag. For N > 1 parallel Codex jobs, do **not** stack N Monitor calls — use `status --watch` for a live table view of all tracked jobs, or `await-artifact` to block on the specific file each job will produce. See "Running N jobs in parallel" below and `references/orchestration-flows.md` for the full fan-out / fan-in pattern.
 
@@ -356,7 +357,7 @@ Full documentation: [references/config-reference.md](references/config-reference
 
 Each task writes artifacts to `~/.codex-bridge/sessions/` (or `config.session_dir`):
 
-- `{threadId}.events` — Monitor tails this. Tags emitted: `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[WARNING]`, `[HEARTBEAT]` (every ~60 s during any running turn — non-terminal liveness pulse), `[CHECKPOINT]` (every ~5 min — non-terminal rich summary: last assistant message, tool calls, git delta, commits since last checkpoint), `[PIPELINE:diff|review|fix|check]` with matching `:done` pair, and terminal `[PIPELINE:done]` or `[PIPELINE:failed]`. A `[ERROR] | UnhandledExit` block indicates the bridge's finally-backstop fired — the turn exited without any other error branch emitting a terminal tag. A `[ERROR] | StallDetected` block indicates 3 consecutive checkpoints (15 min by default) had zero actionable items — Codex is alive but not progressing; orchestrator should cancel or steer.
+- `{threadId}.events` — Monitor tails this. Tags emitted: `[DIRECTIVES]` (first event of every turn — non-terminal echo of the effective runtime config: `mode`, `effort`, `sandbox`, `approval` when set, `quiet`, `skip_meta_skills`, `pipeline`, `model` when set), `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[WARNING]`, `[HEARTBEAT]` (every ~60 s during any running turn — non-terminal liveness pulse), `[CHECKPOINT]` (every ~5 min — non-terminal rich summary: last assistant message, tool calls, git delta, commits since last checkpoint), `[PIPELINE:diff|review|fix|check]` with matching `:done` pair, and terminal `[PIPELINE:done]` or `[PIPELINE:failed]`. A `[ERROR] | UnhandledExit` block indicates the bridge's finally-backstop fired — the turn exited without any other error branch emitting a terminal tag. A `[ERROR] | StallDetected` block indicates 3 consecutive checkpoints (15 min by default) had zero actionable items — Codex is alive but not progressing; orchestrator should cancel or steer.
 - `{threadId}.ndjson` — Curated retrospective log (turn params, item completions, questions, errors, pipeline stages). Not a full wire mirror. See [references/ndjson-guide.md](references/ndjson-guide.md).
 - `{threadId}.diff` — `git diff HEAD` snapshot captured by the pipeline.
 - `{threadId}.plan.md` — Written when Codex emits a structured `item/completed` with `type: "plan"`.

@@ -7322,8 +7322,7 @@ async function runAutoPipeline(options) {
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
-      stage: "pipeline",
-      suffix: "done",
+      stage: "done",
       detail: `stages=${completedStages.join(",")} complete=${Boolean(completionResult.complete)} touched=${fixFilesTouched.length}`
     }));
     return {
@@ -7366,8 +7365,7 @@ async function runAutoPipeline(options) {
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
-      stage: "pipeline",
-      suffix: "failed",
+      stage: "failed",
       detail: `at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
     return {

@@ -292,9 +292,12 @@ export async function runAutoPipeline(options) {
     // Symmetric terminal tag so `events --filter PIPELINE` sees both edges of
     // the pipeline lifecycle. Orchestrators can now wait for [PIPELINE:done]
     // before assuming the bridge has stopped writing to the workspace.
+    // NOTE: previously passed { stage: "pipeline", suffix: "done" } which
+    // rendered as [PIPELINE:pipeline:done] — contradicting every doc surface
+    // that promised [PIPELINE:done]. Pass stage directly so the terminal
+    // closer matches the documented name.
     logEvent(session, formatPipelineEvent(session, {
-      stage: "pipeline",
-      suffix: "done",
+      stage: "done",
       detail: `stages=${completedStages.join(",")} complete=${Boolean(completionResult.complete)} touched=${fixFilesTouched.length}`
     }));
 
@@ -354,9 +357,10 @@ export async function runAutoPipeline(options) {
       touchedFiles: fixFilesTouched,
     });
 
+    // See pipeline:done note above — terminal closer passes stage directly
+    // to render as [PIPELINE:failed] instead of the stale [PIPELINE:pipeline:failed].
     logEvent(session, formatPipelineEvent(session, {
-      stage: "pipeline",
-      suffix: "failed",
+      stage: "failed",
       detail: `at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
 

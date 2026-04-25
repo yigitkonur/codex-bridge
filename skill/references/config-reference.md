@@ -25,19 +25,43 @@ All four layers are honored. Before 1.1.0, only the skill config layer was read 
 | `auto_review` | boolean | `true` | Run automatic review after task execution completes |
 | `post_task_prompt` | string | (see below) | Completion check prompt. Empty string disables it. |
 | `prompt_footer` | string | (see below) | Text appended to every prompt. Used to instruct Codex to use `requestUserInput` tool for questions. |
-| `allow_questions` | boolean | `true` | Allow Codex to ask questions in Default mode. Always enabled in Plan mode. |
+| `allow_questions` | boolean | `true` | **Documented contract, not currently enforced.** Intended to let callers disable `requestUserInput` in default mode; today no code path reads this key and the `prompt_footer` (which steers Codex toward `requestUserInput`) is emitted unconditionally. Either set `prompt_footer: ""` to drop the steering line, or treat this key as reserved until a future release wires it. |
 | `session_dir` | string | `"~/.codex-bridge/sessions"` | Where session logs are stored. `~` expands to home directory. Also the canonical path to `tail -f` directly when the bridge CLI is misbehaving. |
 | `sandbox_policy` | string | `"danger-full-access"` | Sandbox profile. One of `"danger-full-access"`, `"workspace-write"`, `"read-only"`. See below. |
 | `skip_meta_skills` | boolean | `true` | Prepend an `[ORCHESTRATOR DIRECTIVE]` telling Codex to skip any internal planning / ceremony / meta-skill chain before execution (framework-agnostic — any chain that produces scaffold docs under `docs/`, `plans/`, `specs/`, etc.). See below. |
 | `command_failure_circuit_breaker` | boolean | `true` | Emit `[WARNING]` when 3 of the last 5 same-family command executions fail (with wrapper-pattern detection). See below. |
 | `idle_timeout_ms` | integer | `300000` | No-event idle watchdog: max wall-clock gap between app-server notifications before a turn is failed with `ClientTimeout`. CLI override: `--idle-timeout-ms`. |
-| `turn_plan_ms` | integer | `900000` | Per-turn timeout for plan turns. Raised from 300 000 in 1.3.0 — prior ceiling prematurely killed legitimate plan windows. CLI override: `--turn-plan-ms` (task) / `--turn-timeout-ms` (send when `--mode plan`). |
-| `turn_default_ms` | integer | `1800000` | Per-turn timeout for execute turns (also covers send turns in default mode). Raised from 600 000 in 1.3.0 — prior 10-min ceiling interrupted multi-file ports that were still actively writing. CLI override: `--turn-default-ms` (task) / `--turn-timeout-ms` (send). |
+| `turn_plan_ms` | integer | `1800000` | Per-turn timeout for plan turns. Raised to 30 min in 1.3.0 — matches `turn_default_ms`; pre-1.3.0 the plan budget was 5 min (300 000 ms) and routinely killed live plans mid-reasoning. CLI override: `--turn-plan-ms` (task) / `--turn-timeout-ms` (send when `--mode plan`). |
+| `turn_default_ms` | integer | `1800000` | Per-turn timeout for execute turns (also covers send turns in default mode). Raised to 30 min in 1.3.0 — pre-1.3.0 was 600 000 ms (10 min), and interrupted multi-file ports that were still actively writing. CLI override: `--turn-default-ms` (task) / `--turn-timeout-ms` (send). |
 | `pipeline_stage_ms` | integer | `300000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
 | `pipeline_total_ms` | integer | `900000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
 | `question_answer_ms` | integer | `300000` | How long `requestUserInput` waits for a response before auto-answering `{answers: {}}`. CLI override: `--question-timeout-ms`. |
 
-Every `*_ms` key validates as a positive integer. Malformed CLI flag values (`--*-ms notanumber` / `0` / negative) throw `USAGE_ERROR` (exit 2) rather than silent fallback to the default — callers notice typos immediately. Resolution order for every timeout: CLI flag → `config.yaml` key → built-in default.
+Resolution order for every timeout: CLI flag → `config.yaml` key → built-in default.
+
+## Validation and error handling
+
+`loadConfig` does not schema-validate YAML layers. Wrong types and typos survive the merge; behavior depends on where the value is read:
+
+1. **YAML parse failure** (file unreadable, malformed syntax) → the whole layer is dropped silently and the next layer takes over.
+2. **Malformed `*_ms` key in `config.yaml`** (e.g. `turn_plan_ms: "30m"`, `idle_timeout_ms: 0`, `pipeline_stage_ms: -1`) → each read site uses `Number(config.<key>) > 0 ? … : <default>` and silently reverts to the **built-in default** (not the layer below). This is deliberately different from the CLI-flag contract below — a typo in `config.yaml` will not raise an error.
+3. **Malformed CLI flag** (`--turn-plan-ms abc`, `--idle-timeout-ms 0`) → `parsePositiveMsOption` throws `USAGE_ERROR` (exit 2). Callers notice typos immediately.
+4. **Malformed `sandbox_policy`** → silently falls back to the mode-derived default (`plan → read-only`, `default → workspace-write`). Documented under `sandbox_policy` below.
+5. **Malformed `effort`, `mode`, or any other string/boolean key** → **no validation** in `loadConfig`. The raw value is forwarded to the downstream consumer. A bad `effort:` in config.yaml reaches Codex as the `reasoning_effort` payload; a bad `mode:` reaches `buildCollaborationMode` unchecked. Fix by running `config show` to see the effective merged values.
+
+Run `config show` whenever a knob seems to have no effect — the output enumerates every layer's path and highlights keys that differ from `DEFAULT_CONFIG`.
+
+## Environment variable overrides
+
+Four `CODEX_BRIDGE_*` env vars override runtime-only knobs that are not surfaced as `config.yaml` keys or CLI flags. **When they are read varies** — see the rightmost column:
+
+| Env var | Default | Read when | Purpose |
+|---|---|---|---|
+| `CODEX_BRIDGE_HEARTBEAT_MS` | `60000` (60 s) | once per `task` / `send` turn (heartbeat-loop init) | Interval for `[HEARTBEAT]` events written to `.events`. Emits unconditionally regardless of Codex activity — proves the observability channel is live even during silent reasoning windows. |
+| `CODEX_BRIDGE_CHECKPOINT_MS` | `300000` (5 min) | once per `task` / `send` turn (checkpoint-loop init) | Interval for `[CHECKPOINT]` digests (last assistant message + tool calls + git delta). Also drives the stall detector (see below). |
+| `CODEX_BRIDGE_STALL_CHECKPOINTS` | `3` | once per `task` / `send` turn (checkpoint-loop init) | Consecutive **barren** checkpoint windows (no commands, no file changes, no plans) before the bridge emits `[ERROR] \| StallDetected` and stops the heartbeat/checkpoint timers. The barren counter only starts after the first actionable item lands (grace period); default stall window = `CHECKPOINT_MS × STALL_CHECKPOINTS` = 15 min once Codex is past that grace. |
+| `CODEX_BRIDGE_NO_UPDATE_CHECK` | unset | every bridge invocation (auto-apply hot path) | Set to `"1"` (strict equality) to disable the silent auto-apply that re-installs `yigitkonur/codex-bridge` via `npx -y skills add` on non-`--json`, non-`update` invocations (rate-limited to once/hour/workspace). This is the only opt-out. |
+
 
 ### `skip_meta_skills`
 

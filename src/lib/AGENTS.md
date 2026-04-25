@@ -163,7 +163,7 @@ Derived from `codex-rs/app-server/README.md`, `codex-rs/app-server-protocol/src/
 
 | Our JS | Upstream type name | When emitted |
 |---|---|---|
-| `{ type: "readOnly" }` | `SandboxPolicy::ReadOnly` | plan mode default; `sandbox_policy: "read-only"` |
+| `{ type: "readOnly" }` | `SandboxPolicy::ReadOnly` | plan-mode fallback when `config.sandbox_policy` is unset or set to an unknown value; `sandbox_policy: "read-only"` |
 | `{ type: "workspaceWrite" }` | `SandboxPolicy::WorkspaceWrite { writableRoots, networkAccess }` | default-mode + `--write`; `sandbox_policy: "workspace-write"` |
 | `{ type: "dangerFullAccess" }` | `SandboxPolicy::DangerFullAccess` | `sandbox_policy: "danger-full-access"` (the shipped default). See `config.mjs::buildSandboxPolicy`. |
 | n/a | `SandboxPolicy::ExternalSandbox { networkAccess }` | never emitted |
@@ -314,7 +314,7 @@ Read-side. `buildStatusSnapshot(cwd, { all })` returns the sorted, enriched job 
 - Timeouts (v1.2.4 / v1.2.5 / v1.3.0): `idle_timeout_ms: 300_000`, `turn_plan_ms: 1_800_000`, `turn_default_ms: 1_800_000`, `pipeline_stage_ms: 300_000`, `pipeline_total_ms: 900_000`.
 - Paths + prompt: `session_dir: "~/.codex-bridge/sessions"`, `prompt_footer: <requestUserInput directive>`.
 
-**Plan mode forces effort `xhigh`** in `buildCollaborationMode("plan", ...)`. `buildSandboxPolicy("plan")` always returns `{ type: "readOnly" }` regardless of `config.sandbox_policy` — plan turns are read-only by contract. For `default` mode, `buildSandboxPolicy` honors `config.sandbox_policy` and maps it to the upstream type (`danger-full-access` → `dangerFullAccess`, `workspace-write` → `workspaceWrite`, `read-only` → `readOnly`; unknown values fall back to `workspaceWrite`).
+**Plan mode forces effort `xhigh`** in `buildCollaborationMode("plan", ...)`. **Sandbox is independent of mode** — `buildSandboxPolicy(mode, config)` checks `config.sandbox_policy` first and returns the override-derived type (`danger-full-access` → `dangerFullAccess`, `workspace-write` → `workspaceWrite`, `read-only` → `readOnly`) regardless of mode. Only when `config.sandbox_policy` is unset (or set to an unknown value) does the function fall back to mode-derived defaults: plan → `readOnly`, default → `workspaceWrite`. With the shipped `sandbox_policy: "danger-full-access"` ship default, every turn (plan or default) gets `dangerFullAccess`; plan mode is a *reasoning* constraint, not a sandbox one. Earlier revisions of this doc claimed plan turns were read-only "by contract" — that was true under the pre-1.2.0 default of `workspace-write`, but the ship default flip in 1.2.0 inverted the situation.
 
 `COMPLETION_CHECK_SCHEMA` requires `{complete, missing_items, summary}`. Used by `auto-pipeline.mjs` as the `outputSchema` of the final completion turn.
 
