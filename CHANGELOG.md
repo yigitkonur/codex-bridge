@@ -13,12 +13,15 @@ see the "Adding an entry" section at the bottom for the workflow.
 - `auto-pipeline` terminal tag: `[PIPELINE:done]` / `[PIPELINE:failed]` now
   emit the documented names (previously rendered as
   `[PIPELINE:pipeline:done]` / `[PIPELINE:pipeline:failed]` — contradicted
-  every doc surface and made `events --filter PIPELINE` miss the documented
-  terminal names entirely; `--filter` matches the head-tag family only,
-  uppercased and split on `:`). Source call sites in
-  `src/lib/auto-pipeline.mjs` now pass `stage: "done"` / `stage: "failed"`
-  directly. Orchestrators that were relying on the buggy literal tag must
-  switch to the documented names.
+  every doc surface). Consumers expecting the literal `[PIPELINE:done]` /
+  `[PIPELINE:failed]` string in `.events` (via grep, regex, or exact-match
+  string parsers) saw nothing on the buggy build. The `events --filter
+  PIPELINE` recipe still kept matching either form, since `--filter`
+  extracts only the head tag family (`m[1].split(":")[0].toUpperCase()`,
+  `src/codex-bridge.mjs:3734`), but the closing-tag literal text was
+  wrong. Source call sites in `src/lib/auto-pipeline.mjs` now pass
+  `stage: "done"` / `stage: "failed"` directly. Orchestrators that were
+  relying on the buggy literal must switch to the documented names.
 
 ### Docs (skill bundle)
 
