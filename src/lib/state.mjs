@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { OFFICIAL_PLUGIN_STATUS } from "./official-plugin.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
@@ -11,6 +13,7 @@ const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+const STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 
 function nowIso() {
   return new Date().toISOString();
@@ -221,6 +224,125 @@ export function setConfig(cwd, key, value) {
 
 export function getConfig(cwd) {
   return loadState(cwd).config;
+}
+
+// Resolves the git project root from a given workspaceRoot via
+// `git rev-parse --show-toplevel`. Falls back to workspaceRoot when the
+// directory is not inside a git working tree (or git is unavailable).
+// The Stop hook reads the lock from the same project root, so this must
+// stay in sync with hooks/stop-review-gate-hook.mjs's `resolveProjectRoot`.
+function resolveProjectRoot(workspaceRoot) {
+  try {
+    const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      timeout: 5000
+    });
+    if (result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
+      return result.stdout.trim();
+    }
+  } catch {
+    // fall through
+  }
+  return workspaceRoot;
+}
+
+// Activation contract for the stop-time review gate.
+//
+// The Stop hook (hooks/stop-review-gate-hook.mjs) gates on the existence
+// of `.codex-bridge-stop-review-gate.lock` at the git project root —
+// state.json alone is not enough because the hook runs in a fresh node
+// process without the bridge's state machinery. This helper owns that
+// lock-file lifecycle AND continues to mirror the boolean into state.json
+// (via setConfig) so existing read paths stay backward-compatible.
+//
+// Suppression: when the official OpenAI Codex plugin is ACTIVE, we do not
+// create the lock — that plugin owns the stop-time review surface. We
+// still record the user's intent in state.json so disabling later cleans
+// the lock if it ever gets created out-of-band.
+//
+// UNKNOWN status (e.g. `claude plugin list --json` failed) is treated as
+// not-active: we err toward the user's explicit request and create the
+// lock. ABSENT (OFFICIAL_PLUGIN_STATUS.ABSENT) likewise creates the lock.
+//
+// Returns enough state for handleSetup/buildSetupReport to decide what to
+// surface to the caller.
+export function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
+  setConfig(workspaceRoot, "stopReviewGate", Boolean(enabled));
+
+  const projectRoot = resolveProjectRoot(workspaceRoot);
+  const lockPath = path.join(projectRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  const isOfficialActive = officialPlugin?.status === OFFICIAL_PLUGIN_STATUS.ACTIVE;
+  const suppressionReason = isOfficialActive ? "official-openai-codex-plugin-active" : null;
+
+  if (enabled) {
+    if (isOfficialActive) {
+      // Don't create the lock — official plugin owns the gate. Surface the
+      // suppression so the CLI can tell the user why their --enable did
+      // nothing on disk.
+      return {
+        lockPath,
+        lockExists: fs.existsSync(lockPath),
+        lockIgnored: fs.existsSync(lockPath),
+        suppressedByOfficialPlugin: true,
+        suppressionReason
+      };
+    }
+
+    try {
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      const payload = {
+        enabledAt: new Date().toISOString(),
+        enabledBy: "codex-bridge"
+      };
+      fs.writeFileSync(lockPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    } catch {
+      // Lock-write failures must not fail the caller. The Stop hook will
+      // simply see the gate as inactive on the next session boundary; the
+      // user can rerun `codex-bridge setup --enable-review-gate` to retry.
+    }
+
+    return {
+      lockPath,
+      lockExists: fs.existsSync(lockPath),
+      lockIgnored: false,
+      suppressedByOfficialPlugin: false,
+      suppressionReason: null
+    };
+  }
+
+  // disable: remove the lock if it exists, no-op otherwise.
+  try {
+    if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+  } catch {
+    // best-effort
+  }
+
+  return {
+    lockPath,
+    lockExists: fs.existsSync(lockPath),
+    lockIgnored: false,
+    suppressedByOfficialPlugin: isOfficialActive,
+    suppressionReason
+  };
+}
+
+// Read-only inspector used by buildSetupReport. Mirrors the suppression
+// logic above without mutating anything: tells the caller whether a lock
+// is on disk at the project root and whether the official plugin would
+// suppress it.
+export function readStopReviewGateState(workspaceRoot, officialPlugin) {
+  const projectRoot = resolveProjectRoot(workspaceRoot);
+  const lockPath = path.join(projectRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  const lockExists = fs.existsSync(lockPath);
+  const isOfficialActive = officialPlugin?.status === OFFICIAL_PLUGIN_STATUS.ACTIVE;
+  return {
+    lockPath,
+    lockExists,
+    lockIgnored: lockExists && isOfficialActive,
+    suppressedByOfficialPlugin: isOfficialActive,
+    suppressionReason: isOfficialActive ? "official-openai-codex-plugin-active" : null
+  };
 }
 
 export function writeJobFile(cwd, jobId, payload) {

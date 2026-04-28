@@ -242,6 +242,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path2 from "node:path";
 
+// src/lib/official-plugin.mjs
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+
 // src/lib/process.mjs
 import { spawnSync } from "node:child_process";
 import process3 from "node:process";

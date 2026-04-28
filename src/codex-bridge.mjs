@@ -55,10 +55,16 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  readStopReviewGateState,
   setConfig,
+  setStopReviewGate,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
+import {
+  detectOfficialOpenAICodexPlugin,
+  OFFICIAL_PLUGIN_STATUS
+} from "./lib/official-plugin.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -696,6 +702,27 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   const authStatus = await getCodexAuthStatus(cwd);
   const config = getConfig(workspaceRoot);
 
+  // Snapshot official-plugin presence so the Stop hook can tell the
+  // caller which surface owns stop-time review. Status semantics:
+  //   ACTIVE  → the OpenAI plugin owns it, our gate stays inert.
+  //   ABSENT  → OFFICIAL_PLUGIN_STATUS.ABSENT, our gate may activate.
+  //   UNKNOWN → detection failed, treated as not-active by setStopReviewGate.
+  //
+  // The lock file lives at <gitProjectRoot>/.codex-bridge-stop-review-gate.lock
+  // and is created/removed by setStopReviewGate. The Stop hook reads this
+  // exact path to decide whether to fire a review.
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd });
+  // Surface ABSENT explicitly so callers can distinguish it from UNKNOWN
+  // (detection failed) — UNKNOWN still allows enabling the gate, but only
+  // OFFICIAL_PLUGIN_STATUS.ABSENT is the no-conflict happy path.
+  const officialPluginAbsent = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT;
+  const lockState = readStopReviewGateState(workspaceRoot, officialPlugin);
+
+  // The hook gates on the lock file existing AND not being suppressed by
+  // the official plugin. state.json's stopReviewGate captures user intent
+  // but is no longer authoritative for hook activation on its own.
+  const reviewGateEnabled = lockState.lockExists && !lockState.suppressedByOfficialPlugin;
+
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -704,7 +731,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
   }
-  if (!config.stopReviewGate) {
+  if (!reviewGateEnabled && !lockState.suppressedByOfficialPlugin) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to require a fresh review before stop.");
   }
 
@@ -715,7 +742,15 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     codex: codexStatus,
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
-    reviewGateEnabled: Boolean(config.stopReviewGate),
+    reviewGateEnabled,
+    reviewGateLockExists: lockState.lockExists,
+    reviewGateLockIgnored: lockState.lockIgnored,
+    reviewGateLockPath: lockState.lockPath,
+    reviewGateSuppressionReason: lockState.suppressionReason,
+    reviewGateSuppressedByOfficialPlugin: lockState.suppressedByOfficialPlugin,
+    officialPlugin: { status: officialPlugin.status, plugin: officialPlugin.plugin ?? null },
+    officialPluginAbsent,
+    stopReviewGateConfig: Boolean(config.stopReviewGate),
     actionsTaken,
     nextSteps
   };
@@ -739,12 +774,26 @@ async function handleSetup(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
 
+  // Probe official-plugin presence once for both branches; setStopReviewGate
+  // uses it to decide whether to create or skip the project-root lock file.
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd });
+
   if (options["enable-review-gate"]) {
-    setConfig(workspaceRoot, "stopReviewGate", true);
-    actionsTaken.push(`Enabled the stop-time review gate for ${workspaceRoot}.`);
+    const result = setStopReviewGate(workspaceRoot, true, officialPlugin);
+    if (result.suppressedByOfficialPlugin) {
+      actionsTaken.push(
+        `Recorded enable-review-gate intent for ${workspaceRoot}, but the official OpenAI Codex plugin is active so the project-root lock file was NOT created. Stop-time review is owned by that plugin.`
+      );
+    } else {
+      actionsTaken.push(
+        `Enabled the stop-time review gate for ${workspaceRoot} (lock at ${result.lockPath}).`
+      );
+    }
   } else if (options["disable-review-gate"]) {
-    setConfig(workspaceRoot, "stopReviewGate", false);
-    actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+    const result = setStopReviewGate(workspaceRoot, false, officialPlugin);
+    actionsTaken.push(
+      `Disabled the stop-time review gate for ${workspaceRoot} (removed lock at ${result.lockPath}).`
+    );
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken);
