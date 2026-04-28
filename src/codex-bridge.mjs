@@ -811,8 +811,14 @@ async function handleSetup(argv) {
   if (options["enable-review-gate"]) {
     const result = setStopReviewGate(workspaceRoot, true, officialPlugin);
     if (result.suppressedByOfficialPlugin) {
+      // setStopReviewGate(..., true, officialPlugin) persists nothing when
+      // the official plugin is active — no lock file, no deferred enable
+      // intent. Saying we "recorded" the intent implies it activates later
+      // when the user disables the official plugin; nothing on disk supports
+      // that. Be honest: the request was skipped, and the user must rerun
+      // setup after disabling the official plugin.
       actionsTaken.push(
-        `Recorded enable-review-gate intent for ${workspaceRoot}, but the official OpenAI Codex plugin is active so the project-root lock file was NOT created. Stop-time review is owned by that plugin.`
+        `Stop-time review gate enable request was skipped: official OpenAI Codex plugin is active for ${workspaceRoot}. To enable Codex Bridge's gate, first disable the official plugin, then re-run \`codex-bridge setup --enable-review-gate\`.`
       );
     } else if (!result.lockExists) {
       // Lock-write failed (read-only checkout, missing dir, permission

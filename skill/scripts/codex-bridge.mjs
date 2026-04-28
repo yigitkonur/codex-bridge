@@ -8386,7 +8386,7 @@ async function handleSetup(argv) {
     const result = setStopReviewGate(workspaceRoot, true, officialPlugin);
     if (result.suppressedByOfficialPlugin) {
       actionsTaken.push(
-        `Recorded enable-review-gate intent for ${workspaceRoot}, but the official OpenAI Codex plugin is active so the project-root lock file was NOT created. Stop-time review is owned by that plugin.`
+        `Stop-time review gate enable request was skipped: official OpenAI Codex plugin is active for ${workspaceRoot}. To enable Codex Bridge's gate, first disable the official plugin, then re-run \`codex-bridge setup --enable-review-gate\`.`
       );
     } else if (!result.lockExists) {
       actionsTaken.push(
