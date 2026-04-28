@@ -377,6 +377,45 @@ export function emitError(err, { json = false, command = null, stderr = process.
 // would otherwise miss `--json` for collapsed args, emitting plain text
 // instead of the advertised JSON envelope. To stay correct in both shapes,
 // scan each argv element as whitespace-delimited tokens.
+// Walk a single argv element character-by-character and emit the
+// whitespace-separated tokens that live OUTSIDE any quoted span. Both
+// `"..."` and `'...'` are recognized; the matching close quote ends the
+// span. An unterminated quote swallows the rest of the element (the user
+// clearly meant it as prompt body, not a flag bag).
+//
+// This lets detectJsonFlag / detectHelpFlag correctly classify the
+// hybrid case `respond req --json-payload '{"answers":{}}' --json` —
+// the trailing `--json` is outside the quoted JSON payload, so it's a
+// real top-level flag and the JSON-envelope error path must trigger.
+// Conversely `"check the --help output"` keeps `--help` inside the
+// quoted span, so it's still treated as prompt prose, not a flag.
+function* tokenizeOutsideQuotes(arg) {
+  let buffer = "";
+  let quote = null;
+  for (let i = 0; i < arg.length; i++) {
+    const ch = arg[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      // Characters inside a quoted span are deliberately dropped — they
+      // belong to a quoted argument's payload, not a flag.
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (buffer) {
+        yield buffer;
+        buffer = "";
+      }
+      continue;
+    }
+    buffer += ch;
+  }
+  if (buffer) yield buffer;
+}
+
 export function detectJsonFlag(argv) {
   let result = false;
   for (const arg of argv) {
@@ -384,18 +423,14 @@ export function detectJsonFlag(argv) {
     // Fast path for already-tokenized argv.
     if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
     if (arg === "--json=false") return false;
-    // Collapsed slash-command form: tokenize on whitespace and re-check.
-    // Skip tokenization when the element carries quote characters — a
-    // quoted argv element (e.g. `"check the --json output"`) is the
-    // user's prompt body, not a flag bag, and searching inside would
-    // misclassify prompt prose as a top-level flag.
-    if (
-      typeof arg === "string" &&
-      /\s/.test(arg) &&
-      !arg.includes("\"") &&
-      !arg.includes("'")
-    ) {
-      for (const token of arg.split(/\s+/)) {
+    // Collapsed slash-command form: tokenize on whitespace, but skip
+    // anything inside a quoted span (single or double). That keeps
+    // prompt prose like `"check the --json output"` from being
+    // misclassified as a flag, while still catching top-level flags that
+    // sit outside the quoted span — e.g.
+    // `respond req --json-payload '{...}' --json` correctly trips here.
+    if (typeof arg === "string" && /\s|["']/.test(arg)) {
+      for (const token of tokenizeOutsideQuotes(arg)) {
         if (token === "--") return result;
         if (token === "--json" || token === "--json=true" || token === "-j") return true;
         if (token === "--json=false") result = false;
@@ -408,18 +443,14 @@ export function detectJsonFlag(argv) {
 // Same idea for --help / -h so main() can short-circuit before the handler runs.
 // Mirrors detectJsonFlag's collapsed-argv handling for slash-command wrappers,
 // including the quote-aware skip — `/codex-bridge:adversarial-review "check
-// the --help output"` must reach the handler with the focus text intact.
+// the --help output"` must reach the handler with the focus text intact,
+// while a top-level `--help` outside any quoted span still short-circuits.
 export function detectHelpFlag(argv) {
   for (const arg of argv) {
     if (arg === "--") break;
     if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
-    if (
-      typeof arg === "string" &&
-      /\s/.test(arg) &&
-      !arg.includes("\"") &&
-      !arg.includes("'")
-    ) {
-      for (const token of arg.split(/\s+/)) {
+    if (typeof arg === "string" && /\s|["']/.test(arg)) {
+      for (const token of tokenizeOutsideQuotes(arg)) {
         if (token === "--") return false;
         if (token === "--help" || token === "-h" || token === "--help=true") return true;
       }
