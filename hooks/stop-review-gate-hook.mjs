@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -328,12 +328,35 @@ function main() {
   // mutate the repo at session shutdown. Without `--read-only`, omitting
   // `--write` is insufficient because `buildSandboxPolicy` still honors the
   // config override (see src/lib/config.mjs::buildSandboxPolicy).
-  const review = runBridge(
-    cwd,
-    input,
-    ["task", "--json", "--mode", "default", "--read-only", "--no-pipeline", buildStopReviewPrompt(input)],
-    { timeoutMs: STOP_REVIEW_TIMEOUT_MS }
+  //
+  // The prompt is written to a tempfile and forwarded via `--prompt-file`
+  // because Unix argv has a hard cap (~256 KiB on macOS, ~2 MiB on Linux).
+  // The Stop-hook prompt embeds the previous assistant turn extracted from
+  // `transcript_path` — when that turn contains generated code or long
+  // logs, passing the prompt as a single spawnSync argv item could fail
+  // with E2BIG before Codex even runs and leave the gate blocking. Bounding
+  // the size by the filesystem instead of argv removes that failure mode.
+  const promptFile = path.join(
+    os.tmpdir(),
+    `codex-bridge-stop-review-${randomBytes(16).toString("hex")}.prompt.md`
   );
+  let review;
+  try {
+    fs.writeFileSync(promptFile, buildStopReviewPrompt(input), { encoding: "utf8", mode: 0o600 });
+    review = runBridge(
+      cwd,
+      input,
+      ["task", "--json", "--mode", "default", "--read-only", "--no-pipeline", "--prompt-file", promptFile],
+      { timeoutMs: STOP_REVIEW_TIMEOUT_MS }
+    );
+  } finally {
+    try {
+      fs.rmSync(promptFile, { force: true });
+    } catch {
+      // Best-effort cleanup; tmpdir entries are reaped by the OS. We
+      // never want a cleanup error to mask the real review outcome.
+    }
+  }
 
   if (review.error?.code === "ETIMEDOUT") {
     emitBlock("The stop-time Codex Bridge review timed out after 15 minutes. Run /codex-bridge:review --wait manually or disable the gate.");
