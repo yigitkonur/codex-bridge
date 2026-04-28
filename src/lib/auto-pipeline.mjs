@@ -112,6 +112,25 @@ export async function runAutoPipeline(options) {
           "auto-review"
         );
 
+        // Inner watchdog (idleTimeoutMs / turnTimeoutMs in captureTurn) can
+        // fire before the outer `withTimeout` and resolve with `status: 1`
+        // and an `error` field rather than throwing. Without this guard,
+        // `reviewText` is empty, parseReviewText is skipped, and the default
+        // `reviewVerdict = "approve"` would silently carry through to the
+        // completion check and `[DONE]` — masking a stalled/timed-out review
+        // as a passing one. Surface as a TimeoutError so the outer catch
+        // emits `[PIPELINE:failed]` with `errorCode: ClientTimeout` and
+        // `failing_stage: review` (see mapStageLabel below).
+        if (reviewResult.status !== 0) {
+          const detail = reviewResult.error?.message
+            ? `: ${reviewResult.error.message}`
+            : "";
+          const reviewError = new TimeoutError("auto-review", stageTurnMs);
+          reviewError.message =
+            `auto-review did not complete cleanly (status ${reviewResult.status}${detail}).`;
+          throw reviewError;
+        }
+
         completedStages.push("review");
         checkPipelineTimeout();
 
