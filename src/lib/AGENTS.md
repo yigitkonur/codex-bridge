@@ -243,10 +243,19 @@ read-only completion check read-only.
 
 - Exit codes: success `0`, crash `1`, usage `2`, not found `3`, auth `4`,
   conflict `5`, validation `6`, transient `7`, partial `8`.
-- `normalizeCodexErrorInfo` accepts string and object-shaped variants and maps
-  camelCase and upstream snake_case to PascalCase known codes.
-- Local `TurnTimeout` errors classify as retryable timeout failures, not
-  internal crashes.
+- `classifyError` does a direct lookup of `err.codexErrorInfo` /
+  `err.codex_error_info` against the frozen `CODEX_ERROR_INFO` table —
+  there is no `normalizeCodexErrorInfo` helper or string/snake-case
+  normalization layer. Variants the upstream sends camelCase are matched
+  as-is; unknown values fall through to the generic classifier.
+- The per-turn-budget rejection synthesized in `runAppServerTurn`
+  (`Turn timed out after <ms>ms`, `src/lib/codex.mjs:1172`) has no
+  dedicated retryable branch in `classifyError`; it falls through to the
+  generic catch-all and surfaces as `INTERNAL_ERROR` (exit 1). Only the
+  idle-watchdog message (`/No events received for \d+s/`) maps to the
+  retryable `ClientTimeout` (exit 7) branch — see
+  `src/lib/cli-errors.mjs:170-180`. Aligns with the round-4 fix in
+  `skill/references/error-recovery.md`.
 - `classifyTurnErrorOrigin` distinguishes idle, upstream compact proxy,
   upstream transport, response-chain loss, upstream auth, upstream invalid
   request, and generic turn failures.
