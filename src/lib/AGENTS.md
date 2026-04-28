@@ -119,8 +119,9 @@ back to mode-derived defaults without widening permissions.
 
 - The workspace root comes from `resolveWorkspaceRoot`.
 - The hash uses `fs.realpathSync.native` when available.
-- State root precedence is `CODEX_BRIDGE_PLUGIN_DATA`, then
-  `CLAUDE_PLUGIN_DATA`, then `os.tmpdir()/codex-companion`.
+- State root resolution reads `CLAUDE_PLUGIN_DATA` (the only env var
+  consulted, defined as `PLUGIN_DATA_ENV` at `src/lib/state.mjs:9`) and
+  falls back to `os.tmpdir()/codex-companion` when unset.
 - `state.json`, `state.lock`, and `jobs/*.json` live under that state dir.
 - Writes use a lock file with stale-lock cleanup and atomic state-file rename.
 - `loadState` is read-only. Mutating writes reap queued/running jobs whose pid
