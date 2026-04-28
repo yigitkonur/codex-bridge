@@ -114,7 +114,11 @@ test("listJobs does not rewrite state while inspecting stale running jobs", () =
 
     const jobs = listJobs(workspace);
 
-    assert.equal(jobs[0].status, "running");
+    // Round-8 reaps stale-PID jobs in-memory in the default read view, so
+    // callers observe `orphaned` immediately without a disk write. The
+    // load-bearing assertion is the next line: the on-disk state file must
+    // be byte-identical — read-only paths stay read-only.
+    assert.equal(jobs[0].status, "orphaned");
     assert.equal(fs.readFileSync(stateFile, "utf8"), before);
   } finally {
     if (previousBridgePluginData == null) {
