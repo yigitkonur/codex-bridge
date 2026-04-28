@@ -386,6 +386,7 @@ function resolveWorkspaceRoot(cwd) {
 }
 
 // src/lib/state.mjs
+var BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
 var PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 var FALLBACK_STATE_ROOT_DIR = path2.join(os.tmpdir(), "codex-companion");
 function resolveStateDir(cwd) {
@@ -399,7 +400,7 @@ function resolveStateDir(cwd) {
   const slugSource = path2.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[PLUGIN_DATA_ENV];
   const stateRoot = pluginDataDir ? path2.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
   return path2.join(stateRoot, `${slug}-${hash}`);
 }

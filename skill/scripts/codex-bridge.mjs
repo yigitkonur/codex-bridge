@@ -1175,6 +1175,7 @@ function resolveWorkspaceRoot(cwd2) {
 
 // src/lib/state.mjs
 var STATE_VERSION = 1;
+var BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
 var PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 var FALLBACK_STATE_ROOT_DIR = path3.join(os.tmpdir(), "codex-companion");
 var STATE_FILE_NAME = "state.json";
@@ -1204,7 +1205,7 @@ function resolveStateDir(cwd2) {
   const slugSource = path3.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[PLUGIN_DATA_ENV];
   const stateRoot = pluginDataDir ? path3.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
   return path3.join(stateRoot, `${slug}-${hash}`);
 }
@@ -7655,7 +7656,8 @@ var APPLY_ATTEMPT_WINDOW_MS = 60 * 60 * 1e3;
 var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest";
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
-  const root = process.env.CLAUDE_PLUGIN_DATA ? path10.join(process.env.CLAUDE_PLUGIN_DATA, "codex-bridge-update.json") : path10.join(os5.homedir(), ".codex-bridge", "update-cache.json");
+  const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
+  const root = pluginDataDir ? path10.join(pluginDataDir, "codex-bridge-update.json") : path10.join(os5.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
