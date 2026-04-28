@@ -755,7 +755,41 @@ function resolveStopReviewGateLockPath(workspaceRoot) {
 
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  const lockExists = fs.existsSync(lockPath);
+  let lockExists = fs.existsSync(lockPath);
+  // Legacy migration: workspaces that enabled the gate before the lock-file
+  // change only have `config.stopReviewGate: true` persisted in state.json.
+  // Honor that intent and write the lock once so subsequent reads are
+  // canonical without forcing the user to rerun setup --enable-review-gate.
+  let migratedFromLegacyConfig = false;
+  if (!lockExists) {
+    let legacyEnabled = false;
+    try {
+      legacyEnabled = getConfig(workspaceRoot)?.stopReviewGate === true;
+    } catch {
+      legacyEnabled = false;
+    }
+    if (legacyEnabled) {
+      try {
+        fs.writeFileSync(
+          lockPath,
+          [
+            "# Codex Bridge stop-time review gate",
+            "# Presence of this file enables the Claude Code Stop hook for this project.",
+            "# Migrated from legacy state.json config.stopReviewGate=true.",
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      } catch {
+        // Best-effort migration; even if the lock cannot be written we still
+        // honor the user's recorded intent for this read.
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      }
+    }
+  }
   const reviewGateSuppressionReason =
     officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE
       ? "official-openai-codex-plugin-active"
@@ -766,6 +800,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     enabled: lockExists && reviewGateSuppressionReason == null,
     lockPath,
     lockExists,
+    migratedFromLegacyConfig,
     officialOpenAICodexPluginStatus: officialPlugin.status,
     officialOpenAICodexPlugin: officialPlugin.plugin ?? null,
     officialOpenAICodexPluginDetail: officialPlugin.detail ?? null,
