@@ -327,8 +327,18 @@ export function upsertJob(cwd, jobPatch) {
   });
 }
 
+// Read-only view of the job list with stale-PID jobs reaped in-memory.
+// Read-only consumers (`status --watch`, `status <job> --wait`,
+// `await-artifact`, `job-control` filters) call this and the underlying
+// `loadState` returns the raw on-disk record — so a queued/running job whose
+// backing process has already exited would otherwise appear active until a
+// writer (`saveStateUnlocked` / `--prune-orphans`) reaps it. We apply the
+// same `pidIsAlive` probe used by the writer here so reads see a reaped
+// view immediately, but we never write back: on-disk reaping remains the
+// writer's responsibility, keeping read-only paths read-only.
 export function listJobs(cwd) {
-  return loadState(cwd).jobs;
+  const { jobs: reapedJobs } = reapOrphans(loadState(cwd).jobs);
+  return reapedJobs;
 }
 
 export function setConfig(cwd, key, value) {
