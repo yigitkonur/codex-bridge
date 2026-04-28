@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -12,6 +14,13 @@ const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_SCRIPT = path.resolve(SCRIPT_DIR, "..", "skill", "scripts", "codex-bridge.mjs");
+// Mirrors src/lib/state.mjs — kept inline so the cheap legacy-intent probe
+// (see hasLegacyStopReviewGateIntent) can read state.json without spawning
+// the bundled bridge. Update both files in lockstep if the layout changes.
+const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
+const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
+const STATE_FILE_NAME = "state.json";
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -113,6 +122,56 @@ function parseStopReview(rawOutput) {
   };
 }
 
+// Resolve the workspace's state.json path the same way src/lib/state.mjs
+// does, without importing bridge code (this hook ships separately and
+// must stay zero-dep on the bundle for the cheap path). Returns null when
+// we can't resolve a workspace root — in that case there's no state file
+// to read, so callers should treat it as "no legacy intent".
+function resolveStateFilePath(cwd) {
+  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 5000
+  });
+  const workspaceRoot =
+    result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()
+      ? result.stdout.trim()
+      : cwd;
+  if (!workspaceRoot) return null;
+
+  let canonicalWorkspaceRoot = workspaceRoot;
+  try {
+    canonicalWorkspaceRoot = fs.realpathSync.native(workspaceRoot);
+  } catch {
+    canonicalWorkspaceRoot = workspaceRoot;
+  }
+
+  const slugSource = path.basename(workspaceRoot) || "workspace";
+  const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[PLUGIN_DATA_ENV];
+  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+  return path.join(stateRoot, `${slug}-${hash}`, STATE_FILE_NAME);
+}
+
+// Cheap, best-effort probe for "this workspace previously enabled the
+// stop-time review gate via the legacy boolean-only setup". Reads
+// state.json directly. Returns true ONLY when the file exists AND
+// `config.stopReviewGate === true`. Anything else (no file, parse error,
+// missing config, false) means there is nothing to migrate, so the
+// hook's caller can skip the expensive `setup --json` spawn.
+function hasLegacyStopReviewGateIntent(cwd) {
+  const stateFile = resolveStateFilePath(cwd);
+  if (!stateFile) return false;
+  if (!fs.existsSync(stateFile)) return false;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    return parsed?.config?.stopReviewGate === true;
+  } catch {
+    return false;
+  }
+}
+
 // Self-migrate workspaces that enabled the gate before lock-file activation
 // landed: `setup --enable-review-gate` used to persist only
 // `config.stopReviewGate: true` in state.json, but this branch made the
@@ -123,8 +182,17 @@ function parseStopReview(rawOutput) {
 // the rest of the hook proceeds with the migrated state. Suppressed-by-
 // official-plugin workspaces are honored — we don't create a lock the
 // bridge would refuse to honor anyway.
+//
+// Cheap path: the vast majority of Stop-hook invocations land in
+// workspaces that never enabled the gate (the documented disabled
+// default). We short-circuit those by reading state.json directly first
+// — no `setup --json` spawn, no Codex availability/auth probe, no
+// app-server contact. We only fall through to the full setup probe when
+// state.json actually carries `config.stopReviewGate: true`, which is
+// the genuine legacy → migration case.
 function maybeMigrateLegacyGate(cwd, input, activation) {
   if (activation.active) return activation;
+  if (!hasLegacyStopReviewGateIntent(cwd)) return activation;
   const probe = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });
   const probePayload = parseJson(probe.stdout);
   const result = probePayload?.result;
