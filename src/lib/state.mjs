@@ -267,9 +267,14 @@ function resolveProjectRoot(workspaceRoot) {
 //
 // Returns enough state for handleSetup/buildSetupReport to decide what to
 // surface to the caller.
+//
+// `config.stopReviewGate` mirrors the *effective* gate state — i.e. lock on
+// disk AND not suppressed — not the user's raw intent. Status rendering
+// reads this flag (src/lib/render.mjs renderStatusReport), so persisting
+// true when the lock was suppressed or the write failed would tell the
+// user the session will trigger a review when the Stop hook actually
+// returns inert.
 export function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
-  setConfig(workspaceRoot, "stopReviewGate", Boolean(enabled));
-
   const projectRoot = resolveProjectRoot(workspaceRoot);
   const lockPath = path.join(projectRoot, STOP_REVIEW_GATE_LOCK_FILE);
   const isOfficialActive = officialPlugin?.status === OFFICIAL_PLUGIN_STATUS.ACTIVE;
@@ -279,7 +284,9 @@ export function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
     if (isOfficialActive) {
       // Don't create the lock — official plugin owns the gate. Surface the
       // suppression so the CLI can tell the user why their --enable did
-      // nothing on disk.
+      // nothing on disk. Persist config = false so status doesn't render
+      // a stale "review gate: enabled" warning.
+      setConfig(workspaceRoot, "stopReviewGate", false);
       return {
         lockPath,
         lockExists: fs.existsSync(lockPath),
@@ -289,6 +296,7 @@ export function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
       };
     }
 
+    let lockWritten = false;
     try {
       fs.mkdirSync(path.dirname(lockPath), { recursive: true });
       const payload = {
@@ -296,11 +304,17 @@ export function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
         enabledBy: "codex-bridge"
       };
       fs.writeFileSync(lockPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+      lockWritten = true;
     } catch {
       // Lock-write failures must not fail the caller. The Stop hook will
       // simply see the gate as inactive on the next session boundary; the
       // user can rerun `codex-bridge setup --enable-review-gate` to retry.
     }
+
+    // Mirror only the effective state. If the lock didn't actually land on
+    // disk (write failed), keep config = false so the Stop hook's lock
+    // gating and status rendering stay consistent.
+    setConfig(workspaceRoot, "stopReviewGate", lockWritten && fs.existsSync(lockPath));
 
     return {
       lockPath,
@@ -317,6 +331,8 @@ export function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
   } catch {
     // best-effort
   }
+
+  setConfig(workspaceRoot, "stopReviewGate", false);
 
   return {
     lockPath,

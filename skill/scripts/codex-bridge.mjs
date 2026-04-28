@@ -1367,13 +1367,13 @@ function resolveProjectRoot(workspaceRoot) {
   return workspaceRoot;
 }
 function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
-  setConfig(workspaceRoot, "stopReviewGate", Boolean(enabled));
   const projectRoot = resolveProjectRoot(workspaceRoot);
   const lockPath = path3.join(projectRoot, STOP_REVIEW_GATE_LOCK_FILE);
   const isOfficialActive = officialPlugin?.status === OFFICIAL_PLUGIN_STATUS.ACTIVE;
   const suppressionReason = isOfficialActive ? "official-openai-codex-plugin-active" : null;
   if (enabled) {
     if (isOfficialActive) {
+      setConfig(workspaceRoot, "stopReviewGate", false);
       return {
         lockPath,
         lockExists: fs3.existsSync(lockPath),
@@ -1382,6 +1382,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
         suppressionReason
       };
     }
+    let lockWritten = false;
     try {
       fs3.mkdirSync(path3.dirname(lockPath), { recursive: true });
       const payload = {
@@ -1390,8 +1391,10 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
       };
       fs3.writeFileSync(lockPath, `${JSON.stringify(payload, null, 2)}
 `, "utf8");
+      lockWritten = true;
     } catch {
     }
+    setConfig(workspaceRoot, "stopReviewGate", lockWritten && fs3.existsSync(lockPath));
     return {
       lockPath,
       lockExists: fs3.existsSync(lockPath),
@@ -1404,6 +1407,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
     if (fs3.existsSync(lockPath)) fs3.unlinkSync(lockPath);
   } catch {
   }
+  setConfig(workspaceRoot, "stopReviewGate", false);
   return {
     lockPath,
     lockExists: fs3.existsSync(lockPath),
