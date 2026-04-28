@@ -911,6 +911,14 @@ async function resumeThread(client, threadId, cwd, options = {}) {
 }
 
 function buildResultStatus(turnState) {
+  // A late `turn/completed` (status="completed") arriving inside the
+  // post-`turn/interrupt` grace window can overwrite `state.finalTurn` with a
+  // success record even though `state.error.code === "TurnTimeout"` was already
+  // set when the timeout fired. Callers gate on `status`, so without this check
+  // an over-budget turn would be reported as exit 0 with the timeout hidden.
+  if (turnState.error?.code === "TurnTimeout") {
+    return 1;
+  }
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
 }
 
