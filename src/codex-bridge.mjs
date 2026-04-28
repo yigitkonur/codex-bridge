@@ -28,6 +28,7 @@ import {
   invalidThreadIdError,
   classifyTurnErrorOrigin,
   classifyError,
+  normalizeCodexErrorInfo,
   getUpstreamRetryPolicy,
   buildHandoffEnvelope,
   extractUpstreamRequestId
@@ -50,21 +51,19 @@ import {
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
-import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
-import {
-  generateJobId,
-  getConfig,
-  listJobs,
-  readStopReviewGateState,
-  setConfig,
-  setStopReviewGate,
-  upsertJob,
-  writeJobFile
-} from "./lib/state.mjs";
+import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
 import {
   detectOfficialOpenAICodexPlugin,
   OFFICIAL_PLUGIN_STATUS
 } from "./lib/official-plugin.mjs";
+import {
+  generateJobId,
+  getConfig,
+  listJobs,
+  setConfig,
+  upsertJob,
+  writeJobFile
+} from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -245,6 +244,14 @@ const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json"
 const EXECUTE_INSTRUCTIONS_PATH = path.join(ROOT_DIR, "templates", "execute-instructions.md");
 const PLAN_ENFORCEMENT_PATH = path.join(ROOT_DIR, "templates", "plan-enforcement.md");
 
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function bridgeCommand(subcommand, cwd = null) {
+  return `node ${SCRIPT_PATH} ${subcommand}${cwd ? ` --cwd ${shellQuote(cwd)}` : ""}`;
+}
+
 const DEVELOPER_INSTRUCTIONS_FALLBACK = {
   plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
   default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
@@ -263,6 +270,7 @@ const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 
 // Bridge config: skill-dir defaults + optional workspace-root + cwd overrides.
 //
@@ -293,6 +301,76 @@ function getBridgeConfig(cwd = null, workspaceRoot = null) {
 // The respond command reads from disk and writes a response file.
 // See lib/pending-requests.mjs for the file-based IPC protocol.
 
+function buildJsonRpcError(code, message, data) {
+  return data === undefined ? { code, message } : { code, message, data };
+}
+
+function rejectServerRequest(message, code, detail) {
+  message._client?.rejectServerRequest?.(
+    message.id,
+    buildJsonRpcError(code, detail)
+  );
+}
+
+function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs = null, cwd = null }) {
+  return (message) => {
+    const params = message.params ?? {};
+    const threadId = params.threadId ?? "unknown";
+    const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+
+    if (message.method !== "item/tool/requestUserInput") {
+      logNdjson(session, "SERVER_REQUEST_UNSUPPORTED", message.method, {
+        rpcRequestId: message.id,
+        params
+      });
+      rejectServerRequest(message, -32601, `Unsupported server request: ${message.method}`);
+      return;
+    }
+
+    const internalId = `req-${threadId.slice(-6)}-${Date.now().toString(36)}`;
+    const entry = {
+      internalId,
+      rpcRequestId: message.id,
+      method: message.method,
+      threadId,
+      firstQuestionId: params.questions?.[0]?.id ?? "q1",
+      params,
+      createdAt: Date.now(),
+    };
+
+    writePendingRequest(sessionDir, threadId, entry);
+    logEvent(session, formatQuestionEvent(session, {
+      requestId: internalId,
+      questions: params.questions ?? [],
+      scriptPath: SCRIPT_PATH,
+      cwd,
+    }));
+    logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
+
+    const timeoutMs =
+      questionAnswerMs ??
+      (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : DEFAULT_CONFIG.question_answer_ms);
+    return waitForResponse(sessionDir, threadId, timeoutMs, internalId).then((response) => {
+      clearPendingRequest(sessionDir, threadId);
+      if (response?.payload) {
+        message._client?.resolveServerRequest?.(message.id, response.payload);
+        logEvent(session, formatConfirmedEvent(session, { requestId: internalId }));
+        logNdjson(session, "CONFIRMED", "serverRequest/resolved", { requestId: internalId });
+        return;
+      }
+      rejectServerRequest(
+        message,
+        -32000,
+        `requestUserInput timed out after ${timeoutMs}ms without an answer.`
+      );
+      logNdjson(session, "QUESTION_TIMEOUT", null, { requestId: internalId, timeoutMs });
+    }).catch((error) => {
+      clearPendingRequest(sessionDir, threadId);
+      rejectServerRequest(message, -32000, error?.message ?? "requestUserInput response handling failed.");
+    });
+  };
+}
+
 // Produces a ready-to-paste Monitor hint so agents don't have to assemble one
 // from eventsPath + terminal tags. Prefers our `events --follow` subcommand
 // (stable, filtered) over raw `tail -f`. `eventsPath` may be null when the
@@ -320,7 +398,7 @@ function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorComma
   return `${base}\n${parts.join(" · ")}\n`;
 }
 
-function buildMonitorHint({ eventsPath, jobId, threadId }) {
+function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
   const identifier = jobId ?? threadId;
   if (!identifier) return null;
   // v1.4.0 filter contract: exclusion-based, not inclusion-based. Every
@@ -341,10 +419,11 @@ function buildMonitorHint({ eventsPath, jobId, threadId }) {
     jobId: identifier,
     timeoutMs: 1800000,
     exclude: DEFAULT_MONITOR_EXCLUDE,
+    cwd,
   });
   const shellFallback = eventsPath
     ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do ` +
-      `echo "$line"; case "$line" in *"[DONE]"*|*"[ERROR]"*|*"[INCOMPLETE]"*) break ;; esac; done`
+      `echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*) break ;; esac; done`
     : null;
   return {
     command: cliCommand,
@@ -430,7 +509,7 @@ function extractItemText(item) {
 const COMMANDS = Object.freeze({
   task: {
     synopsis: "task [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
@@ -701,6 +780,130 @@ function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 
+function resolveStopReviewGateLockPath(workspaceRoot) {
+  return path.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+}
+
+function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
+  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
+  let lockExists = fs.existsSync(lockPath);
+  // Legacy migration: workspaces that enabled the gate before the lock-file
+  // change only have `config.stopReviewGate: true` persisted in state.json.
+  // Honor that intent and write the lock once so subsequent reads are
+  // canonical without forcing the user to rerun setup --enable-review-gate.
+  let migratedFromLegacyConfig = false;
+  if (!lockExists) {
+    let legacyEnabled = false;
+    try {
+      legacyEnabled = getConfig(workspaceRoot)?.stopReviewGate === true;
+    } catch {
+      legacyEnabled = false;
+    }
+    if (legacyEnabled) {
+      try {
+        fs.writeFileSync(
+          lockPath,
+          [
+            "# Codex Bridge stop-time review gate",
+            "# Presence of this file enables the Claude Code Stop hook for this project.",
+            "# Migrated from legacy state.json config.stopReviewGate=true.",
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      } catch {
+        // Best-effort migration; even if the lock cannot be written we still
+        // honor the user's recorded intent for this read.
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      }
+    }
+  }
+  const reviewGateSuppressionReason =
+    officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE
+      ? "official-openai-codex-plugin-active"
+      : officialPlugin.status === OFFICIAL_PLUGIN_STATUS.UNKNOWN
+        ? "official-openai-codex-plugin-status-unknown"
+        : null;
+  return {
+    enabled: lockExists && reviewGateSuppressionReason == null,
+    lockPath,
+    lockExists,
+    migratedFromLegacyConfig,
+    officialOpenAICodexPluginStatus: officialPlugin.status,
+    officialOpenAICodexPlugin: officialPlugin.plugin ?? null,
+    officialOpenAICodexPluginDetail: officialPlugin.detail ?? null,
+    reviewGateSuppressedByOfficialPlugin: officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE,
+    reviewGateLockIgnored: lockExists && reviewGateSuppressionReason != null,
+    reviewGateSuppressionReason
+  };
+}
+
+function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
+  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
+  if (enabled) {
+    try {
+      fs.writeFileSync(
+        lockPath,
+        [
+          "# Codex Bridge stop-time review gate",
+          "# Presence of this file enables the Claude Code Stop hook for this project.",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+    } catch {
+      // Setup reports the lock absence; a failed gate write must not crash the
+      // otherwise-useful setup health check.
+    }
+  } else {
+    try {
+      fs.rmSync(lockPath, { force: true });
+    } catch {
+      // Setup reports if the lock remains present after the removal attempt.
+    }
+    // Clear any legacy `config.stopReviewGate: true` persisted before the
+    // lock-file rollout. Without this, readStopReviewGate's migration path
+    // (lines 763-792) sees the stale flag, recreates the lock, and turns
+    // disable into a no-op for users on migrated state.
+    try {
+      setConfig(workspaceRoot, "stopReviewGate", false);
+    } catch {
+      // Best-effort: if state can't be written, the lock is already gone
+      // and the next read will still report the gate as disabled — only
+      // workspaces that re-trigger the migration would see the flag flip
+      // back. Don't fail the disable command.
+    }
+  }
+  return readStopReviewGate(workspaceRoot, officialPlugin);
+}
+
+function applyStopReviewGateSnapshot(snapshot) {
+  const gate = readStopReviewGate(snapshot.workspaceRoot);
+  return {
+    ...snapshot,
+    officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
+    officialOpenAICodexPlugin: gate.officialOpenAICodexPlugin,
+    officialOpenAICodexPluginDetail: gate.officialOpenAICodexPluginDetail,
+    reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
+    reviewGateLockIgnored: gate.reviewGateLockIgnored,
+    reviewGateSuppressionReason: gate.reviewGateSuppressionReason,
+    config: {
+      ...snapshot.config,
+      stopReviewGate: gate.enabled,
+      stopReviewGateLockPath: gate.lockPath,
+      stopReviewGateLockExists: gate.lockExists,
+      officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
+      reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
+      reviewGateLockIgnored: gate.reviewGateLockIgnored,
+      reviewGateSuppressionReason: gate.reviewGateSuppressionReason
+    },
+    needsReview: gate.enabled
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -724,34 +927,14 @@ function firstMeaningfulLine(text, fallback) {
   return line ?? fallback;
 }
 
-async function buildSetupReport(cwd, actionsTaken = []) {
+async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
   const codexStatus = getCodexAvailability(cwd);
   const authStatus = await getCodexAuthStatus(cwd);
-  const config = getConfig(workspaceRoot);
-
-  // Snapshot official-plugin presence so the Stop hook can tell the
-  // caller which surface owns stop-time review. Status semantics:
-  //   ACTIVE  → the OpenAI plugin owns it, our gate stays inert.
-  //   ABSENT  → OFFICIAL_PLUGIN_STATUS.ABSENT, our gate may activate.
-  //   UNKNOWN → detection failed, treated as not-active by setStopReviewGate.
-  //
-  // The lock file lives at <gitProjectRoot>/.codex-bridge-stop-review-gate.lock
-  // and is created/removed by setStopReviewGate. The Stop hook reads this
-  // exact path to decide whether to fire a review.
-  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd });
-  // Surface ABSENT explicitly so callers can distinguish it from UNKNOWN
-  // (detection failed) — UNKNOWN still allows enabling the gate, but only
-  // OFFICIAL_PLUGIN_STATUS.ABSENT is the no-conflict happy path.
-  const officialPluginAbsent = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT;
-  const lockState = readStopReviewGateState(workspaceRoot, officialPlugin);
-
-  // The hook gates on the lock file existing AND not being suppressed by
-  // the official plugin. state.json's stopReviewGate captures user intent
-  // but is no longer authoritative for hook activation on its own.
-  const reviewGateEnabled = lockState.lockExists && !lockState.suppressedByOfficialPlugin;
+  const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
+  const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
 
   const nextSteps = [];
   if (!codexStatus.available) {
@@ -761,8 +944,12 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
   }
-  if (!reviewGateEnabled && !lockState.suppressedByOfficialPlugin) {
-    nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to require a fresh review before stop.");
+  if (reviewGate.reviewGateSuppressedByOfficialPlugin) {
+    nextSteps.push("Use the official OpenAI Codex plugin for stop-time review; Codex Bridge review gate is disabled while it is enabled.");
+  } else if (reviewGate.reviewGateSuppressionReason === "official-openai-codex-plugin-status-unknown") {
+    nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
+  } else if (!reviewGate.enabled) {
+    nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
   }
 
   return {
@@ -772,15 +959,15 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     codex: codexStatus,
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
-    reviewGateEnabled,
-    reviewGateLockExists: lockState.lockExists,
-    reviewGateLockIgnored: lockState.lockIgnored,
-    reviewGateLockPath: lockState.lockPath,
-    reviewGateSuppressionReason: lockState.suppressionReason,
-    reviewGateSuppressedByOfficialPlugin: lockState.suppressedByOfficialPlugin,
-    officialPlugin: { status: officialPlugin.status, plugin: officialPlugin.plugin ?? null },
-    officialPluginAbsent,
-    stopReviewGateConfig: Boolean(config.stopReviewGate),
+    reviewGateEnabled: reviewGate.enabled,
+    reviewGateLockPath: reviewGate.lockPath,
+    reviewGateLockExists: reviewGate.lockExists,
+    officialOpenAICodexPluginStatus: reviewGate.officialOpenAICodexPluginStatus,
+    officialOpenAICodexPlugin: reviewGate.officialOpenAICodexPlugin,
+    officialOpenAICodexPluginDetail: reviewGate.officialOpenAICodexPluginDetail,
+    reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
+    reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
+    reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
     actionsTaken,
     nextSteps
   };
@@ -803,55 +990,37 @@ async function handleSetup(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
-
-  // Probe official-plugin presence once for both branches; setStopReviewGate
-  // uses it to decide whether to create or skip the project-root lock file.
-  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd });
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd, maxAgeMs: 0 });
 
   if (options["enable-review-gate"]) {
-    const result = setStopReviewGate(workspaceRoot, true, officialPlugin);
-    if (result.suppressedByOfficialPlugin) {
-      // setStopReviewGate(..., true, officialPlugin) persists nothing when
-      // the official plugin is active — no lock file, no deferred enable
-      // intent. Saying we "recorded" the intent implies it activates later
-      // when the user disables the official plugin; nothing on disk supports
-      // that. Be honest: the request was skipped, and the user must rerun
-      // setup after disabling the official plugin.
-      actionsTaken.push(
-        `Stop-time review gate enable request was skipped: official OpenAI Codex plugin is active for ${workspaceRoot}. To enable Codex Bridge's gate, first disable the official plugin, then re-run \`codex-bridge setup --enable-review-gate\`.`
-      );
-    } else if (!result.lockExists) {
-      // Lock-write failed (read-only checkout, missing dir, permission
-      // denied, etc.). The Stop hook keys off this lock, so the gate is
-      // NOT active despite our enable intent — surface the failure
-      // instead of claiming success. Mirrors the disable path's symmetric
-      // lock-state check.
-      actionsTaken.push(
-        `Failed to create the stop-time review gate lock at ${result.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
-      );
+    if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {
+      const reviewGate = setStopReviewGate(workspaceRoot, true, officialPlugin);
+      if (reviewGate.enabled && reviewGate.lockExists) {
+        actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
+      } else {
+        actionsTaken.push(
+          `Failed to create the stop-time review gate lock at ${reviewGate.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
+        );
+      }
+    } else if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE) {
+      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin is enabled.");
     } else {
-      actionsTaken.push(
-        `Enabled the stop-time review gate for ${workspaceRoot} (lock at ${result.lockPath}).`
-      );
+      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin status could not be verified.");
     }
   } else if (options["disable-review-gate"]) {
-    const result = setStopReviewGate(workspaceRoot, false, officialPlugin);
-    if (result.lockExists) {
-      // Lock removal failed (read-only checkout, stale root-owned lock,
-      // permission denied, etc.). The Stop hook keys off this lock, so the
-      // gate is still active despite our disable intent — surface the
-      // failure instead of claiming success.
+    const reviewGate = setStopReviewGate(workspaceRoot, false, officialPlugin);
+    if (reviewGate.lockExists) {
       actionsTaken.push(
-        `Failed to remove the stop-time review gate lock at ${result.lockPath}; the gate is still active. Please remove the lock file manually.`
+        `Failed to remove the stop-time review gate lock at ${reviewGate.lockPath}; the gate is still active. Please remove the lock file manually.`
       );
     } else {
       actionsTaken.push(
-        `Disabled the stop-time review gate for ${workspaceRoot} (removed lock at ${result.lockPath}).`
+        `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
       );
     }
   }
 
-  const finalReport = await buildSetupReport(cwd, actionsTaken);
+  const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
     json: options.json,
     startedAt
@@ -1186,13 +1355,18 @@ function buildMachineReadableHelp() {
 
 function buildAdversarialReviewPrompt(context, focusText) {
   const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
-  return interpolateTemplate(template, {
-    REVIEW_KIND: "Adversarial Review",
-    TARGET_LABEL: context.target.label,
-    USER_FOCUS: focusText || "No extra focus provided.",
-    REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
-    REVIEW_INPUT: context.content
-  });
+  return interpolateTemplate(
+    template,
+    {
+      TARGET_LABEL: sanitizePromptValue(context.target.label),
+      USER_FOCUS: focusText || "No extra focus provided.",
+      REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
+      REVIEW_INPUT: context.content
+    },
+    {
+      requiredKeys: new Set(["TARGET_LABEL", "USER_FOCUS", "REVIEW_COLLECTION_GUIDANCE", "REVIEW_INPUT"])
+    }
+  );
 }
 
 function ensureCodexAvailable(cwd) {
@@ -1317,6 +1491,7 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
 async function executeReviewRun(request) {
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
+  const startedAt = Date.now();
 
   // Pre-resolve sessionDir so we can initSession the moment Codex gives us
   // a threadId — addresses `unexpected-bridge-observations/08` which
@@ -1326,6 +1501,36 @@ async function executeReviewRun(request) {
   // blind to review threads.
   const reviewConfig = getBridgeConfig(request.cwd, resolveWorkspaceRoot(request.cwd));
   const reviewSessionDir = resolveSessionDir(reviewConfig.session_dir);
+  const logReviewTerminalEvent = (session, result, { reviewKind, targetLabel }) => {
+    if (result.status === 0) {
+      logEvent(session, formatDoneEvent(session, {
+        duration: Math.round((Date.now() - startedAt) / 1000),
+        diffStat: `${reviewKind} review completed: ${targetLabel}`,
+        files: [],
+        config: {
+          model: request.model ?? reviewConfig.model,
+          effort: reviewConfig.effort,
+          modeFlow: reviewKind
+        },
+        diffPath: "not captured for review",
+        scriptPath: SCRIPT_PATH,
+        jobId: request.jobId ?? null,
+        cwd: request.cwd
+      }));
+      return;
+    }
+
+    const classified = classifyError(result.error ?? { message: result.stderr || `${reviewKind} review failed.` });
+    logEvent(session, formatErrorEvent(session, {
+      errorCode: classified.code,
+      message: classified.message,
+      phase: classified.class,
+      origin: "review",
+      scriptPath: SCRIPT_PATH,
+      jobId: request.jobId ?? null,
+      cwd: request.cwd
+    }));
+  };
 
   const target = resolveReviewTarget(request.cwd, {
     base: request.base,
@@ -1358,6 +1563,8 @@ async function executeReviewRun(request) {
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
+      idleTimeoutMs: Number(reviewConfig.idle_timeout_ms) > 0 ? Number(reviewConfig.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
+      turnTimeoutMs: Number(reviewConfig.turn_default_ms) > 0 ? Number(reviewConfig.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms,
       onProgress: request.onProgress
     });
     // Materialize session files for the review thread so `bridge summary`
@@ -1371,6 +1578,10 @@ async function executeReviewRun(request) {
         status: result.status,
         reviewKind: "native",
         target,
+      });
+      logReviewTerminalEvent(reviewSession, result, {
+        reviewKind: "native",
+        targetLabel: target.label
       });
     }
     const payload = {
@@ -1415,6 +1626,8 @@ async function executeReviewRun(request) {
     model: request.model,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
+    idleTimeoutMs: Number(reviewConfig.idle_timeout_ms) > 0 ? Number(reviewConfig.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
+    turnTimeoutMs: Number(reviewConfig.turn_default_ms) > 0 ? Number(reviewConfig.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms,
     onProgress: request.onProgress
   });
   const parsed = parseStructuredOutput(result.finalMessage, {
@@ -1436,6 +1649,10 @@ async function executeReviewRun(request) {
       findingCount: Array.isArray(parsed.parsed?.findings)
         ? parsed.parsed.findings.length
         : null,
+    });
+    logReviewTerminalEvent(advSession, result, {
+      reviewKind: "adversarial",
+      targetLabel: context.target.label
     });
     if (parsed.parsed && !parsed.parseError) {
       try {
@@ -1494,8 +1711,8 @@ async function executeTaskRun(request) {
     resumeLast: request.resumeLast
   });
 
-  let resumeThreadId = null;
-  if (request.resumeLast) {
+  let resumeThreadId = request.resumeThreadId ?? null;
+  if (!resumeThreadId && request.resumeLast) {
     const latestThread = await resolveLatestTrackedTaskThread(workspaceRoot, {
       excludeJobId: request.jobId
     });
@@ -1525,7 +1742,7 @@ async function executeTaskRun(request) {
   // plan-mode developer instructions, the 120 s idle watchdog, and the
   // `[QUESTION]` event pipeline were all inert on the `task` path. Forward
   // explicitly so the runBridgeTask → executeTaskRun contract is real.
-  const result = await runAppServerTurn(workspaceRoot, {
+  const result = await runAppServerTurn(request.cwd, {
     resumeThreadId,
     prompt: request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
@@ -1885,7 +2102,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       title: job.title,
       summary: job.summary,
       logFile,
-      monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null })
+      monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null, cwd })
     },
     logFile
   };
@@ -2261,57 +2478,12 @@ async function runBridgeTask(request) {
     }
   };
 
-  // Set up server request handler for questions (runs on the SAME connection)
-  bridgeRequest.onServerRequest = (message) => {
-    const params = message.params ?? {};
-    const threadId = params.threadId ?? "unknown";
-    const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
-
-    if (message.method === "item/tool/requestUserInput") {
-      const internalId = `req-${threadId.slice(-6)}-${Date.now().toString(36)}`;
-      const entry = {
-        internalId,
-        rpcRequestId: message.id,
-        method: message.method,
-        threadId,
-        firstQuestionId: params.questions?.[0]?.id ?? "q1",
-        params,
-        createdAt: Date.now(),
-      };
-
-      // Persist to disk so respond CLI can find it
-      writePendingRequest(sessionDir, threadId, entry);
-
-      // Write [QUESTION] to events
-      logEvent(session, formatQuestionEvent(session, {
-        requestId: internalId,
-        questions: params.questions ?? [],
-        scriptPath: SCRIPT_PATH,
-      }));
-      logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
-
-      // Poll for response file (blocks until respond CLI writes it or timeout).
-      // Pass `internalId` so stale responses from a previous question on this
-      // thread are discarded instead of delivered to the new RPC request.
-      // Resolution: --question-timeout-ms flag → config.question_answer_ms →
-      // 300 000 ms default. Request carries the resolved override.
-      const questionTimeoutMs = request.questionAnswerMs
-        ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : 300_000);
-      waitForResponse(sessionDir, threadId, questionTimeoutMs, internalId).then((response) => {
-        clearPendingRequest(sessionDir, threadId);
-        if (response && response.payload) {
-          // Send response on the SAME connection that received the request
-          message._client?.sendMessage?.({ id: message.id, result: response.payload });
-          logEvent(session, formatConfirmedEvent(session, { requestId: internalId }));
-          logNdjson(session, "CONFIRMED", "serverRequest/resolved", { requestId: internalId });
-        } else {
-          // Timeout — send empty answers
-          message._client?.sendMessage?.({ id: message.id, result: { answers: {} } });
-          logNdjson(session, "QUESTION_TIMEOUT", null, { requestId: internalId });
-        }
-      });
-    }
-  };
+  bridgeRequest.onServerRequest = createBridgeServerRequestHandler({
+    sessionDir,
+    config,
+    questionAnswerMs: request.questionAnswerMs ?? null,
+    cwd: request.cwd
+  });
 
   // v1.3.0 — unconditional observability. The `.events` file is the contract
   // between the bridge and every caller (Monitor / events --follow / wait /
@@ -2455,6 +2627,7 @@ async function runBridgeTask(request) {
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
+            cwd: request.cwd,
           })
         );
       } catch {
@@ -2522,6 +2695,7 @@ async function runBridgeTask(request) {
               diffStat,
               filesChangedSinceStart,
               scriptPath: SCRIPT_PATH,
+              cwd: request.cwd,
             })
           );
           logNdjson(heartbeatState.session, "CHECKPOINT", null, {
@@ -2575,6 +2749,7 @@ async function runBridgeTask(request) {
               origin: "bridge",
               scriptPath: SCRIPT_PATH,
               jobId: request.jobId ?? null,
+              cwd: request.cwd,
             })
           );
           logNdjson(heartbeatState.session, "ERROR", null, {
@@ -2688,7 +2863,10 @@ async function runBridgeTask(request) {
 
       if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
 
-      const retryResult = await executeTaskRun(bridgeRequest);
+      const retryResult = await executeTaskRun({
+        ...bridgeRequest,
+        resumeThreadId: result.threadId ?? bridgeRequest.resumeThreadId ?? null
+      });
       if (retryResult.exitStatus === 0 || !retryResult.error) {
         retryHistory[retryHistory.length - 1].outcome = "success";
         result = retryResult;
@@ -2707,7 +2885,8 @@ async function runBridgeTask(request) {
   const monitor = buildMonitorHint({
     eventsPath: computedEventsPath,
     jobId: request.jobId ?? null,
-    threadId: result.threadId ?? null
+    threadId: result.threadId ?? null,
+    cwd: request.cwd
   });
 
   // Non-JSON foreground footer. Append a single handle-advertising line so
@@ -2762,12 +2941,14 @@ async function runBridgeTask(request) {
   if (result.exitStatus !== 0 && result.error) {
     const errorMessage = String(result.error.message ?? result.error);
     const origin = classifyTurnErrorOrigin(result.error);
-    const codexErrorInfo =
-      result.error.codexErrorInfo ?? result.error.codex_error_info ?? null;
+    const codexErrorInfo = normalizeCodexErrorInfo(
+      result.error.codexErrorInfo ?? result.error.codex_error_info ?? null
+    );
+    const classifiedTurnError = classifyError(result.error);
     // ClientTimeout stays the error code for the idle-watchdog branch so
     // downstream classifiers/exit-code mapping keep working; codexErrorInfo
     // still wins when the upstream classifier tagged the failure.
-    const errorCode = origin === "idle" ? "ClientTimeout" : (codexErrorInfo ?? "CodexError");
+    const errorCode = origin === "idle" ? "ClientTimeout" : (codexErrorInfo?.code ?? classifiedTurnError.code ?? "CodexError");
     const touchedFiles = result.payload?.touchedFiles ?? [];
 
     // v1.5.0 — partial / handoff envelope assembly. Happens BEFORE the
@@ -2792,6 +2973,7 @@ async function runBridgeTask(request) {
         dirtyFiles: partialDiff.dirtyFiles,
         scriptPath: SCRIPT_PATH,
         jobId: request.jobId ?? null,
+        cwd: request.cwd,
       }));
       logNdjson(session, "PARTIAL", null, {
         commits: partialDiff.commits,
@@ -2851,6 +3033,7 @@ async function runBridgeTask(request) {
         prompt: handoffForEnvelope.prompt,
         retries: retryHistory,
         scriptPath: SCRIPT_PATH,
+        cwd: request.cwd,
       }));
       logNdjson(session, "HANDOFF", null, {
         reason: handoffForEnvelope.reason,
@@ -2868,6 +3051,7 @@ async function runBridgeTask(request) {
       scriptPath: SCRIPT_PATH,
       jobId: request.jobId ?? null,
       upstreamRequestId,
+      cwd: request.cwd,
     }));
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
     markTerminalEmitted();
@@ -2890,7 +3074,7 @@ async function runBridgeTask(request) {
     // touched-files list. We flip `exitStatus` to 0 so `runForegroundCommand`
     // emits a success envelope carrying the phase — a sandbox-blocked commit
     // is actionable state, not a terminal failure.
-    if (codexErrorInfo === "SandboxError" && touchedFiles.length > 0) {
+    if (codexErrorInfo?.code === "SandboxError" && touchedFiles.length > 0) {
       // JSON.stringify for shell-safe quoting of the cwd path (matches the
       // pattern used in buildMonitorHint). Paths with spaces would otherwise
       // break the suggested command.
@@ -2904,7 +3088,7 @@ async function runBridgeTask(request) {
     }
 
     setPhase("error", {
-      command: `node ${SCRIPT_PATH} send ${result.threadId} "<revised prompt>"`,
+      command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "<revised prompt>"`,
       description: "Retry with an adjusted prompt, or cancel and start fresh."
     }, { errorCode, monitor });
     return { ...result, session };
@@ -2921,9 +3105,10 @@ async function runBridgeTask(request) {
       steps,
       planPath,
       scriptPath: SCRIPT_PATH,
+      cwd: request.cwd,
     }));
     setPhase("plan-pending", {
-      command: `node ${SCRIPT_PATH} send ${result.threadId} --mode default "Implement the plan."`,
+      command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
       description: "Approve the plan and switch to execution mode. To revise instead, drop --mode and send revision text."
     }, { planPath, planSteps: steps, monitor });
     return { ...result, session, planPath };
@@ -2973,17 +3158,17 @@ async function runBridgeTask(request) {
           : "diff";
       const nextAction = pipelineErrored
         ? {
-            command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
+            command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
             description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`,
           }
         : {
-            command: `node ${SCRIPT_PATH} send ${result.threadId} "Complete the missing items"`,
+            command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
             description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics.",
           };
       setPhase("incomplete", nextAction, { pipeline: pipelineResult, monitor });
     } else {
       setPhase("done", {
-        command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
+        command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
         description: "Task finished and passed completion check. Inspect full result or send a follow-up."
       }, { pipeline: pipelineResult, monitor });
     }
@@ -3004,10 +3189,11 @@ async function runBridgeTask(request) {
     diffPath: diff.diffPath,
     scriptPath: SCRIPT_PATH,
     jobId: request.jobId ?? null,
+    cwd: request.cwd,
   }));
   markTerminalEmitted();
   setPhase("done", {
-    command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
+    command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
     description: "Task finished. Inspect full result or send a follow-up."
   }, { diffPath: diff.diffPath, monitor });
 
@@ -3057,6 +3243,7 @@ async function runBridgeTask(request) {
             origin: "bridge",
             scriptPath: SCRIPT_PATH,
             jobId: request.jobId ?? null,
+            cwd: request.cwd,
           })
         );
         logNdjson(backstopSession, "ERROR", null, {
@@ -3349,7 +3536,7 @@ async function handleStatus(argv) {
     throw usageError("`status --wait` requires a job id.");
   }
 
-  const report = buildStatusSnapshot(cwd, { all: options.all });
+  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
   emitSuccess("status", report, renderStatusReport(report), {
     json: options.json,
     startedAt
@@ -3370,7 +3557,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json, st
   try {
     while (true) {
       ticks += 1;
-      const snapshot = buildStatusSnapshot(cwd, { all });
+      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all }));
       const activeCount = snapshot.running?.length ?? 0;
       const tickEntry = {
         schema_version: "1.0",
@@ -3557,7 +3744,13 @@ async function handleAwaitArtifact(argv) {
 // suitable for both JSON and rendered output.
 function pruneOrphanedJobs(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = listJobs(workspaceRoot);
+  // The default `listJobs` view reaps stale-PID `running`/`queued` jobs to
+  // `orphaned` in-memory so read-only consumers see crashes promptly. The
+  // prune-orphans writer is the one that must actually persist that
+  // transition, so it asks for the raw on-disk view; otherwise the entries
+  // it's meant to reap arrive already labelled `orphaned` and slip past
+  // the active-status filter below.
+  const jobs = listJobs(workspaceRoot, { raw: true });
   const reaped = [];
   const skipped = [];
   const ts = new Date().toISOString();
@@ -3758,11 +3951,11 @@ async function handleWait(argv) {
     );
   }
 
-  const config = getBridgeConfig(cwd);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
-  const TERMINAL = /\[(DONE|ERROR|INCOMPLETE)\]/;
+  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
 
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
   if (result.timedOut) {
@@ -3833,7 +4026,7 @@ async function handleEvents(argv) {
     );
   }
 
-  const config = getBridgeConfig(cwd);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
 
@@ -4218,7 +4411,8 @@ async function handleSend(argv) {
     throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
   }
 
-  const config = getBridgeConfig(cwd);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getBridgeConfig(cwd, workspaceRoot);
   const modeOverride = options.mode;
 
   const sessionDir = resolveSessionDir(config.session_dir);
@@ -4235,15 +4429,15 @@ async function handleSend(argv) {
     // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
     idleTimeoutMs: idleTimeoutOverride != null
       ? idleTimeoutOverride
-      : (Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 300_000),
+        : (Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms),
     // Turn timeout: per-invocation override > the mode-appropriate config key
     // (turn_plan_ms for plan-mode sends, turn_default_ms otherwise) > built-in
     // default. `send` gets a single --turn-timeout-ms flag that maps onto the
     // right budget based on the resolved mode.
     turnTimeoutMs: turnTimeoutOverride
       ?? (sendIsPlanMode
-        ? (Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : 300_000)
-        : (Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : 600_000)),
+        ? (Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : DEFAULT_CONFIG.turn_plan_ms)
+        : (Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms)),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
       logNdjson(s, "TURN_PARAMS", "turn/start", {
@@ -4265,7 +4459,13 @@ async function handleSend(argv) {
         itemType: item?.type ?? null,
         text: extractItemText(item)
       });
-    }
+    },
+    onServerRequest: createBridgeServerRequestHandler({
+      sessionDir,
+      config,
+      questionAnswerMs: questionTimeoutOverride ?? null,
+      cwd
+    })
   };
 
   // `sandboxPolicy` must honor `config.sandbox_policy` regardless of whether
@@ -4286,19 +4486,82 @@ async function handleSend(argv) {
   }
 
   ensureCodexAvailable(cwd);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const result = await runAppServerTurn(workspaceRoot, turnOptions);
+  const result = await runAppServerTurn(cwd, turnOptions);
 
   // Route failed Codex turns through emitError so exit code reflects the
   // failure class. Previously `send` emitted success + exit 0 even when the
   // turn failed with Unauthorized/ContextWindowExceeded/etc.
   if (result.status !== 0) {
     const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
+    const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    const classified = classifyError(errLike);
+    logEvent(session, formatErrorEvent(session, {
+      errorCode: classified.code,
+      message: classified.message,
+      phase: classified.class,
+      origin: "send",
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session, "ERROR", "turn/completed", { error: classified });
     emitError(errLike, { json: options.json, command: "send" });
     return;
   }
 
-  const session = findSession(sessionDir, threadId);
+  const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+  if (result.planDetected && result.planText) {
+    const planPath = writePlan(session, result.planText);
+    const steps = extractPlanSteps(result.planText);
+    logEvent(session, formatPlanEvent(session, {
+      turnId: result.turnId,
+      planTitle: result.planText.split("\n")[0]?.slice(0, 80) ?? "Plan",
+      steps,
+      planPath,
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session, "PLAN", "item/completed", {
+      turnId: result.turnId ?? null,
+      planPath,
+      planDetected: true
+    });
+    const eventsPath = session?.eventsPath ?? null;
+    const renderedLines = [`Plan updated for ${threadId}.`];
+    if (eventsPath) renderedLines.push(`  events: ${eventsPath}`);
+    emitSuccess(
+      "send",
+      {
+        threadId,
+        status: result.status,
+        turnId: result.turnId ?? null,
+        eventsPath,
+        phase: "plan-pending",
+        planPath,
+        planSteps: steps,
+        finalMessage: result.finalMessage ?? null
+      },
+      `${renderedLines.join("\n")}\n`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  logEvent(session, formatDoneEvent(session, {
+    duration: Math.round((Date.now() - startedAt) / 1000),
+    diffStat: "send follow-up",
+    files: [],
+    config: {
+      model: config.model,
+      effort: turnOptions.effort,
+      modeFlow: modeOverride ?? "resume"
+    },
+    diffPath: "not captured for send",
+    scriptPath: SCRIPT_PATH,
+    cwd
+  }));
+  logNdjson(session, "DONE", "turn/completed", {
+    turnId: result.turnId ?? null,
+    status: result.status
+  });
   const eventsPath = session?.eventsPath ?? null;
   const renderedLines = [`Sent to ${threadId}. Status: ${result.status}`];
   if (eventsPath) renderedLines.push(`  events: ${eventsPath}`);
@@ -4347,7 +4610,7 @@ async function handleSteer(argv) {
     });
   });
 
-  const config = getBridgeConfig(cwd);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
   if (session) {
@@ -4372,7 +4635,8 @@ async function handleRespond(argv) {
     throw usageError("respond requires <request-id>");
   }
 
-  const config = getBridgeConfig(cwd);
+  const cwd = resolveCommandCwd(options);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
 
   // Look up the pending request from disk (written by the worker process)
@@ -4434,7 +4698,8 @@ async function handleSummary(argv) {
     throw usageError("summary requires <thread-id>");
   }
 
-  const config = getBridgeConfig(cwd);
+  const cwd = resolveCommandCwd(options);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
   if (!session) {

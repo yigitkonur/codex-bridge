@@ -42,6 +42,16 @@ var CODEX_ERROR_INFO = Object.freeze({
     retryable: true,
     suggestion: "Wait for the rate-limit window to reset, then retry."
   },
+  ServerOverloaded: {
+    class: "network",
+    retryable: true,
+    suggestion: "Codex app-server is overloaded. Retry with backoff."
+  },
+  CyberPolicy: {
+    class: "validation",
+    retryable: false,
+    suggestion: "Codex blocked the request under policy. Change the request rather than retrying."
+  },
   HttpConnectionFailed: {
     class: "network",
     retryable: true,
@@ -74,6 +84,16 @@ var CODEX_ERROR_INFO = Object.freeze({
     retryable: false,
     suggestion: "Re-run with `--write` only if you intend workspace-write; review sandbox output."
   },
+  ThreadRollbackFailed: {
+    class: "conflict",
+    retryable: false,
+    suggestion: "The thread could not be rolled back. Start a new task from the current workspace state."
+  },
+  ActiveTurnNotSteerable: {
+    class: "conflict",
+    retryable: false,
+    suggestion: "This active turn type cannot be steered. Wait for completion or start a new turn."
+  },
   BadRequest: {
     class: "validation",
     retryable: false,
@@ -83,9 +103,25 @@ var CODEX_ERROR_INFO = Object.freeze({
     class: "dependency_failed",
     retryable: true,
     suggestion: "Retry after a brief backoff."
+  },
+  Other: {
+    class: "internal",
+    retryable: false,
+    suggestion: "The Codex error has no taxonomy entry yet \u2014 read details.codexErrorPayload and details.rawCodexErrorInfo for the upstream payload."
   }
-  // ActiveTurnNotSteerable / Other fall through to default classification.
 });
+var CAMEL_CODEX_ERROR_INFO = new Map(
+  Object.keys(CODEX_ERROR_INFO).map((key) => [
+    key.slice(0, 1).toLowerCase() + key.slice(1),
+    key
+  ])
+);
+var SNAKE_CODEX_ERROR_INFO = new Map(
+  Object.keys(CODEX_ERROR_INFO).map((key) => [
+    key.replace(/[A-Z]/g, (letter, index) => `${index === 0 ? "" : "_"}${letter.toLowerCase()}`),
+    key
+  ])
+);
 var CliError = class extends Error {
   constructor(message, meta = {}) {
     super(message);
@@ -387,7 +423,7 @@ function resolveWorkspaceRoot(cwd) {
 
 // src/lib/state.mjs
 var BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
-var PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+var LEGACY_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 var FALLBACK_STATE_ROOT_DIR = path2.join(os.tmpdir(), "codex-companion");
 function resolveStateDir(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
@@ -400,7 +436,7 @@ function resolveStateDir(cwd) {
   const slugSource = path2.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[PLUGIN_DATA_ENV];
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[LEGACY_PLUGIN_DATA_ENV];
   const stateRoot = pluginDataDir ? path2.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
   return path2.join(stateRoot, `${slug}-${hash}`);
 }
@@ -566,6 +602,8 @@ function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir =
 // src/lib/app-server.mjs
 var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 var BROKER_BUSY_RPC_CODE = -32001;
+var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
+var APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5e3;
 var DEFAULT_CLIENT_INFO = {
   title: "Codex Bridge",
   name: "codex_bridge",
@@ -594,6 +632,26 @@ function createProtocolError(message, data) {
   }
   return error;
 }
+function timeoutError(message) {
+  const error = new Error(message);
+  error.code = "ETIMEDOUT";
+  return error;
+}
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(timeoutError(message)), ms);
+      timer.unref?.();
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+function serverRequestError(method) {
+  return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
+}
 var AppServerClientBase = class {
   constructor(cwd, options = {}) {
     this.cwd = cwd;
@@ -602,32 +660,93 @@ var AppServerClientBase = class {
     this.nextId = 1;
     this.stderr = "";
     this.closed = false;
+    this.transportClosed = false;
     this.exitError = null;
     this.notificationHandler = null;
     this.lineBuffer = "";
     this.transport = "unknown";
+    this.serverRequestHandler = null;
+    this.listeners = /* @__PURE__ */ new Map();
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
+    });
+    this.transportExitPromise = new Promise((resolve) => {
+      this.resolveTransportExit = resolve;
     });
   }
   setNotificationHandler(handler) {
     this.notificationHandler = handler;
   }
+  on(eventName, handler) {
+    if (!this.listeners.has(eventName)) {
+      this.listeners.set(eventName, /* @__PURE__ */ new Set());
+    }
+    this.listeners.get(eventName).add(handler);
+    return this;
+  }
+  off(eventName, handler) {
+    this.listeners.get(eventName)?.delete(handler);
+    return this;
+  }
+  emit(eventName, payload) {
+    for (const handler of this.listeners.get(eventName) ?? []) {
+      try {
+        handler(payload);
+      } catch {
+      }
+    }
+  }
   /**
    * @template {AppServerMethod} M
    * @param {M} method
    * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+   * @param {{ signal?: AbortSignal }} [options]
    * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
    */
-  request(method, params) {
+  request(method, params, options = {}) {
     if (this.closed) {
       throw new Error("codex app-server client is closed.");
+    }
+    const signal = options.signal ?? null;
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error("request aborted"));
     }
     const id = this.nextId;
     this.nextId += 1;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
-      this.sendMessage({ id, method, params });
+      let abortHandler = null;
+      const cleanupAbort = () => {
+        if (signal && abortHandler) {
+          signal.removeEventListener("abort", abortHandler);
+          abortHandler = null;
+        }
+      };
+      const wrappedResolve = (value) => {
+        cleanupAbort();
+        resolve(value);
+      };
+      const wrappedReject = (error) => {
+        cleanupAbort();
+        reject(error);
+      };
+      this.pending.set(id, { resolve: wrappedResolve, reject: wrappedReject, method });
+      if (signal) {
+        abortHandler = () => {
+          if (this.pending.get(id)) {
+            this.pending.delete(id);
+          }
+          cleanupAbort();
+          reject(signal.reason ?? new Error("request aborted"));
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+      try {
+        this.sendMessage({ id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        cleanupAbort();
+        reject(error);
+      }
     });
   }
   notify(method, params = {}) {
@@ -654,7 +773,10 @@ var AppServerClientBase = class {
     try {
       message = JSON.parse(line);
     } catch (error) {
-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
+      this.handleExit(
+        createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }),
+        { transportExited: false }
+      );
       return;
     }
     if (message.id !== void 0 && message.method) {
@@ -683,47 +805,43 @@ var AppServerClientBase = class {
   }
   handleServerRequest(message) {
     const method = message.method;
-    const params = message.params ?? {};
-    if (method === "item/tool/requestUserInput") {
-      if (this.serverRequestHandler) {
-        message._client = this;
-        this.serverRequestHandler(message);
-      } else {
-        this.sendMessage({ id: message.id, result: { answers: {} } });
-      }
+    if (this.serverRequestHandler) {
+      message._client = this;
+      Promise.resolve(this.serverRequestHandler(message)).catch((error) => {
+        this.rejectServerRequest(
+          message.id,
+          buildJsonRpcError(-32e3, error?.message ?? `Server request handler failed for ${method}.`)
+        );
+      });
       return;
     }
-    if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-      this.sendMessage({ id: message.id, result: { decision: "accept" } });
-      return;
-    }
-    if (method === "item/permissions/requestApproval") {
-      const permissions = params.permissions ?? {};
-      this.sendMessage({ id: message.id, result: { permissions, scope: "session" } });
-      return;
-    }
-    if (method === "mcpServer/elicitation/request") {
-      this.sendMessage({ id: message.id, result: { action: "accept", content: null } });
-      return;
-    }
-    this.sendMessage({
-      id: message.id,
-      error: buildJsonRpcError(-32601, `Unsupported server request: ${method}`)
-    });
+    this.rejectServerRequest(message.id, serverRequestError(method));
   }
   setServerRequestHandler(handler) {
     this.serverRequestHandler = handler;
   }
-  handleExit(error) {
+  resolveServerRequest(id, result) {
+    this.sendMessage({ id, result: result ?? {} });
+  }
+  rejectServerRequest(id, error) {
+    this.sendMessage({ id, error });
+  }
+  handleExit(error, { transportExited = true } = {}) {
+    if (transportExited && !this.transportClosed) {
+      this.transportClosed = true;
+      this.resolveTransportExit(void 0);
+    }
     if (this.exitResolved) {
       return;
     }
     this.exitResolved = true;
     this.exitError = error ?? null;
+    this.closed = true;
     for (const pending of this.pending.values()) {
       pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
     }
     this.pending.clear();
+    this.emit("exit", this.exitError);
     this.resolveExit(void 0);
   }
   sendMessage(_message) {
@@ -759,15 +877,19 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
     this.readline.on("line", (line) => {
       this.handleLine(line);
     });
-    await this.request("initialize", {
-      clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server."
+    );
     this.notify("initialized", {});
   }
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
+    if (this.transportClosed) {
+      await this.transportExitPromise;
       return;
     }
     this.closed = true;
@@ -789,7 +911,21 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
         }
       }, 50).unref?.();
     }
-    await this.exitPromise;
+    try {
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
+    } catch (error) {
+      if (this.proc && this.proc.exitCode === null) {
+        if (process5.platform === "win32") {
+          try {
+            terminateProcessTree(this.proc.pid);
+          } catch {
+          }
+        } else {
+          this.proc.kill("SIGKILL");
+        }
+      }
+      this.handleExit(error);
+    }
   }
   sendMessage(message) {
     const line = `${JSON.stringify(message)}
@@ -798,7 +934,14 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
     if (!stdin) {
       throw new Error("codex app-server stdin is not available.");
     }
-    stdin.write(line);
+    if (stdin.destroyed || !stdin.writable) {
+      throw new Error("codex app-server stdin is closed.");
+    }
+    stdin.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
   }
 };
 var BrokerCodexAppServerClient = class extends AppServerClientBase {
@@ -808,7 +951,7 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
     this.endpoint = options.brokerEndpoint;
   }
   async initialize() {
-    await new Promise((resolve, reject) => {
+    await withTimeout(new Promise((resolve, reject) => {
       const target = parseBrokerEndpoint(this.endpoint);
       this.socket = net2.createConnection({ path: target.path });
       this.socket.setEncoding("utf8");
@@ -825,23 +968,32 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
       this.socket.on("close", () => {
         this.handleExit(this.exitError);
       });
-    });
-    await this.request("initialize", {
-      clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+    }), APP_SERVER_INITIALIZE_TIMEOUT_MS, "Timed out connecting to codex app-server broker.");
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server broker connection."
+    );
     this.notify("initialized", {});
   }
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
+    if (this.transportClosed) {
+      await this.transportExitPromise;
       return;
     }
     this.closed = true;
     if (this.socket) {
       this.socket.end();
     }
-    await this.exitPromise;
+    try {
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
+    } catch (error) {
+      this.socket?.destroy();
+      this.handleExit(error);
+    }
   }
   sendMessage(message) {
     const line = `${JSON.stringify(message)}
@@ -850,7 +1002,14 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
     if (!socket) {
       throw new Error("codex app-server broker connection is not connected.");
     }
-    socket.write(line);
+    if (socket.destroyed || !socket.writable) {
+      throw new Error("codex app-server broker connection is closed.");
+    }
+    socket.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
   }
 };
 var CodexAppServerClient = class {
@@ -867,7 +1026,13 @@ var CodexAppServerClient = class {
       }
     }
     const client = brokerEndpoint ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint }) : new SpawnedCodexAppServerClient(cwd, options);
-    await client.initialize();
+    try {
+      await client.initialize();
+    } catch (error) {
+      await client.close().catch(() => {
+      });
+      throw error;
+    }
     return client;
   }
 };
@@ -884,15 +1049,136 @@ function buildStreamThreadIds(method, params, result) {
   }
   return threadIds;
 }
+function createStreamTracker() {
+  let activeStreamSocket = null;
+  let activeStreamThreadIds = null;
+  let activeCompletedThreadIds = null;
+  let pendingThreadCompletions = null;
+  function getActiveStreamSocket() {
+    return activeStreamSocket;
+  }
+  function registerStream(socket, threadIds) {
+    activeStreamSocket = socket;
+    activeStreamThreadIds = threadIds instanceof Set ? threadIds : new Set(threadIds ?? []);
+    activeCompletedThreadIds = /* @__PURE__ */ new Set();
+    pendingThreadCompletions = /* @__PURE__ */ new Set();
+  }
+  function clearAllStreamState() {
+    activeStreamSocket = null;
+    activeStreamThreadIds = null;
+    activeCompletedThreadIds = null;
+    pendingThreadCompletions = null;
+  }
+  function clearStreamStateIfMatch(socket) {
+    if (activeStreamSocket === socket) {
+      clearAllStreamState();
+    }
+  }
+  function clearStreamStateOnFailedStreamStart(socket) {
+    if (activeStreamSocket === socket) {
+      activeStreamSocket = null;
+      activeStreamThreadIds = null;
+      pendingThreadCompletions = null;
+    }
+  }
+  function tryReleaseStream(target) {
+    if (activeStreamSocket !== target) {
+      return false;
+    }
+    const knownThreads = activeStreamThreadIds ? [...activeStreamThreadIds] : [];
+    const completed = activeCompletedThreadIds ?? /* @__PURE__ */ new Set();
+    const allKnownComplete = knownThreads.every((id) => completed.has(id));
+    if (!allKnownComplete) {
+      return false;
+    }
+    activeStreamSocket = null;
+    activeStreamThreadIds = null;
+    activeCompletedThreadIds = null;
+    pendingThreadCompletions = null;
+    return true;
+  }
+  function noteStreamThreads(message) {
+    const item = message?.params?.item ?? null;
+    if (item?.type !== "collabAgentToolCall") {
+      return;
+    }
+    if (!activeStreamThreadIds) {
+      return;
+    }
+    const justAdded = [];
+    for (const threadId of item.receiverThreadIds ?? []) {
+      if (!threadId) {
+        continue;
+      }
+      if (!activeStreamThreadIds.has(threadId)) {
+        activeStreamThreadIds.add(threadId);
+        justAdded.push(threadId);
+      }
+    }
+    let drainedAny = false;
+    if (pendingThreadCompletions) {
+      for (const threadId of justAdded) {
+        if (pendingThreadCompletions.has(threadId)) {
+          pendingThreadCompletions.delete(threadId);
+          if (!activeCompletedThreadIds) {
+            activeCompletedThreadIds = /* @__PURE__ */ new Set();
+          }
+          activeCompletedThreadIds.add(threadId);
+          drainedAny = true;
+        }
+      }
+    }
+    if (drainedAny) {
+      tryReleaseStream(activeStreamSocket);
+    }
+  }
+  function maybeReleaseStream(message, target) {
+    if (message?.method !== "turn/completed" || activeStreamSocket !== target) {
+      return;
+    }
+    const threadId = message.params?.threadId ?? null;
+    if (!activeCompletedThreadIds) {
+      activeCompletedThreadIds = /* @__PURE__ */ new Set();
+    }
+    if (threadId) {
+      if (activeStreamThreadIds && !activeStreamThreadIds.has(threadId)) {
+        if (!pendingThreadCompletions) {
+          pendingThreadCompletions = /* @__PURE__ */ new Set();
+        }
+        pendingThreadCompletions.add(threadId);
+        return;
+      }
+      activeCompletedThreadIds.add(threadId);
+    } else {
+      activeStreamSocket = null;
+      activeStreamThreadIds = null;
+      activeCompletedThreadIds = null;
+      pendingThreadCompletions = null;
+      return;
+    }
+    tryReleaseStream(target);
+  }
+  return {
+    getActiveStreamSocket,
+    registerStream,
+    clearAllStreamState,
+    clearStreamStateIfMatch,
+    clearStreamStateOnFailedStreamStart,
+    noteStreamThreads,
+    maybeReleaseStream,
+    tryReleaseStream
+  };
+}
 function buildJsonRpcError2(code, message, data) {
   return data === void 0 ? { code, message } : { code, message, data };
 }
 function send(socket, message) {
   if (socket.destroyed) {
-    return;
+    return false;
   }
   socket.write(`${JSON.stringify(message)}
 `);
+  return true;
 }
 function isInterruptRequest(message) {
   return message?.method === "turn/interrupt";
@@ -904,6 +1190,21 @@ function writePidFile(pidFile) {
   fs3.mkdirSync(path4.dirname(pidFile), { recursive: true });
   fs3.writeFileSync(pidFile, `${process6.pid}
 `, "utf8");
+}
+function requestKey(id) {
+  return `${typeof id}:${String(id)}`;
+}
+function safeRejectServerRequest(message, error) {
+  try {
+    message?._client?.rejectServerRequest?.(message.id, error);
+  } catch {
+  }
+}
+function safeResolveServerRequest(message, result) {
+  try {
+    message?._client?.resolveServerRequest?.(message.id, result ?? {});
+  } catch {
+  }
 }
 async function main() {
   const [subcommand, ...argv] = process6.argv.slice(2);
@@ -922,52 +1223,122 @@ async function main() {
   const pidFile = options["pid-file"] ? path4.resolve(options["pid-file"]) : null;
   writePidFile(pidFile);
   const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+  const streamTracker = createStreamTracker();
   let activeRequestSocket = null;
-  let activeStreamSocket = null;
-  let activeStreamThreadIds = null;
+  let activeRequestToken = null;
+  const pendingServerRequests = /* @__PURE__ */ new Map();
   const sockets = /* @__PURE__ */ new Set();
+  let server = null;
+  let shuttingDown = false;
   function clearSocketOwnership(socket) {
     if (activeRequestSocket === socket) {
       activeRequestSocket = null;
+      activeRequestToken = null;
     }
-    if (activeStreamSocket === socket) {
-      activeStreamSocket = null;
-      activeStreamThreadIds = null;
+    streamTracker.clearStreamStateIfMatch(socket);
+    for (const [key, pending] of pendingServerRequests) {
+      if (pending.socket !== socket) {
+        continue;
+      }
+      pendingServerRequests.delete(key);
+      safeRejectServerRequest(
+        pending.upstream,
+        buildJsonRpcError2(-32e3, "Downstream bridge connection closed before resolving server request.")
+      );
     }
   }
-  function routeNotification(message) {
-    const target = activeRequestSocket ?? activeStreamSocket;
-    if (!target) {
-      return;
+  function cleanupBrokerFiles() {
+    if (listenTarget.kind === "unix" && fs3.existsSync(listenTarget.path)) {
+      try {
+        fs3.unlinkSync(listenTarget.path);
+      } catch {
+      }
     }
-    send(target, message);
-    if (message.method === "turn/completed" && activeStreamSocket === target) {
-      const threadId = message.params?.threadId ?? null;
-      if (!threadId || !activeStreamThreadIds || activeStreamThreadIds.has(threadId)) {
-        activeStreamSocket = null;
-        activeStreamThreadIds = null;
-        if (activeRequestSocket === target) {
-          activeRequestSocket = null;
-        }
+    if (pidFile && fs3.existsSync(pidFile)) {
+      try {
+        fs3.unlinkSync(pidFile);
+      } catch {
       }
     }
   }
+  function clearAllOwnership() {
+    activeRequestSocket = null;
+    activeRequestToken = null;
+    streamTracker.clearAllStreamState();
+    pendingServerRequests.clear();
+  }
+  function closeDownstreamSockets(error) {
+    const payload = error?.message ? `Upstream codex app-server exited: ${error.message}` : "Upstream codex app-server exited.";
+    for (const socket of sockets) {
+      send(socket, {
+        id: null,
+        error: buildJsonRpcError2(-32e3, payload)
+      });
+      socket.destroy();
+    }
+    sockets.clear();
+  }
+  function handleUpstreamExit(error) {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    clearAllOwnership();
+    closeDownstreamSockets(error);
+    server?.close?.(() => {
+    });
+    cleanupBrokerFiles();
+    setImmediate(() => process6.exit(error ? 1 : 0));
+  }
+  function routeNotification(message) {
+    let target = activeRequestSocket ?? streamTracker.getActiveStreamSocket();
+    if (message.method === "serverRequest/resolved") {
+      const key = requestKey(message.params?.requestId);
+      const pending = pendingServerRequests.get(key);
+      if (pending) {
+        pendingServerRequests.delete(key);
+        target = pending.socket;
+      }
+    }
+    if (!target) {
+      return;
+    }
+    streamTracker.noteStreamThreads(message);
+    send(target, message);
+    streamTracker.maybeReleaseStream(message, target);
+  }
+  function routeServerRequest(message) {
+    const target = activeRequestSocket ?? streamTracker.getActiveStreamSocket();
+    if (!target) {
+      safeRejectServerRequest(
+        message,
+        buildJsonRpcError2(-32e3, `No active downstream client for server request: ${message.method}`)
+      );
+      return;
+    }
+    pendingServerRequests.set(requestKey(message.id), { socket: target, upstream: message });
+    if (!send(target, { id: message.id, method: message.method, params: message.params ?? {} })) {
+      pendingServerRequests.delete(requestKey(message.id));
+      safeRejectServerRequest(
+        message,
+        buildJsonRpcError2(-32e3, `Failed to forward server request: ${message.method}`)
+      );
+    }
+  }
   async function shutdown(server2) {
+    shuttingDown = true;
     for (const socket of sockets) {
       socket.end();
     }
     await appClient.close().catch(() => {
     });
     await new Promise((resolve) => server2.close(resolve));
-    if (listenTarget.kind === "unix" && fs3.existsSync(listenTarget.path)) {
-      fs3.unlinkSync(listenTarget.path);
-    }
-    if (pidFile && fs3.existsSync(pidFile)) {
-      fs3.unlinkSync(pidFile);
-    }
+    cleanupBrokerFiles();
   }
   appClient.setNotificationHandler(routeNotification);
-  const server = net3.createServer((socket) => {
+  appClient.setServerRequestHandler(routeServerRequest);
+  appClient.on?.("exit", handleUpstreamExit);
+  server = net3.createServer((socket) => {
     sockets.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
@@ -1003,6 +1374,24 @@ async function main() {
         if (message.method === "initialized" && message.id === void 0) {
           continue;
         }
+        if (message.id !== void 0 && !message.method) {
+          const key = requestKey(message.id);
+          const pending = pendingServerRequests.get(key);
+          if (pending && pending.socket === socket) {
+            pendingServerRequests.delete(key);
+            if (message.error) {
+              safeRejectServerRequest(pending.upstream, message.error);
+            } else {
+              safeResolveServerRequest(pending.upstream, message.result ?? {});
+            }
+            continue;
+          }
+          send(socket, {
+            id: message.id,
+            error: buildJsonRpcError2(-32603, `No pending server request response for id ${String(message.id)}.`)
+          });
+          continue;
+        }
         if (message.id !== void 0 && message.method === "broker/shutdown") {
           send(socket, { id: message.id, result: {} });
           await shutdown(server);
@@ -1011,8 +1400,16 @@ async function main() {
         if (message.id === void 0) {
           continue;
         }
-        const allowInterruptDuringActiveStream = isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
-        if ((activeRequestSocket && activeRequestSocket !== socket || activeStreamSocket && activeStreamSocket !== socket) && !allowInterruptDuringActiveStream) {
+        const activeStreamSocket = streamTracker.getActiveStreamSocket();
+        const allowInterruptDuringActiveStream = (
+          // Invariant: non-stream concurrent requests are already
+          // busy-rejected before this carve-out runs, so activeRequestSocket
+          // is always null here. The guard is defensive against future
+          // changes to STREAMING_METHODS that could introduce a non-stream
+          // request that is allowed to coexist with a stream.
+          isInterruptRequest(message) && activeStreamSocket && !activeRequestSocket
+        );
+        if ((activeRequestSocket || activeStreamSocket) && !allowInterruptDuringActiveStream) {
           send(socket, {
             id: message.id,
             error: buildJsonRpcError2(BROKER_BUSY_RPC_CODE, "Shared Codex broker is busy.")
@@ -1032,28 +1429,33 @@ async function main() {
           continue;
         }
         const isStreaming = STREAMING_METHODS.has(message.method);
+        const requestToken = Symbol(message.method);
         activeRequestSocket = socket;
+        activeRequestToken = requestToken;
         try {
           const result = await appClient.request(message.method, message.params ?? {});
-          send(socket, { id: message.id, result });
-          if (isStreaming) {
-            activeStreamSocket = socket;
-            activeStreamThreadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
+          const responseSent = send(socket, { id: message.id, result });
+          if (isStreaming && responseSent && sockets.has(socket) && !socket.destroyed) {
+            streamTracker.registerStream(
+              socket,
+              buildStreamThreadIds(message.method, message.params ?? {}, result)
+            );
           }
-          if (activeRequestSocket === socket) {
+          if (activeRequestToken === requestToken) {
             activeRequestSocket = null;
+            activeRequestToken = null;
           }
         } catch (error) {
           send(socket, {
             id: message.id,
             error: buildJsonRpcError2(error.rpcCode ?? -32e3, error.message)
           });
-          if (activeRequestSocket === socket) {
+          if (activeRequestToken === requestToken) {
             activeRequestSocket = null;
+            activeRequestToken = null;
           }
-          if (activeStreamSocket === socket && isStreaming) {
-            activeStreamSocket = null;
-            activeStreamThreadIds = null;
+          if (isStreaming) {
+            streamTracker.clearStreamStateOnFailedStreamStart(socket);
           }
         }
       }
@@ -1077,8 +1479,29 @@ async function main() {
   });
   server.listen(listenTarget.path);
 }
-main().catch((error) => {
-  process6.stderr.write(`${error instanceof Error ? error.message : String(error)}
+var invokedDirectly = (() => {
+  if (!process6.argv[1]) {
+    return false;
+  }
+  try {
+    const entryUrl = new URL(`file://${process6.argv[1]}`).href;
+    return entryUrl === import.meta.url;
+  } catch {
+    return false;
+  }
+})();
+if (invokedDirectly) {
+  main().catch((error) => {
+    process6.stderr.write(`${error instanceof Error ? error.message : String(error)}
 `);
-  process6.exit(1);
-});
+    process6.exit(1);
+  });
+}
+var __testHooks__ = {
+  createStreamTracker,
+  buildStreamThreadIds,
+  STREAMING_METHODS
+};
+export {
+  __testHooks__
+};

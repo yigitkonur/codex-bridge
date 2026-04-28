@@ -21,9 +21,9 @@
  *   finalTurn: Turn | null,
  *   completed: boolean,
  *   finalAnswerSeen: boolean,
+ *   completionTimer: ReturnType<typeof setTimeout> | null,
  *   pendingCollaborations: Set<string>,
  *   activeSubagentTurns: Set<string>,
- *   completionTimer: ReturnType<typeof setTimeout> | null,
  *   lastAgentMessage: string,
  *   reviewText: string,
  *   reasoningSummary: string[],
@@ -43,6 +43,7 @@ import { binaryAvailable } from "./process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
+const TURN_INTERRUPT_GRACE_MS = 30_000;
 const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 
@@ -318,9 +319,9 @@ function createTurnCaptureState(threadId, options = {}) {
     finalTurn: null,
     completed: false,
     finalAnswerSeen: false,
+    completionTimer: null,
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
-    completionTimer: null,
     lastAgentMessage: "",
     reviewText: "",
     planDetected: false,
@@ -330,6 +331,7 @@ function createTurnCaptureState(threadId, options = {}) {
     messages: [],
     fileChanges: [],
     commandExecutions: [],
+    pendingServerRequests: 0,
     onProgress: options.onProgress ?? null,
     onItemCompleted: typeof options.onItemCompleted === "function" ? options.onItemCompleted : null
   };
@@ -372,6 +374,11 @@ function completeTurn(state, turn = null, options = {}) {
   state.resolveCompletion(state);
 }
 
+// When the root final answer has arrived and all collaboration work has
+// drained, schedule a 250 ms grace timer to infer turn completion if the
+// upstream `turn/completed` notification is delayed or missing. Without this,
+// successful turns can fall through to the idle/turn-timeout path and be
+// reported as failed.
 function scheduleInferredCompletion(state) {
   if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
     return;
@@ -520,6 +527,9 @@ function applyTurnNotification(state, message) {
     case "turn/started":
       registerThread(state, message.params.threadId);
       state.threadTurnIds.set(message.params.threadId, message.params.turn.id);
+      if ((message.params.threadId ?? null) === state.threadId && !state.turnId) {
+        state.turnId = message.params.turn.id;
+      }
       if ((message.params.threadId ?? null) !== state.threadId) {
         state.activeSubagentTurns.add(message.params.threadId);
       }
@@ -599,18 +609,79 @@ function applyTurnNotification(state, message) {
   }
 }
 
-async function captureTurn(client, threadId, startRequest, options = {}) {
+function routeTurnNotification(state, message, previousHandler) {
+  if (message.method === "thread/started" || message.method === "thread/name/updated") {
+    applyTurnNotification(state, message);
+    return;
+  }
+
+  if (!belongsToTurn(state, message)) {
+    if (previousHandler) {
+      previousHandler(message);
+    }
+    return;
+  }
+
+  applyTurnNotification(state, message);
+}
+
+function flushBufferedNotifications(state, previousHandler) {
+  if (state.bufferedNotifications.length === 0 || !state.turnId) {
+    return;
+  }
+  const buffered = state.bufferedNotifications.splice(0);
+  for (const message of buffered) {
+    routeTurnNotification(state, message, previousHandler);
+    if (state.completed) {
+      break;
+    }
+  }
+}
+
+export async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
 
   const idleTimeoutMs = Number(options.idleTimeoutMs) > 0 ? Number(options.idleTimeoutMs) : 0;
+  const turnTimeoutMs = Number(options.turnTimeoutMs) > 0 ? Number(options.turnTimeoutMs) : 0;
   let lastNotificationAt = Date.now();
   let idleInterval = null;
+  let turnTimer = null;
+  let interruptGraceTimer = null;
+  // AbortController used to clean up the abandoned `startRequest()` pending entry
+  // when `state.completion` wins the race below. Without this, `client.pending`
+  // accumulates one stale entry per aborted turn until the next `handleExit`
+  // drains it — bounded but real on long-lived broker sessions.
+  const turnAbort = new AbortController();
+
+  const markActivity = () => {
+    lastNotificationAt = Date.now();
+  };
+  markActivity.startServerRequest = () => {
+    state.pendingServerRequests += 1;
+    markActivity();
+    let finished = false;
+    return () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      state.pendingServerRequests = Math.max(0, state.pendingServerRequests - 1);
+      markActivity();
+    };
+  };
+  if (typeof options.onActivityMarkerReady === "function") {
+    options.onActivityMarkerReady(markActivity);
+  }
 
   if (idleTimeoutMs > 0) {
     const checkIntervalMs = Math.min(5000, idleTimeoutMs);
     idleInterval = setInterval(() => {
       if (state.completed) {
+        return;
+      }
+      if (state.pendingServerRequests > 0) {
+        markActivity();
         return;
       }
       const elapsed = Date.now() - lastNotificationAt;
@@ -633,56 +704,130 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     idleInterval.unref?.();
   }
 
+  if (turnTimeoutMs > 0) {
+    turnTimer = setTimeout(() => {
+      if (state.completed) {
+        return;
+      }
+      const message = `Turn timed out after ${turnTimeoutMs}ms.`;
+      state.error = { message, code: "TurnTimeout" };
+      emitProgress(state.onProgress, message, "failed");
+      const interruptTurnId = state.turnId ?? state.threadTurnIds.get(state.threadId) ?? null;
+      if (interruptTurnId) {
+        try {
+          Promise.resolve(client.request("turn/interrupt", { threadId: state.threadId, turnId: interruptTurnId })).catch((error) => {
+            emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
+            if (!state.completed) {
+              completeTurn(state, null, { inferredStatus: "failed" });
+            }
+          });
+        } catch (error) {
+          emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
+          completeTurn(state, null, { inferredStatus: "failed" });
+          return;
+        }
+        const interruptGraceMs =
+          Number(options.interruptGraceMs) > 0 ? Number(options.interruptGraceMs) : TURN_INTERRUPT_GRACE_MS;
+        interruptGraceTimer = setTimeout(() => {
+          if (state.completed) {
+            return;
+          }
+          emitProgress(
+            state.onProgress,
+            `turn/interrupt did not produce turn/completed within ${interruptGraceMs}ms.`,
+            "failed"
+          );
+          completeTurn(state, null, { inferredStatus: "failed" });
+        }, interruptGraceMs);
+        interruptGraceTimer.unref?.();
+        return;
+      }
+      emitProgress(
+        state.onProgress,
+        "turn timeout fired before turn id known; upstream turn may continue running",
+        null
+      );
+      completeTurn(state, null, { inferredStatus: "failed" });
+    }, turnTimeoutMs);
+    turnTimer.unref?.();
+  }
+
   client.setNotificationHandler((message) => {
     lastNotificationAt = Date.now();
 
     if (!state.turnId) {
+      const messageThreadId = extractThreadId(message);
+      if (
+        messageThreadId === state.threadId &&
+        (message.method === "turn/started" || message.method === "turn/completed")
+      ) {
+        applyTurnNotification(state, message);
+        flushBufferedNotifications(state, previousHandler);
+        return;
+      }
       state.bufferedNotifications.push(message);
       return;
     }
 
-    if (message.method === "thread/started" || message.method === "thread/name/updated") {
-      applyTurnNotification(state, message);
-      return;
-    }
-
-    if (!belongsToTurn(state, message)) {
-        if (previousHandler) {
-          previousHandler(message);
-        }
-        return;
-    }
-
-    applyTurnNotification(state, message);
+    routeTurnNotification(state, message, previousHandler);
   });
 
-  // Handle process death: reject completion instead of hanging forever
+  // Handle process death: reject completion instead of hanging forever.
+  // If a buffered terminal `turn/completed` for this thread has already arrived
+  // ahead of `state.turnId`, replay it through `applyTurnNotification` so the
+  // captured terminal status wins instead of being misclassified as a crash.
   const onExit = () => {
-    if (!state.completed) {
-      state.error = { message: "Codex app-server exited unexpectedly" };
-      completeTurn(state, null, { inferredStatus: "failed" });
+    if (state.completed) {
+      return;
     }
+    const bufferedTerminal = state.bufferedNotifications.find(
+      (message) =>
+        message?.method === "turn/completed" &&
+        (message?.params?.threadId ?? null) === state.threadId
+    );
+    if (bufferedTerminal) {
+      applyTurnNotification(state, bufferedTerminal);
+      if (state.completed) {
+        return;
+      }
+    }
+    state.error = { message: "Codex app-server exited unexpectedly" };
+    completeTurn(state, null, { inferredStatus: "failed" });
   };
   if (client.on) client.on("exit", onExit);
 
   try {
-    const response = await startRequest();
-    lastNotificationAt = Date.now();
+    const response = await Promise.race([
+      startRequest(turnAbort.signal),
+      state.completion.then(() => null)
+    ]);
+    if (!response) {
+      // state.completion won the race (process exit, idle timeout, turn timeout,
+      // or buffered-terminal-on-exit flush). Abort the abandoned startRequest so
+      // its pending entry is removed from client.pending instead of leaking
+      // until the next handleExit.
+      turnAbort.abort(new Error("captureTurn: state.completion won the race"));
+      return await state.completion;
+    }
+    markActivity();
+    if (state.completed) {
+      return await state.completion;
+    }
     options.onResponse?.(response, state);
-    state.turnId = response.turn?.id ?? null;
+    const responseTurnId = response.turn?.id ?? null;
+    if (responseTurnId && state.turnId && state.turnId !== responseTurnId) {
+      state.error = {
+        message: `turn/start response turn id ${responseTurnId} did not match streamed turn id ${state.turnId}.`,
+        code: "ProtocolDrift"
+      };
+      completeTurn(state, null, { inferredStatus: "failed" });
+      return await state.completion;
+    }
+    state.turnId = state.turnId ?? responseTurnId;
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
     }
-    for (const message of state.bufferedNotifications) {
-      if (belongsToTurn(state, message)) {
-        applyTurnNotification(state, message);
-      } else {
-        if (previousHandler) {
-          previousHandler(message);
-        }
-      }
-    }
-    state.bufferedNotifications.length = 0;
+    flushBufferedNotifications(state, previousHandler);
 
     if (response.turn?.status && response.turn.status !== "inProgress") {
       completeTurn(state, response.turn);
@@ -694,6 +839,17 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     if (idleInterval) {
       clearInterval(idleInterval);
       idleInterval = null;
+    }
+    if (turnTimer) {
+      clearTimeout(turnTimer);
+      turnTimer = null;
+    }
+    if (interruptGraceTimer) {
+      clearTimeout(interruptGraceTimer);
+      interruptGraceTimer = null;
+    }
+    if (typeof options.onActivityMarkerReady === "function") {
+      options.onActivityMarkerReady(null);
     }
     client.setNotificationHandler(previousHandler ?? null);
     if (client.off) client.off("exit", onExit);
@@ -755,6 +911,14 @@ async function resumeThread(client, threadId, cwd, options = {}) {
 }
 
 function buildResultStatus(turnState) {
+  // A late `turn/completed` (status="completed") arriving inside the
+  // post-`turn/interrupt` grace window can overwrite `state.finalTurn` with a
+  // success record even though `state.error.code === "TurnTimeout"` was already
+  // set when the timeout fired. Callers gate on `status`, so without this check
+  // an over-budget turn would be reported as exit 0 with the timeout hidden.
+  if (turnState.error?.code === "TurnTimeout") {
+    return 1;
+  }
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
 }
 
@@ -1030,14 +1194,16 @@ export async function runAppServerReview(cwd, options = {}) {
     const turnState = await captureTurn(
       client,
       sourceThreadId,
-      () =>
+      (signal) =>
         client.request("review/start", {
           threadId: sourceThreadId,
           delivery,
           target: options.target
-        }),
+        }, { signal }),
       {
         onProgress: options.onProgress,
+        idleTimeoutMs: options.idleTimeoutMs ?? null,
+        turnTimeoutMs: options.turnTimeoutMs ?? null,
         onResponse(response, state) {
           if (response.reviewThreadId) {
             state.threadIds.add(response.reviewThreadId);
@@ -1076,10 +1242,22 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   return withAppServer(cwd, async (client) => {
     let threadId;
+    let markServerRequestActivity = null;
 
     // Hook: allow caller to handle server requests (e.g., requestUserInput)
     if (options.onServerRequest) {
-      client.setServerRequestHandler(options.onServerRequest);
+      client.setServerRequestHandler(async (message) => {
+        const finishServerRequest =
+          typeof markServerRequestActivity?.startServerRequest === "function"
+            ? markServerRequestActivity.startServerRequest()
+            : null;
+        markServerRequestActivity?.();
+        try {
+          return await options.onServerRequest(message);
+        } finally {
+          finishServerRequest?.();
+        }
+      });
     }
 
     if (options.resumeThreadId) {
@@ -1154,28 +1332,20 @@ export async function runAppServerTurn(cwd, options = {}) {
     const turnPromise = captureTurn(
       client,
       threadId,
-      () => client.request("turn/start", turnParams),
+      (signal) => client.request("turn/start", turnParams, { signal }),
       {
         onProgress: options.onProgress,
         idleTimeoutMs: options.idleTimeoutMs ?? null,
+        turnTimeoutMs: options.turnTimeoutMs ?? null,
+        onActivityMarkerReady(marker) {
+          markServerRequestActivity = marker;
+        },
         onIdleTimeout: options.onIdleTimeout ?? null,
         onItemCompleted: options.onItemCompleted ?? null
       }
     );
 
-    // Wrap with timeout if caller specified one
-    let turnState;
-    if (options.turnTimeoutMs && options.turnTimeoutMs > 0) {
-      turnState = await Promise.race([
-        turnPromise,
-        new Promise((_, reject) => {
-          const t = setTimeout(() => reject(new Error(`Turn timed out after ${options.turnTimeoutMs}ms`)), options.turnTimeoutMs);
-          if (t.unref) t.unref();
-        })
-      ]);
-    } else {
-      turnState = await turnPromise;
-    }
+    const turnState = await turnPromise;
 
     return {
       status: buildResultStatus(turnState),

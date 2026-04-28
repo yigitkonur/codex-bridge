@@ -42,6 +42,16 @@ const CODEX_ERROR_INFO = Object.freeze({
     retryable: true,
     suggestion: "Wait for the rate-limit window to reset, then retry."
   },
+  ServerOverloaded: {
+    class: "network",
+    retryable: true,
+    suggestion: "Codex app-server is overloaded. Retry with backoff."
+  },
+  CyberPolicy: {
+    class: "validation",
+    retryable: false,
+    suggestion: "Codex blocked the request under policy. Change the request rather than retrying."
+  },
   HttpConnectionFailed: {
     class: "network",
     retryable: true,
@@ -74,6 +84,16 @@ const CODEX_ERROR_INFO = Object.freeze({
     retryable: false,
     suggestion: "Re-run with `--write` only if you intend workspace-write; review sandbox output."
   },
+  ThreadRollbackFailed: {
+    class: "conflict",
+    retryable: false,
+    suggestion: "The thread could not be rolled back. Start a new task from the current workspace state."
+  },
+  ActiveTurnNotSteerable: {
+    class: "conflict",
+    retryable: false,
+    suggestion: "This active turn type cannot be steered. Wait for completion or start a new turn."
+  },
   BadRequest: {
     class: "validation",
     retryable: false,
@@ -83,9 +103,60 @@ const CODEX_ERROR_INFO = Object.freeze({
     class: "dependency_failed",
     retryable: true,
     suggestion: "Retry after a brief backoff."
+  },
+  Other: {
+    class: "internal",
+    retryable: false,
+    suggestion: "The Codex error has no taxonomy entry yet — read details.codexErrorPayload and details.rawCodexErrorInfo for the upstream payload."
   }
-  // ActiveTurnNotSteerable / Other fall through to default classification.
 });
+
+const CAMEL_CODEX_ERROR_INFO = new Map(
+  Object.keys(CODEX_ERROR_INFO).map((key) => [
+    key.slice(0, 1).toLowerCase() + key.slice(1),
+    key
+  ])
+);
+
+const SNAKE_CODEX_ERROR_INFO = new Map(
+  Object.keys(CODEX_ERROR_INFO).map((key) => [
+    key.replace(/[A-Z]/g, (letter, index) => `${index === 0 ? "" : "_"}${letter.toLowerCase()}`),
+    key
+  ])
+);
+
+function normalizeCodexErrorInfoCode(value) {
+  return CODEX_ERROR_INFO[value] ? value : (CAMEL_CODEX_ERROR_INFO.get(value) ?? SNAKE_CODEX_ERROR_INFO.get(value) ?? value);
+}
+
+export function normalizeCodexErrorInfo(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return {
+      code: normalizeCodexErrorInfoCode(value),
+      raw: value,
+      payload: null
+    };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const [rawKey] = Object.keys(value);
+    if (!rawKey) {
+      return null;
+    }
+    return {
+      code: normalizeCodexErrorInfoCode(rawKey),
+      raw: value,
+      payload: value[rawKey]
+    };
+  }
+  return {
+    code: String(value),
+    raw: value,
+    payload: null
+  };
+}
 
 export class CliError extends Error {
   constructor(message, meta = {}) {
@@ -152,16 +223,22 @@ export function classifyError(err) {
   }
 
   // Codex turn errors carry `codexErrorInfo` / `codex_error_info` on the thrown error.
-  const codexInfo = err?.codexErrorInfo ?? err?.codex_error_info ?? null;
-  if (codexInfo && CODEX_ERROR_INFO[codexInfo]) {
-    const entry = CODEX_ERROR_INFO[codexInfo];
+  const codexInfo = normalizeCodexErrorInfo(err?.codexErrorInfo ?? err?.codex_error_info ?? null);
+  if (codexInfo && CODEX_ERROR_INFO[codexInfo.code]) {
+    const entry = CODEX_ERROR_INFO[codexInfo.code];
     return {
       class: entry.class,
-      code: codexInfo,
+      code: codexInfo.code,
       message: err.message ?? String(err),
       retryable: entry.retryable,
       suggestion: entry.suggestion,
-      details: { codexErrorInfo: codexInfo },
+      details: {
+        codexErrorInfo: codexInfo.code,
+        rawCodexErrorInfo: codexInfo.raw,
+        ...(codexInfo.payload != null ? { codexErrorPayload: codexInfo.payload } : {}),
+        ...(err?.additionalDetails != null ? { additionalDetails: err.additionalDetails } : {}),
+        ...(err?.additional_details != null ? { additionalDetails: err.additional_details } : {})
+      },
       exitCode: CLASS_TO_EXIT[entry.class] ?? ExitCode.CRASH
     };
   }
@@ -175,6 +252,29 @@ export function classifyError(err) {
       message,
       retryable: true,
       suggestion: "Check whether the turn is stuck; cancel and retry with a simpler prompt if needed.",
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "TurnTimeout" || /Turn timed out after \d+ms\./.test(message)) {
+    return {
+      class: "timeout",
+      code: "TurnTimeout",
+      message,
+      retryable: true,
+      suggestion: "The turn exceeded its configured budget. Retry with a simpler prompt or increase the turn timeout.",
+      details: {
+        originalCode: err?.code ?? null
+      },
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "ETIMEDOUT") {
+    return {
+      class: "timeout",
+      code: "ClientTimeout",
+      message,
+      retryable: true,
+      suggestion: "Init/shutdown/socket-connect timed out. Verify Codex is responding and retry.",
       exitCode: ExitCode.TRANSIENT
     };
   }

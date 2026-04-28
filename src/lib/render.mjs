@@ -21,7 +21,43 @@ function formatLineRange(finding) {
   return `:${finding.line_start}-${finding.line_end}`;
 }
 
-function validateReviewResultShape(data) {
+const ALLOWED_FINDING_SEVERITIES = new Set(["critical", "high", "medium", "low"]);
+
+function validateReviewFinding(finding, index) {
+  if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+    return `finding[${index}] is not an object`;
+  }
+  if (typeof finding.severity !== "string" || !finding.severity.trim()) {
+    return `finding[${index}] missing required field 'severity'`;
+  }
+  if (!ALLOWED_FINDING_SEVERITIES.has(finding.severity.trim())) {
+    return `finding[${index}] has invalid severity '${finding.severity}'`;
+  }
+  if (typeof finding.title !== "string" || !finding.title.trim()) {
+    return `finding[${index}] missing required field 'title'`;
+  }
+  if (typeof finding.body !== "string" || !finding.body.trim()) {
+    return `finding[${index}] missing required field 'body'`;
+  }
+  if (typeof finding.file !== "string" || !finding.file.trim()) {
+    return `finding[${index}] missing required field 'file'`;
+  }
+  if (!Number.isInteger(finding.line_start) || finding.line_start < 1) {
+    return `finding[${index}] missing required field 'line_start'`;
+  }
+  if (!Number.isInteger(finding.line_end) || finding.line_end < finding.line_start) {
+    return `finding[${index}] missing required field 'line_end'`;
+  }
+  if (typeof finding.confidence !== "number" || Number.isNaN(finding.confidence) || finding.confidence < 0 || finding.confidence > 1) {
+    return `finding[${index}] missing required field 'confidence'`;
+  }
+  if (typeof finding.recommendation !== "string") {
+    return `finding[${index}] missing required field 'recommendation'`;
+  }
+  return null;
+}
+
+export function validateReviewResultShape(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Expected a top-level JSON object.";
   }
@@ -36,6 +72,12 @@ function validateReviewResultShape(data) {
   }
   if (!Array.isArray(data.next_steps)) {
     return "Missing array `next_steps`.";
+  }
+  for (let index = 0; index < data.findings.length; index += 1) {
+    const findingError = validateReviewFinding(data.findings[index], index);
+    if (findingError) {
+      return findingError;
+    }
   }
   return null;
 }
@@ -55,6 +97,10 @@ function normalizeReviewFinding(finding, index) {
     file: typeof source.file === "string" && source.file.trim() ? source.file.trim() : "unknown",
     line_start: lineStart,
     line_end: lineEnd,
+    confidence:
+      typeof source.confidence === "number" && source.confidence >= 0 && source.confidence <= 1
+        ? source.confidence
+        : null,
     recommendation: typeof source.recommendation === "string" ? source.recommendation.trim() : ""
   };
 }
@@ -186,9 +232,15 @@ export function renderSetupReport(report) {
     `- codex: ${report.codex.detail}`,
     `- auth: ${report.auth.detail}`,
     `- session runtime: ${report.sessionRuntime.label}`,
+    `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
+    `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
     ""
   ];
+
+  if (report.reviewGateSuppressionReason) {
+    lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
+  }
 
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");
@@ -265,7 +317,11 @@ export function renderReviewResult(parsedResult, meta) {
     lines.push("Findings:");
     for (const finding of findings) {
       const lineSuffix = formatLineRange(finding);
-      lines.push(`- [${finding.severity}] ${finding.title} (${finding.file}${lineSuffix})`);
+      const severityHeader =
+        typeof finding.confidence === "number"
+          ? `${finding.severity} · conf=${finding.confidence.toFixed(2)}`
+          : finding.severity;
+      lines.push(`- [${severityHeader}] ${finding.title} (${finding.file}${lineSuffix})`);
       lines.push(`  ${finding.body}`);
       if (finding.recommendation) {
         lines.push(`  Recommendation: ${finding.recommendation}`);
@@ -368,7 +424,15 @@ export function renderStatusReport(report) {
 
   if (report.needsReview) {
     lines.push("The stop-time review gate is enabled.");
-    lines.push("Ending the session will trigger a fresh Codex adversarial review and block if it finds issues.");
+    if (report.config.stopReviewGateLockPath) {
+      lines.push(`Project lock: ${report.config.stopReviewGateLockPath}`);
+    }
+    lines.push("Ending the session will trigger a fresh Codex stop-time review and block if it finds issues.");
+  } else if (report.reviewGateLockIgnored) {
+    lines.push("The Codex Bridge stop-time review gate lock is present but ignored.");
+    if (report.reviewGateSuppressionReason) {
+      lines.push(`Reason: ${report.reviewGateSuppressionReason}`);
+    }
   }
 
   return `${lines.join("\n").trimEnd()}\n`;

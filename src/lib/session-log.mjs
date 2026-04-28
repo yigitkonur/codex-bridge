@@ -189,18 +189,30 @@ function summarizeNumstat(files) {
 // `result`/`cancel` would target "latest in session", which changes as new
 // tasks start and could silently hit the wrong job when an agent reads the
 // event later.
-function resultActionLine(scriptPath, jobId, indent = "    detail: ") {
-  return jobId
-    ? `${indent}node ${scriptPath} result ${jobId}`
-    : `${indent}node ${scriptPath} result    # rerun with the specific job id from status`;
-}
-function cancelActionLine(scriptPath, jobId, indent = "    cancel: ") {
-  return jobId
-    ? `${indent}node ${scriptPath} cancel ${jobId}`
-    : `${indent}node ${scriptPath} cancel    # rerun with the specific job id from status`;
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-export function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null }) {
+function formatCwdFlag(cwd) {
+  return cwd ? ` --cwd ${shellQuote(cwd)}` : "";
+}
+
+function commandPrefix(scriptPath, subcommand, cwd = null) {
+  return `node ${scriptPath} ${subcommand}${formatCwdFlag(cwd)}`;
+}
+
+function resultActionLine(scriptPath, jobId, indent = "    detail: ", cwd = null) {
+  return jobId
+    ? `${indent}${commandPrefix(scriptPath, "result", cwd)} ${jobId}`
+    : `${indent}${commandPrefix(scriptPath, "result", cwd)}    # rerun with the specific job id from status`;
+}
+function cancelActionLine(scriptPath, jobId, indent = "    cancel: ", cwd = null) {
+  return jobId
+    ? `${indent}${commandPrefix(scriptPath, "cancel", cwd)} ${jobId}`
+    : `${indent}${commandPrefix(scriptPath, "cancel", cwd)}    # rerun with the specific job id from status`;
+}
+
+export function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null }) {
   const lines = [
     `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
     `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
@@ -213,9 +225,9 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
     }
   }
   lines.push("  actions:");
-  lines.push(`    review: node ${scriptPath} review --scope working-tree`);
-  lines.push(`    revise: node ${scriptPath} send ${session.threadId} "<message>"`);
-  lines.push(resultActionLine(scriptPath, jobId));
+  lines.push(`    review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`);
+  lines.push(`    revise: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<message>"`);
+  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", cwd));
   return lines.join("\n");
 }
 
@@ -231,7 +243,7 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
 // `skill/references/error-recovery.md` so an agent can pull the full recovery
 // recipe in one read without relying on memory. Anchors are kept stable; new
 // origins MUST register an anchor in error-recovery.md before landing here.
-function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage }) {
+function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage, cwd = null }) {
   const lines = ["  actions:"];
   const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
 
@@ -240,9 +252,9 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     // the 400 forever. Recovery is a fresh task seeded from committed state;
     // `git log --oneline <launch-iso>` audits what survived.
     lines.push(
-      `    new-task: node ${scriptPath} task --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
+      `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
       `    inspect:  git log --oneline <launch-iso>..HEAD    # audit what committed before the chain loss`,
-      resultActionLine(scriptPath, jobId, "    log:     "),
+      resultActionLine(scriptPath, jobId, "    log:     ", cwd),
       see("response-chain-lost"),
     );
     return lines;
@@ -252,8 +264,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       "    reauth:  run `codex login` (or reauth your upstream proxy if one is in the path)",
       "    do-not:  retry the same thread — auth is deterministic; the 401 will repeat",
-      resultActionLine(scriptPath, jobId, "    log:    "),
-      cancelActionLine(scriptPath, jobId),
+      resultActionLine(scriptPath, jobId, "    log:    ", cwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
       see("upstream-auth-401"),
     );
     return lines;
@@ -261,8 +273,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
 
   if (origin === "upstream:invalid-request") {
     lines.push(
-      `    inspect: node ${scriptPath} result ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
-      `    new-task: node ${scriptPath} task --json --mode default "<fixed prompt>"`,
+      `    inspect: ${commandPrefix(scriptPath, "result", cwd)} ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
+      `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<fixed prompt>"`,
       see("upstream-invalid-request"),
     );
     return lines;
@@ -270,9 +282,9 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
 
   if (origin === "idle") {
     lines.push(
-      `    relaunch: node ${scriptPath} task --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
-      resultActionLine(scriptPath, jobId, "    log:   "),
-      cancelActionLine(scriptPath, jobId),
+      `    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
+      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
       see("idle-timeout"),
     );
     return lines;
@@ -281,8 +293,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (origin === "upstream:compact-proxy") {
     lines.push(
       "    narrow:  split the task, or trim required-reads before resending (the upstream compact proxy ran out of budget mid-turn)",
-      `    resume:  node ${scriptPath} send ${threadId} "<shorter follow-up>"`,
-      resultActionLine(scriptPath, jobId, "    log:   "),
+      `    resume:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<shorter follow-up>"`,
+      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
       see("compact-proxy-502"),
     );
     return lines;
@@ -290,9 +302,9 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
 
   if (origin === "upstream:transport") {
     lines.push(
-      `    retry:   node ${scriptPath} send ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
-      resultActionLine(scriptPath, jobId, "    log:   "),
-      cancelActionLine(scriptPath, jobId),
+      `    retry:   ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
+      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
       see("upstream-transport-drop"),
     );
     return lines;
@@ -304,8 +316,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     // review rather than retry the whole task.
     const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
     lines.push(
-      `    inspect:     node ${scriptPath} result ${jobId ?? threadId}    # main task may already be done${stageLine}`,
-      `    rerun-review: node ${scriptPath} review --scope working-tree`,
+      `    inspect:     ${commandPrefix(scriptPath, "result", cwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
+      `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
       see("pipeline-stage-timeout"),
     );
     return lines;
@@ -315,8 +327,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   // tripped a safety net. Action is to inspect logs + file a report.
   if (typeof origin === "string" && origin.startsWith("bridge")) {
     lines.push(
-      resultActionLine(scriptPath, jobId, "    log:    "),
-      cancelActionLine(scriptPath, jobId),
+      resultActionLine(scriptPath, jobId, "    log:    ", cwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
       see("bridge-unhandled-exit"),
     );
     return lines;
@@ -326,15 +338,15 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (errorCode === "Unauthorized") {
     lines.push(
       "    login:  codex login",
-      `    retry:  node ${scriptPath} send ${threadId} "<revised prompt>"`,
+      `    retry:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
       see("unauthorized"),
     );
     return lines;
   }
   if (errorCode === "ContextWindowExceeded") {
     lines.push(
-      `    new:    node ${scriptPath} task "<shorter prompt>"    # context window full; do not retry the same turn`,
-      resultActionLine(scriptPath, jobId, "    log:   "),
+      `    new:    ${commandPrefix(scriptPath, "task", cwd)} "<shorter prompt>"    # context window full; do not retry the same turn`,
+      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
       see("context-window-exceeded"),
     );
     return lines;
@@ -342,7 +354,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (errorCode === "SandboxError") {
     lines.push(
       "    policy: set config.sandbox_policy: danger-full-access (or re-run with --write)",
-      `    retry:  node ${scriptPath} send ${threadId} "<revised prompt>"`,
+      `    retry:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
       see("sandbox-denial"),
     );
     return lines;
@@ -351,14 +363,14 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   // Default: the legacy retry/log/cancel triple — still sensible for generic
   // `origin: turn` failures without a more specific branch above.
   lines.push(
-    `    retry: node ${scriptPath} send ${threadId} "<revised prompt>"`,
-    resultActionLine(scriptPath, jobId, "    log:   "),
-    cancelActionLine(scriptPath, jobId),
+    `    retry: ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
+    resultActionLine(scriptPath, jobId, "    log:   ", cwd),
+    cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
   );
   return lines;
 }
 
-export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null }) {
+export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null, cwd = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
@@ -378,6 +390,7 @@ export function formatErrorEvent(session, { errorCode, message, phase, origin = 
     threadId: session.threadId,
     jobId,
     failingStage,
+    cwd,
   }));
   return lines.join("\n");
 }
@@ -390,7 +403,7 @@ export function formatErrorEvent(session, { errorCode, message, phase, origin = 
 // `git log` when a chain-lost 400 dropped into the `internal` bucket.
 // Non-terminal by itself; the paired `[ERROR]` / `[HANDOFF]` is what trips
 // Monitor self-termination.
-export function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null }) {
+export function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null, cwd = null }) {
   const lines = [`[PARTIAL] ${session.threadId} commits=[${commits.join(",")}]`];
   if (currentHeadSha) lines.push(`  current_head: ${currentHeadSha}`);
   if (lastOkHeadSha) lines.push(`  last_ok_head: ${lastOkHeadSha}`);
@@ -403,7 +416,7 @@ export function formatPartialEvent(session, { commits = [], currentHeadSha = nul
     if (dirtyFiles.length > 20) lines.push(`    ... and ${dirtyFiles.length - 20} more`);
   }
   if (scriptPath && jobId) {
-    lines.push(`  inspect: node ${scriptPath} result ${jobId}`);
+    lines.push(`  inspect: ${commandPrefix(scriptPath, "result", cwd)} ${jobId}`);
   }
   return lines.join("\n");
 }
@@ -428,7 +441,7 @@ export function formatRetryingEvent(session, { attempt, maxAttempts, backoffMs, 
 // the same data lives under `error.handoff` in the JSON envelope. Pairs with
 // `[ERROR]` — Monitor treats the pair as a terminal combo (HANDOFF first,
 // ERROR last so the existing TERMINAL_TAG_REGEX still fires on ERROR).
-export function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath }) {
+export function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath, cwd = null }) {
   const lines = [
     `[HANDOFF] ${session.threadId} reason=${reason} | origin=${origin}${errorCode ? ` | code=${errorCode}` : ""}`,
   ];
@@ -454,17 +467,17 @@ export function formatHandoffEvent(session, { reason, origin, errorCode, upstrea
   }
   lines.push("  next:");
   if (scriptPath && sessionInfo?.jobId) {
-    lines.push(`    read:     node ${scriptPath} result ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
+    lines.push(`    read:     ${commandPrefix(scriptPath, "result", cwd)} ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
   }
   if (partial?.lastOkHeadSha || partial?.currentHeadSha) {
     lines.push(`    audit:    git log --oneline ${partial.lastOkHeadSha ?? partial.currentHeadSha}..HEAD`);
   }
-  lines.push(`    relaunch: node ${scriptPath} task --json --mode default --prompt-file <rebased prompt>    # seed with last commit + remaining scope`);
+  lines.push(`    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default --prompt-file <rebased prompt>    # seed with last commit + remaining scope`);
   lines.push("    see: skill/references/orchestration-flows.md#recovering-from-upstream-state-loss");
   return lines.join("\n");
 }
 
-export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null }) {
+export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null, cwd = null }) {
   const lines = [
     `[INCOMPLETE] ${session.threadId} | ${diffStat}`,
     `  diff: ${diffPath}`,
@@ -477,13 +490,13 @@ export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, fi
     }
   }
   lines.push("  actions:");
-  lines.push(`    fix:  node ${scriptPath} send ${session.threadId} "Complete the missing items"`);
-  lines.push(`    new:  node ${scriptPath} task --write "..."`);
-  lines.push(resultActionLine(scriptPath, jobId));
+  lines.push(`    fix:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "Complete the missing items"`);
+  lines.push(`    new:  ${commandPrefix(scriptPath, "task", cwd)} --write "..."`);
+  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", cwd));
   return lines.join("\n");
 }
 
-export function formatQuestionEvent(session, { requestId, questions, scriptPath }) {
+export function formatQuestionEvent(session, { requestId, questions, scriptPath, cwd = null }) {
   const lines = [`[QUESTION] ${session.threadId} ${requestId}`];
   for (const q of (questions || [])) {
     lines.push(`  "${q.question}"`);
@@ -500,16 +513,16 @@ export function formatQuestionEvent(session, { requestId, questions, scriptPath 
     lines.push("respond:");
     if (q.options && q.options.length > 0) {
       for (const opt of q.options) {
-        lines.push(`  node ${scriptPath} respond ${requestId} --question-id ${q.id} --answer "${opt.label}"`);
+        lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "${opt.label}"`);
       }
     } else {
-      lines.push(`  node ${scriptPath} respond ${requestId} --question-id ${q.id} --answer "<answer>"`);
+      lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "<answer>"`);
     }
   }
   return lines.join("\n");
 }
 
-export function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPath }) {
+export function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPath, cwd = null }) {
   const lines = [`[PLAN] ${session.threadId} ${turnId}`];
   lines.push(`  ${planTitle || "(untitled plan)"}`);
   if (steps && steps.length > 0) {
@@ -522,8 +535,8 @@ export function formatPlanEvent(session, { turnId, planTitle, steps, planPath, s
   }
   lines.push(`  plan: ${planPath}`);
   lines.push("actions:");
-  lines.push(`  approve: node ${scriptPath} send ${session.threadId} --mode default "Implement the plan."`);
-  lines.push(`  revise:  node ${scriptPath} send ${session.threadId} "<revision instructions>"`);
+  lines.push(`  approve: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} --mode default "Implement the plan."`);
+  lines.push(`  revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<revision instructions>"`);
   return lines.join("\n");
 }
 
@@ -531,7 +544,7 @@ export function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }
 
-export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null }) {
+export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null, cwd = null }) {
   // Unconditional liveness pulse written to `.events` every ~60s during any
   // running turn. Purpose: an orchestrator tailing `events --follow` can never
   // go longer than the heartbeat interval without seeing *something* from the
@@ -557,7 +570,7 @@ export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, last
     lines.push(`  budget: ${fmtSeconds(budgetRemainingMs)} remaining`);
   }
   if (scriptPath && jobId) {
-    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId })}`);
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
   }
   return lines.join("\n");
 }
@@ -593,11 +606,11 @@ export const DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT"]);
 // Canonical tail invocation — reused by every `.events` block's `tail:`
 // line and by `buildMonitorHint`. One builder so a change to the default
 // exclusion list propagates everywhere that prints a re-attach hint.
-export function formatTailCommand({ scriptPath, jobId, timeoutMs = 1_800_000, exclude = DEFAULT_MONITOR_EXCLUDE }) {
+export function formatTailCommand({ scriptPath, jobId, timeoutMs = 1_800_000, exclude = DEFAULT_MONITOR_EXCLUDE, cwd = null }) {
   const excludeClause = exclude && exclude.length > 0
     ? ` --exclude ${Array.from(exclude).join(",")}`
     : "";
-  return `node ${scriptPath} events ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
+  return `${commandPrefix(scriptPath, "events", cwd)} ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
 }
 
 // v1.3.0 — periodic rich digest of in-flight work. Emitted every 5 min (or
@@ -630,6 +643,7 @@ export function formatCheckpointEvent(session, {
   diffStat = null,
   filesChangedSinceStart = null,
   scriptPath = null,
+  cwd = null,
 }) {
   const head = `[CHECKPOINT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | interval=${fmtSeconds(intervalMs)} | pid=${pid ?? "?"}`;
   const lines = [head];
@@ -683,7 +697,7 @@ export function formatCheckpointEvent(session, {
   }
 
   if (scriptPath && jobId) {
-    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId })}`);
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
   }
 
   return lines.join("\n");
@@ -746,7 +760,7 @@ export function formatPhaseEvent(session, { phase, detail }) {
   return `[PHASE] ${phase}${detail ? " " + detail : ""}`;
 }
 
-export function formatReviewEvent(session, { verdict, findingCount, findings, reviewPath, scriptPath }) {
+export function formatReviewEvent(session, { verdict, findingCount, findings, reviewPath, scriptPath, cwd = null }) {
   const lines = [`[REVIEW] ${session.threadId} verdict: ${verdict} | ${findingCount} findings`];
   if (findings && findings.length > 0) {
     for (const f of findings.slice(0, 5)) {
@@ -758,6 +772,6 @@ export function formatReviewEvent(session, { verdict, findingCount, findings, re
   }
   lines.push(`  full: ${reviewPath}`);
   lines.push("  actions:");
-  lines.push(`    fix: node ${scriptPath} task --write "fix the ${findingCount} review findings"`);
+  lines.push(`    fix: ${commandPrefix(scriptPath, "task", cwd)} --write "fix the ${findingCount} review findings"`);
   return lines.join("\n");
 }
