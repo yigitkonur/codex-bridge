@@ -113,6 +113,43 @@ function parseStopReview(rawOutput) {
   };
 }
 
+// Self-migrate workspaces that enabled the gate before lock-file activation
+// landed: `setup --enable-review-gate` used to persist only
+// `config.stopReviewGate: true` in state.json, but this branch made the
+// hook gate on the project-root lock file. Without migration the hook
+// would return at the activation check below and silently disable an
+// already-enabled gate on upgrade. We mint the lock inline here when
+// setup reports legacy intent and no on-disk lock, then re-evaluate so
+// the rest of the hook proceeds with the migrated state. Suppressed-by-
+// official-plugin workspaces are honored — we don't create a lock the
+// bridge would refuse to honor anyway.
+function maybeMigrateLegacyGate(cwd, input, activation) {
+  if (activation.active) return activation;
+  const probe = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });
+  const probePayload = parseJson(probe.stdout);
+  const result = probePayload?.result;
+  if (!probePayload?.ok || !result) return activation;
+  if (result.stopReviewGateConfig !== true) return activation;
+  if (result.reviewGateSuppressedByOfficialPlugin === true) return activation;
+  if (result.reviewGateLockExists === true) return activation;
+
+  try {
+    fs.mkdirSync(path.dirname(activation.lockPath), { recursive: true });
+    const payload = {
+      enabledAt: new Date().toISOString(),
+      enabledBy: "codex-bridge-stop-hook-legacy-migration"
+    };
+    fs.writeFileSync(activation.lockPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  } catch {
+    // Lock-write failure is non-fatal: the next setup --json call will
+    // surface the gate as inactive and the hook returns inert. The user
+    // can rerun `codex-bridge setup --enable-review-gate` to retry.
+    return activation;
+  }
+
+  return reviewGateActivation(cwd);
+}
+
 function main() {
   const input = readHookInput();
   if (input.stop_hook_active === true) {
@@ -121,7 +158,8 @@ function main() {
 
   const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const runningNote = runningJobNote(cwd, input);
-  const activation = reviewGateActivation(cwd);
+  let activation = reviewGateActivation(cwd);
+  activation = maybeMigrateLegacyGate(cwd, input, activation);
 
   if (!activation.active) {
     stderrLine(runningNote);
