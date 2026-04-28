@@ -19,7 +19,7 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 | `fs.mjs` | Small filesystem helpers and stdin/text sniffing |
 | `git.mjs` | Review target resolution and review-context collection |
 | `job-control.mjs` | Job lookup/enrichment/status/result/cancel resolution |
-| `official-plugin.mjs` | Official OpenAI Codex Claude plugin detection |
+| `official-plugin.mjs` *(preview — `feat/plugin-surfaces`)* | Official OpenAI Codex Claude plugin detection. Not present on this branch. |
 | `pending-requests.mjs` | Disk IPC for `requestUserInput` and `respond` |
 | `process.mjs` | Process execution, availability checks, process-tree termination |
 | `prompts.mjs` | Prompt template load/interpolation |
@@ -49,8 +49,16 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
   broker session.
 - If the broker is busy or unavailable in selected cases, `withAppServer` falls
   back to a direct client.
-- Server requests without a handler are rejected with `-32601`; tests pin that
-  they are not auto-answered.
+- Server requests without a custom handler use built-in defaults in
+  `AppServerClientBase.handleServerRequest` (`src/lib/app-server.mjs:152-186`):
+  `item/tool/requestUserInput` auto-answers with `{ answers: {} }`,
+  `item/commandExecution/requestApproval` and
+  `item/fileChange/requestApproval` auto-accept (`{ decision: "accept" }`),
+  `item/permissions/requestApproval` auto-grants the requested permissions
+  for the session, and `mcpServer/elicitation/request` auto-accepts. Only
+  unknown methods are rejected with `-32601`. When wiring a custom handler
+  for a known method, take care that disabling the auto-answer is the
+  intended behavior change.
 
 The `.d.ts` method map includes every app-server method live code sends:
 `initialize`, thread start/resume/name/list, `review/start`, turn
