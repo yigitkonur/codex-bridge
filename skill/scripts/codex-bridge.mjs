@@ -7972,7 +7972,7 @@ function extractItemText(item) {
 }
 var COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -8973,6 +8973,7 @@ function buildTaskRequest({
   effort,
   prompt,
   write,
+  readOnly,
   resumeLast,
   jobId,
   mode,
@@ -8991,6 +8992,7 @@ function buildTaskRequest({
     effort,
     prompt,
     write,
+    readOnly: Boolean(readOnly),
     resumeLast,
     jobId,
     mode: mode ?? null,
@@ -9246,7 +9248,14 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     // wins regardless of plan/write flags. When no override is set, the
     // mode-derived default applies (plan → readOnly, --write → workspaceWrite,
     // plain exec → readOnly).
-    sandboxPolicy: buildSandboxPolicy(
+    //
+    // `request.readOnly` is the one explicit override that bypasses
+    // `config.sandbox_policy` entirely. Used by the stop-time review-gate
+    // hook to guarantee the gate-time review can never mutate the repo even
+    // when the user has set `sandbox_policy: danger-full-access`. The Stop
+    // hook only ALLOWs/BLOCKs the previous turn — it must not double as a
+    // license to write at session shutdown.
+    sandboxPolicy: request.readOnly ? { type: "readOnly" } : buildSandboxPolicy(
       isPlanMode || !request.write ? "plan" : "default",
       config
     ),
@@ -9939,7 +9948,7 @@ async function handleTask(argv) {
       "pipeline-total-timeout-ms",
       "question-timeout-ms"
     ],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
     aliasMap: {
       m: "model"
     }
@@ -9971,6 +9980,13 @@ async function handleTask(argv) {
   }
   requireTaskRequest(prompt, resumeLast);
   const write = Boolean(options.write);
+  const readOnly = Boolean(options["read-only"]);
+  if (write && readOnly) {
+    throw conflictError(
+      "Choose either --write or --read-only, not both.",
+      "WRITE_READ_ONLY_CONFLICT"
+    );
+  }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -9984,6 +10000,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      readOnly,
       resumeLast,
       jobId: job2.id,
       mode: options.mode ?? null,
@@ -10011,6 +10028,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      readOnly,
       resumeLast,
       jobId: job.id,
       mode: options.mode ?? null,

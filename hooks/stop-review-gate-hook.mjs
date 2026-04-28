@@ -154,10 +154,16 @@ function main() {
     return;
   }
 
+  // `--read-only` forces the gate-time review onto a read-only sandbox even
+  // when the workspace `config.sandbox_policy` is `danger-full-access`. The
+  // Stop hook only ALLOWs/BLOCKs the previous Claude turn — it must not
+  // mutate the repo at session shutdown. Without `--read-only`, omitting
+  // `--write` is insufficient because `buildSandboxPolicy` still honors the
+  // config override (see src/lib/config.mjs::buildSandboxPolicy).
   const review = runBridge(
     cwd,
     input,
-    ["task", "--json", "--mode", "default", "--no-pipeline", buildStopReviewPrompt(input)],
+    ["task", "--json", "--mode", "default", "--read-only", "--no-pipeline", buildStopReviewPrompt(input)],
     { timeoutMs: STOP_REVIEW_TIMEOUT_MS }
   );
 
