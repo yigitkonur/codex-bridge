@@ -54,7 +54,7 @@ Codes the bridge attaches when a failure's `codexErrorInfo` is missing or too ge
 
 | `error.code` | Class | `$?` | Retryable? | Trigger |
 |---|---|---|---|---|
-| `ClientTimeout` | timeout | 7 | yes | Idle / turn / pipeline timer expired; `origin:` names which. (Question-answer timeouts do **not** surface as `ClientTimeout` — they auto-answer `{answers: {}}` and log a non-terminal `QUESTION_TIMEOUT` ndjson record.) |
+| `ClientTimeout` | timeout | 7 | yes | Idle watchdog expired (synthesized in `classifyError` for messages matching `/No events received for \d+s/`, see `src/lib/cli-errors.mjs:170-180`). Pipeline timeouts also surface here via the `origin:` line. Question-answer timeouts log `QUESTION_TIMEOUT` and reply to the pending server request with `result: { answers: {} }` (empty-answer success — `src/codex-bridge.mjs:2197`); the turn continues from there as if the user had returned no answers. **Note:** the per-turn budget rejection from `runAppServerTurn` (`Turn timed out after <ms>ms`, `src/lib/codex.mjs:1172`) currently falls through to the generic classifier — there is no dedicated `TurnTimeout` code on this branch. If `error.code` is missing for a per-turn-budget failure, check the `origin:` line in the `[ERROR]` block. |
 | `ProcessDeath` | dependency_failed | 7 | yes | Codex app-server process exited before `turn/completed`. The classifier marks this retryable unconditionally — re-run after `setup` confirms Codex is reachable. |
 | `UPSTREAM_STREAM_DISCONNECTED` | network | 7 | yes | Transport drop: websocket close / ECONNRESET / socket hang up. Auto-retried by the `upstream:transport` policy before surfacing |
 | `PreviousResponseNotFound` | dependency_failed | 7 | yes, **by new task only** | Upstream 400 `previous_response_not_found` — the `previous_response_id` is dead. `send` on the same thread repeats the 400 forever |
@@ -94,7 +94,7 @@ A client-side timeout fired. The canonical `origin:` vocabulary actually emitted
 | `origin: turn` + message mentions "turn exceeded" | Per-turn ceiling (`turn_plan_ms` / `turn_default_ms`). | Re-run with a larger `--turn-default-ms` (e.g. `1800000` for large scaffolds) |
 | `origin: pipeline:<lastCompleted>` + `failing_stage: review` / `fix` / `check` | Per-stage pipeline timeout (`pipeline_stage_ms`, default 5 min). See [#pipeline-stage-timeout](#pipeline-stage-timeout). | Re-run with larger `--pipeline-stage-timeout-ms`, or `--no-pipeline` if you want to own completion checking |
 | `origin: pipeline:<lastCompleted>` + `failing_stage: pipeline-total` | Total pipeline budget (`pipeline_total_ms`, default 15 min). | Re-run with larger `--pipeline-total-timeout-ms`, or `--no-pipeline` |
-| `QUESTION_TIMEOUT` ndjson entry (`question_answer_ms`, default 5 min). Note: this does **not** emit its own `[ERROR]` event today — the bridge auto-answers `{answers:{}}` and the turn continues. | Human/orchestrator didn't answer `requestUserInput` in time. | If the answer was slow rather than missing, re-run with `--question-timeout-ms 1800000` |
+| `QUESTION_TIMEOUT` ndjson entry (`question_answer_ms`, default 5 min). The bridge logs the timeout and replies to the upstream server request with `result: { answers: {} }` — an empty-answer success response, not a rejection (`src/codex-bridge.mjs:2197`). | Human/orchestrator didn't answer `requestUserInput` in time. | If the answer was slow rather than missing, re-run with `--question-timeout-ms 1800000` |
 
 Before v1.4.1, every timeout branch collapsed to `origin: turn` with recovery tables that string-matched on the message. The vocabulary above is the emitted truth — reader code can branch on the `origin:` / `failing_stage:` fields directly.
 
@@ -306,12 +306,12 @@ Every budget is configurable. Resolution order for each: CLI flag → `config.ya
 |-------|---------|------------|----------|
 | Plan turn | 30 min (1 800 000 ms, raised from 5 min in 1.3.0) | `turn_plan_ms` | `--turn-plan-ms` |
 | Execution turn | 30 min (1 800 000 ms, raised from 10 min in 1.3.0) | `turn_default_ms` | `--turn-default-ms` |
-| Question unanswered (auto-answers with `{answers: {}}`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
+| Question unanswered (replies with empty-answer success — see `src/codex-bridge.mjs:2197`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | Auto-pipeline per-stage (review / fix / check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
 | Auto-pipeline total | 15 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
 | No-event idle (per-turn) | 5 min (300 000 ms) | `idle_timeout_ms` | `--idle-timeout-ms` |
 
-A timeout fires a `ClientTimeout` error to the events file as `[ERROR] {threadId} failed | ClientTimeout`. The rendered message uses seconds/minutes (`Xs` under 60 s, `Xm` for whole minutes, `XmYYs` for mixed — e.g. `auto-review exceeded 5m`, `auto-fix exceeded 7m30s`). The underlying `TimeoutError` instance preserves the raw `timeoutMs` integer as a field — machine consumers should read `.timeoutMs` rather than parse the string. Every `[ERROR]` block also carries an `origin:` line (`turn` or `pipeline:<stage>`); pipeline-origin timeouts may coexist with a success envelope whose `phase: "incomplete"`.
+A timeout fires a timeout-class error to the events file as `[ERROR] {threadId} failed | ClientTimeout` for idle/pipeline timers. The per-turn budget rejects from `runAppServerTurn` with a plain `Error("Turn timed out after <ms>ms")` that has no `.code` field; it falls through to the generic classifier rather than emitting a dedicated code (consistent with the table above — there is no `TurnTimeout` code on this branch). The rendered message uses seconds/minutes (`Xs` under 60 s, `Xm` for whole minutes, `XmYYs` for mixed — e.g. `auto-review exceeded 5m`, `auto-fix exceeded 7m30s`). The underlying `TimeoutError` instance preserves the raw `timeoutMs` integer as a field — machine consumers should read `.timeoutMs` rather than parse the string. Every `[ERROR]` block also carries an `origin:` line (`turn` or `pipeline:<stage>`); pipeline-origin timeouts may coexist with a success envelope whose `phase: "incomplete"`.
 
 ## `UnhandledExit` — the finally-backstop marker (1.3.0)
 

@@ -35,7 +35,7 @@ All four layers are honored. Before 1.1.0, only the skill config layer was read 
 | `turn_default_ms` | integer | `1800000` | Per-turn timeout for execute turns (also covers send turns in default mode). Raised to 30 min in 1.3.0 — pre-1.3.0 was 600 000 ms (10 min), and interrupted multi-file ports that were still actively writing. CLI override: `--turn-default-ms` (task) / `--turn-timeout-ms` (send). |
 | `pipeline_stage_ms` | integer | `300000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
 | `pipeline_total_ms` | integer | `900000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
-| `question_answer_ms` | integer | `300000` | How long `requestUserInput` waits for a response before auto-answering `{answers: {}}`. CLI override: `--question-timeout-ms`. |
+| `question_answer_ms` | integer | `300000` | How long `requestUserInput` waits for a response before logging `QUESTION_TIMEOUT` and replying to the upstream server request with `result: { answers: {} }` (an empty-answer success response, not a rejection — see `src/codex-bridge.mjs:2197`). CLI override: `--question-timeout-ms`. |
 
 Resolution order for every timeout: CLI flag → `config.yaml` key → built-in default.
 

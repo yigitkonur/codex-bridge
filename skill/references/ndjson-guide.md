@@ -15,7 +15,7 @@ NDJSON captures a curated slice of the run — **not every wire-level notificati
 | `ITEM_COMPLETED` | Every finalized item on the root thread | `itemId`, `itemType` (`agentMessage` \| `commandExecution` \| `fileChange` \| `plan` \| `reasoning` \| …), `text` (agentMessage ≤ 500 chars; commandExecution ≤ 200; fileChange = `"<op> <path>"`; plan = title / first line; otherwise `null`) | `runBridgeTask::onItemCompleted`, `handleSend::onItemCompleted` |
 | `QUESTION` | `item/tool/requestUserInput` arrived | `requestId`, `questions` | `runBridgeTask::onServerRequest` |
 | `CONFIRMED` | A pending question was answered via `respond` | `requestId` | `runBridgeTask::onServerRequest` |
-| `QUESTION_TIMEOUT` | Question timed out (default 5 min); empty answer was sent | `requestId` | `runBridgeTask::onServerRequest` |
+| `QUESTION_TIMEOUT` | Question timed out (default 5 min); bridge replied to the upstream server request with `result: { answers: {} }` (empty-answer success — `src/codex-bridge.mjs:2197`) | `requestId` | `runBridgeTask::onServerRequest` |
 | `SERVER_RESPONSE` | `respond` CLI delivered a payload | `requestId`, `payload` | `handleRespond` |
 | `STEER` | `steer` CLI sent mid-turn guidance | `turnId`, `prompt` (120-char preview) | `handleSteer` |
 | `ERROR` | Turn failed with a Codex-reported error (`will_retry: false`) | `errorCode`, `message`, `origin` (`turn` or `pipeline:<stage>`) | `src/codex-bridge.mjs` |
