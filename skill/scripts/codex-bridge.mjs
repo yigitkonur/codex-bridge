@@ -354,6 +354,14 @@ function looksLikeFlagBearingArg(arg) {
   const trimmed = arg.trimStart();
   return trimmed.startsWith("-");
 }
+function trailingFlagShapedToken(arg) {
+  if (typeof arg !== "string") return false;
+  if (!/\s/.test(arg)) return false;
+  let last = null;
+  for (const token of tokenizeOutsideQuotes(arg)) last = token;
+  if (typeof last !== "string") return false;
+  return last !== "--" && last.startsWith("-");
+}
 var PROMPT_ACCEPTING_SUBCOMMANDS = /* @__PURE__ */ new Set([
   "task",
   "send",
@@ -385,7 +393,10 @@ function flagBearingSlice(argv) {
     const rest = argv.slice(1);
     if (rest.length === 0) return rest;
     const last = rest[rest.length - 1];
-    return looksLikeFlagBearingArg(last) ? rest : rest.slice(0, -1);
+    if (looksLikeFlagBearingArg(last) || trailingFlagShapedToken(last)) {
+      return rest;
+    }
+    return rest.slice(0, -1);
   }
   if (NON_PROMPT_SUBCOMMANDS.has(head)) return argv.slice(1);
   return argv;

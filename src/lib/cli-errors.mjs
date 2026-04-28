@@ -428,6 +428,28 @@ function looksLikeFlagBearingArg(arg) {
   return trimmed.startsWith("-");
 }
 
+// True iff a collapsed prompt-accepting argv element ends with a flag-shaped
+// token outside any quoted span. This catches the `task "fix --mode nope
+// --json"` shape where the user's slash-command tail packs prompt prose AND
+// real top-level flags into one shell-quoted blob: `normalizeArgv` re-splits
+// it (single-element → `splitRawArgumentString`), the handler sees `--json`
+// as a real flag, so the error-channel scanner must too — otherwise an error
+// from that handler emits as plain text instead of the JSON envelope.
+//
+// We use the LAST tokenized token as the discriminator: if it's flag-shaped,
+// the element is a hybrid prompt+flags invocation (case 3, ALL tokens fair
+// game); otherwise it's pure prose with `--help` / `--json` incidentally
+// embedded (case 2: `"write docs for --help output"` → last token `output`,
+// not flag-shaped, so don't false-positive).
+function trailingFlagShapedToken(arg) {
+  if (typeof arg !== "string") return false;
+  if (!/\s/.test(arg)) return false;
+  let last = null;
+  for (const token of tokenizeOutsideQuotes(arg)) last = token;
+  if (typeof last !== "string") return false;
+  return last !== "--" && last.startsWith("-");
+}
+
 // Subcommands whose final positional arg is a free-text PROMPT (or focus
 // blob) the user authors. For these, the LAST argv element — when it isn't
 // flag-shaped — must NOT be scanned: it's prose, and any embedded
@@ -474,10 +496,14 @@ const NON_PROMPT_SUBCOMMANDS = new Set([
 //
 //   1. PROMPT-ACCEPTING subcommand → scan every argv element AFTER the
 //      subcommand EXCEPT the trailing positional, but ONLY if that trailing
-//      positional doesn't itself look flag-shaped (because then it's a real
-//      flag, not a prompt).
+//      positional isn't itself flag-shaped (because then it's a real flag,
+//      not a prompt) AND isn't a collapsed prompt+flags blob whose last
+//      tokenized token is flag-shaped (`task "fix --mode nope --json"` —
+//      `normalizeArgv` re-splits this and the handler sees the trailing flag,
+//      so the error channel must too).
 //        ["task", "--json", "write docs"]        → ["--json"]
 //        ["task", "write docs", "--json"]        → ["write docs", "--json"]
+//        ["task", "fix --mode nope --json"]      → ["fix --mode nope --json"]
 //        ["task", "write docs for --help out"]   → []
 //
 //   2. KNOWN NON-PROMPT subcommand → scan every argv element after the
@@ -494,7 +520,10 @@ function flagBearingSlice(argv) {
     const rest = argv.slice(1);
     if (rest.length === 0) return rest;
     const last = rest[rest.length - 1];
-    return looksLikeFlagBearingArg(last) ? rest : rest.slice(0, -1);
+    if (looksLikeFlagBearingArg(last) || trailingFlagShapedToken(last)) {
+      return rest;
+    }
+    return rest.slice(0, -1);
   }
   if (NON_PROMPT_SUBCOMMANDS.has(head)) return argv.slice(1);
   return argv;
