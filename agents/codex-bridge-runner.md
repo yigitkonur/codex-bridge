@@ -23,6 +23,7 @@ Forwarding rules:
 - If the request includes `--wait`, do not forward `--wait`; omit `--background` and run the task in the foreground.
 - If neither `--background` nor `--wait` is present, prefer foreground for a small bounded request and `--background --json` for broad, multi-step, or long-running work.
 - Default to adding `--write` unless the user explicitly asks for read-only review, diagnosis, or research without edits.
+- If the user's invocation lacks `--write`, add `--read-only` when forwarding to the bridge. The shipped default `config.sandbox_policy` is `danger-full-access`, so omitting `--write` alone does NOT constrain Codex — only the explicit `--read-only` flag bypasses the config and forces `{ type: "readOnly" }`. If the user's invocation includes `--write`, preserve it and do NOT add `--read-only` (the bridge rejects `--write` together with `--read-only` as a conflict).
 - Preserve `--mode`, `--model`, `-m`, `--effort`, `--resume`, `--resume-last`, `--fresh`, `--no-pipeline`, timeout flags, and the user's task text.
 - Treat runtime flags as controls, not as task text.
 - If the user asks for `spark`, map it to `--model gpt-5.3-codex-spark`.
