@@ -83,6 +83,7 @@ export class AppServerClientBase {
     this.nextId = 1;
     this.stderr = "";
     this.closed = false;
+    this.transportClosed = false;
     this.exitError = null;
     /** @type {AppServerNotificationHandler | null} */
     this.notificationHandler = null;
@@ -93,6 +94,13 @@ export class AppServerClientBase {
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
+    });
+    // Distinct from exitPromise: only resolves when the underlying transport
+    // (child process / socket) has truly ended. close() awaits this so a
+    // logical protocol failure that pre-resolved exitPromise still blocks
+    // until child cleanup completes.
+    this.transportExitPromise = new Promise((resolve) => {
+      this.resolveTransportExit = resolve;
     });
   }
 
@@ -211,7 +219,13 @@ export class AppServerClientBase {
     try {
       message = JSON.parse(line);
     } catch (error) {
-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
+      // Logical protocol failure — the transport (child stdout / socket) is
+      // still alive. Mark the client closed but leave transportClosed=false
+      // so close() can still end stdin and reap the child.
+      this.handleExit(
+        createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }),
+        { transportExited: false }
+      );
       return;
     }
 
@@ -269,7 +283,18 @@ export class AppServerClientBase {
     this.sendMessage({ id, error });
   }
 
-  handleExit(error) {
+  handleExit(error, { transportExited = true } = {}) {
+    // `transportExited` distinguishes a real transport end (process/socket
+    // closed) from a logical protocol failure (e.g. JSON parse error in
+    // handleLine) where the underlying child/socket is still alive and
+    // close() must still tear it down. Promote `transportClosed` (and
+    // resolve transportExitPromise) only on real exit; a later transport
+    // callback fired after a logical failure still flips the flag here.
+    if (transportExited && !this.transportClosed) {
+      this.transportClosed = true;
+      this.resolveTransportExit(undefined);
+    }
+
     if (this.exitResolved) {
       return;
     }
@@ -342,8 +367,8 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
   }
 
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
+    if (this.transportClosed) {
+      await this.transportExitPromise;
       return;
     }
 
@@ -375,7 +400,7 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     }
 
     try {
-      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
     } catch (error) {
       if (this.proc && this.proc.exitCode === null) {
         if (process.platform === "win32") {
@@ -448,8 +473,8 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
   }
 
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
+    if (this.transportClosed) {
+      await this.transportExitPromise;
       return;
     }
 
@@ -458,7 +483,7 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
       this.socket.end();
     }
     try {
-      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
     } catch (error) {
       this.socket?.destroy();
       this.handleExit(error);
