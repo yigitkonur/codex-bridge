@@ -181,6 +181,16 @@ export function loadState(cwd) {
       jobs: rawJobs,
     };
   } catch (error) {
+    // Race: the existsSync probe at the top of loadState() can report the
+    // file present milliseconds before readFileSync is called, but a
+    // concurrent state-touching command (e.g. saveStateUnlocked's atomic
+    // rename, or an external cleanup) can unlink/replace the inode in that
+    // window. The resulting ENOENT here is not corruption — quietly fall
+    // back to defaults without warning or rename. The same applies to a
+    // brand-new workspace whose existsSync was racing first-write.
+    if (error && error.code === "ENOENT") {
+      return defaultState();
+    }
     // Corrupt state.json: a re-throw here wedges every state-touching command
     // because saveStateUnlocked itself calls loadState for previousJobs. To
     // avoid that cascade while still preserving forensic data, rename the
