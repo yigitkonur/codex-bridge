@@ -54,7 +54,7 @@ Codes the bridge attaches when a failure's `codexErrorInfo` is missing or too ge
 
 | `error.code` | Class | `$?` | Retryable? | Trigger |
 |---|---|---|---|---|
-| `ClientTimeout` / `TurnTimeout` | timeout | 7 | yes | Idle, turn, or pipeline timer expired; `origin:` names which. Question-answer timeouts reject the pending server request and log `QUESTION_TIMEOUT`; the turn should then fail or recover explicitly through App Server state. |
+| `ClientTimeout` / `TurnTimeout` | timeout | 7 | yes | Idle, turn, or pipeline timer expired; `origin:` names which. Question-answer timeouts log `QUESTION_TIMEOUT` and reply to the pending server request with `result: { answers: {} }` (empty-answer success — `src/codex-bridge.mjs:2197`); the turn continues from there as if the user had returned no answers. |
 | `ProcessDeath` | dependency_failed | 7 | yes | Codex app-server process exited before `turn/completed`. The classifier marks this retryable unconditionally — re-run after `setup` confirms Codex is reachable. |
 | `UPSTREAM_STREAM_DISCONNECTED` | network | 7 | yes | Transport drop: websocket close / ECONNRESET / socket hang up. Auto-retried by the `upstream:transport` policy before surfacing |
 | `PreviousResponseNotFound` | dependency_failed | 7 | yes, **by new task only** | Upstream 400 `previous_response_not_found` — the `previous_response_id` is dead. `send` on the same thread repeats the 400 forever |
@@ -306,7 +306,7 @@ Every budget is configurable. Resolution order for each: CLI flag → `config.ya
 |-------|---------|------------|----------|
 | Plan turn | 30 min (1 800 000 ms, raised from 5 min in 1.3.0) | `turn_plan_ms` | `--turn-plan-ms` |
 | Execution turn | 30 min (1 800 000 ms, raised from 10 min in 1.3.0) | `turn_default_ms` | `--turn-default-ms` |
-| Question unanswered (server request rejected) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
+| Question unanswered (replies with empty-answer success — see `src/codex-bridge.mjs:2197`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | Auto-pipeline per-stage (review / fix / check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
 | Auto-pipeline total | 15 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
 | No-event idle (per-turn) | 5 min (300 000 ms) | `idle_timeout_ms` | `--idle-timeout-ms` |

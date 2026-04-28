@@ -132,7 +132,7 @@ codex-bridge task [--write] [--effort <level>] [--mode <plan|default>] [-m <mode
 | `--turn-default-ms <ms>` | Override per-turn timeout for execute turns (default `turn_default_ms = 1800000` = 30 min; raised in v1.3.0 from the pre-1.3.0 10 min hard-code) |
 | `--pipeline-stage-timeout-ms <ms>` | Override per-stage pipeline timeout (default `pipeline_stage_ms = 300000`) |
 | `--pipeline-total-timeout-ms <ms>` | Override total pipeline timeout (default `pipeline_total_ms = 900000`) |
-| `--question-timeout-ms <ms>` | How long `requestUserInput` waits before rejecting an unanswered request (default `question_answer_ms = 300000`) |
+| `--question-timeout-ms <ms>` | How long `requestUserInput` waits before logging `QUESTION_TIMEOUT` and replying with `result: { answers: {} }` (empty-answer success, not a rejection — `src/codex-bridge.mjs:2197`). Default `question_answer_ms = 300000`. |
 
 All `*-ms` flags require positive integers; malformed values throw `USAGE_ERROR` (exit 2) rather than silent fallback.
 
