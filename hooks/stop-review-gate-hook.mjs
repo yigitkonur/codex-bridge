@@ -83,10 +83,72 @@ function runningJobNote(cwd, input) {
   return `Codex Bridge job ${first.id ?? "unknown"} is still running. Check /codex-bridge:status and use /codex-bridge:cancel ${first.id ?? ""} if you want to stop it before ending the session.`;
 }
 
+// Read the last assistant turn out of Claude Code's transcript JSONL. Stop-hook
+// payload shape (per Claude Code docs) is `{ session_id, transcript_path, cwd,
+// reason, stop_hook_active }` — there is NO `last_assistant_message` field, so
+// the review must hydrate the transcript itself or it asks Codex to ALLOW/BLOCK
+// an unspecified previous turn. Best-effort: any read/parse failure falls back
+// to an empty string and we log a stderr warning so the operator knows the
+// review prompt was un-grounded for this turn.
+//
+// Transcript format: each line is one JSON record. Records carrying a final
+// assistant turn look like `{type:"assistant", message:{role:"assistant",
+// content:[{type:"text", text:"..."}, ...]}}`. We only want the most recent
+// such record (so we ignore mid-session assistant tool-use turns prior to it
+// — those still appear, but the LAST one is the user-facing final answer
+// that triggered Stop). Content blocks other than `text` (tool_use,
+// thinking, etc.) are skipped; we only join the `text` blocks.
+function extractLastAssistantText(transcriptPath) {
+  if (!transcriptPath || typeof transcriptPath !== "string") return "";
+  let raw;
+  try {
+    raw = fs.readFileSync(transcriptPath, "utf8");
+  } catch (error) {
+    stderrLine(
+      `codex-bridge stop hook: could not read transcript_path (${transcriptPath}): ${
+        error instanceof Error ? error.message : String(error)
+      }. Review will run without prior-turn grounding.`
+    );
+    return "";
+  }
+
+  const lines = raw.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.type !== "assistant") continue;
+    const content = record?.message?.content;
+    if (!Array.isArray(content)) continue;
+    const texts = [];
+    for (const block of content) {
+      if (block && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
+        texts.push(block.text);
+      }
+    }
+    const joined = texts.join("\n").trim();
+    if (joined) return joined;
+  }
+
+  stderrLine(
+    `codex-bridge stop hook: transcript_path (${transcriptPath}) had no readable assistant turn. Review will run without prior-turn grounding.`
+  );
+  return "";
+}
+
 function buildStopReviewPrompt(input) {
-  const lastAssistantMessage = String(input.last_assistant_message ?? "").trim();
-  const claudeResponseBlock = lastAssistantMessage
-    ? `\n\nPrevious Claude response:\n${lastAssistantMessage}`
+  // `last_assistant_message` is NOT a Claude Code Stop-hook payload field. We
+  // keep the (defensive) read for any future shape change but the real source
+  // is `transcript_path` — see extractLastAssistantText.
+  const fromPayload = String(input.last_assistant_message ?? "").trim();
+  const fromTranscript = fromPayload || extractLastAssistantText(input?.transcript_path);
+  const claudeResponseBlock = fromTranscript
+    ? `\n\n<previous_assistant_message>\n${fromTranscript}\n</previous_assistant_message>`
     : "";
   return `${STOP_REVIEW_TASK_MARKER}
 
