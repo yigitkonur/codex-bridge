@@ -349,13 +349,19 @@ function* tokenizeOutsideQuotes(arg) {
   }
   if (buffer) yield buffer;
 }
+function looksLikeFlagBearingArg(arg) {
+  if (typeof arg !== "string") return false;
+  const trimmed = arg.trimStart();
+  return trimmed.startsWith("-");
+}
 function detectJsonFlag(argv) {
   let result = false;
   for (const arg of argv) {
     if (arg === "--") break;
     if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
     if (arg === "--json=false") return false;
-    if (typeof arg === "string" && /\s|["']/.test(arg)) {
+    if (!looksLikeFlagBearingArg(arg)) continue;
+    if (/\s|["']/.test(arg)) {
       for (const token of tokenizeOutsideQuotes(arg)) {
         if (token === "--") return result;
         if (token === "--json" || token === "--json=true" || token === "-j") return true;
@@ -369,7 +375,8 @@ function detectHelpFlag(argv) {
   for (const arg of argv) {
     if (arg === "--") break;
     if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
-    if (typeof arg === "string" && /\s|["']/.test(arg)) {
+    if (!looksLikeFlagBearingArg(arg)) continue;
+    if (/\s|["']/.test(arg)) {
       for (const token of tokenizeOutsideQuotes(arg)) {
         if (token === "--") return false;
         if (token === "--help" || token === "-h" || token === "--help=true") return true;

@@ -416,6 +416,24 @@ function* tokenizeOutsideQuotes(arg) {
   if (buffer) yield buffer;
 }
 
+// True iff this argv element looks like flag content (vs. a positional
+// prompt / thread-id / focus blob). Round-5's tokenizer correctly skipped
+// content inside QUOTE spans, but the shell strips surrounding quotes
+// before argv arrives, so `task "write docs for --help output"` lands as
+// one bare element with `--help` not in any internal quote span — and
+// trips the short-circuit. Heuristic: positional content rarely begins
+// with `-`. Anything that does start with `-` (after trimStart) is either
+// a flag, a flag bag like `"--enable-review-gate --json"`, or a hybrid
+// like `"--json-payload '{...}' --json"` we still want to scan with the
+// quote-aware tokenizer. Anything else is opaque positional content and
+// we leave it alone. Users who genuinely want a leading-hyphen prompt can
+// pass it after `--`.
+function looksLikeFlagBearingArg(arg) {
+  if (typeof arg !== "string") return false;
+  const trimmed = arg.trimStart();
+  return trimmed.startsWith("-");
+}
+
 export function detectJsonFlag(argv) {
   let result = false;
   for (const arg of argv) {
@@ -423,13 +441,16 @@ export function detectJsonFlag(argv) {
     // Fast path for already-tokenized argv.
     if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
     if (arg === "--json=false") return false;
+    // Skip positional content (prompts, thread-ids, focus text) — only
+    // tokenize argv elements that look flag-bearing.
+    if (!looksLikeFlagBearingArg(arg)) continue;
     // Collapsed slash-command form: tokenize on whitespace, but skip
     // anything inside a quoted span (single or double). That keeps
     // prompt prose like `"check the --json output"` from being
     // misclassified as a flag, while still catching top-level flags that
     // sit outside the quoted span — e.g.
     // `respond req --json-payload '{...}' --json` correctly trips here.
-    if (typeof arg === "string" && /\s|["']/.test(arg)) {
+    if (/\s|["']/.test(arg)) {
       for (const token of tokenizeOutsideQuotes(arg)) {
         if (token === "--") return result;
         if (token === "--json" || token === "--json=true" || token === "-j") return true;
@@ -442,14 +463,18 @@ export function detectJsonFlag(argv) {
 
 // Same idea for --help / -h so main() can short-circuit before the handler runs.
 // Mirrors detectJsonFlag's collapsed-argv handling for slash-command wrappers,
-// including the quote-aware skip — `/codex-bridge:adversarial-review "check
-// the --help output"` must reach the handler with the focus text intact,
-// while a top-level `--help` outside any quoted span still short-circuits.
+// including the quote-aware skip and the positional-content skip — a prompt
+// like `task "write docs for --help output"` arrives as a bare argv element
+// (the shell strips surrounding quotes), so we must NOT scan elements that
+// don't start with `-`, otherwise the `--help` substring inside the prompt
+// trips the short-circuit and the user gets help text instead of a Codex
+// turn.
 export function detectHelpFlag(argv) {
   for (const arg of argv) {
     if (arg === "--") break;
     if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
-    if (typeof arg === "string" && /\s|["']/.test(arg)) {
+    if (!looksLikeFlagBearingArg(arg)) continue;
+    if (/\s|["']/.test(arg)) {
       for (const token of tokenizeOutsideQuotes(arg)) {
         if (token === "--") return false;
         if (token === "--help" || token === "-h" || token === "--help=true") return true;
