@@ -77,7 +77,7 @@ Drop a `config.yaml` at layer 3 or 4 to override per-project without editing you
 - **typed error taxonomy** — Codex's `codexErrorInfo` mapped to stable `error.code` values: `INVALID_THREAD_ID`, `REVIEW_EMPTY_DIFF`, `WAIT_TIMEOUT`, `UNKNOWN_SUBCOMMAND`, `CONTEXT_WINDOW_EXCEEDED`, and the rest.
 - **structured review output** — `adversarial-review` returns findings conforming to a shipped JSON schema; pair with `review` for Codex's native pass.
 - **mid-turn steering + resume** — `steer <tid> <turn-id> "…"` sends guidance to a live turn; `task --resume-last` picks up the session's latest resumable thread.
-- **self-healing state** — `bridge status --prune-orphans` reaps orphaned "running" jobs under the state lock (dead-pid probe). Crashed workers don't wedge your state file.
+- **self-healing state** — `bridge status --prune-orphans` reaps orphaned "running" jobs via a dead-pid probe. Crashed workers don't wedge your state file.
 - **no telemetry. no sidecar manifest.** Everything lives in `SKILL.md` frontmatter + the single bundled CLI.
 - **update check built in** — `bridge update` against the GitHub Releases API, 24 h cache, silent stdout notice on every launch, opt-out via env.
 
