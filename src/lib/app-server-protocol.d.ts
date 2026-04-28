@@ -47,7 +47,7 @@ export type ThreadResumeParams = Omit<RawThreadResumeParams, "persistExtendedHis
 
 export interface TurnSteerParams {
   threadId: string;
-  turnId: string;
+  expectedTurnId: string;
   input: UserInput[];
 }
 
