@@ -8219,7 +8219,18 @@ function normalizeArgv(argv) {
     }
     return splitRawArgumentString(raw);
   }
-  return argv;
+  const out = [];
+  for (const element of argv) {
+    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
+      const tokens = splitRawArgumentString(element);
+      if (tokens.length > 1) {
+        out.push(...tokens);
+        continue;
+      }
+    }
+    out.push(element);
+  }
+  return out;
 }
 function parseCommandInput(argv, config = {}) {
   return parseArgs(normalizeArgv(argv), {

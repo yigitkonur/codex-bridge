@@ -642,6 +642,25 @@ function normalizeReasoningEffort(effort) {
   return normalized;
 }
 
+// Re-split argv elements that the shell didn't tokenize for us. Two shapes
+// fall through here:
+//
+//   1. Slash-command wrappers (commands/*.md) that expand `$ARGUMENTS`
+//      INTO ONE quoted argv element — the legacy single-element form.
+//   2. Round-6 mixed-up form: a wrapper hard-codes some flags AND quotes
+//      `$ARGUMENTS`, e.g. `setup --json "$ARGUMENTS"`. With user input
+//      `--enable-review-gate --json`, the shell yields two argv elements
+//      `["--json", "--enable-review-gate --json"]` — the second is a
+//      collapsed flag bag that strict parseArgs would reject as an unknown
+//      single flag named `"--enable-review-gate --json"`.
+//
+// We must NOT re-split task/adversarial-review prompt content, where a
+// quoted prompt like `"write the plan"` arrives as one whitespace-bearing
+// element by design. Heuristic: only re-split when the element clearly
+// looks like a flag bag — its first non-whitespace character is `-`.
+// Prompts almost never start with `-`; if a user really wants a leading-
+// hyphen prompt they pass it after `--`. This keeps prompt fidelity for
+// `task`/`adversarial-review`/`send` while fixing the flag-collapse case.
 function normalizeArgv(argv) {
   if (argv.length === 1) {
     const [raw] = argv;
@@ -650,7 +669,18 @@ function normalizeArgv(argv) {
     }
     return splitRawArgumentString(raw);
   }
-  return argv;
+  const out = [];
+  for (const element of argv) {
+    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
+      const tokens = splitRawArgumentString(element);
+      if (tokens.length > 1) {
+        out.push(...tokens);
+        continue;
+      }
+    }
+    out.push(element);
+  }
+  return out;
 }
 
 function parseCommandInput(argv, config = {}) {
