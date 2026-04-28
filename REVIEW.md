@@ -51,7 +51,7 @@ Severity:
 
 ## Performance
 
-26. **[WARN]** Completion is gated on `turn/completed`; do not infer completion from text alone (matches `src/lib/codex.mjs::captureTurn` behavior post v1.5.0).
+26. **[WARN]** Completion is preferentially driven by `turn/completed`, but `src/lib/codex.mjs::scheduleInferredCompletion` (defined at line 375, called from agent-message and drained-subagent paths at lines 415/434/577) is an intentional fallback that completes the capture when `turn/completed` is missing after a final-answer item plus drained collaboration work. Do not remove or short-circuit that path; do not infer completion from text alone outside that helper.
 27. **[WARN]** Idle-check interval is `Math.min(5000, idleTimeoutMs)`. Hard-coding 5000 regresses short timeouts; removing the check regresses stall detection.
 28. **[INFO]** Broker ready-poll interval is 50 ms with no published justification. Changes should note the startup-latency / syscall-budget tradeoff.
 
