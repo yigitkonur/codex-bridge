@@ -1,96 +1,117 @@
 # src/AGENTS.md
 
-Source for the Node 22+ ESM CLI that Claude invokes through the skill. Root rules live in `/AGENTS.md`; this file covers the top-level `src/` folder and the handler layer in `codex-bridge.mjs` + the standalone broker in `app-server-broker.mjs`. Per-module details for `src/lib/` live in `src/lib/AGENTS.md`.
+This folder contains the authored runtime source. Build outputs live under
+`skill/`; do not edit generated skill files to change behavior.
 
-## Files at this level
+## Files And Folders
 
-| File | Role |
+| Path | Role |
 |---|---|
-| `codex-bridge.mjs` | Main CLI entry. Parses `process.argv`, dispatches to per-subcommand handlers, runs the **bridge layer** (`runBridgeTask`). Gets bundled into `skill/scripts/codex-bridge.mjs` by `esbuild.config.mjs`. |
-| `app-server-broker.mjs` | Standalone socket multiplexer. Not imported; spawned separately by `src/lib/broker-lifecycle.mjs` (`spawn(process.execPath, [scriptPath, "serve", ...])`). |
-| `lib/` | Library modules. See `src/lib/AGENTS.md`. |
-| `prompts/`, `schemas/`, `templates/` | Authored assets copied into `skill/` by esbuild. |
+| `codex-bridge.mjs` | Main CLI entry point and orchestration layer |
+| `app-server-broker.mjs` | Standalone shared Codex app-server broker process |
+| `lib/` | Reusable client, state, config, git, session-log, render, update, and error modules |
+| `prompts/` | Authored prompt source copied to `skill/prompts/` |
+| `schemas/` | Authored JSON schema source copied to `skill/schemas/` |
+| `templates/` | Authored developer-instruction templates copied to `skill/templates/` |
 
-`src/codex-bridge.mjs` is currently ~1560 lines and growing; keep new logic in `src/lib/*.mjs` and have the handler just orchestrate.
+## `codex-bridge.mjs`
 
-## `codex-bridge.mjs` layout
+The CLI uses a single file for command metadata, parsing, handlers, and task
+orchestration.
 
-Three zones, in reading order:
+Important structures:
 
-1. **Constants + config lookup (lines ~97-170)**: resolves `ROOT_DIR`, loads developer-instruction templates with `loadDeveloperInstructions(mode)`, caches bridge config via `getBridgeConfig()`.
-2. **Per-subcommand handlers (lines ~280-1420)**: each `handle<Name>` parses its args, builds a job record, and calls into `src/lib`. Key handlers: `handleSetup`, `handleTask`, `handleTaskWorker`, `handleSend`, `handleSteer`, `handleRespond`, `handleReview`, `handleReviewCommand("adversarial-review")`, `handleSummary`, `handleStatus`, `handleResult`, `handleCancel`, `handleTaskResumeCandidate`.
-3. **Bridge orchestration (`runBridgeTask`, lines ~807-967)**: the integration layer. Merges command request with `config.yaml`, picks plan vs. default mode, registers an `onServerRequest` handler for `requestUserInput`, runs the turn via `executeTaskRun`, then emits `[PLAN]` or invokes `runAutoPipeline`.
+- `COMMANDS` is the displayed help and machine-readable help source for public
+  subcommands.
+- `SUBCOMMAND_DISPATCH` is the actual handler map.
+- `parseCommandInput` adds global `-C/--cwd`, `-h/--help`, and `-j/--json`
+  behavior through `src/lib/args.mjs`.
+- `ROOT_DIR` detects source layout vs. bundled skill layout. Any new bundled
+  asset must be reachable through this root.
+- `runBridgeTask` is the integration layer for tasks: config merge, prompt
+  decoration, developer instructions, sandbox policy, server-request handling,
+  heartbeats/checkpoints, retries, session logging, and auto-pipeline.
 
-### Conventions every handler follows
+Current public subcommands are visible with:
 
-- Parse args through `parseCommandInput(argv, { valueOptions, booleanOptions, aliasMap })` — a wrapper over `src/lib/args.mjs` that adds the `-C` → `cwd` alias and handles single-string arg forms. Never call `parseArgs` directly from a handler.
-- Resolve directory via `resolveCommandCwd(options)` (for Codex spawn env + git) and `resolveCommandWorkspace(options)` (for state, jobs). `cwd` and `workspaceRoot` are **not interchangeable** — see root `AGENTS.md` rule 3.
-- Build a job record with `createCompanionJob({ prefix, kind, ... })` so `status`/`result`/`cancel` subcommands can find it later.
-- Route output through `outputCommandResult(payload, rendered, options.json)` so `--json` is always honored.
-- Never `console.log` raw — use `outputResult` / `outputCommandResult` / `process.stdout.write` consistently.
+```bash
+node src/codex-bridge.mjs --help
+```
 
-### Adding a new subcommand
+The implementation also has internal helpers such as `task-worker` and
+`task-resume-candidate`; only expose a command through plugin docs when it is
+intended for users.
 
-1. Add the handler `async function handle<Name>(argv)` in the handler zone.
-2. Register it in the `switch` inside `main()` (bottom of the file).
-3. Extend `printUsage()`.
-4. Add scenarios in the matching `gherkin-tests-v2/` context — typically `04-errors/` for new failure envelopes, `07-orchestration/` for lifecycle-affecting subcommands, or `08-review-and-resume/` for review/resume variants.
-5. Update `skill/references/command-reference.md`.
+## Handler Conventions
 
-### Modes, sandbox, and developer instructions
+When adding or changing a handler:
 
-From `src/lib/config.mjs`:
+- Parse only declared flags with `parseCommandInput`.
+- Resolve cwd before loading config when behavior depends on the caller's
+  project.
+- Use `resolveWorkspaceRoot` for state/job identity and cwd for git/Codex
+  execution.
+- Normalize model/effort through existing helpers.
+- Emit success through `emitSuccess` and failures through `emitError` or
+  `CliError` subclasses.
+- Use existing job helpers so `status`, `result`, `wait`, `events`, and
+  `cancel` keep working.
+- For user-facing commands, update `COMMANDS`, `SUBCOMMAND_DISPATCH`,
+  `commands/*.md`, skill references, and tests together.
 
-| Mode | `sandboxPolicy` (source) | `reasoning_effort` | Developer instructions file |
-|---|---|---|---|
-| `plan` | `{ type: "readOnly" }` (forced by mode) | `xhigh` (forced) | `src/templates/plan-enforcement.md` |
-| `default` (execute) | Resolved from `config.sandbox_policy` — shipped default `{ type: "dangerFullAccess" }`; `"workspace-write"` and `"read-only"` also accepted. | `config.effort` (default `xhigh`) | `src/templates/execute-instructions.md` |
+## Task Flow
 
-`runBridgeTask` (line ~820) selects `isPlanMode = config.mode === "plan" && !request.resumeLast`. A resumed task never re-enters plan mode. Turn + idle budgets (all configurable — see `src/lib/config.mjs::DEFAULT_CONFIG` and `skill/references/config-reference.md`):
+`runBridgeTask` currently:
 
-- Plan turn: `turn_plan_ms` (default 30 min).
-- Execute turn: `turn_default_ms` (default 30 min).
-- Idle gap: `idle_timeout_ms` (default 5 min).
-- Question answer: `question_answer_ms` (default 5 min).
-- Pipeline stage: `pipeline_stage_ms` (default 5 min); pipeline total `pipeline_total_ms` (default 15 min).
+- Loads config with `getBridgeConfig(cwd, workspaceRoot)`.
+- Applies `skip_meta_skills` and `prompt_footer` to the prompt.
+- Uses `plan` mode unless overridden or resuming.
+- Injects `plan-enforcement.md` or `execute-instructions.md` as developer
+  instructions.
+- Resolves sandbox through `buildSandboxPolicy`; configured
+  `sandbox_policy` wins over mode-derived defaults.
+- Handles `item/tool/requestUserInput` by writing a pending request to disk and
+  waiting for `respond`.
+- Writes `TURN_PARAMS`, `DIRECTIVES`, item-completion NDJSON, heartbeats,
+  checkpoints, terminal events, partial/handoff data, and pipeline events.
+- Runs the auto-pipeline only when `--no-pipeline` is not set and at least one
+  configured stage is enabled (`auto_review` or `post_task_prompt`).
 
-Each has a `--*-ms` CLI override on `task` / `send`. Pre-v1.3.0 the turn budgets were 5/10 min and the idle gap was 120 s; those values still show up in older session transcripts but are not current.
+Do not bypass `runBridgeTask` from task paths. `task-worker` intentionally calls
+it so foreground and background runs produce the same session artifacts.
 
-### How questions flow through `runBridgeTask`
+## Broker Entry
 
-Codex can emit `item/tool/requestUserInput` — a server-to-client **request** (not a notification) with a JSON-RPC id. `runBridgeTask` registers `onServerRequest` (line ~852) which:
+`app-server-broker.mjs` serves one shared Codex app-server connection. It:
 
-1. Persists the pending request via `writePendingRequest(sessionDir, threadId, entry)` to `{threadId}.pending.json` (see `src/lib/pending-requests.mjs`).
-2. Writes `[QUESTION]` to `.events`.
-3. Polls `waitForResponse(sessionDir, threadId, 300_000)` for the response file written by the `respond` CLI.
-4. When the response arrives, delivers it on the **same** RPC connection via `message._client?.sendMessage?.({ id: message.id, result: response.payload })`.
-5. On timeout, delivers `{ answers: {} }` so the server doesn't hang.
+- Accepts `serve --endpoint <value> [--cwd <path>] [--pid-file <path>]`.
+- Handles newline-delimited JSON messages.
+- Owns streaming request exclusivity for `turn/start`, `review/start`, and
+  `thread/compact/start`.
+- Allows `turn/interrupt` from a different socket during an active stream.
+- Forwards server-initiated requests to the active downstream client and tracks
+  their responses in `pendingServerRequests`.
+- Removes unix sockets and pid files on shutdown.
 
-This worker/respond split is necessary because `respond` is a separate CLI invocation; the worker process holds the open RPC connection.
+Any broker change needs `npm test`; `test/bridge-static.test.mjs` and
+`test/app-server-client.test.mjs` pin several request/response invariants.
 
-**Codex may also ask questions in plain assistant text instead of using the tool.** In that case, no `[QUESTION]` notification is emitted; use `send <thread-id> "<answer>"`. The skill doc (`skill/SKILL.md`) calls this out — keep both paths working.
+## Build Rules
 
-## `app-server-broker.mjs`
+After any source change in this folder, run:
 
-A standalone JSON-RPC multiplexer that accepts multiple client sockets, forwards their requests to a **single** `CodexAppServerClient` connected in direct mode (`disableBroker: true`), and enforces "one active turn" semantics across clients.
+```bash
+npm run build
+npm test
+```
 
-Critical behaviors:
+For AGENTS-only edits, `npm test` is enough.
 
-- **Streaming methods** (`turn/start`, `review/start`, `thread/compact/start`, line 12) take exclusive ownership of the notification fan-out until `turn/completed` for the matching `threadId`. Other sockets attempting non-interrupt requests get `BROKER_BUSY_RPC_CODE` (`-32001`, the Codex convention for "busy, retry later").
-- **`turn/interrupt` is an exception** (lines 170-195) — it's allowed while another socket's stream is active, so clients can cancel somebody else's in-flight turn.
-- **`initialize`** returns `{ userAgent: "codex-companion-broker" }` (line 149) — the broker does its own handshake with the upstream server on startup.
-- **`broker/shutdown`** cleanly closes sockets, calls `appClient.close()`, removes the unix socket file and PID file, then `process.exit(0)`.
-- Framing is **newline-delimited JSON** on a unix socket (or Windows named pipe via `parseBrokerEndpoint`). Bad JSON → `-32700 Parse error`.
-- Notifications from the upstream server are fanned out through `routeNotification` to whichever socket owns the current request or stream. If neither, the notification is dropped — this matches "dropped" semantics in the upstream reference client's bounded-channel design.
+## Common Mistakes
 
-### Invariants for editing `app-server-broker.mjs`
-
-- `STREAMING_METHODS` is the single source of truth for which methods take exclusive ownership. If the upstream spec adds a new streaming method (`compaction/start` variants, etc.), add it here and to the Gherkin spec.
-- Never remove the `allowInterruptDuringActiveStream` carve-out — it's the only way to cancel a hung turn from a sibling client.
-- `activeStreamThreadIds` is a `Set`, not a single id, because `review/start` with `delivery: "detached"` introduces a new `reviewThreadId` (see `src/lib/AGENTS.md` for the upstream test invariant).
-- The broker is spawned detached with its own log/PID files (see `src/lib/broker-lifecycle.mjs`). `shutdown()` must remove both; orphan files cause "broker already running" false positives on next spawn.
-
-## Unverified / known gaps
-
-- The broker has no retry logic for upstream `-32001` from the Codex app-server itself — it relays the error unchanged. If the upstream introduces server-side backoff we should handle it here, not in each client.
-- There is no per-request timeout at the broker layer. A slow Codex turn can hold exclusive ownership indefinitely; sibling clients get `busy` responses forever until the streaming caller times out themselves. Document-only issue for now.
+- Do not update `skill/scripts/codex-bridge.mjs` directly.
+- Do not add a CLI flag to help text without adding it to the handler parser.
+- Do not add a handler without `SUBCOMMAND_DISPATCH`.
+- Do not assume static tests cover real Codex app-server round trips.
+- Do not resurrect references to absent behavioral-spec directories as required
+  workflow unless the directories and runnable process exist in the working tree.

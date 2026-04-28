@@ -9,7 +9,28 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+### Added
+- Claude Code plugin-native slash commands under `/codex-bridge:*`, plus a
+  thin `codex-bridge:codex-bridge-runner` subagent that forwards substantial
+  task delegation to the existing bridge runtime while preserving Monitor-ready
+  envelopes.
+- Claude Code lifecycle hooks for session-id export, session-end orphan
+  pruning, and the optional stop-time review gate, implemented as thin wrappers
+  around the existing bridge CLI.
+- Stop-time review gate activation is now explicit, visible, and
+  project-scoped: the Stop hook only runs Codex when
+  `.codex-bridge-stop-review-gate.lock` exists at the git project root.
+- Stop-time review gate now defers to the official OpenAI Codex plugin: when
+  that plugin is enabled, codex-bridge refuses to enable or run its own Stop
+  review gate and reports the suppression in setup/status JSON.
+- Static regression coverage for plugin manifest version sync, command
+  discovery, hook discovery, command script paths, and the runner subagent's
+  thin-forwarder contract.
+
 ### Fixed
+- `.claude-plugin/plugin.json` now matches the package / skill metadata
+  version instead of advertising stale `1.2.3` metadata to Claude Code plugin
+  discovery.
 - `auto-pipeline` terminal tag: `[PIPELINE:done]` / `[PIPELINE:failed]` now
   emit the documented names (previously rendered as
   `[PIPELINE:pipeline:done]` / `[PIPELINE:pipeline:failed]` — contradicted

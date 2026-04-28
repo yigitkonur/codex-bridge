@@ -104,7 +104,7 @@ A failed `task --json` **does not** return a success envelope with `phase=error`
 
 ## task
 
-Start a new Codex task. Default: plan mode, read-only sandbox, foreground.
+Start a new Codex task. Default: plan mode, configured sandbox, foreground.
 
 ```
 codex-bridge task [--write] [--effort <level>] [--mode <plan|default>] [-m <model>]
@@ -132,7 +132,7 @@ codex-bridge task [--write] [--effort <level>] [--mode <plan|default>] [-m <mode
 | `--turn-default-ms <ms>` | Override per-turn timeout for execute turns (default `turn_default_ms = 1800000` = 30 min; raised in v1.3.0 from the pre-1.3.0 10 min hard-code) |
 | `--pipeline-stage-timeout-ms <ms>` | Override per-stage pipeline timeout (default `pipeline_stage_ms = 300000`) |
 | `--pipeline-total-timeout-ms <ms>` | Override total pipeline timeout (default `pipeline_total_ms = 900000`) |
-| `--question-timeout-ms <ms>` | How long `requestUserInput` waits before auto-answering `{}` (default `question_answer_ms = 300000`) |
+| `--question-timeout-ms <ms>` | How long `requestUserInput` waits before rejecting an unanswered request (default `question_answer_ms = 300000`) |
 
 All `*-ms` flags require positive integers; malformed values throw `USAGE_ERROR` (exit 2) rather than silent fallback.
 

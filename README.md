@@ -77,7 +77,7 @@ Drop a `config.yaml` at layer 3 or 4 to override per-project without editing you
 - **typed error taxonomy** — Codex's `codexErrorInfo` mapped to stable `error.code` values: `INVALID_THREAD_ID`, `REVIEW_EMPTY_DIFF`, `WAIT_TIMEOUT`, `UNKNOWN_SUBCOMMAND`, `CONTEXT_WINDOW_EXCEEDED`, and the rest.
 - **structured review output** — `adversarial-review` returns findings conforming to a shipped JSON schema; pair with `review` for Codex's native pass.
 - **mid-turn steering + resume** — `steer <tid> <turn-id> "…"` sends guidance to a live turn; `task --resume-last` picks up the session's latest resumable thread.
-- **self-healing state** — `bridge status` reaps orphaned "running" jobs on load (dead-pid probe). Crashed workers don't wedge your state file.
+- **self-healing state** — `bridge status --prune-orphans` reaps orphaned "running" jobs under the state lock (dead-pid probe). Crashed workers don't wedge your state file.
 - **no telemetry. no sidecar manifest.** Everything lives in `SKILL.md` frontmatter + the single bundled CLI.
 - **update check built in** — `bridge update` against the GitHub Releases API, 24 h cache, silent stdout notice on every launch, opt-out via env.
 
@@ -189,9 +189,33 @@ Edit `src/`, re-run `npm run build`, commit the regenerated bundle alongside you
 
 ---
 
-## how the skill shows up in Claude Code
+## how it shows up in Claude Code
 
 Once installed, Claude Code reads `skill/SKILL.md` front matter (`name: codex-bridge`). The description field lists every trigger Claude should route to this skill — "ask Codex", "run this by Codex", "adversarial review", background Codex jobs, tailing terminal events, etc. Claude activates it automatically; you don't invoke it by name.
+
+When installed as a Claude Code plugin, the repo also exposes native slash commands under `/codex-bridge:*`, a thin `codex-bridge:codex-bridge-runner` subagent, and lifecycle hooks. Use `/codex-bridge:task` for fresh-context delegation with Monitor-ready output; use `/codex-bridge:status`, `/codex-bridge:events`, `/codex-bridge:wait`, and `/codex-bridge:result` to observe or retrieve jobs without guessing file paths.
+
+### project-scoped stop review gate
+
+Plugin mode also supports an optional stop-time review gate modeled after the official OpenAI Codex plugin: when Claude Code is about to stop, the hook asks Codex for a first-line `ALLOW:` or `BLOCK:` judgment over the just-finished Claude response. A `BLOCK:` result prevents the stop and surfaces the reason.
+
+If the official OpenAI Codex plugin is enabled in Claude Code, `codex-bridge` does not enable its own stop review gate. The official plugin owns that behavior; `codex-bridge` remains available for its namespaced `/codex-bridge:*` orchestration commands.
+
+The gate is intentionally project-scoped and visible in git. Enable it only for the current repository:
+
+```bash
+/codex-bridge:setup --enable-review-gate
+```
+
+That creates `.codex-bridge-stop-review-gate.lock` at the git root. Remove it with:
+
+```bash
+/codex-bridge:setup --disable-review-gate
+```
+
+Without that lock file, the Stop hook exits without running Codex, even though the plugin hook is installed. This keeps the review gate auditable per project instead of silently enabling it from global state or an environment variable.
+
+If a stale `.codex-bridge-stop-review-gate.lock` exists while the official OpenAI plugin is enabled, the lock is ignored. `/codex-bridge:setup --json` reports `officialOpenAICodexPluginStatus`, `reviewGateSuppressedByOfficialPlugin`, and `reviewGateLockIgnored` so the reason is machine-readable.
 
 Full user-facing docs live at [`skill/SKILL.md`](skill/SKILL.md). Topical references:
 
