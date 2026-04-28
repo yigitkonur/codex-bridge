@@ -326,17 +326,31 @@ function emitError(err, { json: json2 = false, command = null, stderr = process2
   return classified;
 }
 function detectJsonFlag(argv) {
+  let result = false;
   for (const arg of argv) {
     if (arg === "--") break;
     if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
     if (arg === "--json=false") return false;
+    if (typeof arg === "string" && /\s/.test(arg)) {
+      for (const token of arg.split(/\s+/)) {
+        if (token === "--") return result;
+        if (token === "--json" || token === "--json=true" || token === "-j") return true;
+        if (token === "--json=false") result = false;
+      }
+    }
   }
-  return false;
+  return result;
 }
 function detectHelpFlag(argv) {
   for (const arg of argv) {
     if (arg === "--") break;
     if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
+    if (typeof arg === "string" && /\s/.test(arg)) {
+      for (const token of arg.split(/\s+/)) {
+        if (token === "--") return false;
+        if (token === "--help" || token === "-h" || token === "--help=true") return true;
+      }
+    }
   }
   return false;
 }

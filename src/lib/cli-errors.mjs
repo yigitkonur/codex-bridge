@@ -368,20 +368,49 @@ export function emitError(err, { json = false, command = null, stderr = process.
 
 // Quick argv scan: pre-dispatch detection of `--json` / `-j` so `main().catch`
 // can choose the right error channel without re-parsing per-handler specs.
+//
+// Slash-command wrappers (commands/*.md) pass the user's argument tail as a
+// single shell-quoted argv element — e.g. `/codex-bridge:status missing
+// --json` arrives as one string `"missing --json"`. The per-handler
+// `parseCommandInput` re-splits via `normalizeArgv`, but the top-level error
+// path (`main().catch`) checks this function BEFORE any handler runs and
+// would otherwise miss `--json` for collapsed args, emitting plain text
+// instead of the advertised JSON envelope. To stay correct in both shapes,
+// scan each argv element as whitespace-delimited tokens.
 export function detectJsonFlag(argv) {
+  let result = false;
   for (const arg of argv) {
     if (arg === "--") break;
+    // Fast path for already-tokenized argv.
     if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
     if (arg === "--json=false") return false;
+    // Collapsed slash-command form: tokenize on whitespace and re-check.
+    // Quote handling isn't needed here — `--json` is a flag-shaped token
+    // that never appears inside a quoted prompt as itself, and we're only
+    // looking for an exact match.
+    if (typeof arg === "string" && /\s/.test(arg)) {
+      for (const token of arg.split(/\s+/)) {
+        if (token === "--") return result;
+        if (token === "--json" || token === "--json=true" || token === "-j") return true;
+        if (token === "--json=false") result = false;
+      }
+    }
   }
-  return false;
+  return result;
 }
 
 // Same idea for --help / -h so main() can short-circuit before the handler runs.
+// Mirrors detectJsonFlag's collapsed-argv handling for slash-command wrappers.
 export function detectHelpFlag(argv) {
   for (const arg of argv) {
     if (arg === "--") break;
     if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
+    if (typeof arg === "string" && /\s/.test(arg)) {
+      for (const token of arg.split(/\s+/)) {
+        if (token === "--") return false;
+        if (token === "--help" || token === "-h" || token === "--help=true") return true;
+      }
+    }
   }
   return false;
 }
