@@ -69,15 +69,25 @@ before tightening type checking.
 - `captureTurn` tracks root and collaboration-thread notifications, final
   assistant output, plans, review text, reasoning summaries, touched files,
   command executions, idle timeouts, turn timeouts, and process death.
-- Completion is based on `turn/completed`; final answer text alone is not a
-  terminal signal.
+- Completion is preferentially driven by `turn/completed`, but
+  `scheduleInferredCompletion` (called from agent-message and drained-subagent
+  paths in `src/lib/codex.mjs`) can also conclude the capture when
+  `turn/completed` is missing — final answer text alone is not enough on its
+  own, but it is one of several signals the inferred-completion path
+  considers.
 - Pre-response `turn/started` may establish the turn id before the `turn/start`
   response resolves so buffered `turn/completed` can complete the capture.
-- Pending server-request handlers suppress idle timeout while waiting for a
-  response; do not replace this with one-shot activity marking.
-- Turn timeout attempts `turn/interrupt` when a turn id is known, then waits
-  for terminal `turn/completed` before resolving unless the interrupt grace
-  timer expires.
+- The idle watchdog polls `lastNotificationAt` against `idle_timeout_ms` on a
+  `Math.min(5000, idle_timeout_ms)` interval and fires when the gap exceeds
+  the budget. `requestUserInput` does not separately suppress the idle timer;
+  on long human/orchestrator delays, raise `--question-timeout-ms` and/or
+  `--idle-timeout-ms` together so the idle watchdog does not preempt the
+  pending question.
+- Turn timeout is enforced as `Promise.race([turnPromise, setTimeout(reject)])`
+  in `runAppServerTurn` — when the budget elapses, the race rejects and the
+  turn is failed without an explicit `turn/interrupt`. The standalone
+  `interruptTurn` helper exists for callers who need to interrupt by id, but
+  it is not the per-turn-budget path.
 - Auth status uses `account/read` plus `config/read`.
 - Availability checks require both `codex --version` and
   `codex app-server --help`.
@@ -122,10 +132,16 @@ back to mode-derived defaults without widening permissions.
 - State root resolution reads `CLAUDE_PLUGIN_DATA` (the only env var
   consulted, defined as `PLUGIN_DATA_ENV` at `src/lib/state.mjs:9`) and
   falls back to `os.tmpdir()/codex-companion` when unset.
-- `state.json`, `state.lock`, and `jobs/*.json` live under that state dir.
-- Writes use a lock file with stale-lock cleanup and atomic state-file rename.
-- `loadState` is read-only. Mutating writes reap queued/running jobs whose pid
-  no longer exists while holding `state.lock`.
+- `state.json` and `jobs/*.json` live under that state dir. There is no
+  `state.lock` file in the current implementation — `src/lib/state.mjs` writes
+  `state.json` with a plain `fs.writeFileSync`, with no separate lock file
+  and no write-temp-then-rename. Callers running concurrently can race; the
+  upstream broker session and the per-launch `tracked-jobs.mjs` writes are the
+  only serialization in practice.
+- `loadState` is **not** strictly read-only: when it detects orphaned
+  `running`/`queued` jobs whose pid is no longer alive (`reapOrphans`), it
+  rewrites `state.json` in place via `fs.writeFileSync`. Writers should expect
+  that any `loadState` call may flush a reaper update.
 - Job lists are pruned to `MAX_JOBS = 50`.
 
 `tracked-jobs.mjs` writes job detail files and state-index entries. Preserve the
