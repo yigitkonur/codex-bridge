@@ -126,9 +126,17 @@ removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
   `os.tmpdir()/codex-companion` when unset.
 - Session `.events` and `.ndjson` writes are append-only synchronous writes in
   `src/lib/session-log.mjs`. Do not introduce competing async writers.
-- The Stop review gate is project-scoped. `setup --enable-review-gate` creates
-  `.codex-bridge-stop-review-gate.lock` at the git root only when the official
-  OpenAI Codex plugin is absent; the hook suppresses itself otherwise.
+- The Stop review gate is project-scoped. On this branch alone,
+  `setup --enable-review-gate` only sets `stopReviewGate: true` in the
+  workspace state via `setConfig` (`src/codex-bridge.mjs:743`) and prints a
+  next-step hint; there is no git-root `.codex-bridge-stop-review-gate.lock`
+  file, no official-OpenAI-Codex-plugin suppression check, and no
+  `reviewGateSuppressedByOfficialPlugin` / `officialOpenAICodexPluginStatus`
+  fields in `setup --json`. The lock-file activation, official-plugin
+  detection, and Stop hook itself land with the sibling `feat/plugin-surfaces`
+  branch — once that stack ships, `setup --enable-review-gate` will also
+  create the lock at the git root only when the official plugin is absent and
+  the hook will suppress itself otherwise.
 - Update checks use the public GitHub releases API anonymously. Normal hot-path
   invocations can trigger a rate-limited detached `npx skills@latest add ...`
   auto-apply unless disabled with `CODEX_BRIDGE_NO_UPDATE_CHECK=1`; `update
