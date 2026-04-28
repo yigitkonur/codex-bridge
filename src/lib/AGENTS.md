@@ -271,9 +271,10 @@ the broker so a sibling client can cancel an active stream.
 
 ## Plugin Detection And Updates
 
-`official-plugin.mjs` detects the official OpenAI Codex Claude plugin by parsing
-`claude plugin list --json`. Status values are `active`, `absent`, and
-`unknown`.
+`official-plugin.mjs` *(preview — lands with sibling branch
+`feat/plugin-surfaces`; not present on this branch)* detects the official
+OpenAI Codex Claude plugin by parsing `claude plugin list --json`. Status
+values are `active`, `absent`, and `unknown`.
 
 `update-check.mjs` uses `fetch` against
 `https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest`, caches
