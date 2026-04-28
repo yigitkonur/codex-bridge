@@ -1,5 +1,5 @@
 // src/codex-bridge.mjs
-import { spawn as spawn3, spawnSync as spawnSync3 } from "node:child_process";
+import { spawn as spawn3, spawnSync as spawnSync5 } from "node:child_process";
 import fs13 from "node:fs";
 import os6 from "node:os";
 import path11 from "node:path";
@@ -14,7 +14,8 @@ var package_default = {
   type: "module",
   scripts: {
     build: "node esbuild.config.mjs",
-    dev: "node src/codex-bridge.mjs"
+    dev: "node src/codex-bridge.mjs",
+    test: "node --test test/*.test.mjs"
   },
   author: "Yigit Konur",
   license: "MIT",
@@ -324,18 +325,116 @@ function emitError(err, { json: json2 = false, command = null, stderr = process2
   process2.exitCode = classified.exitCode;
   return classified;
 }
-function detectJsonFlag(argv) {
-  for (const arg of argv) {
-    if (arg === "--") break;
-    if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
-    if (arg === "--json=false") return false;
+function* tokenizeOutsideQuotes(arg) {
+  let buffer = "";
+  let quote = null;
+  for (let i = 0; i < arg.length; i++) {
+    const ch = arg[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (buffer) {
+        yield buffer;
+        buffer = "";
+      }
+      continue;
+    }
+    buffer += ch;
+  }
+  if (buffer) yield buffer;
+}
+function looksLikeFlagBearingArg(arg) {
+  if (typeof arg !== "string") return false;
+  const trimmed = arg.trimStart();
+  return trimmed.startsWith("-");
+}
+function trailingFlagShapedToken(arg) {
+  if (typeof arg !== "string") return false;
+  if (!/\s/.test(arg)) return false;
+  let last = null;
+  for (const token of tokenizeOutsideQuotes(arg)) last = token;
+  if (typeof last !== "string") return false;
+  return last !== "--" && last.startsWith("-");
+}
+var PROMPT_ACCEPTING_SUBCOMMANDS = /* @__PURE__ */ new Set([
+  "task",
+  "send",
+  "steer",
+  "adversarial-review"
+]);
+var NON_PROMPT_SUBCOMMANDS = /* @__PURE__ */ new Set([
+  "respond",
+  "review",
+  "summary",
+  "status",
+  "result",
+  "wait",
+  "events",
+  "cancel",
+  "await-artifact",
+  "setup",
+  "version",
+  "update",
+  "config",
+  "auth-status",
+  "task-resume-candidate",
+  "help"
+]);
+function flagBearingSlice(argv) {
+  if (!Array.isArray(argv) || argv.length === 0) return [];
+  const head = argv[0];
+  if (PROMPT_ACCEPTING_SUBCOMMANDS.has(head)) {
+    const rest = argv.slice(1);
+    if (rest.length === 0) return rest;
+    const last = rest[rest.length - 1];
+    if (looksLikeFlagBearingArg(last) || trailingFlagShapedToken(last)) {
+      return rest;
+    }
+    return rest.slice(0, -1);
+  }
+  if (NON_PROMPT_SUBCOMMANDS.has(head)) return argv.slice(1);
+  return argv;
+}
+function elementCarriesAnyToken(arg, targets, { stopOnDoubleDash = true } = {}) {
+  if (typeof arg !== "string") return false;
+  if (stopOnDoubleDash && arg === "--") return false;
+  if (targets.has(arg)) return true;
+  if (!/\s|["']/.test(arg)) return false;
+  for (const token of tokenizeOutsideQuotes(arg)) {
+    if (stopOnDoubleDash && token === "--") return false;
+    if (targets.has(token)) return true;
   }
   return false;
 }
-function detectHelpFlag(argv) {
-  for (const arg of argv) {
+var JSON_TRUE_TOKENS = /* @__PURE__ */ new Set(["--json", "--json=true", "-j"]);
+var JSON_FALSE_TOKENS = /* @__PURE__ */ new Set(["--json=false"]);
+var HELP_TOKENS = /* @__PURE__ */ new Set(["--help", "-h", "--help=true"]);
+function detectJsonFlag(argv) {
+  let result = false;
+  for (const arg of flagBearingSlice(argv)) {
     if (arg === "--") break;
-    if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
+    if (JSON_TRUE_TOKENS.has(arg)) return true;
+    if (JSON_FALSE_TOKENS.has(arg)) return false;
+    if (/\s|["']/.test(arg)) {
+      for (const token of tokenizeOutsideQuotes(arg)) {
+        if (token === "--") return result;
+        if (JSON_TRUE_TOKENS.has(token)) return true;
+        if (JSON_FALSE_TOKENS.has(token)) result = false;
+      }
+    }
+  }
+  return result;
+}
+function detectHelpFlag(argv) {
+  for (const arg of flagBearingSlice(argv)) {
+    if (arg === "--") break;
+    if (elementCarriesAnyToken(arg, HELP_TOKENS)) return true;
   }
   return false;
 }
@@ -574,20 +673,145 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // src/lib/state.mjs
+import { spawnSync as spawnSync3 } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs3 from "node:fs";
 import os from "node:os";
 import path3 from "node:path";
+
+// src/lib/official-plugin.mjs
+import { spawnSync } from "node:child_process";
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
+function stringValue(value) {
+  return typeof value === "string" ? value : "";
+}
+function normalizePathLike(value) {
+  return stringValue(value).replace(/\\/g, "/").toLowerCase();
+}
+function pluginEntryEnabled(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if ("enabled" in entry) return Boolean(entry.enabled);
+  if ("disabled" in entry) return !entry.disabled;
+  return true;
+}
+function summarizePluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: entry.id ?? null,
+    name: entry.name ?? null,
+    version: entry.version ?? null,
+    scope: entry.scope ?? null,
+    installPath: entry.installPath ?? entry.path ?? null,
+    enabled: pluginEntryEnabled(entry)
+  };
+}
+function isOfficialOpenAICodexPluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const id = stringValue(entry.id).toLowerCase();
+  const name = stringValue(entry.name).toLowerCase();
+  const source = stringValue(entry.source).toLowerCase();
+  const installPath = normalizePathLike(entry.installPath ?? entry.path);
+  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
+  if (id === "codex@openai-codex") return true;
+  if (id === "codex" && authorName === "openai") return true;
+  if (name === "codex" && authorName === "openai") return true;
+  if (source.includes("openai/codex-plugin-cc")) return true;
+  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
+  if (installPath.includes("/openai-codex/codex/")) return true;
+  if (installPath.endsWith("/openai-codex/codex")) return true;
+  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
+  return false;
+}
+function detectOfficialOpenAICodexPluginFromEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: "Claude plugin list output was not an array.",
+      plugin: null
+    };
+  }
+  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
+  if (plugin) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
+      detail: "Official OpenAI Codex plugin is enabled.",
+      plugin: summarizePluginEntry(plugin)
+    };
+  }
+  return {
+    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
+    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
+    plugin: null
+  };
+}
+function extractPluginEntries(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
+  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
+  return null;
+}
+function detectOfficialOpenAICodexPluginUncached(options = {}) {
+  const spawn4 = options.spawnSync ?? spawnSync;
+  const result = spawn4("claude", ["plugin", "list", "--json"], {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
+  });
+  if (result.error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
+      plugin: null
+    };
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
+      plugin: null
+    };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
+  } catch (error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
+      plugin: null
+    };
+  }
+}
+var DEFAULT_DETECT_CACHE_MS = 3e4;
+var cached = null;
+var cachedAt = 0;
+function detectOfficialOpenAICodexPlugin(options = {}) {
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
+  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
+    return cached;
+  }
+  const result = detectOfficialOpenAICodexPluginUncached(options);
+  cached = result;
+  cachedAt = Date.now();
+  return result;
+}
 
 // src/lib/git.mjs
 import fs2 from "node:fs";
 import path2 from "node:path";
 
 // src/lib/process.mjs
-import { spawnSync } from "node:child_process";
+import { spawnSync as spawnSync2 } from "node:child_process";
 import process4 from "node:process";
 function runCommand(command, args = [], options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync2(command, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
@@ -1049,11 +1273,13 @@ function resolveWorkspaceRoot(cwd2) {
 
 // src/lib/state.mjs
 var STATE_VERSION = 1;
+var BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
 var PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 var FALLBACK_STATE_ROOT_DIR = path3.join(os.tmpdir(), "codex-companion");
 var STATE_FILE_NAME = "state.json";
 var JOBS_DIR_NAME = "jobs";
 var MAX_JOBS = 50;
+var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 function nowIso() {
   return (/* @__PURE__ */ new Date()).toISOString();
 }
@@ -1077,7 +1303,7 @@ function resolveStateDir(cwd2) {
   const slugSource = path3.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[PLUGIN_DATA_ENV];
   const stateRoot = pluginDataDir ? path3.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
   return path3.join(stateRoot, `${slug}-${hash}`);
 }
@@ -1224,6 +1450,83 @@ function setConfig(cwd2, key, value) {
 }
 function getConfig(cwd2) {
   return loadState(cwd2).config;
+}
+function resolveProjectRoot(workspaceRoot) {
+  try {
+    const result = spawnSync3("git", ["rev-parse", "--show-toplevel"], {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      timeout: 5e3
+    });
+    if (result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
+      return result.stdout.trim();
+    }
+  } catch {
+  }
+  return workspaceRoot;
+}
+function setStopReviewGate(workspaceRoot, enabled, officialPlugin) {
+  const projectRoot = resolveProjectRoot(workspaceRoot);
+  const lockPath = path3.join(projectRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  const isOfficialActive = officialPlugin?.status === OFFICIAL_PLUGIN_STATUS.ACTIVE;
+  const suppressionReason = isOfficialActive ? "official-openai-codex-plugin-active" : null;
+  if (enabled) {
+    if (isOfficialActive) {
+      setConfig(workspaceRoot, "stopReviewGate", false);
+      return {
+        lockPath,
+        lockExists: fs3.existsSync(lockPath),
+        lockIgnored: fs3.existsSync(lockPath),
+        suppressedByOfficialPlugin: true,
+        suppressionReason
+      };
+    }
+    let lockWritten = false;
+    try {
+      fs3.mkdirSync(path3.dirname(lockPath), { recursive: true });
+      const payload = {
+        enabledAt: (/* @__PURE__ */ new Date()).toISOString(),
+        enabledBy: "codex-bridge"
+      };
+      fs3.writeFileSync(lockPath, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+      lockWritten = true;
+    } catch {
+    }
+    setConfig(workspaceRoot, "stopReviewGate", lockWritten && fs3.existsSync(lockPath));
+    return {
+      lockPath,
+      lockExists: fs3.existsSync(lockPath),
+      lockIgnored: false,
+      suppressedByOfficialPlugin: false,
+      suppressionReason: null
+    };
+  }
+  try {
+    if (fs3.existsSync(lockPath)) fs3.unlinkSync(lockPath);
+  } catch {
+  }
+  setConfig(workspaceRoot, "stopReviewGate", false);
+  return {
+    lockPath,
+    lockExists: fs3.existsSync(lockPath),
+    lockIgnored: false,
+    suppressedByOfficialPlugin: isOfficialActive,
+    suppressionReason
+  };
+}
+function readStopReviewGateState(workspaceRoot, officialPlugin) {
+  const projectRoot = resolveProjectRoot(workspaceRoot);
+  const lockPath = path3.join(projectRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  const lockExists = fs3.existsSync(lockPath);
+  const isOfficialActive = officialPlugin?.status === OFFICIAL_PLUGIN_STATUS.ACTIVE;
+  return {
+    lockPath,
+    lockExists,
+    lockIgnored: lockExists && isOfficialActive,
+    suppressedByOfficialPlugin: isOfficialActive,
+    suppressionReason: isOfficialActive ? "official-openai-codex-plugin-active" : null
+  };
 }
 function writeJobFile(cwd2, jobId, payload) {
   ensureStateDir(cwd2);
@@ -6495,7 +6798,7 @@ var COMPLETION_CHECK_SCHEMA = {
 import fs9 from "node:fs";
 import path7 from "node:path";
 import os4 from "node:os";
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync as spawnSync4 } from "node:child_process";
 function resolveSessionDir(configDir) {
   const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os4.homedir());
   fs9.mkdirSync(dir, { recursive: true });
@@ -6563,11 +6866,11 @@ function writeReview(session, reviewData) {
 function captureGitSnapshot(cwd2) {
   const isoTimestamp = (/* @__PURE__ */ new Date()).toISOString();
   try {
-    const headResult = spawnSync2("git", ["rev-parse", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync4("git", ["rev-parse", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
     if (headResult.status !== 0 || !headResult.stdout) {
       return { headSha: null, porcelain: null, isoTimestamp };
     }
-    const statusResult = spawnSync2("git", ["status", "--porcelain=v1"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync4("git", ["status", "--porcelain=v1"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
     return {
       headSha: headResult.stdout.trim(),
       porcelain: statusResult.status === 0 ? statusResult.stdout ?? "" : "",
@@ -6585,7 +6888,7 @@ function diffGitSnapshot(cwd2, snapshot) {
   let currentHeadSha = null;
   let dirtyFiles = [];
   try {
-    const logResult = spawnSync2(
+    const logResult = spawnSync4(
       "git",
       ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
       { cwd: cwd2, encoding: "utf8", timeout: 1e4 }
@@ -6593,11 +6896,11 @@ function diffGitSnapshot(cwd2, snapshot) {
     if (logResult.status === 0 && logResult.stdout) {
       commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
-    const headResult = spawnSync2("git", ["rev-parse", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync4("git", ["rev-parse", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
     if (headResult.status === 0 && headResult.stdout) {
       currentHeadSha = headResult.stdout.trim();
     }
-    const statusResult = spawnSync2("git", ["status", "--porcelain=v1"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync4("git", ["status", "--porcelain=v1"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
     if (statusResult.status === 0 && statusResult.stdout) {
       dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
@@ -6612,8 +6915,8 @@ function diffGitSnapshot(cwd2, snapshot) {
   };
 }
 function captureGitDiff(cwd2, session) {
-  const numstatResult = spawnSync2("git", ["diff", "--numstat", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
-  const fullResult = spawnSync2("git", ["diff", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+  const numstatResult = spawnSync4("git", ["diff", "--numstat", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+  const fullResult = spawnSync4("git", ["diff", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
   const diffContent = fullResult.stdout || "";
   const diffPath = writeDiff(session, diffContent);
   const numstatOutput = numstatResult.stdout || "";
@@ -7451,7 +7754,8 @@ var APPLY_ATTEMPT_WINDOW_MS = 60 * 60 * 1e3;
 var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest";
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
-  const root = process.env.CLAUDE_PLUGIN_DATA ? path10.join(process.env.CLAUDE_PLUGIN_DATA, "codex-bridge-update.json") : path10.join(os5.homedir(), ".codex-bridge", "update-cache.json");
+  const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
+  const root = pluginDataDir ? path10.join(pluginDataDir, "codex-bridge-update.json") : path10.join(os5.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
@@ -7766,7 +8070,7 @@ function extractItemText(item) {
 }
 var COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -7975,7 +8279,18 @@ function normalizeArgv(argv) {
     }
     return splitRawArgumentString(raw);
   }
-  return argv;
+  const out = [];
+  for (const element of argv) {
+    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
+      const tokens = splitRawArgumentString(element);
+      if (tokens.length > 1) {
+        out.push(...tokens);
+        continue;
+      }
+    }
+    out.push(element);
+  }
+  return out;
 }
 function parseCommandInput(argv, config = {}) {
   return parseArgs(normalizeArgv(argv), {
@@ -8016,6 +8331,10 @@ async function buildSetupReport(cwd2, actionsTaken = []) {
   const codexStatus = getCodexAvailability(cwd2);
   const authStatus = await getCodexAuthStatus(cwd2);
   const config = getConfig(workspaceRoot);
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: cwd2 });
+  const officialPluginAbsent = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT;
+  const lockState = readStopReviewGateState(workspaceRoot, officialPlugin);
+  const reviewGateEnabled = lockState.lockExists && !lockState.suppressedByOfficialPlugin;
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -8024,7 +8343,7 @@ async function buildSetupReport(cwd2, actionsTaken = []) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
   }
-  if (!config.stopReviewGate) {
+  if (!reviewGateEnabled && !lockState.suppressedByOfficialPlugin) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to require a fresh review before stop.");
   }
   return {
@@ -8034,7 +8353,15 @@ async function buildSetupReport(cwd2, actionsTaken = []) {
     codex: codexStatus,
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(process8.env, workspaceRoot),
-    reviewGateEnabled: Boolean(config.stopReviewGate),
+    reviewGateEnabled,
+    reviewGateLockExists: lockState.lockExists,
+    reviewGateLockIgnored: lockState.lockIgnored,
+    reviewGateLockPath: lockState.lockPath,
+    reviewGateSuppressionReason: lockState.suppressionReason,
+    reviewGateSuppressedByOfficialPlugin: lockState.suppressedByOfficialPlugin,
+    officialPlugin: { status: officialPlugin.status, plugin: officialPlugin.plugin ?? null },
+    officialPluginAbsent,
+    stopReviewGateConfig: Boolean(config.stopReviewGate),
     actionsTaken,
     nextSteps
   };
@@ -8054,12 +8381,33 @@ async function handleSetup(argv) {
   const cwd2 = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: cwd2 });
   if (options["enable-review-gate"]) {
-    setConfig(workspaceRoot, "stopReviewGate", true);
-    actionsTaken.push(`Enabled the stop-time review gate for ${workspaceRoot}.`);
+    const result = setStopReviewGate(workspaceRoot, true, officialPlugin);
+    if (result.suppressedByOfficialPlugin) {
+      actionsTaken.push(
+        `Stop-time review gate enable request was skipped: official OpenAI Codex plugin is active for ${workspaceRoot}. To enable Codex Bridge's gate, first disable the official plugin, then re-run \`codex-bridge setup --enable-review-gate\`.`
+      );
+    } else if (!result.lockExists) {
+      actionsTaken.push(
+        `Failed to create the stop-time review gate lock at ${result.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
+      );
+    } else {
+      actionsTaken.push(
+        `Enabled the stop-time review gate for ${workspaceRoot} (lock at ${result.lockPath}).`
+      );
+    }
   } else if (options["disable-review-gate"]) {
-    setConfig(workspaceRoot, "stopReviewGate", false);
-    actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+    const result = setStopReviewGate(workspaceRoot, false, officialPlugin);
+    if (result.lockExists) {
+      actionsTaken.push(
+        `Failed to remove the stop-time review gate lock at ${result.lockPath}; the gate is still active. Please remove the lock file manually.`
+      );
+    } else {
+      actionsTaken.push(
+        `Disabled the stop-time review gate for ${workspaceRoot} (removed lock at ${result.lockPath}).`
+      );
+    }
   }
   const finalReport = await buildSetupReport(cwd2, actionsTaken);
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
@@ -8252,7 +8600,7 @@ Or rerun with --apply to install automatically.
 }
 function runSkillsAddForApply(jsonMode) {
   try {
-    const result = spawnSync3(
+    const result = spawnSync5(
       "npx",
       ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
       {
@@ -8744,6 +9092,7 @@ function buildTaskRequest({
   effort,
   prompt,
   write,
+  readOnly,
   resumeLast,
   jobId,
   mode,
@@ -8762,6 +9111,7 @@ function buildTaskRequest({
     effort,
     prompt,
     write,
+    readOnly: Boolean(readOnly),
     resumeLast,
     jobId,
     mode: mode ?? null,
@@ -9017,7 +9367,14 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     // wins regardless of plan/write flags. When no override is set, the
     // mode-derived default applies (plan → readOnly, --write → workspaceWrite,
     // plain exec → readOnly).
-    sandboxPolicy: buildSandboxPolicy(
+    //
+    // `request.readOnly` is the one explicit override that bypasses
+    // `config.sandbox_policy` entirely. Used by the stop-time review-gate
+    // hook to guarantee the gate-time review can never mutate the repo even
+    // when the user has set `sandbox_policy: danger-full-access`. The Stop
+    // hook only ALLOWs/BLOCKs the previous turn — it must not double as a
+    // license to write at session shutdown.
+    sandboxPolicy: request.readOnly ? { type: "readOnly" } : buildSandboxPolicy(
       isPlanMode || !request.write ? "plan" : "default",
       config
     ),
@@ -9217,7 +9574,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   const readGitHead = () => {
     if (!gitCwd) return null;
     try {
-      const r = spawnSync3("git", ["rev-parse", "HEAD"], {
+      const r = spawnSync5("git", ["rev-parse", "HEAD"], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -9230,7 +9587,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   const readGitLogRange = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return [];
     try {
-      const r = spawnSync3(
+      const r = spawnSync5(
         "git",
         ["log", "--no-color", "--no-decorate", "-n", "50", "--pretty=%h %s", `${from}..${to}`],
         { cwd: gitCwd, encoding: "utf8", timeout: 5e3 }
@@ -9247,7 +9604,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   const readGitDiffStat = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return null;
     try {
-      const r = spawnSync3("git", ["diff", "--shortstat", `${from}..${to}`], {
+      const r = spawnSync5("git", ["diff", "--shortstat", `${from}..${to}`], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -9710,7 +10067,7 @@ async function handleTask(argv) {
       "pipeline-total-timeout-ms",
       "question-timeout-ms"
     ],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
     aliasMap: {
       m: "model"
     }
@@ -9742,6 +10099,13 @@ async function handleTask(argv) {
   }
   requireTaskRequest(prompt, resumeLast);
   const write = Boolean(options.write);
+  const readOnly = Boolean(options["read-only"]);
+  if (write && readOnly) {
+    throw conflictError(
+      "Choose either --write or --read-only, not both.",
+      "WRITE_READ_ONLY_CONFLICT"
+    );
+  }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -9755,6 +10119,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      readOnly,
       resumeLast,
       jobId: job2.id,
       mode: options.mode ?? null,
@@ -9782,6 +10147,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      readOnly,
       resumeLast,
       jobId: job.id,
       mode: options.mode ?? null,
@@ -10961,7 +11327,7 @@ async function main() {
     printUsage();
     return;
   }
-  if (COMMANDS[subcommand] && detectHelpFlag(argv)) {
+  if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
     printSubcommandUsage(subcommand);
     return;
   }

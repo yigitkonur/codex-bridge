@@ -55,10 +55,16 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  readStopReviewGateState,
   setConfig,
+  setStopReviewGate,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
+import {
+  detectOfficialOpenAICodexPlugin,
+  OFFICIAL_PLUGIN_STATUS
+} from "./lib/official-plugin.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -423,7 +429,7 @@ function extractItemText(item) {
 // table as the CLI contract and update it in the same commit as any flag move.
 const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -636,6 +642,25 @@ function normalizeReasoningEffort(effort) {
   return normalized;
 }
 
+// Re-split argv elements that the shell didn't tokenize for us. Two shapes
+// fall through here:
+//
+//   1. Slash-command wrappers (commands/*.md) that expand `$ARGUMENTS`
+//      INTO ONE quoted argv element — the legacy single-element form.
+//   2. Round-6 mixed-up form: a wrapper hard-codes some flags AND quotes
+//      `$ARGUMENTS`, e.g. `setup --json "$ARGUMENTS"`. With user input
+//      `--enable-review-gate --json`, the shell yields two argv elements
+//      `["--json", "--enable-review-gate --json"]` — the second is a
+//      collapsed flag bag that strict parseArgs would reject as an unknown
+//      single flag named `"--enable-review-gate --json"`.
+//
+// We must NOT re-split task/adversarial-review prompt content, where a
+// quoted prompt like `"write the plan"` arrives as one whitespace-bearing
+// element by design. Heuristic: only re-split when the element clearly
+// looks like a flag bag — its first non-whitespace character is `-`.
+// Prompts almost never start with `-`; if a user really wants a leading-
+// hyphen prompt they pass it after `--`. This keeps prompt fidelity for
+// `task`/`adversarial-review`/`send` while fixing the flag-collapse case.
 function normalizeArgv(argv) {
   if (argv.length === 1) {
     const [raw] = argv;
@@ -644,7 +669,18 @@ function normalizeArgv(argv) {
     }
     return splitRawArgumentString(raw);
   }
-  return argv;
+  const out = [];
+  for (const element of argv) {
+    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
+      const tokens = splitRawArgumentString(element);
+      if (tokens.length > 1) {
+        out.push(...tokens);
+        continue;
+      }
+    }
+    out.push(element);
+  }
+  return out;
 }
 
 function parseCommandInput(argv, config = {}) {
@@ -696,6 +732,27 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   const authStatus = await getCodexAuthStatus(cwd);
   const config = getConfig(workspaceRoot);
 
+  // Snapshot official-plugin presence so the Stop hook can tell the
+  // caller which surface owns stop-time review. Status semantics:
+  //   ACTIVE  → the OpenAI plugin owns it, our gate stays inert.
+  //   ABSENT  → OFFICIAL_PLUGIN_STATUS.ABSENT, our gate may activate.
+  //   UNKNOWN → detection failed, treated as not-active by setStopReviewGate.
+  //
+  // The lock file lives at <gitProjectRoot>/.codex-bridge-stop-review-gate.lock
+  // and is created/removed by setStopReviewGate. The Stop hook reads this
+  // exact path to decide whether to fire a review.
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd });
+  // Surface ABSENT explicitly so callers can distinguish it from UNKNOWN
+  // (detection failed) — UNKNOWN still allows enabling the gate, but only
+  // OFFICIAL_PLUGIN_STATUS.ABSENT is the no-conflict happy path.
+  const officialPluginAbsent = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT;
+  const lockState = readStopReviewGateState(workspaceRoot, officialPlugin);
+
+  // The hook gates on the lock file existing AND not being suppressed by
+  // the official plugin. state.json's stopReviewGate captures user intent
+  // but is no longer authoritative for hook activation on its own.
+  const reviewGateEnabled = lockState.lockExists && !lockState.suppressedByOfficialPlugin;
+
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -704,7 +761,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
   }
-  if (!config.stopReviewGate) {
+  if (!reviewGateEnabled && !lockState.suppressedByOfficialPlugin) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to require a fresh review before stop.");
   }
 
@@ -715,7 +772,15 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     codex: codexStatus,
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
-    reviewGateEnabled: Boolean(config.stopReviewGate),
+    reviewGateEnabled,
+    reviewGateLockExists: lockState.lockExists,
+    reviewGateLockIgnored: lockState.lockIgnored,
+    reviewGateLockPath: lockState.lockPath,
+    reviewGateSuppressionReason: lockState.suppressionReason,
+    reviewGateSuppressedByOfficialPlugin: lockState.suppressedByOfficialPlugin,
+    officialPlugin: { status: officialPlugin.status, plugin: officialPlugin.plugin ?? null },
+    officialPluginAbsent,
+    stopReviewGateConfig: Boolean(config.stopReviewGate),
     actionsTaken,
     nextSteps
   };
@@ -739,12 +804,51 @@ async function handleSetup(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
 
+  // Probe official-plugin presence once for both branches; setStopReviewGate
+  // uses it to decide whether to create or skip the project-root lock file.
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd });
+
   if (options["enable-review-gate"]) {
-    setConfig(workspaceRoot, "stopReviewGate", true);
-    actionsTaken.push(`Enabled the stop-time review gate for ${workspaceRoot}.`);
+    const result = setStopReviewGate(workspaceRoot, true, officialPlugin);
+    if (result.suppressedByOfficialPlugin) {
+      // setStopReviewGate(..., true, officialPlugin) persists nothing when
+      // the official plugin is active — no lock file, no deferred enable
+      // intent. Saying we "recorded" the intent implies it activates later
+      // when the user disables the official plugin; nothing on disk supports
+      // that. Be honest: the request was skipped, and the user must rerun
+      // setup after disabling the official plugin.
+      actionsTaken.push(
+        `Stop-time review gate enable request was skipped: official OpenAI Codex plugin is active for ${workspaceRoot}. To enable Codex Bridge's gate, first disable the official plugin, then re-run \`codex-bridge setup --enable-review-gate\`.`
+      );
+    } else if (!result.lockExists) {
+      // Lock-write failed (read-only checkout, missing dir, permission
+      // denied, etc.). The Stop hook keys off this lock, so the gate is
+      // NOT active despite our enable intent — surface the failure
+      // instead of claiming success. Mirrors the disable path's symmetric
+      // lock-state check.
+      actionsTaken.push(
+        `Failed to create the stop-time review gate lock at ${result.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
+      );
+    } else {
+      actionsTaken.push(
+        `Enabled the stop-time review gate for ${workspaceRoot} (lock at ${result.lockPath}).`
+      );
+    }
   } else if (options["disable-review-gate"]) {
-    setConfig(workspaceRoot, "stopReviewGate", false);
-    actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+    const result = setStopReviewGate(workspaceRoot, false, officialPlugin);
+    if (result.lockExists) {
+      // Lock removal failed (read-only checkout, stale root-owned lock,
+      // permission denied, etc.). The Stop hook keys off this lock, so the
+      // gate is still active despite our disable intent — surface the
+      // failure instead of claiming success.
+      actionsTaken.push(
+        `Failed to remove the stop-time review gate lock at ${result.lockPath}; the gate is still active. Please remove the lock file manually.`
+      );
+    } else {
+      actionsTaken.push(
+        `Disabled the stop-time review gate for ${workspaceRoot} (removed lock at ${result.lockPath}).`
+      );
+    }
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken);
@@ -1570,7 +1674,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
 }
 
 function buildTaskRequest({
-  cwd, model, effort, prompt, write, resumeLast, jobId, mode,
+  cwd, model, effort, prompt, write, readOnly, resumeLast, jobId, mode,
   idleTimeoutMs, noPipeline,
   turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs
 }) {
@@ -1581,6 +1685,7 @@ function buildTaskRequest({
     effort,
     prompt,
     write,
+    readOnly: Boolean(readOnly),
     resumeLast,
     jobId,
     mode: mode ?? null,
@@ -1959,10 +2064,19 @@ async function runBridgeTask(request) {
     // wins regardless of plan/write flags. When no override is set, the
     // mode-derived default applies (plan → readOnly, --write → workspaceWrite,
     // plain exec → readOnly).
-    sandboxPolicy: buildSandboxPolicy(
-      isPlanMode || !request.write ? "plan" : "default",
-      config
-    ),
+    //
+    // `request.readOnly` is the one explicit override that bypasses
+    // `config.sandbox_policy` entirely. Used by the stop-time review-gate
+    // hook to guarantee the gate-time review can never mutate the repo even
+    // when the user has set `sandbox_policy: danger-full-access`. The Stop
+    // hook only ALLOWs/BLOCKs the previous turn — it must not double as a
+    // license to write at session shutdown.
+    sandboxPolicy: request.readOnly
+      ? { type: "readOnly" }
+      : buildSandboxPolicy(
+          isPlanMode || !request.write ? "plan" : "default",
+          config
+        ),
     effort: isPlanMode ? "xhigh" : (request.effort ?? config.effort ?? "high"),
     // Turn timeout resolution (most specific wins): CLI flag → config.yaml
     // key → built-in default. Plan and execute turns use separate budgets
@@ -2980,7 +3094,7 @@ async function handleTask(argv) {
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
       "question-timeout-ms"
     ],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
     aliasMap: {
       m: "model"
     }
@@ -3028,6 +3142,18 @@ async function handleTask(argv) {
   // and spend a billed Codex turn. Mirrors the check the --background path already does.
   requireTaskRequest(prompt, resumeLast);
   const write = Boolean(options.write);
+  // `--read-only` forces sandboxPolicy: { type: "readOnly" } regardless of
+  // `config.sandbox_policy` (including `danger-full-access`). Mutually
+  // exclusive with `--write` — that combination is incoherent. Used by the
+  // stop-time review-gate hook to ensure stop-hook reviews never mutate the
+  // repo even when the user has opted into a wide-open default policy.
+  const readOnly = Boolean(options["read-only"]);
+  if (write && readOnly) {
+    throw conflictError(
+      "Choose either --write or --read-only, not both.",
+      "WRITE_READ_ONLY_CONFLICT"
+    );
+  }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -3043,6 +3169,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      readOnly,
       resumeLast,
       jobId: job.id,
       mode: options.mode ?? null,
@@ -3072,6 +3199,7 @@ async function handleTask(argv) {
         effort,
         prompt,
         write,
+        readOnly,
         resumeLast,
         jobId: job.id,
         mode: options.mode ?? null,
@@ -4497,8 +4625,10 @@ async function main() {
   }
 
   // Per-subcommand --help / -h short-circuits before the handler runs so we
-  // never fire a Codex turn just to answer a discovery query.
-  if (COMMANDS[subcommand] && detectHelpFlag(argv)) {
+  // never fire a Codex turn just to answer a discovery query. Pass the full
+  // rawArgv so the per-subcommand prompt-skipping in detectHelpFlag sees the
+  // subcommand at index 0.
+  if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
     printSubcommandUsage(subcommand);
     return;
   }

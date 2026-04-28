@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "dev": "node src/codex-bridge.mjs"
+    "dev": "node src/codex-bridge.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "author": "Yigit Konur",
   "license": "MIT",
