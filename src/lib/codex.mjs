@@ -20,6 +20,8 @@
  *   rejectCompletion: (error: unknown) => void,
  *   finalTurn: Turn | null,
  *   completed: boolean,
+ *   finalAnswerSeen: boolean,
+ *   completionTimer: ReturnType<typeof setTimeout> | null,
  *   pendingCollaborations: Set<string>,
  *   activeSubagentTurns: Set<string>,
  *   lastAgentMessage: string,
@@ -316,6 +318,8 @@ function createTurnCaptureState(threadId, options = {}) {
     rejectCompletion,
     finalTurn: null,
     completed: false,
+    finalAnswerSeen: false,
+    completionTimer: null,
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
     lastAgentMessage: "",
@@ -333,11 +337,19 @@ function createTurnCaptureState(threadId, options = {}) {
   };
 }
 
+function clearCompletionTimer(state) {
+  if (state.completionTimer) {
+    clearTimeout(state.completionTimer);
+    state.completionTimer = null;
+  }
+}
+
 function completeTurn(state, turn = null, options = {}) {
   if (state.completed) {
     return;
   }
 
+  clearCompletionTimer(state);
   state.completed = true;
 
   if (turn) {
@@ -362,6 +374,34 @@ function completeTurn(state, turn = null, options = {}) {
   state.resolveCompletion(state);
 }
 
+// When the root final answer has arrived and all collaboration work has
+// drained, schedule a 250 ms grace timer to infer turn completion if the
+// upstream `turn/completed` notification is delayed or missing. Without this,
+// successful turns can fall through to the idle/turn-timeout path and be
+// reported as failed.
+function scheduleInferredCompletion(state) {
+  if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+    return;
+  }
+
+  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+    return;
+  }
+
+  clearCompletionTimer(state);
+  state.completionTimer = setTimeout(() => {
+    state.completionTimer = null;
+    if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+      return;
+    }
+    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+      return;
+    }
+    completeTurn(state, null, { inferred: true });
+  }, 250);
+  state.completionTimer.unref?.();
+}
+
 function belongsToTurn(state, message) {
   const messageThreadId = extractThreadId(message);
   if (!messageThreadId || !state.threadIds.has(messageThreadId)) {
@@ -379,6 +419,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
         state.pendingCollaborations.add(item.id);
       } else if (lifecycle === "completed") {
         state.pendingCollaborations.delete(item.id);
+        scheduleInferredCompletion(state);
       }
     }
     for (const receiverThreadId of item.receiverThreadIds ?? []) {
@@ -395,6 +436,10 @@ function recordItem(state, item, lifecycle, threadId = null) {
     if (item.text) {
       if (!threadId || threadId === state.threadId) {
         state.lastAgentMessage = item.text;
+        if (lifecycle === "completed" && item.phase === "final_answer") {
+          state.finalAnswerSeen = true;
+          scheduleInferredCompletion(state);
+        }
       }
       if (lifecycle === "completed") {
         const sourceLabel = labelForThread(state, threadId);
@@ -539,6 +584,7 @@ function applyTurnNotification(state, message) {
     case "turn/completed":
       if ((message.params.threadId ?? null) !== state.threadId) {
         state.activeSubagentTurns.delete(message.params.threadId);
+        scheduleInferredCompletion(state);
         break;
       }
       emitProgress(
@@ -789,6 +835,7 @@ export async function captureTurn(client, threadId, startRequest, options = {}) 
 
     return await state.completion;
   } finally {
+    clearCompletionTimer(state);
     if (idleInterval) {
       clearInterval(idleInterval);
       idleInterval = null;
