@@ -421,18 +421,116 @@ function emitError(err, { json: json2 = false, command = null, stderr = process2
   process2.exitCode = classified.exitCode;
   return classified;
 }
-function detectJsonFlag(argv) {
-  for (const arg of argv) {
-    if (arg === "--") break;
-    if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
-    if (arg === "--json=false") return false;
+function* tokenizeOutsideQuotes(arg) {
+  let buffer = "";
+  let quote = null;
+  for (let i = 0; i < arg.length; i++) {
+    const ch = arg[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (buffer) {
+        yield buffer;
+        buffer = "";
+      }
+      continue;
+    }
+    buffer += ch;
+  }
+  if (buffer) yield buffer;
+}
+function looksLikeFlagBearingArg(arg) {
+  if (typeof arg !== "string") return false;
+  const trimmed = arg.trimStart();
+  return trimmed.startsWith("-");
+}
+function trailingFlagShapedToken(arg) {
+  if (typeof arg !== "string") return false;
+  if (!/\s/.test(arg)) return false;
+  let last = null;
+  for (const token of tokenizeOutsideQuotes(arg)) last = token;
+  if (typeof last !== "string") return false;
+  return last !== "--" && last.startsWith("-");
+}
+var PROMPT_ACCEPTING_SUBCOMMANDS = /* @__PURE__ */ new Set([
+  "task",
+  "send",
+  "steer",
+  "adversarial-review"
+]);
+var NON_PROMPT_SUBCOMMANDS = /* @__PURE__ */ new Set([
+  "respond",
+  "review",
+  "summary",
+  "status",
+  "result",
+  "wait",
+  "events",
+  "cancel",
+  "await-artifact",
+  "setup",
+  "version",
+  "update",
+  "config",
+  "auth-status",
+  "task-resume-candidate",
+  "help"
+]);
+function flagBearingSlice(argv) {
+  if (!Array.isArray(argv) || argv.length === 0) return [];
+  const head = argv[0];
+  if (PROMPT_ACCEPTING_SUBCOMMANDS.has(head)) {
+    const rest = argv.slice(1);
+    if (rest.length === 0) return rest;
+    const last = rest[rest.length - 1];
+    if (looksLikeFlagBearingArg(last) || trailingFlagShapedToken(last)) {
+      return rest;
+    }
+    return rest.slice(0, -1);
+  }
+  if (NON_PROMPT_SUBCOMMANDS.has(head)) return argv.slice(1);
+  return argv;
+}
+function elementCarriesAnyToken(arg, targets, { stopOnDoubleDash = true } = {}) {
+  if (typeof arg !== "string") return false;
+  if (stopOnDoubleDash && arg === "--") return false;
+  if (targets.has(arg)) return true;
+  if (!/\s|["']/.test(arg)) return false;
+  for (const token of tokenizeOutsideQuotes(arg)) {
+    if (stopOnDoubleDash && token === "--") return false;
+    if (targets.has(token)) return true;
   }
   return false;
 }
-function detectHelpFlag(argv) {
-  for (const arg of argv) {
+var JSON_TRUE_TOKENS = /* @__PURE__ */ new Set(["--json", "--json=true", "-j"]);
+var JSON_FALSE_TOKENS = /* @__PURE__ */ new Set(["--json=false"]);
+var HELP_TOKENS = /* @__PURE__ */ new Set(["--help", "-h", "--help=true"]);
+function detectJsonFlag(argv) {
+  let result = false;
+  for (const arg of flagBearingSlice(argv)) {
     if (arg === "--") break;
-    if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
+    if (JSON_TRUE_TOKENS.has(arg)) return true;
+    if (JSON_FALSE_TOKENS.has(arg)) return false;
+    if (/\s|["']/.test(arg)) {
+      for (const token of tokenizeOutsideQuotes(arg)) {
+        if (token === "--") return result;
+        if (JSON_TRUE_TOKENS.has(token)) return true;
+        if (JSON_FALSE_TOKENS.has(token)) result = false;
+      }
+    }
+  }
+  return result;
+}
+function detectHelpFlag(argv) {
+  for (const arg of flagBearingSlice(argv)) {
+    if (arg === "--") break;
+    if (elementCarriesAnyToken(arg, HELP_TOKENS)) return true;
   }
   return false;
 }
@@ -676,15 +774,139 @@ import fs4 from "node:fs";
 import os from "node:os";
 import path4 from "node:path";
 
+// src/lib/official-plugin.mjs
+import { spawnSync } from "node:child_process";
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
+function stringValue(value) {
+  return typeof value === "string" ? value : "";
+}
+function normalizePathLike(value) {
+  return stringValue(value).replace(/\\/g, "/").toLowerCase();
+}
+function pluginEntryEnabled(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if ("enabled" in entry) return Boolean(entry.enabled);
+  if ("disabled" in entry) return !entry.disabled;
+  return true;
+}
+function summarizePluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: entry.id ?? null,
+    name: entry.name ?? null,
+    version: entry.version ?? null,
+    scope: entry.scope ?? null,
+    installPath: entry.installPath ?? entry.path ?? null,
+    enabled: pluginEntryEnabled(entry)
+  };
+}
+function isOfficialOpenAICodexPluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const id = stringValue(entry.id).toLowerCase();
+  const name = stringValue(entry.name).toLowerCase();
+  const source = stringValue(entry.source).toLowerCase();
+  const installPath = normalizePathLike(entry.installPath ?? entry.path);
+  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
+  if (id === "codex@openai-codex") return true;
+  if (id === "codex" && authorName === "openai") return true;
+  if (name === "codex" && authorName === "openai") return true;
+  if (source.includes("openai/codex-plugin-cc")) return true;
+  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
+  if (installPath.includes("/openai-codex/codex/")) return true;
+  if (installPath.endsWith("/openai-codex/codex")) return true;
+  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
+  return false;
+}
+function detectOfficialOpenAICodexPluginFromEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: "Claude plugin list output was not an array.",
+      plugin: null
+    };
+  }
+  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
+  if (plugin) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
+      detail: "Official OpenAI Codex plugin is enabled.",
+      plugin: summarizePluginEntry(plugin)
+    };
+  }
+  return {
+    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
+    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
+    plugin: null
+  };
+}
+function extractPluginEntries(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
+  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
+  return null;
+}
+function detectOfficialOpenAICodexPluginUncached(options = {}) {
+  const spawn4 = options.spawnSync ?? spawnSync;
+  const result = spawn4("claude", ["plugin", "list", "--json"], {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
+  });
+  if (result.error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
+      plugin: null
+    };
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
+      plugin: null
+    };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
+  } catch (error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
+      plugin: null
+    };
+  }
+}
+var DEFAULT_DETECT_CACHE_MS = 3e4;
+var cached = null;
+var cachedAt = 0;
+function detectOfficialOpenAICodexPlugin(options = {}) {
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
+  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
+    return cached;
+  }
+  const result = detectOfficialOpenAICodexPluginUncached(options);
+  cached = result;
+  cachedAt = Date.now();
+  return result;
+}
+
 // src/lib/git.mjs
 import fs3 from "node:fs";
 import path3 from "node:path";
 
 // src/lib/process.mjs
-import { spawnSync } from "node:child_process";
+import { spawnSync as spawnSync2 } from "node:child_process";
 import process4 from "node:process";
 function runCommand(command, args = [], options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync2(command, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
@@ -1330,6 +1552,9 @@ function loadState(cwd) {
       jobs: rawJobs
     };
   } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return defaultState();
+    }
     let renamedPath = null;
     try {
       const candidate = `${stateFile}.corrupt-${Date.now()}`;
@@ -1437,8 +1662,21 @@ function upsertJob(cwd, jobPatch) {
     };
   });
 }
-function listJobs(cwd) {
-  return loadState(cwd).jobs;
+function listJobs(cwd, options = {}) {
+  const jobs = loadState(cwd).jobs;
+  if (options && options.raw) {
+    return jobs;
+  }
+  const { jobs: reapedJobs } = reapOrphans(jobs);
+  return reapedJobs;
+}
+function setConfig(cwd, key, value) {
+  return updateState(cwd, (state) => {
+    state.config = {
+      ...state.config,
+      [key]: value
+    };
+  });
 }
 function getConfig(cwd) {
   return loadState(cwd).config;
@@ -1686,6 +1924,7 @@ var AppServerClientBase = class {
     this.nextId = 1;
     this.stderr = "";
     this.closed = false;
+    this.transportClosed = false;
     this.exitError = null;
     this.notificationHandler = null;
     this.lineBuffer = "";
@@ -1694,6 +1933,9 @@ var AppServerClientBase = class {
     this.listeners = /* @__PURE__ */ new Map();
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
+    });
+    this.transportExitPromise = new Promise((resolve) => {
+      this.resolveTransportExit = resolve;
     });
   }
   setNotificationHandler(handler) {
@@ -1795,7 +2037,10 @@ var AppServerClientBase = class {
     try {
       message = JSON.parse(line);
     } catch (error) {
-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
+      this.handleExit(
+        createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }),
+        { transportExited: false }
+      );
       return;
     }
     if (message.id !== void 0 && message.method) {
@@ -1845,7 +2090,11 @@ var AppServerClientBase = class {
   rejectServerRequest(id, error) {
     this.sendMessage({ id, error });
   }
-  handleExit(error) {
+  handleExit(error, { transportExited = true } = {}) {
+    if (transportExited && !this.transportClosed) {
+      this.transportClosed = true;
+      this.resolveTransportExit(void 0);
+    }
     if (this.exitResolved) {
       return;
     }
@@ -1903,8 +2152,8 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
     this.notify("initialized", {});
   }
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
+    if (this.transportClosed) {
+      await this.transportExitPromise;
       return;
     }
     this.closed = true;
@@ -1927,7 +2176,7 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
       }, 50).unref?.();
     }
     try {
-      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
     } catch (error) {
       if (this.proc && this.proc.exitCode === null) {
         if (process6.platform === "win32") {
@@ -1995,8 +2244,8 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
     this.notify("initialized", {});
   }
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
+    if (this.transportClosed) {
+      await this.transportExitPromise;
       return;
     }
     this.closed = true;
@@ -2004,7 +2253,7 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
       this.socket.end();
     }
     try {
-      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
     } catch (error) {
       this.socket?.destroy();
       this.handleExit(error);
@@ -2277,6 +2526,8 @@ function createTurnCaptureState(threadId, options = {}) {
     rejectCompletion,
     finalTurn: null,
     completed: false,
+    finalAnswerSeen: false,
+    completionTimer: null,
     pendingCollaborations: /* @__PURE__ */ new Set(),
     activeSubagentTurns: /* @__PURE__ */ new Set(),
     lastAgentMessage: "",
@@ -2293,10 +2544,17 @@ function createTurnCaptureState(threadId, options = {}) {
     onItemCompleted: typeof options.onItemCompleted === "function" ? options.onItemCompleted : null
   };
 }
+function clearCompletionTimer(state) {
+  if (state.completionTimer) {
+    clearTimeout(state.completionTimer);
+    state.completionTimer = null;
+  }
+}
 function completeTurn(state, turn = null, options = {}) {
   if (state.completed) {
     return;
   }
+  clearCompletionTimer(state);
   state.completed = true;
   if (turn) {
     state.finalTurn = turn;
@@ -2314,6 +2572,26 @@ function completeTurn(state, turn = null, options = {}) {
   }
   state.resolveCompletion(state);
 }
+function scheduleInferredCompletion(state) {
+  if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+    return;
+  }
+  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+    return;
+  }
+  clearCompletionTimer(state);
+  state.completionTimer = setTimeout(() => {
+    state.completionTimer = null;
+    if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+      return;
+    }
+    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+      return;
+    }
+    completeTurn(state, null, { inferred: true });
+  }, 250);
+  state.completionTimer.unref?.();
+}
 function belongsToTurn(state, message) {
   const messageThreadId = extractThreadId(message);
   if (!messageThreadId || !state.threadIds.has(messageThreadId)) {
@@ -2330,6 +2608,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
         state.pendingCollaborations.add(item.id);
       } else if (lifecycle === "completed") {
         state.pendingCollaborations.delete(item.id);
+        scheduleInferredCompletion(state);
       }
     }
     for (const receiverThreadId of item.receiverThreadIds ?? []) {
@@ -2345,6 +2624,10 @@ function recordItem(state, item, lifecycle, threadId = null) {
     if (item.text) {
       if (!threadId || threadId === state.threadId) {
         state.lastAgentMessage = item.text;
+        if (lifecycle === "completed" && item.phase === "final_answer") {
+          state.finalAnswerSeen = true;
+          scheduleInferredCompletion(state);
+        }
       }
       if (lifecycle === "completed") {
         const sourceLabel = labelForThread(state, threadId);
@@ -2478,6 +2761,7 @@ function applyTurnNotification(state, message) {
     case "turn/completed":
       if ((message.params.threadId ?? null) !== state.threadId) {
         state.activeSubagentTurns.delete(message.params.threadId);
+        scheduleInferredCompletion(state);
         break;
       }
       emitProgress(
@@ -2689,6 +2973,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }
     return await state.completion;
   } finally {
+    clearCompletionTimer(state);
     if (idleInterval) {
       clearInterval(idleInterval);
       idleInterval = null;
@@ -2754,6 +3039,9 @@ async function resumeThread(client, threadId, cwd, options = {}) {
   return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
 }
 function buildResultStatus(turnState) {
+  if (turnState.error?.code === "TurnTimeout") {
+    return 1;
+  }
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
 }
 var BUILTIN_PROVIDER_LABELS = /* @__PURE__ */ new Map([
@@ -3197,130 +3485,6 @@ function parseStructuredOutput(rawOutput, fallback = {}) {
 }
 function readOutputSchema(schemaPath) {
   return readJsonFile(schemaPath);
-}
-
-// src/lib/official-plugin.mjs
-import { spawnSync as spawnSync2 } from "node:child_process";
-var OFFICIAL_PLUGIN_STATUS = Object.freeze({
-  ACTIVE: "active",
-  ABSENT: "absent",
-  UNKNOWN: "unknown"
-});
-var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
-function stringValue(value) {
-  return typeof value === "string" ? value : "";
-}
-function normalizePathLike(value) {
-  return stringValue(value).replace(/\\/g, "/").toLowerCase();
-}
-function pluginEntryEnabled(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  if ("enabled" in entry) return Boolean(entry.enabled);
-  if ("disabled" in entry) return !entry.disabled;
-  return true;
-}
-function summarizePluginEntry(entry) {
-  if (!entry || typeof entry !== "object") return null;
-  return {
-    id: entry.id ?? null,
-    name: entry.name ?? null,
-    version: entry.version ?? null,
-    scope: entry.scope ?? null,
-    installPath: entry.installPath ?? entry.path ?? null,
-    enabled: pluginEntryEnabled(entry)
-  };
-}
-function isOfficialOpenAICodexPluginEntry(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  const id = stringValue(entry.id).toLowerCase();
-  const name = stringValue(entry.name).toLowerCase();
-  const source = stringValue(entry.source).toLowerCase();
-  const installPath = normalizePathLike(entry.installPath ?? entry.path);
-  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
-  if (id === "codex@openai-codex") return true;
-  if (id === "codex" && authorName === "openai") return true;
-  if (name === "codex" && authorName === "openai") return true;
-  if (source.includes("openai/codex-plugin-cc")) return true;
-  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
-  if (installPath.includes("/openai-codex/codex/")) return true;
-  if (installPath.endsWith("/openai-codex/codex")) return true;
-  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
-  return false;
-}
-function detectOfficialOpenAICodexPluginFromEntries(entries) {
-  if (!Array.isArray(entries)) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: "Claude plugin list output was not an array.",
-      plugin: null
-    };
-  }
-  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
-  if (plugin) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
-      detail: "Official OpenAI Codex plugin is enabled.",
-      plugin: summarizePluginEntry(plugin)
-    };
-  }
-  return {
-    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
-    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
-    plugin: null
-  };
-}
-function extractPluginEntries(parsed) {
-  if (Array.isArray(parsed)) return parsed;
-  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
-  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
-  return null;
-}
-function detectOfficialOpenAICodexPluginUncached(options = {}) {
-  const spawn4 = options.spawnSync ?? spawnSync2;
-  const result = spawn4("claude", ["plugin", "list", "--json"], {
-    cwd: options.cwd ?? process.cwd(),
-    env: options.env ?? process.env,
-    encoding: "utf8",
-    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
-  });
-  if (result.error) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
-      plugin: null
-    };
-  }
-  if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || "").trim();
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
-      plugin: null
-    };
-  }
-  try {
-    const parsed = JSON.parse(result.stdout);
-    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
-  } catch (error) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
-      plugin: null
-    };
-  }
-}
-var DEFAULT_DETECT_CACHE_MS = 3e4;
-var cached = null;
-var cachedAt = 0;
-function detectOfficialOpenAICodexPlugin(options = {}) {
-  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
-  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
-    return cached;
-  }
-  const result = detectOfficialOpenAICodexPluginUncached(options);
-  cached = result;
-  cachedAt = Date.now();
-  return result;
 }
 
 // src/lib/job-control.mjs
@@ -7784,6 +7948,23 @@ async function runAutoPipeline(options) {
           stageMs,
           "auto-review"
         );
+        if (reviewResult.status !== 0) {
+          const innerError = reviewResult.error ?? null;
+          const innerMessage = innerError?.message ?? "";
+          const isTimeout = innerError?.code === "TurnTimeout" || /Turn timed out after \d+ms\./.test(innerMessage) || /No events received for \d+s/.test(innerMessage);
+          const detail = innerMessage ? `: ${innerMessage}` : "";
+          if (isTimeout) {
+            const reviewError = new TimeoutError("auto-review", stageTurnMs);
+            reviewError.message = `auto-review did not complete cleanly (status ${reviewResult.status}${detail}).`;
+            throw reviewError;
+          }
+          const stageError = new PipelineStageError(
+            "review",
+            `auto-review failed (status ${reviewResult.status}${detail}).`,
+            innerError
+          );
+          throw stageError;
+        }
         completedStages.push("review");
         checkPipelineTimeout();
         if (reviewResult.reviewText) {
@@ -7953,7 +8134,7 @@ async function runAutoPipeline(options) {
     };
   } catch (error) {
     const duration = Math.round((Date.now() - startTime) / 1e3);
-    const errorCode = error instanceof TimeoutError ? "ClientTimeout" : "PipelineError";
+    const errorCode = error instanceof TimeoutError ? "ClientTimeout" : error instanceof PipelineStageError && error.cause?.code ? error.cause.code : "PipelineError";
     const errorMessage = error instanceof PipelineTimeoutError ? `Auto-pipeline exceeded ${fmtSeconds(totalMs)}. Completed stages: ${completedStages.join(", ")}` : error.message;
     let finalDiff;
     try {
@@ -7963,7 +8144,7 @@ async function runAutoPipeline(options) {
     }
     const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
     const origin = `pipeline:${lastStage}`;
-    const failingStage = error instanceof TimeoutError ? mapStageLabel(error.label) : null;
+    const failingStage = error instanceof TimeoutError ? mapStageLabel(error.label) : error instanceof PipelineStageError ? error.stage : null;
     const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
@@ -8034,6 +8215,14 @@ var TimeoutError = class extends Error {
     super(`${label} exceeded ${fmtSeconds(timeoutMs)}`);
     this.label = label;
     this.timeoutMs = timeoutMs;
+  }
+};
+var PipelineStageError = class extends Error {
+  constructor(stage, message, cause = null) {
+    super(message);
+    this.name = "PipelineStageError";
+    this.stage = stage;
+    if (cause) this.cause = cause;
   }
 };
 var PipelineTimeoutError = class extends TimeoutError {
@@ -8456,7 +8645,7 @@ function extractItemText(item) {
 }
 var COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -8665,7 +8854,18 @@ function normalizeArgv(argv) {
     }
     return splitRawArgumentString(raw);
   }
-  return argv;
+  const out = [];
+  for (const element of argv) {
+    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
+      const tokens = splitRawArgumentString(element);
+      if (tokens.length > 1) {
+        out.push(...tokens);
+        continue;
+      }
+    }
+    out.push(element);
+  }
+  return out;
 }
 function parseCommandInput(argv, config = {}) {
   return parseArgs(normalizeArgv(argv), {
@@ -8687,12 +8887,41 @@ function resolveStopReviewGateLockPath(workspaceRoot) {
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  const lockExists = fs13.existsSync(lockPath);
+  let lockExists = fs13.existsSync(lockPath);
+  let migratedFromLegacyConfig = false;
+  if (!lockExists) {
+    let legacyEnabled = false;
+    try {
+      legacyEnabled = getConfig(workspaceRoot)?.stopReviewGate === true;
+    } catch {
+      legacyEnabled = false;
+    }
+    if (legacyEnabled) {
+      try {
+        fs13.writeFileSync(
+          lockPath,
+          [
+            "# Codex Bridge stop-time review gate",
+            "# Presence of this file enables the Claude Code Stop hook for this project.",
+            "# Migrated from legacy state.json config.stopReviewGate=true.",
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      } catch {
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      }
+    }
+  }
   const reviewGateSuppressionReason = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE ? "official-openai-codex-plugin-active" : officialPlugin.status === OFFICIAL_PLUGIN_STATUS.UNKNOWN ? "official-openai-codex-plugin-status-unknown" : null;
   return {
     enabled: lockExists && reviewGateSuppressionReason == null,
     lockPath,
     lockExists,
+    migratedFromLegacyConfig,
     officialOpenAICodexPluginStatus: officialPlugin.status,
     officialOpenAICodexPlugin: officialPlugin.plugin ?? null,
     officialOpenAICodexPluginDetail: officialPlugin.detail ?? null,
@@ -8704,17 +8933,27 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
 function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
-    fs13.writeFileSync(
-      lockPath,
-      [
-        "# Codex Bridge stop-time review gate",
-        "# Presence of this file enables the Claude Code Stop hook for this project.",
-        ""
-      ].join("\n"),
-      "utf8"
-    );
+    try {
+      fs13.writeFileSync(
+        lockPath,
+        [
+          "# Codex Bridge stop-time review gate",
+          "# Presence of this file enables the Claude Code Stop hook for this project.",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+    } catch {
+    }
   } else {
-    fs13.rmSync(lockPath, { force: true });
+    try {
+      fs13.rmSync(lockPath, { force: true });
+    } catch {
+    }
+    try {
+      setConfig(workspaceRoot, "stopReviewGate", false);
+    } catch {
+    }
   }
   return readStopReviewGate(workspaceRoot, officialPlugin);
 }
@@ -8820,7 +9059,13 @@ async function handleSetup(argv) {
   if (options["enable-review-gate"]) {
     if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {
       const reviewGate = setStopReviewGate(workspaceRoot, true, officialPlugin);
-      actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
+      if (reviewGate.enabled && reviewGate.lockExists) {
+        actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
+      } else {
+        actionsTaken.push(
+          `Failed to create the stop-time review gate lock at ${reviewGate.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
+        );
+      }
     } else if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE) {
       actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin is enabled.");
     } else {
@@ -8828,7 +9073,15 @@ async function handleSetup(argv) {
     }
   } else if (options["disable-review-gate"]) {
     const reviewGate = setStopReviewGate(workspaceRoot, false, officialPlugin);
-    actionsTaken.push(`Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`);
+    if (reviewGate.lockExists) {
+      actionsTaken.push(
+        `Failed to remove the stop-time review gate lock at ${reviewGate.lockPath}; the gate is still active. Please remove the lock file manually.`
+      );
+    } else {
+      actionsTaken.push(
+        `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
+      );
+    }
   }
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
@@ -9560,6 +9813,7 @@ function buildTaskRequest({
   effort,
   prompt,
   write,
+  readOnly,
   resumeLast,
   jobId,
   mode,
@@ -9578,6 +9832,7 @@ function buildTaskRequest({
     effort,
     prompt,
     write,
+    readOnly: Boolean(readOnly),
     resumeLast,
     jobId,
     mode: mode ?? null,
@@ -9833,7 +10088,14 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     // wins regardless of plan/write flags. When no override is set, the
     // mode-derived default applies (plan → readOnly, --write → workspaceWrite,
     // plain exec → readOnly).
-    sandboxPolicy: buildSandboxPolicy(
+    //
+    // `request.readOnly` is the one explicit override that bypasses
+    // `config.sandbox_policy` entirely. Used by the stop-time review-gate
+    // hook to guarantee the gate-time review can never mutate the repo even
+    // when the user has set `sandbox_policy: danger-full-access`. The Stop
+    // hook only ALLOWs/BLOCKs the previous turn — it must not double as a
+    // license to write at session shutdown.
+    sandboxPolicy: request.readOnly ? { type: "readOnly" } : buildSandboxPolicy(
       isPlanMode || !request.write ? "plan" : "default",
       config
     ),
@@ -10512,7 +10774,7 @@ async function handleTask(argv) {
       "pipeline-total-timeout-ms",
       "question-timeout-ms"
     ],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
     aliasMap: {
       m: "model"
     }
@@ -10544,6 +10806,13 @@ async function handleTask(argv) {
   }
   requireTaskRequest(prompt, resumeLast);
   const write = Boolean(options.write);
+  const readOnly = Boolean(options["read-only"]);
+  if (write && readOnly) {
+    throw conflictError(
+      "Choose either --write or --read-only, not both.",
+      "WRITE_READ_ONLY_CONFLICT"
+    );
+  }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -10557,6 +10826,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      readOnly,
       resumeLast,
       jobId: job2.id,
       mode: options.mode ?? null,
@@ -10584,6 +10854,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      readOnly,
       resumeLast,
       jobId: job.id,
       mode: options.mode ?? null,
@@ -10881,7 +11152,7 @@ async function handleAwaitArtifact(argv) {
 }
 function pruneOrphanedJobs(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = listJobs(workspaceRoot);
+  const jobs = listJobs(workspaceRoot, { raw: true });
   const reaped = [];
   const skipped = [];
   const ts = (/* @__PURE__ */ new Date()).toISOString();
@@ -11836,7 +12107,7 @@ async function main() {
     printUsage();
     return;
   }
-  if (COMMANDS[subcommand] && detectHelpFlag(argv)) {
+  if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
     printSubcommandUsage(subcommand);
     return;
   }

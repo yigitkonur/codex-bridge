@@ -278,6 +278,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path2 from "node:path";
 
+// src/lib/official-plugin.mjs
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+
 // src/lib/process.mjs
 import { spawnSync } from "node:child_process";
 import process3 from "node:process";
@@ -653,6 +660,7 @@ var AppServerClientBase = class {
     this.nextId = 1;
     this.stderr = "";
     this.closed = false;
+    this.transportClosed = false;
     this.exitError = null;
     this.notificationHandler = null;
     this.lineBuffer = "";
@@ -661,6 +669,9 @@ var AppServerClientBase = class {
     this.listeners = /* @__PURE__ */ new Map();
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
+    });
+    this.transportExitPromise = new Promise((resolve) => {
+      this.resolveTransportExit = resolve;
     });
   }
   setNotificationHandler(handler) {
@@ -762,7 +773,10 @@ var AppServerClientBase = class {
     try {
       message = JSON.parse(line);
     } catch (error) {
-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
+      this.handleExit(
+        createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }),
+        { transportExited: false }
+      );
       return;
     }
     if (message.id !== void 0 && message.method) {
@@ -812,7 +826,11 @@ var AppServerClientBase = class {
   rejectServerRequest(id, error) {
     this.sendMessage({ id, error });
   }
-  handleExit(error) {
+  handleExit(error, { transportExited = true } = {}) {
+    if (transportExited && !this.transportClosed) {
+      this.transportClosed = true;
+      this.resolveTransportExit(void 0);
+    }
     if (this.exitResolved) {
       return;
     }
@@ -870,8 +888,8 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
     this.notify("initialized", {});
   }
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
+    if (this.transportClosed) {
+      await this.transportExitPromise;
       return;
     }
     this.closed = true;
@@ -894,7 +912,7 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
       }, 50).unref?.();
     }
     try {
-      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
     } catch (error) {
       if (this.proc && this.proc.exitCode === null) {
         if (process5.platform === "win32") {
@@ -962,8 +980,8 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
     this.notify("initialized", {});
   }
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
+    if (this.transportClosed) {
+      await this.transportExitPromise;
       return;
     }
     this.closed = true;
@@ -971,7 +989,7 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
       this.socket.end();
     }
     try {
-      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
     } catch (error) {
       this.socket?.destroy();
       this.handleExit(error);
