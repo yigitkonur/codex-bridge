@@ -39,7 +39,9 @@ change without regenerated skill output ships stale code to users.
 Keep its frontmatter in sync with code and package metadata:
 
 - `name` must stay `codex-bridge`.
-- `metadata.version` must match `package.json` and `.claude-plugin/plugin.json`.
+- `metadata.version` must match `package.json`. On this branch alone
+  `.claude-plugin/plugin.json` still declares `1.2.3`; the version-sync fix
+  to `1.5.0` lands with the sibling `feat/plugin-surfaces` branch.
 - Runtime compatibility must match `package.json` engines and actual code.
 - Examples must invoke `node <skill path>/scripts/codex-bridge.mjs`; there is no
   package-level executable declared in `package.json`.
@@ -104,7 +106,10 @@ skill tree.
 
 - If you touch generated paths, stop and move the edit to `src/` instead.
 - If you touch `src/`, run `npm run build` before verification.
-- If you only touch authored skill docs/config, `npm test` is usually enough.
+- If you only touch authored skill docs/config, `npm test` is usually enough
+  once `feat/runtime-improvements` lands; on this branch alone the suite is
+  not yet wired (`package.json` defines only `build` and `dev`), so re-read
+  the cited code paths manually.
 - Keep examples runnable against the checked-in bundle.
 - Do not describe features that only exist in prose. Verify the command, flag,
   tag, or field in code first.

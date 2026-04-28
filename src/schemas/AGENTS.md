@@ -42,8 +42,9 @@ Change this schema only with the code and prompt paths that consume it:
 - `src/codex-bridge.mjs` persists parsed results with `writeReview` and puts the
   parsed object under the command payload.
 - `src/lib/render.mjs` renders adversarial review findings.
-- `test/plugin-surfaces.test.mjs` does not validate schema contents, so add or
-  adjust tests when changing behavior.
+- `test/plugin-surfaces.test.mjs` (added by `feat/runtime-improvements`) does
+  not validate schema contents, so add or adjust tests when changing behavior
+  once that suite lands.
 
 ## Editing Rules
 
@@ -58,11 +59,13 @@ Change this schema only with the code and prompt paths that consume it:
 
 ## Build And Verification
 
-After editing the schema:
+After editing the schema, run `npm run build`. Once the
+`feat/runtime-improvements` stack lands, also run `npm test`; on this branch
+alone `package.json` defines only `build` and `dev`.
 
 ```bash
 npm run build
-npm test
+npm test   # post-feat/runtime-improvements
 ```
 
 Confirm the generated copy changed as expected:

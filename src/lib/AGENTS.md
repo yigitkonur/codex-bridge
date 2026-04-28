@@ -254,6 +254,10 @@ are rate-limited with the same cache file.
 
 ## Tests To Remember
 
+The test suite ships with `feat/runtime-improvements`; on this branch alone
+`package.json` declares only `build` and `dev`, so `npm test` is not yet
+runnable. Once that stack lands, these are the regression anchors:
+
 - `test/app-server-client.test.mjs` pins server-request rejection/resolution and
   transport-exit behavior.
 - `test/bridge-static.test.mjs` pins broker forwarding/exit handling, anchored
@@ -270,5 +274,6 @@ are rate-limited with the same cache file.
 - `test/state.test.mjs` pins concurrent state writes, locked reaping,
   corruption handling, and plugin-data precedence.
 
-Run `npm test` for any change in this folder. Run `npm run build` first when the
-change affects bundled output.
+Once the test suite is wired, run `npm test` for any change in this folder and
+`npm run build` first when the change affects bundled output. Until then,
+verify behaviour by re-running the CLI against an authenticated Codex install.

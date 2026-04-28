@@ -57,11 +57,14 @@ around user text that would let focus text override the review role.
 
 ## Build And Verification
 
-After editing this prompt:
+After editing this prompt, run `npm run build`. Once the
+`feat/runtime-improvements` stack lands, also run `npm test`; on this branch
+alone `package.json` declares only `build` and `dev`, so `npm test` exits with
+`Missing script: "test"`.
 
 ```bash
 npm run build
-npm test
+npm test   # post-feat/runtime-improvements
 ```
 
 Then inspect both source and generated copies if the diff is surprising:

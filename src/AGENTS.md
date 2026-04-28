@@ -56,8 +56,9 @@ When adding or changing a handler:
   `CliError` subclasses.
 - Use existing job helpers so `status`, `result`, `wait`, `events`, and
   `cancel` keep working.
-- For user-facing commands, update `COMMANDS`, `SUBCOMMAND_DISPATCH`,
-  `commands/*.md`, skill references, and tests together.
+- For user-facing commands, update `COMMANDS`, `SUBCOMMAND_DISPATCH`, skill
+  references, and tests together. Once `feat/plugin-surfaces` lands, also
+  update `commands/*.md`.
 
 ## Task Flow
 
@@ -93,19 +94,26 @@ it so foreground and background runs produce the same session artifacts.
   their responses in `pendingServerRequests`.
 - Removes unix sockets and pid files on shutdown.
 
-Any broker change needs `npm test`; `test/bridge-static.test.mjs` and
-`test/app-server-client.test.mjs` pin several request/response invariants.
+Once `feat/runtime-improvements` lands, any broker change needs `npm test`;
+`test/bridge-static.test.mjs` and `test/app-server-client.test.mjs` will pin
+several request/response invariants. On this branch alone the suite is not
+wired (`package.json` declares only `build` and `dev`), so verify broker
+changes by re-running the CLI against an authenticated Codex install until
+that stack ships.
 
 ## Build Rules
 
-After any source change in this folder, run:
+After any source change in this folder, run `npm run build` and confirm the
+generated `skill/` outputs match the source change. Once
+`feat/runtime-improvements` lands, also run `npm test`:
 
 ```bash
 npm run build
-npm test
+npm test   # post-feat/runtime-improvements
 ```
 
-For AGENTS-only edits, `npm test` is enough.
+For AGENTS-only edits on this branch alone, `npm run build` is unaffected and
+there is no test gate yet.
 
 ## Common Mistakes
 

@@ -55,11 +55,13 @@ The execute template should not encourage plain-text questions that bypass
 
 ## Build And Verification
 
-After editing either template:
+After editing either template, run `npm run build`. Once the
+`feat/runtime-improvements` stack lands, also run `npm test`; on this branch
+alone `package.json` defines only `build` and `dev`.
 
 ```bash
 npm run build
-npm test
+npm test   # post-feat/runtime-improvements
 ```
 
 Check generated copies:
