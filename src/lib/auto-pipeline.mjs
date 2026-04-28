@@ -118,17 +118,36 @@ export async function runAutoPipeline(options) {
         // `reviewText` is empty, parseReviewText is skipped, and the default
         // `reviewVerdict = "approve"` would silently carry through to the
         // completion check and `[DONE]` — masking a stalled/timed-out review
-        // as a passing one. Surface as a TimeoutError so the outer catch
-        // emits `[PIPELINE:failed]` with `errorCode: ClientTimeout` and
-        // `failing_stage: review` (see mapStageLabel below).
+        // as a passing one.
+        //
+        // Round-5 7c3507a threw TimeoutError unconditionally so the outer
+        // catch emitted `[PIPELINE:failed]` with `errorCode: ClientTimeout`
+        // and `failing_stage: review`. That hid auth/validation/upstream-
+        // reject failures behind timeout-recovery guidance. Branch on the
+        // structured error so only real timeouts map to `ClientTimeout`;
+        // every other non-zero status surfaces with its real cause attached.
         if (reviewResult.status !== 0) {
-          const detail = reviewResult.error?.message
-            ? `: ${reviewResult.error.message}`
-            : "";
-          const reviewError = new TimeoutError("auto-review", stageTurnMs);
-          reviewError.message =
-            `auto-review did not complete cleanly (status ${reviewResult.status}${detail}).`;
-          throw reviewError;
+          const innerError = reviewResult.error ?? null;
+          const innerMessage = innerError?.message ?? "";
+          const isTimeout =
+            innerError?.code === "TurnTimeout" ||
+            /Turn timed out after \d+ms\./.test(innerMessage) ||
+            /No events received for \d+s/.test(innerMessage);
+          const detail = innerMessage ? `: ${innerMessage}` : "";
+
+          if (isTimeout) {
+            const reviewError = new TimeoutError("auto-review", stageTurnMs);
+            reviewError.message =
+              `auto-review did not complete cleanly (status ${reviewResult.status}${detail}).`;
+            throw reviewError;
+          }
+
+          const stageError = new PipelineStageError(
+            "review",
+            `auto-review failed (status ${reviewResult.status}${detail}).`,
+            innerError
+          );
+          throw stageError;
         }
 
         completedStages.push("review");
@@ -348,7 +367,17 @@ export async function runAutoPipeline(options) {
 
   } catch (error) {
     const duration = Math.round((Date.now() - startTime) / 1000);
-    const errorCode = error instanceof TimeoutError ? "ClientTimeout" : "PipelineError";
+    // Pick the most specific error code for the [ERROR] tag. Timeouts
+    // remain `ClientTimeout` (matches cli-errors.mjs synthesizers + round-5
+    // contract). Pipeline stage errors propagate the underlying Codex error
+    // code when present (e.g. `Unauthorized`, `BadRequest`, `ServerOverloaded`)
+    // so orchestrators get the real cause + recovery guidance instead of a
+    // generic `PipelineError`. Fall back to `PipelineError` for anything else.
+    const errorCode = error instanceof TimeoutError
+      ? "ClientTimeout"
+      : (error instanceof PipelineStageError && error.cause?.code)
+        ? error.cause.code
+        : "PipelineError";
     const errorMessage = error instanceof PipelineTimeoutError
       ? `Auto-pipeline exceeded ${fmtSeconds(totalMs)}. Completed stages: ${completedStages.join(", ")}`
       : error.message;
@@ -367,12 +396,14 @@ export async function runAutoPipeline(options) {
     // separate field from `origin` (which keeps its "last-completed" semantics
     // for backward compatibility with tooling that already filters on it).
     // Pre-1.4.1 readers had to guess whether `origin: pipeline:diff` meant
-    // "diff failed" or "diff completed and review failed". The TimeoutError
-    // label is the authoritative source; map its label to the canonical
-    // stage token used in `completedStages`.
+    // "diff failed" or "diff completed and review failed". TimeoutError's
+    // `label` and PipelineStageError's `stage` both carry the authoritative
+    // source; map them to the canonical stage token used in `completedStages`.
     const failingStage = error instanceof TimeoutError
       ? mapStageLabel(error.label)
-      : null;
+      : error instanceof PipelineStageError
+        ? error.stage
+        : null;
     const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
@@ -457,6 +488,20 @@ export class TimeoutError extends Error {
     super(`${label} exceeded ${fmtSeconds(timeoutMs)}`);
     this.label = label;
     this.timeoutMs = timeoutMs;
+  }
+}
+
+// Non-timeout failure inside a pipeline stage. Carries the underlying
+// Codex `error` object on `.cause` so the outer catch can surface the real
+// code (Unauthorized, BadRequest, ServerOverloaded, …) instead of a generic
+// `PipelineError`. `stage` populates `failing_stage` in the [ERROR] / NDJSON
+// payloads so orchestrators see WHICH stage actually broke.
+export class PipelineStageError extends Error {
+  constructor(stage, message, cause = null) {
+    super(message);
+    this.name = "PipelineStageError";
+    this.stage = stage;
+    if (cause) this.cause = cause;
   }
 }
 
