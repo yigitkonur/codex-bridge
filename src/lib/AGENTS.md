@@ -60,9 +60,13 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
   for a known method, take care that disabling the auto-answer is the
   intended behavior change.
 
-The `.d.ts` method map includes every app-server method live code sends:
+The `.d.ts` method map should include every app-server method live code sends:
 `initialize`, thread start/resume/name/list, `review/start`, turn
-start/steer/interrupt, `account/read`, and `config/read`. Keep this map in sync
+start/steer/interrupt, `account/read`, and `config/read`. Current declarations
+may lag behind live code — as of this writing `turn/steer`, `account/read`, and
+`config/read` are sent on the wire but not yet declared in
+`app-server-protocol.d.ts`. File `app-server generate-ts` regen issues against
+the upstream codex-rs spec when adding new methods; keep this map in sync
 before tightening type checking.
 
 ## Codex Runtime
