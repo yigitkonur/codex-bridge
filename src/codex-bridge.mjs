@@ -4619,8 +4619,10 @@ async function main() {
   }
 
   // Per-subcommand --help / -h short-circuits before the handler runs so we
-  // never fire a Codex turn just to answer a discovery query.
-  if (COMMANDS[subcommand] && detectHelpFlag(argv)) {
+  // never fire a Codex turn just to answer a discovery query. Pass the full
+  // rawArgv so the per-subcommand prompt-skipping in detectHelpFlag sees the
+  // subcommand at index 0.
+  if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
     printSubcommandUsage(subcommand);
     return;
   }

@@ -354,34 +354,76 @@ function looksLikeFlagBearingArg(arg) {
   const trimmed = arg.trimStart();
   return trimmed.startsWith("-");
 }
+var PROMPT_ACCEPTING_SUBCOMMANDS = /* @__PURE__ */ new Set([
+  "task",
+  "send",
+  "steer",
+  "adversarial-review"
+]);
+var NON_PROMPT_SUBCOMMANDS = /* @__PURE__ */ new Set([
+  "respond",
+  "review",
+  "summary",
+  "status",
+  "result",
+  "wait",
+  "events",
+  "cancel",
+  "await-artifact",
+  "setup",
+  "version",
+  "update",
+  "config",
+  "auth-status",
+  "task-resume-candidate",
+  "help"
+]);
+function flagBearingSlice(argv) {
+  if (!Array.isArray(argv) || argv.length === 0) return [];
+  const head = argv[0];
+  if (PROMPT_ACCEPTING_SUBCOMMANDS.has(head)) {
+    const rest = argv.slice(1);
+    if (rest.length === 0) return rest;
+    const last = rest[rest.length - 1];
+    return looksLikeFlagBearingArg(last) ? rest : rest.slice(0, -1);
+  }
+  if (NON_PROMPT_SUBCOMMANDS.has(head)) return argv.slice(1);
+  return argv;
+}
+function elementCarriesAnyToken(arg, targets, { stopOnDoubleDash = true } = {}) {
+  if (typeof arg !== "string") return false;
+  if (stopOnDoubleDash && arg === "--") return false;
+  if (targets.has(arg)) return true;
+  if (!/\s|["']/.test(arg)) return false;
+  for (const token of tokenizeOutsideQuotes(arg)) {
+    if (stopOnDoubleDash && token === "--") return false;
+    if (targets.has(token)) return true;
+  }
+  return false;
+}
+var JSON_TRUE_TOKENS = /* @__PURE__ */ new Set(["--json", "--json=true", "-j"]);
+var JSON_FALSE_TOKENS = /* @__PURE__ */ new Set(["--json=false"]);
+var HELP_TOKENS = /* @__PURE__ */ new Set(["--help", "-h", "--help=true"]);
 function detectJsonFlag(argv) {
   let result = false;
-  for (const arg of argv) {
+  for (const arg of flagBearingSlice(argv)) {
     if (arg === "--") break;
-    if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
-    if (arg === "--json=false") return false;
-    if (!looksLikeFlagBearingArg(arg)) continue;
+    if (JSON_TRUE_TOKENS.has(arg)) return true;
+    if (JSON_FALSE_TOKENS.has(arg)) return false;
     if (/\s|["']/.test(arg)) {
       for (const token of tokenizeOutsideQuotes(arg)) {
         if (token === "--") return result;
-        if (token === "--json" || token === "--json=true" || token === "-j") return true;
-        if (token === "--json=false") result = false;
+        if (JSON_TRUE_TOKENS.has(token)) return true;
+        if (JSON_FALSE_TOKENS.has(token)) result = false;
       }
     }
   }
   return result;
 }
 function detectHelpFlag(argv) {
-  for (const arg of argv) {
+  for (const arg of flagBearingSlice(argv)) {
     if (arg === "--") break;
-    if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
-    if (!looksLikeFlagBearingArg(arg)) continue;
-    if (/\s|["']/.test(arg)) {
-      for (const token of tokenizeOutsideQuotes(arg)) {
-        if (token === "--") return false;
-        if (token === "--help" || token === "-h" || token === "--help=true") return true;
-      }
-    }
+    if (elementCarriesAnyToken(arg, HELP_TOKENS)) return true;
   }
   return false;
 }
@@ -11274,7 +11316,7 @@ async function main() {
     printUsage();
     return;
   }
-  if (COMMANDS[subcommand] && detectHelpFlag(argv)) {
+  if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
     printSubcommandUsage(subcommand);
     return;
   }

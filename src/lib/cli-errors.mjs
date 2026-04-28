@@ -417,69 +417,152 @@ function* tokenizeOutsideQuotes(arg) {
 }
 
 // True iff this argv element looks like flag content (vs. a positional
-// prompt / thread-id / focus blob). Round-5's tokenizer correctly skipped
-// content inside QUOTE spans, but the shell strips surrounding quotes
-// before argv arrives, so `task "write docs for --help output"` lands as
-// one bare element with `--help` not in any internal quote span — and
-// trips the short-circuit. Heuristic: positional content rarely begins
-// with `-`. Anything that does start with `-` (after trimStart) is either
-// a flag, a flag bag like `"--enable-review-gate --json"`, or a hybrid
-// like `"--json-payload '{...}' --json"` we still want to scan with the
-// quote-aware tokenizer. Anything else is opaque positional content and
-// we leave it alone. Users who genuinely want a leading-hyphen prompt can
-// pass it after `--`.
+// prompt / thread-id / focus blob). Anything that starts with `-` (after
+// trimStart) is either a flag, a flag bag like
+// `"--enable-review-gate --json"`, or a hybrid like
+// `"--json-payload '{...}' --json"` we want to scan with the quote-aware
+// tokenizer. Anything else is opaque positional content.
 function looksLikeFlagBearingArg(arg) {
   if (typeof arg !== "string") return false;
   const trimmed = arg.trimStart();
   return trimmed.startsWith("-");
 }
 
+// Subcommands whose final positional arg is a free-text PROMPT (or focus
+// blob) the user authors. For these, the LAST argv element — when it isn't
+// flag-shaped — must NOT be scanned: it's prose, and any embedded
+// `--json` / `--help` substring is incidental.
+//
+// All OTHER known subcommands take only ids/flags as positionals; for those,
+// every argv element after the subcommand is fair game (including a
+// collapsed element like `"missing --json"` for `status`, which packs an id
+// and a real top-level flag into one shell-quoted blob).
+//
+// Cross-checked against the COMMANDS table in src/codex-bridge.mjs.
+const PROMPT_ACCEPTING_SUBCOMMANDS = new Set([
+  "task",
+  "send",
+  "steer",
+  "adversarial-review"
+]);
+
+// Subcommands the bridge dispatches that take ONLY ids/flags (no free-text
+// prompt). Listed explicitly so we can distinguish "argv[0] is a known
+// non-prompt subcommand → strip it off before scanning" from "argv[0] is
+// not a subcommand at all (`--json` / `-h` / etc.) → scan everything as is."
+const NON_PROMPT_SUBCOMMANDS = new Set([
+  "respond",
+  "review",
+  "summary",
+  "status",
+  "result",
+  "wait",
+  "events",
+  "cancel",
+  "await-artifact",
+  "setup",
+  "version",
+  "update",
+  "config",
+  "auth-status",
+  "task-resume-candidate",
+  "help"
+]);
+
+// Pick the slice of argv elements whose contents are *flag-bearing* given
+// argv[0] is the subcommand. Three cases:
+//
+//   1. PROMPT-ACCEPTING subcommand → scan every argv element AFTER the
+//      subcommand EXCEPT the trailing positional, but ONLY if that trailing
+//      positional doesn't itself look flag-shaped (because then it's a real
+//      flag, not a prompt).
+//        ["task", "--json", "write docs"]        → ["--json"]
+//        ["task", "write docs", "--json"]        → ["write docs", "--json"]
+//        ["task", "write docs for --help out"]   → []
+//
+//   2. KNOWN NON-PROMPT subcommand → scan every argv element after the
+//      subcommand. This is what makes `["status", "missing --json"]`
+//      (collapsed slash-command form) detect `--json`.
+//
+//   3. UNKNOWN argv[0] (no subcommand, or `--json` / `-h` invoked at top
+//      level) → scan the whole argv. Preserves the legacy behavior where
+//      `codex-bridge --json` was recognized.
+function flagBearingSlice(argv) {
+  if (!Array.isArray(argv) || argv.length === 0) return [];
+  const head = argv[0];
+  if (PROMPT_ACCEPTING_SUBCOMMANDS.has(head)) {
+    const rest = argv.slice(1);
+    if (rest.length === 0) return rest;
+    const last = rest[rest.length - 1];
+    return looksLikeFlagBearingArg(last) ? rest : rest.slice(0, -1);
+  }
+  if (NON_PROMPT_SUBCOMMANDS.has(head)) return argv.slice(1);
+  return argv;
+}
+
+// Walk a single argv element and return true iff it carries any of `targets`
+// as a top-level token (outside quoted spans, before `--`). The fast path
+// short-circuits on exact matches; the slow path uses tokenizeOutsideQuotes
+// for collapsed slash-command forms like `"missing --json"`.
+function elementCarriesAnyToken(arg, targets, { stopOnDoubleDash = true } = {}) {
+  if (typeof arg !== "string") return false;
+  if (stopOnDoubleDash && arg === "--") return false;
+  if (targets.has(arg)) return true;
+  if (!/\s|["']/.test(arg)) return false;
+  for (const token of tokenizeOutsideQuotes(arg)) {
+    if (stopOnDoubleDash && token === "--") return false;
+    if (targets.has(token)) return true;
+  }
+  return false;
+}
+
+const JSON_TRUE_TOKENS = new Set(["--json", "--json=true", "-j"]);
+const JSON_FALSE_TOKENS = new Set(["--json=false"]);
+const HELP_TOKENS = new Set(["--help", "-h", "--help=true"]);
+
+// Quick argv scan: pre-dispatch detection of `--json` so `main().catch` can
+// pick the right error channel without re-parsing per-handler specs.
+//
+// Argv[0] is the subcommand (or absent). Slash-command wrappers
+// (commands/*.md) frequently collapse the user's tail into a single
+// shell-quoted argv element — e.g. `/codex-bridge:status missing --json`
+// arrives as `["status", "missing --json"]`. For NON-PROMPT subcommands
+// (status, result, cancel, ...) every post-subcommand element is
+// flag-bearing and must be scanned. For PROMPT-ACCEPTING subcommands
+// (task, send, steer, adversarial-review) the trailing positional is a
+// free-text prompt — skip it unless it's flag-shaped — so prose like
+// `task "write docs for --help output"` doesn't false-positive.
+//
+// Inside scanned elements, `tokenizeOutsideQuotes` catches real top-level
+// flags (`respond req --json-payload '{...}' --json` → trips on the
+// trailing `--json`) while keeping intra-quote substrings (`"check the
+// --json output"`) inert.
 export function detectJsonFlag(argv) {
   let result = false;
-  for (const arg of argv) {
+  for (const arg of flagBearingSlice(argv)) {
     if (arg === "--") break;
     // Fast path for already-tokenized argv.
-    if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
-    if (arg === "--json=false") return false;
-    // Skip positional content (prompts, thread-ids, focus text) — only
-    // tokenize argv elements that look flag-bearing.
-    if (!looksLikeFlagBearingArg(arg)) continue;
-    // Collapsed slash-command form: tokenize on whitespace, but skip
-    // anything inside a quoted span (single or double). That keeps
-    // prompt prose like `"check the --json output"` from being
-    // misclassified as a flag, while still catching top-level flags that
-    // sit outside the quoted span — e.g.
-    // `respond req --json-payload '{...}' --json` correctly trips here.
+    if (JSON_TRUE_TOKENS.has(arg)) return true;
+    if (JSON_FALSE_TOKENS.has(arg)) return false;
+    // Slow path: collapsed slash-command form. Tokenize on whitespace,
+    // skipping content inside quoted spans.
     if (/\s|["']/.test(arg)) {
       for (const token of tokenizeOutsideQuotes(arg)) {
         if (token === "--") return result;
-        if (token === "--json" || token === "--json=true" || token === "-j") return true;
-        if (token === "--json=false") result = false;
+        if (JSON_TRUE_TOKENS.has(token)) return true;
+        if (JSON_FALSE_TOKENS.has(token)) result = false;
       }
     }
   }
   return result;
 }
 
-// Same idea for --help / -h so main() can short-circuit before the handler runs.
-// Mirrors detectJsonFlag's collapsed-argv handling for slash-command wrappers,
-// including the quote-aware skip and the positional-content skip — a prompt
-// like `task "write docs for --help output"` arrives as a bare argv element
-// (the shell strips surrounding quotes), so we must NOT scan elements that
-// don't start with `-`, otherwise the `--help` substring inside the prompt
-// trips the short-circuit and the user gets help text instead of a Codex
-// turn.
+// Same idea for --help / -h so main() can short-circuit before the handler
+// runs. Argv[0] is the subcommand (or absent for the bare `help` case).
 export function detectHelpFlag(argv) {
-  for (const arg of argv) {
+  for (const arg of flagBearingSlice(argv)) {
     if (arg === "--") break;
-    if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
-    if (!looksLikeFlagBearingArg(arg)) continue;
-    if (/\s|["']/.test(arg)) {
-      for (const token of tokenizeOutsideQuotes(arg)) {
-        if (token === "--") return false;
-        if (token === "--help" || token === "-h" || token === "--help=true") return true;
-      }
-    }
+    if (elementCarriesAnyToken(arg, HELP_TOKENS)) return true;
   }
   return false;
 }
