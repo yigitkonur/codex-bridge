@@ -90,8 +90,13 @@ it so foreground and background runs produce the same session artifacts.
 - Owns streaming request exclusivity for `turn/start`, `review/start`, and
   `thread/compact/start`.
 - Allows `turn/interrupt` from a different socket during an active stream.
-- Forwards server-initiated requests to the active downstream client and tracks
-  their responses in `pendingServerRequests`.
+- Routes server-side notifications to the active downstream client via
+  `appClient.setNotificationHandler(routeNotification)`. The current broker
+  does **not** forward server-initiated *requests* (e.g. `requestUserInput`)
+  to a downstream client and has no `pendingServerRequests` map; for
+  broker-mediated runs, server requests are handled by the upstream
+  `CodexAppServerClient`'s default behavior. Wire the forwarding logic before
+  documenting it as supported.
 - Removes unix sockets and pid files on shutdown.
 
 Once `feat/runtime-improvements` lands, any broker change needs `npm test`;
