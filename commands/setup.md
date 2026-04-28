@@ -15,7 +15,7 @@ Plugin stop-review gate activation is visible and project-scoped:
 Run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge.mjs" setup --json $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge.mjs" setup --json "$ARGUMENTS"
 ```
 
 The bridge CLI creates or removes the lock file itself. Do not create a second marker file in another directory. If the official OpenAI Codex plugin is enabled, leave stop-time review to that plugin and use this plugin only for `/codex-bridge:*` orchestration.
