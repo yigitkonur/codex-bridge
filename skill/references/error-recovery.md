@@ -94,7 +94,7 @@ A client-side timeout fired. The canonical `origin:` vocabulary actually emitted
 | `origin: turn` + message mentions "turn exceeded" | Per-turn ceiling (`turn_plan_ms` / `turn_default_ms`). | Re-run with a larger `--turn-default-ms` (e.g. `1800000` for large scaffolds) |
 | `origin: pipeline:<lastCompleted>` + `failing_stage: review` / `fix` / `check` | Per-stage pipeline timeout (`pipeline_stage_ms`, default 5 min). See [#pipeline-stage-timeout](#pipeline-stage-timeout). | Re-run with larger `--pipeline-stage-timeout-ms`, or `--no-pipeline` if you want to own completion checking |
 | `origin: pipeline:<lastCompleted>` + `failing_stage: pipeline-total` | Total pipeline budget (`pipeline_total_ms`, default 15 min). | Re-run with larger `--pipeline-total-timeout-ms`, or `--no-pipeline` |
-| `QUESTION_TIMEOUT` ndjson entry (`question_answer_ms`, default 5 min). The bridge rejects the unanswered server request instead of fabricating an empty answer. | Human/orchestrator didn't answer `requestUserInput` in time. | If the answer was slow rather than missing, re-run with `--question-timeout-ms 1800000` |
+| `QUESTION_TIMEOUT` ndjson entry (`question_answer_ms`, default 5 min). The bridge logs the timeout and replies to the upstream server request with `result: { answers: {} }` — an empty-answer success response, not a rejection (`src/codex-bridge.mjs:2197`). | Human/orchestrator didn't answer `requestUserInput` in time. | If the answer was slow rather than missing, re-run with `--question-timeout-ms 1800000` |
 
 Before v1.4.1, every timeout branch collapsed to `origin: turn` with recovery tables that string-matched on the message. The vocabulary above is the emitted truth — reader code can branch on the `origin:` / `failing_stage:` fields directly.
 
