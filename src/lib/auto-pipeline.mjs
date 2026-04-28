@@ -53,6 +53,16 @@ export async function runAutoPipeline(options) {
   // "use the built-in default".
   const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
   const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
+  // Per-turn watchdog budget. The outer `withTimeout` wrapper around each
+  // stage call rejects when the stage clock hits `stageMs`, but it does not
+  // tear the in-flight Codex turn down — the request just keeps running until
+  // the underlying app-server eventually responds (or never does). We pass
+  // these into runAppServerTurn / runAppServerReview so captureTurn's own
+  // `idleTimeoutMs` / `turnTimeoutMs` watchers fire slightly before the outer
+  // wrapper, giving the inner code a chance to issue `turn/interrupt` and
+  // settle cleanly. The 500ms grace keeps the outer wrapper as the
+  // load-bearing safety net.
+  const stageTurnMs = Math.max(0, stageMs - 500);
 
   const completedStages = [];
   const startTime = Date.now();
@@ -95,6 +105,8 @@ export async function runAutoPipeline(options) {
           runAppServerReview(cwd, {
             target: { type: "uncommittedChanges" },
             model: config.model,
+            turnTimeoutMs: stageTurnMs,
+            idleTimeoutMs: stageTurnMs,
           }),
           stageMs,
           "auto-review"
@@ -138,6 +150,8 @@ export async function runAutoPipeline(options) {
                 developerInstructions: executeInstructions,
               }),
               sandboxPolicy: buildSandboxPolicy("default", config),
+              turnTimeoutMs: stageTurnMs,
+              idleTimeoutMs: stageTurnMs,
             }),
             stageMs,
             "auto-fix"
@@ -194,6 +208,8 @@ export async function runAutoPipeline(options) {
             }),
             sandboxPolicy: { type: "readOnly" },
             outputSchema: COMPLETION_CHECK_SCHEMA,
+            turnTimeoutMs: stageTurnMs,
+            idleTimeoutMs: stageTurnMs,
           }),
           stageMs,
           "completion-check"
@@ -269,6 +285,7 @@ export async function runAutoPipeline(options) {
         diffPath: finalDiff.diffPath,
         scriptPath,
         jobId,
+        cwd,
       }));
     } else {
       logEvent(session, formatIncompleteEvent(session, {
@@ -279,6 +296,7 @@ export async function runAutoPipeline(options) {
         missingItems: completionResult.missing_items || [],
         scriptPath,
         jobId,
+        cwd,
       }));
     }
 
@@ -346,6 +364,7 @@ export async function runAutoPipeline(options) {
       scriptPath,
       jobId,
       upstreamRequestId,
+      cwd,
     }));
 
     logNdjson(session, "PIPELINE_ERROR", null, {

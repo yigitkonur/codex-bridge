@@ -1,5 +1,5 @@
 // src/codex-bridge.mjs
-import { spawn as spawn3, spawnSync as spawnSync3 } from "node:child_process";
+import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
 import fs13 from "node:fs";
 import os6 from "node:os";
 import path11 from "node:path";
@@ -14,7 +14,8 @@ var package_default = {
   type: "module",
   scripts: {
     build: "node esbuild.config.mjs",
-    dev: "node src/codex-bridge.mjs"
+    dev: "node src/codex-bridge.mjs",
+    test: "node --test test/*.test.mjs"
   },
   author: "Yigit Konur",
   license: "MIT",
@@ -64,6 +65,16 @@ var CODEX_ERROR_INFO = Object.freeze({
     retryable: true,
     suggestion: "Wait for the rate-limit window to reset, then retry."
   },
+  ServerOverloaded: {
+    class: "network",
+    retryable: true,
+    suggestion: "Codex app-server is overloaded. Retry with backoff."
+  },
+  CyberPolicy: {
+    class: "validation",
+    retryable: false,
+    suggestion: "Codex blocked the request under policy. Change the request rather than retrying."
+  },
   HttpConnectionFailed: {
     class: "network",
     retryable: true,
@@ -96,6 +107,16 @@ var CODEX_ERROR_INFO = Object.freeze({
     retryable: false,
     suggestion: "Re-run with `--write` only if you intend workspace-write; review sandbox output."
   },
+  ThreadRollbackFailed: {
+    class: "conflict",
+    retryable: false,
+    suggestion: "The thread could not be rolled back. Start a new task from the current workspace state."
+  },
+  ActiveTurnNotSteerable: {
+    class: "conflict",
+    retryable: false,
+    suggestion: "This active turn type cannot be steered. Wait for completion or start a new turn."
+  },
   BadRequest: {
     class: "validation",
     retryable: false,
@@ -105,9 +126,56 @@ var CODEX_ERROR_INFO = Object.freeze({
     class: "dependency_failed",
     retryable: true,
     suggestion: "Retry after a brief backoff."
+  },
+  Other: {
+    class: "internal",
+    retryable: false,
+    suggestion: "The Codex error has no taxonomy entry yet \u2014 read details.codexErrorPayload and details.rawCodexErrorInfo for the upstream payload."
   }
-  // ActiveTurnNotSteerable / Other fall through to default classification.
 });
+var CAMEL_CODEX_ERROR_INFO = new Map(
+  Object.keys(CODEX_ERROR_INFO).map((key) => [
+    key.slice(0, 1).toLowerCase() + key.slice(1),
+    key
+  ])
+);
+var SNAKE_CODEX_ERROR_INFO = new Map(
+  Object.keys(CODEX_ERROR_INFO).map((key) => [
+    key.replace(/[A-Z]/g, (letter, index) => `${index === 0 ? "" : "_"}${letter.toLowerCase()}`),
+    key
+  ])
+);
+function normalizeCodexErrorInfoCode(value) {
+  return CODEX_ERROR_INFO[value] ? value : CAMEL_CODEX_ERROR_INFO.get(value) ?? SNAKE_CODEX_ERROR_INFO.get(value) ?? value;
+}
+function normalizeCodexErrorInfo(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return {
+      code: normalizeCodexErrorInfoCode(value),
+      raw: value,
+      payload: null
+    };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const [rawKey] = Object.keys(value);
+    if (!rawKey) {
+      return null;
+    }
+    return {
+      code: normalizeCodexErrorInfoCode(rawKey),
+      raw: value,
+      payload: value[rawKey]
+    };
+  }
+  return {
+    code: String(value),
+    raw: value,
+    payload: null
+  };
+}
 var CliError = class extends Error {
   constructor(message, meta = {}) {
     super(message);
@@ -157,16 +225,22 @@ function classifyError(err) {
       exitCode: CLASS_TO_EXIT[err.class] ?? ExitCode.CRASH
     };
   }
-  const codexInfo = err?.codexErrorInfo ?? err?.codex_error_info ?? null;
-  if (codexInfo && CODEX_ERROR_INFO[codexInfo]) {
-    const entry = CODEX_ERROR_INFO[codexInfo];
+  const codexInfo = normalizeCodexErrorInfo(err?.codexErrorInfo ?? err?.codex_error_info ?? null);
+  if (codexInfo && CODEX_ERROR_INFO[codexInfo.code]) {
+    const entry = CODEX_ERROR_INFO[codexInfo.code];
     return {
       class: entry.class,
-      code: codexInfo,
+      code: codexInfo.code,
       message: err.message ?? String(err),
       retryable: entry.retryable,
       suggestion: entry.suggestion,
-      details: { codexErrorInfo: codexInfo },
+      details: {
+        codexErrorInfo: codexInfo.code,
+        rawCodexErrorInfo: codexInfo.raw,
+        ...codexInfo.payload != null ? { codexErrorPayload: codexInfo.payload } : {},
+        ...err?.additionalDetails != null ? { additionalDetails: err.additionalDetails } : {},
+        ...err?.additional_details != null ? { additionalDetails: err.additional_details } : {}
+      },
       exitCode: CLASS_TO_EXIT[entry.class] ?? ExitCode.CRASH
     };
   }
@@ -178,6 +252,29 @@ function classifyError(err) {
       message,
       retryable: true,
       suggestion: "Check whether the turn is stuck; cancel and retry with a simpler prompt if needed.",
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "TurnTimeout" || /Turn timed out after \d+ms\./.test(message)) {
+    return {
+      class: "timeout",
+      code: "TurnTimeout",
+      message,
+      retryable: true,
+      suggestion: "The turn exceeded its configured budget. Retry with a simpler prompt or increase the turn timeout.",
+      details: {
+        originalCode: err?.code ?? null
+      },
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "ETIMEDOUT") {
+    return {
+      class: "timeout",
+      code: "ClientTimeout",
+      message,
+      retryable: true,
+      suggestion: "Init/shutdown/socket-connect timed out. Verify Codex is responding and retry.",
       exitCode: ExitCode.TRANSIENT
     };
   }
@@ -565,23 +662,23 @@ function parseBrokerEndpoint(endpoint) {
 }
 
 // src/lib/broker-lifecycle.mjs
-import fs4 from "node:fs";
+import fs5 from "node:fs";
 import net from "node:net";
 import os2 from "node:os";
-import path4 from "node:path";
+import path5 from "node:path";
 import process5 from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // src/lib/state.mjs
 import { createHash } from "node:crypto";
-import fs3 from "node:fs";
+import fs4 from "node:fs";
 import os from "node:os";
-import path3 from "node:path";
+import path4 from "node:path";
 
 // src/lib/git.mjs
-import fs2 from "node:fs";
-import path2 from "node:path";
+import fs3 from "node:fs";
+import path3 from "node:path";
 
 // src/lib/process.mjs
 import { spawnSync } from "node:child_process";
@@ -707,15 +804,49 @@ function formatCommandFailure(result) {
   return parts.join(": ");
 }
 
+// src/lib/prompts.mjs
+import fs2 from "node:fs";
+import path2 from "node:path";
+function loadPromptTemplate(rootDir, name) {
+  const promptPath = path2.join(rootDir, "prompts", `${name}.md`);
+  return fs2.readFileSync(promptPath, "utf8");
+}
+function interpolateTemplate(template, variables, options = {}) {
+  const requiredKeys = options?.requiredKeys ?? null;
+  if (requiredKeys) {
+    const iterable = requiredKeys instanceof Set ? requiredKeys : new Set(requiredKeys);
+    for (const key of iterable) {
+      if (!Object.prototype.hasOwnProperty.call(variables, key)) {
+        throw new Error(`interpolateTemplate: missing required key '${key}'`);
+      }
+    }
+  }
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => {
+    return Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : "";
+  });
+}
+var PROMPT_VALUE_MAX_LEN = 200;
+function sanitizePromptValue(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const stripped = value.replace(/[\n\r<>]/g, " ");
+  const collapsed = stripped.replace(/\s+/g, " ");
+  if (collapsed.length <= PROMPT_VALUE_MAX_LEN) {
+    return collapsed;
+  }
+  return collapsed.slice(0, PROMPT_VALUE_MAX_LEN);
+}
+
 // src/lib/git.mjs
 var MAX_UNTRACKED_BYTES = 24 * 1024;
 var DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
-function git(cwd2, args, options = {}) {
-  return runCommand("git", args, { cwd: cwd2, ...options });
+function git(cwd, args, options = {}) {
+  return runCommand("git", args, { cwd, ...options });
 }
-function gitChecked(cwd2, args, options = {}) {
-  return runCommandChecked("git", args, { cwd: cwd2, ...options });
+function gitChecked(cwd, args, options = {}) {
+  return runCommandChecked("git", args, { cwd, ...options });
 }
 function listUniqueFiles(...groups) {
   return [...new Set(groups.flat().filter(Boolean))].sort();
@@ -734,8 +865,8 @@ function normalizeMaxInlineDiffBytes(value) {
   }
   return Math.floor(parsed);
 }
-function measureGitOutputBytes(cwd2, args, maxBytes) {
-  const result = git(cwd2, args, { maxBuffer: maxBytes + 1 });
+function measureGitOutputBytes(cwd, args, maxBytes) {
+  const result = git(cwd, args, { maxBuffer: maxBytes + 1 });
   if (result.error && /** @type {NodeJS.ErrnoException} */
   result.error.code === "ENOBUFS") {
     return maxBytes + 1;
@@ -748,30 +879,30 @@ function measureGitOutputBytes(cwd2, args, maxBytes) {
   }
   return Buffer.byteLength(result.stdout, "utf8");
 }
-function measureCombinedGitOutputBytes(cwd2, argSets, maxBytes) {
+function measureCombinedGitOutputBytes(cwd, argSets, maxBytes) {
   let totalBytes = 0;
   for (const args of argSets) {
     const remainingBytes = maxBytes - totalBytes;
     if (remainingBytes < 0) {
       return maxBytes + 1;
     }
-    totalBytes += measureGitOutputBytes(cwd2, args, remainingBytes);
+    totalBytes += measureGitOutputBytes(cwd, args, remainingBytes);
     if (totalBytes > maxBytes) {
       return totalBytes;
     }
   }
   return totalBytes;
 }
-function buildBranchComparison(cwd2, baseRef) {
-  const mergeBase = gitChecked(cwd2, ["merge-base", "HEAD", baseRef]).stdout.trim();
+function buildBranchComparison(cwd, baseRef) {
+  const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", baseRef]).stdout.trim();
   return {
     mergeBase,
     commitRange: `${mergeBase}..HEAD`,
     reviewRange: `${baseRef}...HEAD`
   };
 }
-function ensureGitRepository(cwd2) {
-  const result = git(cwd2, ["rev-parse", "--show-toplevel"]);
+function ensureGitRepository(cwd) {
+  const result = git(cwd, ["rev-parse", "--show-toplevel"]);
   const errorCode = result.error && "code" in result.error ? result.error.code : null;
   if (errorCode === "ENOENT") {
     throw new CliError("git is not installed. Install Git and retry.", {
@@ -791,16 +922,16 @@ function ensureGitRepository(cwd2) {
   }
   return result.stdout.trim();
 }
-function getRepoRoot(cwd2) {
-  return gitChecked(cwd2, ["rev-parse", "--show-toplevel"]).stdout.trim();
+function getRepoRoot(cwd) {
+  return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
 }
-function detectDefaultBranch(cwd2) {
-  const symbolic = git(cwd2, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
+function detectDefaultBranch(cwd) {
+  const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
   if (symbolic.status === 0) {
     const remoteHead = symbolic.stdout.trim();
     if (remoteHead.startsWith("refs/remotes/origin/")) {
       const candidate = remoteHead.replace("refs/remotes/origin/", "");
-      const localCheck = git(cwd2, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+      const localCheck = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
       if (localCheck.status === 0) {
         return candidate;
       }
@@ -809,11 +940,11 @@ function detectDefaultBranch(cwd2) {
   }
   const candidates = ["main", "master", "trunk"];
   for (const candidate of candidates) {
-    const local = git(cwd2, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+    const local = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
     if (local.status === 0) {
       return candidate;
     }
-    const remote = git(cwd2, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]);
+    const remote = git(cwd, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]);
     if (remote.status === 0) {
       return `origin/${candidate}`;
     }
@@ -825,13 +956,13 @@ function detectDefaultBranch(cwd2) {
     suggestion: "Pass `--base <ref>` explicitly, or use `--scope working-tree`."
   });
 }
-function getCurrentBranch(cwd2) {
-  return gitChecked(cwd2, ["branch", "--show-current"]).stdout.trim() || "HEAD";
+function getCurrentBranch(cwd) {
+  return gitChecked(cwd, ["branch", "--show-current"]).stdout.trim() || "HEAD";
 }
-function getWorkingTreeState(cwd2) {
-  const staged = gitChecked(cwd2, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
-  const unstaged = gitChecked(cwd2, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
-  const untracked = gitChecked(cwd2, ["ls-files", "--others", "--exclude-standard"]).stdout.trim().split("\n").filter(Boolean);
+function getWorkingTreeState(cwd) {
+  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
+  const unstaged = gitChecked(cwd, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
+  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard"]).stdout.trim().split("\n").filter(Boolean);
   return {
     staged,
     unstaged,
@@ -839,16 +970,16 @@ function getWorkingTreeState(cwd2) {
     isDirty: staged.length > 0 || unstaged.length > 0 || untracked.length > 0
   };
 }
-function resolveReviewTarget(cwd2, options = {}) {
-  ensureGitRepository(cwd2);
+function resolveReviewTarget(cwd, options = {}) {
+  ensureGitRepository(cwd);
   const requestedScope = options.scope ?? "auto";
   const baseRef = options.base ?? null;
-  const state = getWorkingTreeState(cwd2);
+  const state = getWorkingTreeState(cwd);
   const supportedScopes = /* @__PURE__ */ new Set(["auto", "working-tree", "branch"]);
   if (baseRef) {
     return {
       mode: "branch",
-      label: `branch diff against ${baseRef}`,
+      label: `branch diff against ${sanitizePromptValue(baseRef)}`,
       baseRef,
       explicit: true
     };
@@ -872,10 +1003,10 @@ function resolveReviewTarget(cwd2, options = {}) {
     );
   }
   if (requestedScope === "branch") {
-    const detectedBase2 = detectDefaultBranch(cwd2);
+    const detectedBase2 = detectDefaultBranch(cwd);
     return {
       mode: "branch",
-      label: `branch diff against ${detectedBase2}`,
+      label: `branch diff against ${sanitizePromptValue(detectedBase2)}`,
       baseRef: detectedBase2,
       explicit: true
     };
@@ -887,10 +1018,10 @@ function resolveReviewTarget(cwd2, options = {}) {
       explicit: false
     };
   }
-  const detectedBase = detectDefaultBranch(cwd2);
+  const detectedBase = detectDefaultBranch(cwd);
   return {
     mode: "branch",
-    label: `branch diff against ${detectedBase}`,
+    label: `branch diff against ${sanitizePromptValue(detectedBase)}`,
     baseRef: detectedBase,
     explicit: false
   };
@@ -898,11 +1029,11 @@ function resolveReviewTarget(cwd2, options = {}) {
 function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
-function formatUntrackedFile(cwd2, relativePath) {
-  const absolutePath = path2.join(cwd2, relativePath);
+function formatUntrackedFile(cwd, relativePath) {
+  const absolutePath = path3.join(cwd, relativePath);
   let stat;
   try {
-    stat = fs2.statSync(absolutePath);
+    stat = fs3.statSync(absolutePath);
   } catch {
     return `### ${relativePath}
 (skipped: broken symlink or unreadable file)`;
@@ -917,7 +1048,7 @@ function formatUntrackedFile(cwd2, relativePath) {
   }
   let buffer;
   try {
-    buffer = fs2.readFileSync(absolutePath);
+    buffer = fs3.readFileSync(absolutePath);
   } catch {
     return `### ${relativePath}
 (skipped: broken symlink or unreadable file)`;
@@ -928,15 +1059,15 @@ function formatUntrackedFile(cwd2, relativePath) {
   }
   return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
 }
-function collectWorkingTreeContext(cwd2, state, options = {}) {
+function collectWorkingTreeContext(cwd, state, options = {}) {
   const includeDiff = options.includeDiff !== false;
-  const status = gitChecked(cwd2, ["status", "--short", "--untracked-files=all"]).stdout.trim();
+  const status = gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim();
   const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
   let parts;
   if (includeDiff) {
-    const stagedDiff = gitChecked(cwd2, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const unstagedDiff = gitChecked(cwd2, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd2, file)).join("\n\n");
+    const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff", stagedDiff),
@@ -944,9 +1075,9 @@ function collectWorkingTreeContext(cwd2, state, options = {}) {
       formatSection("Untracked Files", untrackedBody)
     ];
   } else {
-    const stagedStat = gitChecked(cwd2, ["diff", "--shortstat", "--cached"]).stdout.trim();
-    const unstagedStat = gitChecked(cwd2, ["diff", "--shortstat"]).stdout.trim();
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd2, file)).join("\n\n");
+    const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
+    const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
+    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
@@ -962,13 +1093,13 @@ function collectWorkingTreeContext(cwd2, state, options = {}) {
     changedFiles
   };
 }
-function collectBranchContext(cwd2, baseRef, options = {}) {
+function collectBranchContext(cwd, baseRef, options = {}) {
   const includeDiff = options.includeDiff !== false;
-  const comparison = options.comparison ?? buildBranchComparison(cwd2, baseRef);
-  const currentBranch = getCurrentBranch(cwd2);
-  const changedFiles = gitChecked(cwd2, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
-  const logOutput = gitChecked(cwd2, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
-  const diffStat = gitChecked(cwd2, ["diff", "--stat", comparison.commitRange]).stdout.trim();
+  const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
+  const currentBranch = getCurrentBranch(cwd);
+  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
+  const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
+  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
   return {
     mode: "branch",
     summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,
@@ -977,7 +1108,7 @@ function collectBranchContext(cwd2, baseRef, options = {}) {
       formatSection("Diff Stat", diffStat),
       formatSection(
         "Branch Diff",
-        gitChecked(cwd2, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
+        gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
       )
     ].join("\n") : [
       formatSection("Commit Log", logOutput),
@@ -994,8 +1125,8 @@ function buildAdversarialCollectionGuidance(options = {}) {
   }
   return "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.";
 }
-function collectReviewContext(cwd2, target, options = {}) {
-  const repoRoot = getRepoRoot(cwd2);
+function collectReviewContext(cwd, target, options = {}) {
+  const repoRoot = getRepoRoot(cwd);
   const currentBranch = getCurrentBranch(repoRoot);
   const maxInlineFiles = normalizeMaxInlineFiles(options.maxInlineFiles);
   const maxInlineDiffBytes = normalizeMaxInlineDiffBytes(options.maxInlineDiffBytes);
@@ -1039,21 +1170,25 @@ function collectReviewContext(cwd2, target, options = {}) {
 }
 
 // src/lib/workspace.mjs
-function resolveWorkspaceRoot(cwd2) {
+function resolveWorkspaceRoot(cwd) {
   try {
-    return ensureGitRepository(cwd2);
+    return ensureGitRepository(cwd);
   } catch {
-    return cwd2;
+    return cwd;
   }
 }
 
 // src/lib/state.mjs
 var STATE_VERSION = 1;
-var PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
-var FALLBACK_STATE_ROOT_DIR = path3.join(os.tmpdir(), "codex-companion");
+var BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
+var LEGACY_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+var FALLBACK_STATE_ROOT_DIR = path4.join(os.tmpdir(), "codex-companion");
 var STATE_FILE_NAME = "state.json";
+var STATE_LOCK_FILE_NAME = "state.lock";
 var JOBS_DIR_NAME = "jobs";
 var MAX_JOBS = 50;
+var LOCK_TIMEOUT_MS = 5e3;
+var STALE_LOCK_MS = 3e4;
 function nowIso() {
   return (/* @__PURE__ */ new Date()).toISOString();
 }
@@ -1066,29 +1201,89 @@ function defaultState() {
     jobs: []
   };
 }
-function resolveStateDir(cwd2) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+function resolveStateDir(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   let canonicalWorkspaceRoot = workspaceRoot;
   try {
-    canonicalWorkspaceRoot = fs3.realpathSync.native(workspaceRoot);
+    canonicalWorkspaceRoot = fs4.realpathSync.native(workspaceRoot);
   } catch {
     canonicalWorkspaceRoot = workspaceRoot;
   }
-  const slugSource = path3.basename(workspaceRoot) || "workspace";
+  const slugSource = path4.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
-  const stateRoot = pluginDataDir ? path3.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  return path3.join(stateRoot, `${slug}-${hash}`);
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[LEGACY_PLUGIN_DATA_ENV];
+  const stateRoot = pluginDataDir ? path4.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+  return path4.join(stateRoot, `${slug}-${hash}`);
 }
-function resolveStateFile(cwd2) {
-  return path3.join(resolveStateDir(cwd2), STATE_FILE_NAME);
+function resolveStateFile(cwd) {
+  return path4.join(resolveStateDir(cwd), STATE_FILE_NAME);
 }
-function resolveJobsDir(cwd2) {
-  return path3.join(resolveStateDir(cwd2), JOBS_DIR_NAME);
+function resolveStateLockFile(cwd) {
+  return path4.join(resolveStateDir(cwd), STATE_LOCK_FILE_NAME);
 }
-function ensureStateDir(cwd2) {
-  fs3.mkdirSync(resolveJobsDir(cwd2), { recursive: true });
+function resolveJobsDir(cwd) {
+  return path4.join(resolveStateDir(cwd), JOBS_DIR_NAME);
+}
+function ensureStateDir(cwd) {
+  fs4.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+}
+function sleepSync(ms) {
+  const buffer = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
+}
+function acquireStateLock(cwd) {
+  ensureStateDir(cwd);
+  const lockFile = resolveStateLockFile(cwd);
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      const fd = fs4.openSync(lockFile, "wx");
+      fs4.writeFileSync(fd, `${process.pid}
+${(/* @__PURE__ */ new Date()).toISOString()}
+`, "utf8");
+      let ownedIno = null;
+      try {
+        ownedIno = fs4.fstatSync(fd).ino;
+      } catch {
+      }
+      return () => {
+        try {
+          fs4.closeSync(fd);
+        } catch {
+        }
+        try {
+          if (ownedIno !== null) {
+            const stat = fs4.statSync(lockFile);
+            if (stat.ino !== ownedIno) {
+              return;
+            }
+          }
+          fs4.unlinkSync(lockFile);
+        } catch (releaseError) {
+          if (releaseError?.code !== "ENOENT") {
+          }
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const stat = fs4.statSync(lockFile);
+        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+          fs4.unlinkSync(lockFile);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - startedAt > LOCK_TIMEOUT_MS) {
+        throw new Error(`Timed out waiting for state lock: ${lockFile}`);
+      }
+      sleepSync(50);
+    }
+  }
 }
 function pidIsAlive(pid) {
   if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false;
@@ -1117,37 +1312,37 @@ function reapOrphans(jobs) {
   });
   return { jobs: reaped, reaped: changed };
 }
-function loadState(cwd2) {
-  const stateFile = resolveStateFile(cwd2);
-  if (!fs3.existsSync(stateFile)) {
+function loadState(cwd) {
+  const stateFile = resolveStateFile(cwd);
+  if (!fs4.existsSync(stateFile)) {
     return defaultState();
   }
   try {
-    const parsed = JSON.parse(fs3.readFileSync(stateFile, "utf8"));
+    const parsed = JSON.parse(fs4.readFileSync(stateFile, "utf8"));
     const rawJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
-    const { jobs, reaped } = reapOrphans(rawJobs);
-    const state = {
+    return {
       ...defaultState(),
       ...parsed,
       config: {
         ...defaultState().config,
         ...parsed.config ?? {}
       },
-      jobs
+      jobs: rawJobs
     };
-    if (reaped > 0) {
-      try {
-        fs3.writeFileSync(stateFile, `${JSON.stringify({
-          version: parsed.version ?? STATE_VERSION,
-          config: state.config,
-          jobs: state.jobs
-        }, null, 2)}
-`, "utf8");
-      } catch {
+  } catch (error) {
+    let renamedPath = null;
+    try {
+      const candidate = `${stateFile}.corrupt-${Date.now()}`;
+      fs4.renameSync(stateFile, candidate);
+      renamedPath = candidate;
+    } catch (renameError) {
+      if (renameError && renameError.code !== "ENOENT" && renameError.code !== "EXDEV") {
       }
     }
-    return state;
-  } catch {
+    process.emitWarning(
+      `State file at ${stateFile} was corrupt (${error?.message ?? error}); preserved at ${renamedPath ?? "<unable to rename>"}`,
+      "CodexBridgeStateWarning"
+    );
     return defaultState();
   }
 }
@@ -1155,14 +1350,41 @@ function pruneJobs(jobs) {
   return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))).slice(0, MAX_JOBS);
 }
 function removeFileIfExists(filePath) {
-  if (filePath && fs3.existsSync(filePath)) {
-    fs3.unlinkSync(filePath);
+  if (filePath && fs4.existsSync(filePath)) {
+    fs4.unlinkSync(filePath);
   }
 }
-function saveState(cwd2, state) {
-  const previousJobs = loadState(cwd2).jobs;
-  ensureStateDir(cwd2);
-  const nextJobs = pruneJobs(state.jobs ?? []);
+function writeJsonFileAtomic(filePath, payload) {
+  fs4.mkdirSync(path4.dirname(filePath), { recursive: true });
+  const tempPath = path4.join(
+    path4.dirname(filePath),
+    `.${path4.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  const fd = fs4.openSync(tempPath, "w");
+  try {
+    fs4.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+    fs4.fsyncSync(fd);
+  } finally {
+    fs4.closeSync(fd);
+  }
+  try {
+    fs4.renameSync(tempPath, filePath);
+  } catch (renameError) {
+    try {
+      fs4.unlinkSync(tempPath);
+    } catch (cleanupError) {
+      if (cleanupError?.code !== "ENOENT") {
+      }
+    }
+    throw renameError;
+  }
+}
+function saveStateUnlocked(cwd, state) {
+  const previousJobs = loadState(cwd).jobs;
+  ensureStateDir(cwd);
+  const { jobs: reapedJobs } = reapOrphans(state.jobs ?? []);
+  const nextJobs = pruneJobs(reapedJobs);
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -1176,24 +1398,28 @@ function saveState(cwd2, state) {
     if (retainedIds.has(job.id)) {
       continue;
     }
-    removeJobFile(resolveJobFile(cwd2, job.id));
+    removeJobFile(resolveJobFile(cwd, job.id));
     removeFileIfExists(job.logFile);
   }
-  fs3.writeFileSync(resolveStateFile(cwd2), `${JSON.stringify(nextState, null, 2)}
-`, "utf8");
+  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
   return nextState;
 }
-function updateState(cwd2, mutate) {
-  const state = loadState(cwd2);
-  mutate(state);
-  return saveState(cwd2, state);
+function updateState(cwd, mutate) {
+  const release = acquireStateLock(cwd);
+  try {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveStateUnlocked(cwd, state);
+  } finally {
+    release();
+  }
 }
 function generateJobId(prefix = "job") {
   const random = Math.random().toString(36).slice(2, 8);
   return `${prefix}-${Date.now().toString(36)}-${random}`;
 }
-function upsertJob(cwd2, jobPatch) {
-  return updateState(cwd2, (state) => {
+function upsertJob(cwd, jobPatch) {
+  return updateState(cwd, (state) => {
     const timestamp2 = nowIso();
     const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
     if (existingIndex === -1) {
@@ -1211,48 +1437,40 @@ function upsertJob(cwd2, jobPatch) {
     };
   });
 }
-function listJobs(cwd2) {
-  return loadState(cwd2).jobs;
+function listJobs(cwd) {
+  return loadState(cwd).jobs;
 }
-function setConfig(cwd2, key, value) {
-  return updateState(cwd2, (state) => {
-    state.config = {
-      ...state.config,
-      [key]: value
-    };
-  });
+function getConfig(cwd) {
+  return loadState(cwd).config;
 }
-function getConfig(cwd2) {
-  return loadState(cwd2).config;
-}
-function writeJobFile(cwd2, jobId, payload) {
-  ensureStateDir(cwd2);
-  const jobFile = resolveJobFile(cwd2, jobId);
-  fs3.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}
+function writeJobFile(cwd, jobId, payload) {
+  ensureStateDir(cwd);
+  const jobFile = resolveJobFile(cwd, jobId);
+  fs4.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}
 `, "utf8");
   return jobFile;
 }
 function readJobFile(jobFile) {
-  return JSON.parse(fs3.readFileSync(jobFile, "utf8"));
+  return JSON.parse(fs4.readFileSync(jobFile, "utf8"));
 }
 function removeJobFile(jobFile) {
-  if (fs3.existsSync(jobFile)) {
-    fs3.unlinkSync(jobFile);
+  if (fs4.existsSync(jobFile)) {
+    fs4.unlinkSync(jobFile);
   }
 }
-function resolveJobLogFile(cwd2, jobId) {
-  ensureStateDir(cwd2);
-  return path3.join(resolveJobsDir(cwd2), `${jobId}.log`);
+function resolveJobLogFile(cwd, jobId) {
+  ensureStateDir(cwd);
+  return path4.join(resolveJobsDir(cwd), `${jobId}.log`);
 }
-function resolveJobFile(cwd2, jobId) {
-  ensureStateDir(cwd2);
-  return path3.join(resolveJobsDir(cwd2), `${jobId}.json`);
+function resolveJobFile(cwd, jobId) {
+  ensureStateDir(cwd);
+  return path4.join(resolveJobsDir(cwd), `${jobId}.json`);
 }
 
 // src/lib/broker-lifecycle.mjs
 var BROKER_STATE_FILE = "broker.json";
 function createBrokerSessionDir(prefix = "cxc-") {
-  return fs4.mkdtempSync(path4.join(os2.tmpdir(), prefix));
+  return fs5.mkdtempSync(path5.join(os2.tmpdir(), prefix));
 }
 function connectToEndpoint(endpoint) {
   const target = parseBrokerEndpoint(endpoint);
@@ -1276,42 +1494,42 @@ async function waitForBrokerEndpoint(endpoint, timeoutMs = 2e3) {
   }
   return false;
 }
-function spawnBrokerProcess({ scriptPath, cwd: cwd2, endpoint, pidFile, logFile, env = process5.env }) {
-  const logFd = fs4.openSync(logFile, "a");
-  const child = spawn(process5.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd2, "--pid-file", pidFile], {
-    cwd: cwd2,
+function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process5.env }) {
+  const logFd = fs5.openSync(logFile, "a");
+  const child = spawn(process5.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
+    cwd,
     env,
     detached: true,
     stdio: ["ignore", logFd, logFd]
   });
   child.unref();
-  fs4.closeSync(logFd);
+  fs5.closeSync(logFd);
   return child;
 }
-function resolveBrokerStateFile(cwd2) {
-  return path4.join(resolveStateDir(cwd2), BROKER_STATE_FILE);
+function resolveBrokerStateFile(cwd) {
+  return path5.join(resolveStateDir(cwd), BROKER_STATE_FILE);
 }
-function loadBrokerSession(cwd2) {
-  const stateFile = resolveBrokerStateFile(cwd2);
-  if (!fs4.existsSync(stateFile)) {
+function loadBrokerSession(cwd) {
+  const stateFile = resolveBrokerStateFile(cwd);
+  if (!fs5.existsSync(stateFile)) {
     return null;
   }
   try {
-    return JSON.parse(fs4.readFileSync(stateFile, "utf8"));
+    return JSON.parse(fs5.readFileSync(stateFile, "utf8"));
   } catch {
     return null;
   }
 }
-function saveBrokerSession(cwd2, session) {
-  const stateDir = resolveStateDir(cwd2);
-  fs4.mkdirSync(stateDir, { recursive: true });
-  fs4.writeFileSync(resolveBrokerStateFile(cwd2), `${JSON.stringify(session, null, 2)}
+function saveBrokerSession(cwd, session) {
+  const stateDir = resolveStateDir(cwd);
+  fs5.mkdirSync(stateDir, { recursive: true });
+  fs5.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}
 `, "utf8");
 }
-function clearBrokerSession(cwd2) {
-  const stateFile = resolveBrokerStateFile(cwd2);
-  if (fs4.existsSync(stateFile)) {
-    fs4.unlinkSync(stateFile);
+function clearBrokerSession(cwd) {
+  const stateFile = resolveBrokerStateFile(cwd);
+  if (fs5.existsSync(stateFile)) {
+    fs5.unlinkSync(stateFile);
   }
 }
 async function isBrokerEndpointReady(endpoint) {
@@ -1324,8 +1542,8 @@ async function isBrokerEndpointReady(endpoint) {
     return false;
   }
 }
-async function ensureBrokerSession(cwd2, options = {}) {
-  const existing = loadBrokerSession(cwd2);
+async function ensureBrokerSession(cwd, options = {}) {
+  const existing = loadBrokerSession(cwd);
   if (existing && await isBrokerEndpointReady(existing.endpoint)) {
     return existing;
   }
@@ -1338,17 +1556,17 @@ async function ensureBrokerSession(cwd2, options = {}) {
       pid: existing.pid ?? null,
       killProcess: options.killProcess ?? null
     });
-    clearBrokerSession(cwd2);
+    clearBrokerSession(cwd);
   }
   const sessionDir = createBrokerSessionDir();
   const endpointFactory = options.createBrokerEndpoint ?? createBrokerEndpoint;
   const endpoint = endpointFactory(sessionDir, options.platform);
-  const pidFile = path4.join(sessionDir, "broker.pid");
-  const logFile = path4.join(sessionDir, "broker.log");
+  const pidFile = path5.join(sessionDir, "broker.pid");
+  const logFile = path5.join(sessionDir, "broker.log");
   const scriptPath = options.scriptPath ?? fileURLToPath(new URL("../app-server-broker.mjs", import.meta.url));
   const child = spawnBrokerProcess({
     scriptPath,
-    cwd: cwd2,
+    cwd,
     endpoint,
     pidFile,
     logFile,
@@ -1373,7 +1591,7 @@ async function ensureBrokerSession(cwd2, options = {}) {
     sessionDir,
     pid: child.pid ?? null
   };
-  saveBrokerSession(cwd2, session);
+  saveBrokerSession(cwd, session);
   return session;
 }
 function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
@@ -1383,25 +1601,25 @@ function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir =
     } catch {
     }
   }
-  if (pidFile && fs4.existsSync(pidFile)) {
-    fs4.unlinkSync(pidFile);
+  if (pidFile && fs5.existsSync(pidFile)) {
+    fs5.unlinkSync(pidFile);
   }
-  if (logFile && fs4.existsSync(logFile)) {
-    fs4.unlinkSync(logFile);
+  if (logFile && fs5.existsSync(logFile)) {
+    fs5.unlinkSync(logFile);
   }
   if (endpoint) {
     try {
       const target = parseBrokerEndpoint(endpoint);
-      if (target.kind === "unix" && fs4.existsSync(target.path)) {
-        fs4.unlinkSync(target.path);
+      if (target.kind === "unix" && fs5.existsSync(target.path)) {
+        fs5.unlinkSync(target.path);
       }
     } catch {
     }
   }
-  const resolvedSessionDir = sessionDir ?? (pidFile ? path4.dirname(pidFile) : logFile ? path4.dirname(logFile) : null);
-  if (resolvedSessionDir && fs4.existsSync(resolvedSessionDir)) {
+  const resolvedSessionDir = sessionDir ?? (pidFile ? path5.dirname(pidFile) : logFile ? path5.dirname(logFile) : null);
+  if (resolvedSessionDir && fs5.existsSync(resolvedSessionDir)) {
     try {
-      fs4.rmdirSync(resolvedSessionDir);
+      fs5.rmdirSync(resolvedSessionDir);
     } catch {
     }
   }
@@ -1410,6 +1628,8 @@ function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir =
 // src/lib/app-server.mjs
 var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 var BROKER_BUSY_RPC_CODE = -32001;
+var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
+var APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5e3;
 var DEFAULT_CLIENT_INFO = {
   title: "Codex Bridge",
   name: "codex_bridge",
@@ -1438,9 +1658,29 @@ function createProtocolError(message, data) {
   }
   return error;
 }
+function timeoutError(message) {
+  const error = new Error(message);
+  error.code = "ETIMEDOUT";
+  return error;
+}
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(timeoutError(message)), ms);
+      timer.unref?.();
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+function serverRequestError(method) {
+  return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
+}
 var AppServerClientBase = class {
-  constructor(cwd2, options = {}) {
-    this.cwd = cwd2;
+  constructor(cwd, options = {}) {
+    this.cwd = cwd;
     this.options = options;
     this.pending = /* @__PURE__ */ new Map();
     this.nextId = 1;
@@ -1450,6 +1690,8 @@ var AppServerClientBase = class {
     this.notificationHandler = null;
     this.lineBuffer = "";
     this.transport = "unknown";
+    this.serverRequestHandler = null;
+    this.listeners = /* @__PURE__ */ new Map();
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
     });
@@ -1457,21 +1699,76 @@ var AppServerClientBase = class {
   setNotificationHandler(handler) {
     this.notificationHandler = handler;
   }
+  on(eventName, handler) {
+    if (!this.listeners.has(eventName)) {
+      this.listeners.set(eventName, /* @__PURE__ */ new Set());
+    }
+    this.listeners.get(eventName).add(handler);
+    return this;
+  }
+  off(eventName, handler) {
+    this.listeners.get(eventName)?.delete(handler);
+    return this;
+  }
+  emit(eventName, payload) {
+    for (const handler of this.listeners.get(eventName) ?? []) {
+      try {
+        handler(payload);
+      } catch {
+      }
+    }
+  }
   /**
    * @template {AppServerMethod} M
    * @param {M} method
    * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+   * @param {{ signal?: AbortSignal }} [options]
    * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
    */
-  request(method, params) {
+  request(method, params, options = {}) {
     if (this.closed) {
       throw new Error("codex app-server client is closed.");
+    }
+    const signal = options.signal ?? null;
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error("request aborted"));
     }
     const id = this.nextId;
     this.nextId += 1;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
-      this.sendMessage({ id, method, params });
+      let abortHandler = null;
+      const cleanupAbort = () => {
+        if (signal && abortHandler) {
+          signal.removeEventListener("abort", abortHandler);
+          abortHandler = null;
+        }
+      };
+      const wrappedResolve = (value) => {
+        cleanupAbort();
+        resolve(value);
+      };
+      const wrappedReject = (error) => {
+        cleanupAbort();
+        reject(error);
+      };
+      this.pending.set(id, { resolve: wrappedResolve, reject: wrappedReject, method });
+      if (signal) {
+        abortHandler = () => {
+          if (this.pending.get(id)) {
+            this.pending.delete(id);
+          }
+          cleanupAbort();
+          reject(signal.reason ?? new Error("request aborted"));
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+      try {
+        this.sendMessage({ id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        cleanupAbort();
+        reject(error);
+      }
     });
   }
   notify(method, params = {}) {
@@ -1527,36 +1824,26 @@ var AppServerClientBase = class {
   }
   handleServerRequest(message) {
     const method = message.method;
-    const params = message.params ?? {};
-    if (method === "item/tool/requestUserInput") {
-      if (this.serverRequestHandler) {
-        message._client = this;
-        this.serverRequestHandler(message);
-      } else {
-        this.sendMessage({ id: message.id, result: { answers: {} } });
-      }
+    if (this.serverRequestHandler) {
+      message._client = this;
+      Promise.resolve(this.serverRequestHandler(message)).catch((error) => {
+        this.rejectServerRequest(
+          message.id,
+          buildJsonRpcError(-32e3, error?.message ?? `Server request handler failed for ${method}.`)
+        );
+      });
       return;
     }
-    if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-      this.sendMessage({ id: message.id, result: { decision: "accept" } });
-      return;
-    }
-    if (method === "item/permissions/requestApproval") {
-      const permissions = params.permissions ?? {};
-      this.sendMessage({ id: message.id, result: { permissions, scope: "session" } });
-      return;
-    }
-    if (method === "mcpServer/elicitation/request") {
-      this.sendMessage({ id: message.id, result: { action: "accept", content: null } });
-      return;
-    }
-    this.sendMessage({
-      id: message.id,
-      error: buildJsonRpcError(-32601, `Unsupported server request: ${method}`)
-    });
+    this.rejectServerRequest(message.id, serverRequestError(method));
   }
   setServerRequestHandler(handler) {
     this.serverRequestHandler = handler;
+  }
+  resolveServerRequest(id, result) {
+    this.sendMessage({ id, result: result ?? {} });
+  }
+  rejectServerRequest(id, error) {
+    this.sendMessage({ id, error });
   }
   handleExit(error) {
     if (this.exitResolved) {
@@ -1564,10 +1851,12 @@ var AppServerClientBase = class {
     }
     this.exitResolved = true;
     this.exitError = error ?? null;
+    this.closed = true;
     for (const pending of this.pending.values()) {
       pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
     }
     this.pending.clear();
+    this.emit("exit", this.exitError);
     this.resolveExit(void 0);
   }
   sendMessage(_message) {
@@ -1575,8 +1864,8 @@ var AppServerClientBase = class {
   }
 };
 var SpawnedCodexAppServerClient = class extends AppServerClientBase {
-  constructor(cwd2, options = {}) {
-    super(cwd2, options);
+  constructor(cwd, options = {}) {
+    super(cwd, options);
     this.transport = "direct";
   }
   async initialize() {
@@ -1603,10 +1892,14 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
     this.readline.on("line", (line) => {
       this.handleLine(line);
     });
-    await this.request("initialize", {
-      clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server."
+    );
     this.notify("initialized", {});
   }
   async close() {
@@ -1633,7 +1926,21 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
         }
       }, 50).unref?.();
     }
-    await this.exitPromise;
+    try {
+      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
+    } catch (error) {
+      if (this.proc && this.proc.exitCode === null) {
+        if (process6.platform === "win32") {
+          try {
+            terminateProcessTree(this.proc.pid);
+          } catch {
+          }
+        } else {
+          this.proc.kill("SIGKILL");
+        }
+      }
+      this.handleExit(error);
+    }
   }
   sendMessage(message) {
     const line = `${JSON.stringify(message)}
@@ -1642,17 +1949,24 @@ var SpawnedCodexAppServerClient = class extends AppServerClientBase {
     if (!stdin) {
       throw new Error("codex app-server stdin is not available.");
     }
-    stdin.write(line);
+    if (stdin.destroyed || !stdin.writable) {
+      throw new Error("codex app-server stdin is closed.");
+    }
+    stdin.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
   }
 };
 var BrokerCodexAppServerClient = class extends AppServerClientBase {
-  constructor(cwd2, options = {}) {
-    super(cwd2, options);
+  constructor(cwd, options = {}) {
+    super(cwd, options);
     this.transport = "broker";
     this.endpoint = options.brokerEndpoint;
   }
   async initialize() {
-    await new Promise((resolve, reject) => {
+    await withTimeout(new Promise((resolve, reject) => {
       const target = parseBrokerEndpoint(this.endpoint);
       this.socket = net2.createConnection({ path: target.path });
       this.socket.setEncoding("utf8");
@@ -1669,11 +1983,15 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
       this.socket.on("close", () => {
         this.handleExit(this.exitError);
       });
-    });
-    await this.request("initialize", {
-      clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+    }), APP_SERVER_INITIALIZE_TIMEOUT_MS, "Timed out connecting to codex app-server broker.");
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server broker connection."
+    );
     this.notify("initialized", {});
   }
   async close() {
@@ -1685,7 +2003,12 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
     if (this.socket) {
       this.socket.end();
     }
-    await this.exitPromise;
+    try {
+      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
+    } catch (error) {
+      this.socket?.destroy();
+      this.handleExit(error);
+    }
   }
   sendMessage(message) {
     const line = `${JSON.stringify(message)}
@@ -1694,24 +2017,37 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
     if (!socket) {
       throw new Error("codex app-server broker connection is not connected.");
     }
-    socket.write(line);
+    if (socket.destroyed || !socket.writable) {
+      throw new Error("codex app-server broker connection is closed.");
+    }
+    socket.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
   }
 };
 var CodexAppServerClient = class {
-  static async connect(cwd2, options = {}) {
+  static async connect(cwd, options = {}) {
     let brokerEndpoint = null;
     if (!options.disableBroker) {
       brokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process6.env[BROKER_ENDPOINT_ENV] ?? null;
       if (!brokerEndpoint && options.reuseExistingBroker) {
-        brokerEndpoint = loadBrokerSession(cwd2)?.endpoint ?? null;
+        brokerEndpoint = loadBrokerSession(cwd)?.endpoint ?? null;
       }
       if (!brokerEndpoint && !options.reuseExistingBroker) {
-        const brokerSession = await ensureBrokerSession(cwd2, { env: options.env });
+        const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
         brokerEndpoint = brokerSession?.endpoint ?? null;
       }
     }
-    const client = brokerEndpoint ? new BrokerCodexAppServerClient(cwd2, { ...options, brokerEndpoint }) : new SpawnedCodexAppServerClient(cwd2, options);
-    await client.initialize();
+    const client = brokerEndpoint ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint }) : new SpawnedCodexAppServerClient(cwd, options);
+    try {
+      await client.initialize();
+    } catch (error) {
+      await client.close().catch(() => {
+      });
+      throw error;
+    }
     return client;
   }
 };
@@ -1719,13 +2055,14 @@ var CodexAppServerClient = class {
 // src/lib/codex.mjs
 var SERVICE_NAME = "claude_code_codex_plugin";
 var TASK_THREAD_PREFIX = "Codex Companion Task";
+var TURN_INTERRUPT_GRACE_MS = 3e4;
 var DEFAULT_CONTINUE_PROMPT = "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 function cleanCodexStderr(stderr) {
   return stderr.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line && !line.startsWith("WARNING: proceeding, even though we could not update PATH:")).join("\n");
 }
-function buildThreadParams(cwd2, options = {}) {
+function buildThreadParams(cwd, options = {}) {
   return {
-    cwd: cwd2,
+    cwd,
     model: options.model ?? null,
     approvalPolicy: "never",
     sandbox: options.sandbox ?? "read-only",
@@ -1734,10 +2071,10 @@ function buildThreadParams(cwd2, options = {}) {
     experimentalRawEvents: false
   };
 }
-function buildResumeParams(threadId, cwd2, options = {}) {
+function buildResumeParams(threadId, cwd, options = {}) {
   return {
     threadId,
-    cwd: cwd2,
+    cwd,
     model: options.model ?? null,
     approvalPolicy: "never",
     sandbox: options.sandbox ?? "read-only"
@@ -1940,10 +2277,8 @@ function createTurnCaptureState(threadId, options = {}) {
     rejectCompletion,
     finalTurn: null,
     completed: false,
-    finalAnswerSeen: false,
     pendingCollaborations: /* @__PURE__ */ new Set(),
     activeSubagentTurns: /* @__PURE__ */ new Set(),
-    completionTimer: null,
     lastAgentMessage: "",
     reviewText: "",
     planDetected: false,
@@ -1953,21 +2288,15 @@ function createTurnCaptureState(threadId, options = {}) {
     messages: [],
     fileChanges: [],
     commandExecutions: [],
+    pendingServerRequests: 0,
     onProgress: options.onProgress ?? null,
     onItemCompleted: typeof options.onItemCompleted === "function" ? options.onItemCompleted : null
   };
-}
-function clearCompletionTimer(state) {
-  if (state.completionTimer) {
-    clearTimeout(state.completionTimer);
-    state.completionTimer = null;
-  }
 }
 function completeTurn(state, turn = null, options = {}) {
   if (state.completed) {
     return;
   }
-  clearCompletionTimer(state);
   state.completed = true;
   if (turn) {
     state.finalTurn = turn;
@@ -1985,26 +2314,6 @@ function completeTurn(state, turn = null, options = {}) {
   }
   state.resolveCompletion(state);
 }
-function scheduleInferredCompletion(state) {
-  if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
-    return;
-  }
-  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
-    return;
-  }
-  clearCompletionTimer(state);
-  state.completionTimer = setTimeout(() => {
-    state.completionTimer = null;
-    if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
-      return;
-    }
-    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
-      return;
-    }
-    completeTurn(state, null, { inferred: true });
-  }, 250);
-  state.completionTimer.unref?.();
-}
 function belongsToTurn(state, message) {
   const messageThreadId = extractThreadId(message);
   if (!messageThreadId || !state.threadIds.has(messageThreadId)) {
@@ -2021,7 +2330,6 @@ function recordItem(state, item, lifecycle, threadId = null) {
         state.pendingCollaborations.add(item.id);
       } else if (lifecycle === "completed") {
         state.pendingCollaborations.delete(item.id);
-        scheduleInferredCompletion(state);
       }
     }
     for (const receiverThreadId of item.receiverThreadIds ?? []) {
@@ -2037,10 +2345,6 @@ function recordItem(state, item, lifecycle, threadId = null) {
     if (item.text) {
       if (!threadId || threadId === state.threadId) {
         state.lastAgentMessage = item.text;
-        if (lifecycle === "completed" && item.phase === "final_answer") {
-          state.finalAnswerSeen = true;
-          scheduleInferredCompletion(state);
-        }
       }
       if (lifecycle === "completed") {
         const sourceLabel = labelForThread(state, threadId);
@@ -2120,6 +2424,9 @@ function applyTurnNotification(state, message) {
     case "turn/started":
       registerThread(state, message.params.threadId);
       state.threadTurnIds.set(message.params.threadId, message.params.turn.id);
+      if ((message.params.threadId ?? null) === state.threadId && !state.turnId) {
+        state.turnId = message.params.turn.id;
+      }
       if ((message.params.threadId ?? null) !== state.threadId) {
         state.activeSubagentTurns.add(message.params.threadId);
       }
@@ -2171,7 +2478,6 @@ function applyTurnNotification(state, message) {
     case "turn/completed":
       if ((message.params.threadId ?? null) !== state.threadId) {
         state.activeSubagentTurns.delete(message.params.threadId);
-        scheduleInferredCompletion(state);
         break;
       }
       emitProgress(
@@ -2191,16 +2497,68 @@ function applyTurnNotification(state, message) {
       break;
   }
 }
+function routeTurnNotification(state, message, previousHandler) {
+  if (message.method === "thread/started" || message.method === "thread/name/updated") {
+    applyTurnNotification(state, message);
+    return;
+  }
+  if (!belongsToTurn(state, message)) {
+    if (previousHandler) {
+      previousHandler(message);
+    }
+    return;
+  }
+  applyTurnNotification(state, message);
+}
+function flushBufferedNotifications(state, previousHandler) {
+  if (state.bufferedNotifications.length === 0 || !state.turnId) {
+    return;
+  }
+  const buffered = state.bufferedNotifications.splice(0);
+  for (const message of buffered) {
+    routeTurnNotification(state, message, previousHandler);
+    if (state.completed) {
+      break;
+    }
+  }
+}
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
   const idleTimeoutMs = Number(options.idleTimeoutMs) > 0 ? Number(options.idleTimeoutMs) : 0;
+  const turnTimeoutMs = Number(options.turnTimeoutMs) > 0 ? Number(options.turnTimeoutMs) : 0;
   let lastNotificationAt = Date.now();
   let idleInterval = null;
+  let turnTimer = null;
+  let interruptGraceTimer = null;
+  const turnAbort = new AbortController();
+  const markActivity = () => {
+    lastNotificationAt = Date.now();
+  };
+  markActivity.startServerRequest = () => {
+    state.pendingServerRequests += 1;
+    markActivity();
+    let finished = false;
+    return () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      state.pendingServerRequests = Math.max(0, state.pendingServerRequests - 1);
+      markActivity();
+    };
+  };
+  if (typeof options.onActivityMarkerReady === "function") {
+    options.onActivityMarkerReady(markActivity);
+  }
   if (idleTimeoutMs > 0) {
     const checkIntervalMs = Math.min(5e3, idleTimeoutMs);
     idleInterval = setInterval(() => {
       if (state.completed) {
+        return;
+      }
+      if (state.pendingServerRequests > 0) {
+        markActivity();
         return;
       }
       const elapsed = Date.now() - lastNotificationAt;
@@ -2221,68 +2579,140 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }, checkIntervalMs);
     idleInterval.unref?.();
   }
+  if (turnTimeoutMs > 0) {
+    turnTimer = setTimeout(() => {
+      if (state.completed) {
+        return;
+      }
+      const message = `Turn timed out after ${turnTimeoutMs}ms.`;
+      state.error = { message, code: "TurnTimeout" };
+      emitProgress(state.onProgress, message, "failed");
+      const interruptTurnId = state.turnId ?? state.threadTurnIds.get(state.threadId) ?? null;
+      if (interruptTurnId) {
+        try {
+          Promise.resolve(client.request("turn/interrupt", { threadId: state.threadId, turnId: interruptTurnId })).catch((error) => {
+            emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
+            if (!state.completed) {
+              completeTurn(state, null, { inferredStatus: "failed" });
+            }
+          });
+        } catch (error) {
+          emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
+          completeTurn(state, null, { inferredStatus: "failed" });
+          return;
+        }
+        const interruptGraceMs = Number(options.interruptGraceMs) > 0 ? Number(options.interruptGraceMs) : TURN_INTERRUPT_GRACE_MS;
+        interruptGraceTimer = setTimeout(() => {
+          if (state.completed) {
+            return;
+          }
+          emitProgress(
+            state.onProgress,
+            `turn/interrupt did not produce turn/completed within ${interruptGraceMs}ms.`,
+            "failed"
+          );
+          completeTurn(state, null, { inferredStatus: "failed" });
+        }, interruptGraceMs);
+        interruptGraceTimer.unref?.();
+        return;
+      }
+      emitProgress(
+        state.onProgress,
+        "turn timeout fired before turn id known; upstream turn may continue running",
+        null
+      );
+      completeTurn(state, null, { inferredStatus: "failed" });
+    }, turnTimeoutMs);
+    turnTimer.unref?.();
+  }
   client.setNotificationHandler((message) => {
     lastNotificationAt = Date.now();
     if (!state.turnId) {
+      const messageThreadId = extractThreadId(message);
+      if (messageThreadId === state.threadId && (message.method === "turn/started" || message.method === "turn/completed")) {
+        applyTurnNotification(state, message);
+        flushBufferedNotifications(state, previousHandler);
+        return;
+      }
       state.bufferedNotifications.push(message);
       return;
     }
-    if (message.method === "thread/started" || message.method === "thread/name/updated") {
-      applyTurnNotification(state, message);
-      return;
-    }
-    if (!belongsToTurn(state, message)) {
-      if (previousHandler) {
-        previousHandler(message);
-      }
-      return;
-    }
-    applyTurnNotification(state, message);
+    routeTurnNotification(state, message, previousHandler);
   });
   const onExit = () => {
-    if (!state.completed) {
-      state.error = { message: "Codex app-server exited unexpectedly" };
-      completeTurn(state, null, { inferredStatus: "failed" });
+    if (state.completed) {
+      return;
     }
+    const bufferedTerminal = state.bufferedNotifications.find(
+      (message) => message?.method === "turn/completed" && (message?.params?.threadId ?? null) === state.threadId
+    );
+    if (bufferedTerminal) {
+      applyTurnNotification(state, bufferedTerminal);
+      if (state.completed) {
+        return;
+      }
+    }
+    state.error = { message: "Codex app-server exited unexpectedly" };
+    completeTurn(state, null, { inferredStatus: "failed" });
   };
   if (client.on) client.on("exit", onExit);
   try {
-    const response = await startRequest();
-    lastNotificationAt = Date.now();
+    const response = await Promise.race([
+      startRequest(turnAbort.signal),
+      state.completion.then(() => null)
+    ]);
+    if (!response) {
+      turnAbort.abort(new Error("captureTurn: state.completion won the race"));
+      return await state.completion;
+    }
+    markActivity();
+    if (state.completed) {
+      return await state.completion;
+    }
     options.onResponse?.(response, state);
-    state.turnId = response.turn?.id ?? null;
+    const responseTurnId = response.turn?.id ?? null;
+    if (responseTurnId && state.turnId && state.turnId !== responseTurnId) {
+      state.error = {
+        message: `turn/start response turn id ${responseTurnId} did not match streamed turn id ${state.turnId}.`,
+        code: "ProtocolDrift"
+      };
+      completeTurn(state, null, { inferredStatus: "failed" });
+      return await state.completion;
+    }
+    state.turnId = state.turnId ?? responseTurnId;
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
     }
-    for (const message of state.bufferedNotifications) {
-      if (belongsToTurn(state, message)) {
-        applyTurnNotification(state, message);
-      } else {
-        if (previousHandler) {
-          previousHandler(message);
-        }
-      }
-    }
-    state.bufferedNotifications.length = 0;
+    flushBufferedNotifications(state, previousHandler);
     if (response.turn?.status && response.turn.status !== "inProgress") {
       completeTurn(state, response.turn);
     }
     return await state.completion;
   } finally {
-    clearCompletionTimer(state);
     if (idleInterval) {
       clearInterval(idleInterval);
       idleInterval = null;
+    }
+    if (turnTimer) {
+      clearTimeout(turnTimer);
+      turnTimer = null;
+    }
+    if (interruptGraceTimer) {
+      clearTimeout(interruptGraceTimer);
+      interruptGraceTimer = null;
+    }
+    if (typeof options.onActivityMarkerReady === "function") {
+      options.onActivityMarkerReady(null);
     }
     client.setNotificationHandler(previousHandler ?? null);
     if (client.off) client.off("exit", onExit);
     else if (client.removeListener) client.removeListener("exit", onExit);
   }
 }
-async function withAppServer(cwd2, fn) {
+async function withAppServer(cwd, fn) {
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd2);
+    client = await CodexAppServerClient.connect(cwd);
     const result = await fn(client);
     await client.close();
     return result;
@@ -2297,7 +2727,7 @@ async function withAppServer(cwd2, fn) {
     if (!shouldRetryDirect) {
       throw error;
     }
-    const directClient = await CodexAppServerClient.connect(cwd2, { disableBroker: true });
+    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
     try {
       return await fn(directClient);
     } finally {
@@ -2305,8 +2735,8 @@ async function withAppServer(cwd2, fn) {
     }
   }
 }
-async function startThread(client, cwd2, options = {}) {
-  const response = await client.request("thread/start", buildThreadParams(cwd2, options));
+async function startThread(client, cwd, options = {}) {
+  const response = await client.request("thread/start", buildThreadParams(cwd, options));
   const threadId = response.thread.id;
   if (options.threadName) {
     try {
@@ -2320,8 +2750,8 @@ async function startThread(client, cwd2, options = {}) {
   }
   return response;
 }
-async function resumeThread(client, threadId, cwd2, options = {}) {
-  return client.request("thread/resume", buildResumeParams(threadId, cwd2, options));
+async function resumeThread(client, threadId, cwd, options = {}) {
+  return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
 }
 function buildResultStatus(turnState) {
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
@@ -2419,12 +2849,12 @@ function buildAppServerAuthStatus(accountResponse, configResponse) {
     provider: providerId
   });
 }
-async function getCodexAuthStatusFromClient(client, cwd2) {
+async function getCodexAuthStatusFromClient(client, cwd) {
   try {
     const accountResponse = await client.request("account/read", { refreshToken: false });
     const configResponse = await client.request("config/read", {
       includeLayers: false,
-      cwd: cwd2
+      cwd
     });
     return buildAppServerAuthStatus(accountResponse, configResponse);
   } catch (error) {
@@ -2435,12 +2865,12 @@ async function getCodexAuthStatusFromClient(client, cwd2) {
     });
   }
 }
-function getCodexAvailability(cwd2) {
-  const versionStatus = binaryAvailable("codex", ["--version"], { cwd: cwd2 });
+function getCodexAvailability(cwd) {
+  const versionStatus = binaryAvailable("codex", ["--version"], { cwd });
   if (!versionStatus.available) {
     return versionStatus;
   }
-  const appServerStatus = binaryAvailable("codex", ["app-server", "--help"], { cwd: cwd2 });
+  const appServerStatus = binaryAvailable("codex", ["app-server", "--help"], { cwd });
   if (!appServerStatus.available) {
     return {
       available: false,
@@ -2452,8 +2882,8 @@ function getCodexAvailability(cwd2) {
     detail: `${versionStatus.detail}; advanced runtime available`
   };
 }
-function getSessionRuntimeStatus(env = process.env, cwd2 = process.cwd()) {
-  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd2)?.endpoint ?? null;
+function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
+  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
   if (endpoint) {
     return {
       mode: "shared",
@@ -2469,8 +2899,8 @@ function getSessionRuntimeStatus(env = process.env, cwd2 = process.cwd()) {
     endpoint: null
   };
 }
-async function getCodexAuthStatus(cwd2, options = {}) {
-  const availability = getCodexAvailability(cwd2);
+async function getCodexAuthStatus(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     return {
       available: false,
@@ -2485,11 +2915,11 @@ async function getCodexAuthStatus(cwd2, options = {}) {
   }
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd2, {
+    client = await CodexAppServerClient.connect(cwd, {
       env: options.env,
       reuseExistingBroker: true
     });
-    return await getCodexAuthStatusFromClient(client, cwd2);
+    return await getCodexAuthStatusFromClient(client, cwd);
   } catch (error) {
     return buildAuthStatus({
       loggedIn: false,
@@ -2503,7 +2933,7 @@ async function getCodexAuthStatus(cwd2, options = {}) {
     }
   }
 }
-async function interruptAppServerTurn(cwd2, { threadId, turnId }) {
+async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   if (!threadId || !turnId) {
     return {
       attempted: false,
@@ -2512,7 +2942,7 @@ async function interruptAppServerTurn(cwd2, { threadId, turnId }) {
       detail: "missing threadId or turnId"
     };
   }
-  const availability = getCodexAvailability(cwd2);
+  const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     return {
       attempted: false,
@@ -2523,7 +2953,7 @@ async function interruptAppServerTurn(cwd2, { threadId, turnId }) {
   }
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd2, { reuseExistingBroker: true });
+    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
     await client.request("turn/interrupt", { threadId, turnId });
     return {
       attempted: true,
@@ -2543,8 +2973,8 @@ async function interruptAppServerTurn(cwd2, { threadId, turnId }) {
     });
   }
 }
-async function runAppServerReview(cwd2, options = {}) {
-  const availability = getCodexAvailability(cwd2);
+async function runAppServerReview(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
       class: "dependency_failed",
@@ -2553,9 +2983,9 @@ async function runAppServerReview(cwd2, options = {}) {
       suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
     });
   }
-  return withAppServer(cwd2, async (client) => {
+  return withAppServer(cwd, async (client) => {
     emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
-    const thread = await startThread(client, cwd2, {
+    const thread = await startThread(client, cwd, {
       model: options.model,
       sandbox: "read-only",
       ephemeral: true,
@@ -2569,13 +2999,15 @@ async function runAppServerReview(cwd2, options = {}) {
     const turnState = await captureTurn(
       client,
       sourceThreadId,
-      () => client.request("review/start", {
+      (signal) => client.request("review/start", {
         threadId: sourceThreadId,
         delivery,
         target: options.target
-      }),
+      }, { signal }),
       {
         onProgress: options.onProgress,
+        idleTimeoutMs: options.idleTimeoutMs ?? null,
+        turnTimeoutMs: options.turnTimeoutMs ?? null,
         onResponse(response, state) {
           if (response.reviewThreadId) {
             state.threadIds.add(response.reviewThreadId);
@@ -2599,8 +3031,8 @@ async function runAppServerReview(cwd2, options = {}) {
     };
   });
 }
-async function runAppServerTurn(cwd2, options = {}) {
-  const availability = getCodexAvailability(cwd2);
+async function runAppServerTurn(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
       class: "dependency_failed",
@@ -2609,14 +3041,23 @@ async function runAppServerTurn(cwd2, options = {}) {
       suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
     });
   }
-  return withAppServer(cwd2, async (client) => {
+  return withAppServer(cwd, async (client) => {
     let threadId;
+    let markServerRequestActivity = null;
     if (options.onServerRequest) {
-      client.setServerRequestHandler(options.onServerRequest);
+      client.setServerRequestHandler(async (message) => {
+        const finishServerRequest = typeof markServerRequestActivity?.startServerRequest === "function" ? markServerRequestActivity.startServerRequest() : null;
+        markServerRequestActivity?.();
+        try {
+          return await options.onServerRequest(message);
+        } finally {
+          finishServerRequest?.();
+        }
+      });
     }
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
-      const response = await resumeThread(client, options.resumeThreadId, cwd2, {
+      const response = await resumeThread(client, options.resumeThreadId, cwd, {
         model: options.model,
         sandbox: options.sandbox,
         ephemeral: false
@@ -2624,7 +3065,7 @@ async function runAppServerTurn(cwd2, options = {}) {
       threadId = response.thread.id;
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
-      const response = await startThread(client, cwd2, {
+      const response = await startThread(client, cwd, {
         model: options.model,
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
@@ -2675,26 +3116,19 @@ async function runAppServerTurn(cwd2, options = {}) {
     const turnPromise = captureTurn(
       client,
       threadId,
-      () => client.request("turn/start", turnParams),
+      (signal) => client.request("turn/start", turnParams, { signal }),
       {
         onProgress: options.onProgress,
         idleTimeoutMs: options.idleTimeoutMs ?? null,
+        turnTimeoutMs: options.turnTimeoutMs ?? null,
+        onActivityMarkerReady(marker) {
+          markServerRequestActivity = marker;
+        },
         onIdleTimeout: options.onIdleTimeout ?? null,
         onItemCompleted: options.onItemCompleted ?? null
       }
     );
-    let turnState;
-    if (options.turnTimeoutMs && options.turnTimeoutMs > 0) {
-      turnState = await Promise.race([
-        turnPromise,
-        new Promise((_, reject) => {
-          const t = setTimeout(() => reject(new Error(`Turn timed out after ${options.turnTimeoutMs}ms`)), options.turnTimeoutMs);
-          if (t.unref) t.unref();
-        })
-      ]);
-    } else {
-      turnState = await turnPromise;
-    }
+    const turnState = await turnPromise;
     return {
       status: buildResultStatus(turnState),
       threadId,
@@ -2712,8 +3146,8 @@ async function runAppServerTurn(cwd2, options = {}) {
     };
   });
 }
-async function findLatestTaskThread(cwd2) {
-  const availability = getCodexAvailability(cwd2);
+async function findLatestTaskThread(cwd) {
+  const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
       class: "dependency_failed",
@@ -2722,9 +3156,9 @@ async function findLatestTaskThread(cwd2) {
       suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
     });
   }
-  return withAppServer(cwd2, async (client) => {
+  return withAppServer(cwd, async (client) => {
     const response = await client.request("thread/list", {
-      cwd: cwd2,
+      cwd,
       limit: 20,
       sortKey: "updated_at",
       sourceKinds: ["appServer"],
@@ -2765,17 +3199,128 @@ function readOutputSchema(schemaPath) {
   return readJsonFile(schemaPath);
 }
 
-// src/lib/prompts.mjs
-import fs5 from "node:fs";
-import path5 from "node:path";
-function loadPromptTemplate(rootDir, name) {
-  const promptPath = path5.join(rootDir, "prompts", `${name}.md`);
-  return fs5.readFileSync(promptPath, "utf8");
+// src/lib/official-plugin.mjs
+import { spawnSync as spawnSync2 } from "node:child_process";
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
+function stringValue(value) {
+  return typeof value === "string" ? value : "";
 }
-function interpolateTemplate(template, variables) {
-  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => {
-    return Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : "";
+function normalizePathLike(value) {
+  return stringValue(value).replace(/\\/g, "/").toLowerCase();
+}
+function pluginEntryEnabled(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if ("enabled" in entry) return Boolean(entry.enabled);
+  if ("disabled" in entry) return !entry.disabled;
+  return true;
+}
+function summarizePluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: entry.id ?? null,
+    name: entry.name ?? null,
+    version: entry.version ?? null,
+    scope: entry.scope ?? null,
+    installPath: entry.installPath ?? entry.path ?? null,
+    enabled: pluginEntryEnabled(entry)
+  };
+}
+function isOfficialOpenAICodexPluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const id = stringValue(entry.id).toLowerCase();
+  const name = stringValue(entry.name).toLowerCase();
+  const source = stringValue(entry.source).toLowerCase();
+  const installPath = normalizePathLike(entry.installPath ?? entry.path);
+  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
+  if (id === "codex@openai-codex") return true;
+  if (id === "codex" && authorName === "openai") return true;
+  if (name === "codex" && authorName === "openai") return true;
+  if (source.includes("openai/codex-plugin-cc")) return true;
+  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
+  if (installPath.includes("/openai-codex/codex/")) return true;
+  if (installPath.endsWith("/openai-codex/codex")) return true;
+  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
+  return false;
+}
+function detectOfficialOpenAICodexPluginFromEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: "Claude plugin list output was not an array.",
+      plugin: null
+    };
+  }
+  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
+  if (plugin) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
+      detail: "Official OpenAI Codex plugin is enabled.",
+      plugin: summarizePluginEntry(plugin)
+    };
+  }
+  return {
+    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
+    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
+    plugin: null
+  };
+}
+function extractPluginEntries(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
+  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
+  return null;
+}
+function detectOfficialOpenAICodexPluginUncached(options = {}) {
+  const spawn4 = options.spawnSync ?? spawnSync2;
+  const result = spawn4("claude", ["plugin", "list", "--json"], {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
   });
+  if (result.error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
+      plugin: null
+    };
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
+      plugin: null
+    };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
+  } catch (error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
+      plugin: null
+    };
+  }
+}
+var DEFAULT_DETECT_CACHE_MS = 3e4;
+var cached = null;
+var cachedAt = 0;
+function detectOfficialOpenAICodexPlugin(options = {}) {
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
+  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
+    return cached;
+  }
+  const result = detectOfficialOpenAICodexPluginUncached(options);
+  cached = result;
+  cachedAt = Date.now();
+  return result;
 }
 
 // src/lib/job-control.mjs
@@ -3141,8 +3686,8 @@ function matchJobReference(jobs, reference, predicate = () => true) {
     suggestion: "Run `status` to list known jobs."
   });
 }
-function buildStatusSnapshot(cwd2, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+function buildStatusSnapshot(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
@@ -3161,8 +3706,8 @@ function buildStatusSnapshot(cwd2, options = {}) {
     needsReview: Boolean(config.stopReviewGate)
   };
 }
-function buildSingleJobSnapshot(cwd2, reference, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+function buildSingleJobSnapshot(cwd, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
@@ -3178,8 +3723,8 @@ function buildSingleJobSnapshot(cwd2, reference, options = {}) {
     job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
   };
 }
-function resolveResultJob(cwd2, reference) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+function resolveResultJob(cwd, reference) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
   if (reference) {
     const activeMatch = jobs.find(
@@ -3216,8 +3761,8 @@ function resolveResultJob(cwd2, reference) {
     retryable: false
   });
 }
-function resolveCancelableJob(cwd2, reference, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+function resolveCancelableJob(cwd, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
   if (reference) {
@@ -3279,6 +3824,40 @@ function formatLineRange(finding) {
   }
   return `:${finding.line_start}-${finding.line_end}`;
 }
+var ALLOWED_FINDING_SEVERITIES = /* @__PURE__ */ new Set(["critical", "high", "medium", "low"]);
+function validateReviewFinding(finding, index) {
+  if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+    return `finding[${index}] is not an object`;
+  }
+  if (typeof finding.severity !== "string" || !finding.severity.trim()) {
+    return `finding[${index}] missing required field 'severity'`;
+  }
+  if (!ALLOWED_FINDING_SEVERITIES.has(finding.severity.trim())) {
+    return `finding[${index}] has invalid severity '${finding.severity}'`;
+  }
+  if (typeof finding.title !== "string" || !finding.title.trim()) {
+    return `finding[${index}] missing required field 'title'`;
+  }
+  if (typeof finding.body !== "string" || !finding.body.trim()) {
+    return `finding[${index}] missing required field 'body'`;
+  }
+  if (typeof finding.file !== "string" || !finding.file.trim()) {
+    return `finding[${index}] missing required field 'file'`;
+  }
+  if (!Number.isInteger(finding.line_start) || finding.line_start < 1) {
+    return `finding[${index}] missing required field 'line_start'`;
+  }
+  if (!Number.isInteger(finding.line_end) || finding.line_end < finding.line_start) {
+    return `finding[${index}] missing required field 'line_end'`;
+  }
+  if (typeof finding.confidence !== "number" || Number.isNaN(finding.confidence) || finding.confidence < 0 || finding.confidence > 1) {
+    return `finding[${index}] missing required field 'confidence'`;
+  }
+  if (typeof finding.recommendation !== "string") {
+    return `finding[${index}] missing required field 'recommendation'`;
+  }
+  return null;
+}
 function validateReviewResultShape(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Expected a top-level JSON object.";
@@ -3295,6 +3874,12 @@ function validateReviewResultShape(data) {
   if (!Array.isArray(data.next_steps)) {
     return "Missing array `next_steps`.";
   }
+  for (let index = 0; index < data.findings.length; index += 1) {
+    const findingError = validateReviewFinding(data.findings[index], index);
+    if (findingError) {
+      return findingError;
+    }
+  }
   return null;
 }
 function normalizeReviewFinding(finding, index) {
@@ -3308,6 +3893,7 @@ function normalizeReviewFinding(finding, index) {
     file: typeof source.file === "string" && source.file.trim() ? source.file.trim() : "unknown",
     line_start: lineStart,
     line_end: lineEnd,
+    confidence: typeof source.confidence === "number" && source.confidence >= 0 && source.confidence <= 1 ? source.confidence : null,
     recommendation: typeof source.recommendation === "string" ? source.recommendation.trim() : ""
   };
 }
@@ -3421,9 +4007,14 @@ function renderSetupReport(report) {
     `- codex: ${report.codex.detail}`,
     `- auth: ${report.auth.detail}`,
     `- session runtime: ${report.sessionRuntime.label}`,
+    `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
+    `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
     ""
   ];
+  if (report.reviewGateSuppressionReason) {
+    lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
+  }
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");
     for (const action of report.actionsTaken) {
@@ -3490,7 +4081,8 @@ function renderReviewResult(parsedResult, meta) {
     lines.push("Findings:");
     for (const finding of findings) {
       const lineSuffix = formatLineRange(finding);
-      lines.push(`- [${finding.severity}] ${finding.title} (${finding.file}${lineSuffix})`);
+      const severityHeader = typeof finding.confidence === "number" ? `${finding.severity} \xB7 conf=${finding.confidence.toFixed(2)}` : finding.severity;
+      lines.push(`- [${severityHeader}] ${finding.title} (${finding.file}${lineSuffix})`);
       lines.push(`  ${finding.body}`);
       if (finding.recommendation) {
         lines.push(`  Recommendation: ${finding.recommendation}`);
@@ -3582,7 +4174,15 @@ function renderStatusReport(report) {
   }
   if (report.needsReview) {
     lines.push("The stop-time review gate is enabled.");
-    lines.push("Ending the session will trigger a fresh Codex adversarial review and block if it finds issues.");
+    if (report.config.stopReviewGateLockPath) {
+      lines.push(`Project lock: ${report.config.stopReviewGateLockPath}`);
+    }
+    lines.push("Ending the session will trigger a fresh Codex stop-time review and block if it finds issues.");
+  } else if (report.reviewGateLockIgnored) {
+    lines.push("The Codex Bridge stop-time review gate lock is present but ignored.");
+    if (report.reviewGateSuppressionReason) {
+      lines.push(`Reason: ${report.reviewGateSuppressionReason}`);
+    }
   }
   return `${lines.join("\n").trimEnd()}
 `;
@@ -6393,10 +6993,9 @@ var DEFAULT_CONFIG = {
   pipeline_stage_ms: 3e5,
   pipeline_total_ms: 9e5,
   // How long `requestUserInput` waits for a human/orchestrator to answer
-  // before auto-answering `{answers: {}}`. Five minutes is tight for
-  // thoughtful decisions; make it configurable so a slow loop (human in a
-  // meeting, or a subagent orchestrator with its own deliberation latency)
-  // isn't silently coerced into a no-op answer.
+  // before rejecting the server request. Five minutes is tight for thoughtful
+  // decisions; make it configurable so a slow loop can widen the window
+  // without silently coercing the turn into a no-op answer.
   question_answer_ms: 3e5,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
@@ -6495,7 +7094,7 @@ var COMPLETION_CHECK_SCHEMA = {
 import fs9 from "node:fs";
 import path7 from "node:path";
 import os4 from "node:os";
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync as spawnSync3 } from "node:child_process";
 function resolveSessionDir(configDir) {
   const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os4.homedir());
   fs9.mkdirSync(dir, { recursive: true });
@@ -6560,14 +7159,14 @@ function writeReview(session, reviewData) {
   }
   return reviewPath;
 }
-function captureGitSnapshot(cwd2) {
+function captureGitSnapshot(cwd) {
   const isoTimestamp = (/* @__PURE__ */ new Date()).toISOString();
   try {
-    const headResult = spawnSync2("git", ["rev-parse", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (headResult.status !== 0 || !headResult.stdout) {
       return { headSha: null, porcelain: null, isoTimestamp };
     }
-    const statusResult = spawnSync2("git", ["status", "--porcelain=v1"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
     return {
       headSha: headResult.stdout.trim(),
       porcelain: statusResult.status === 0 ? statusResult.stdout ?? "" : "",
@@ -6577,7 +7176,7 @@ function captureGitSnapshot(cwd2) {
     return { headSha: null, porcelain: null, isoTimestamp };
   }
 }
-function diffGitSnapshot(cwd2, snapshot) {
+function diffGitSnapshot(cwd, snapshot) {
   if (!snapshot || !snapshot.headSha) {
     return { commits: [], currentHeadSha: null, lastOkHeadSha: null, dirtyFiles: [], launchedAtIso: snapshot?.isoTimestamp ?? null };
   }
@@ -6585,19 +7184,19 @@ function diffGitSnapshot(cwd2, snapshot) {
   let currentHeadSha = null;
   let dirtyFiles = [];
   try {
-    const logResult = spawnSync2(
+    const logResult = spawnSync3(
       "git",
       ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
-      { cwd: cwd2, encoding: "utf8", timeout: 1e4 }
+      { cwd, encoding: "utf8", timeout: 1e4 }
     );
     if (logResult.status === 0 && logResult.stdout) {
       commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
-    const headResult = spawnSync2("git", ["rev-parse", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (headResult.status === 0 && headResult.stdout) {
       currentHeadSha = headResult.stdout.trim();
     }
-    const statusResult = spawnSync2("git", ["status", "--porcelain=v1"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (statusResult.status === 0 && statusResult.stdout) {
       dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
@@ -6611,9 +7210,9 @@ function diffGitSnapshot(cwd2, snapshot) {
     launchedAtIso: snapshot.isoTimestamp ?? null
   };
 }
-function captureGitDiff(cwd2, session) {
-  const numstatResult = spawnSync2("git", ["diff", "--numstat", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
-  const fullResult = spawnSync2("git", ["diff", "HEAD"], { cwd: cwd2, encoding: "utf8", timeout: 1e4 });
+function captureGitDiff(cwd, session) {
+  const numstatResult = spawnSync3("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+  const fullResult = spawnSync3("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
   const diffContent = fullResult.stdout || "";
   const diffPath = writeDiff(session, diffContent);
   const numstatOutput = numstatResult.stdout || "";
@@ -6643,13 +7242,22 @@ function summarizeNumstat(files) {
   const totalDels = files.reduce((sum, f) => sum + f.dels, 0);
   return `${files.length} files | +${totalAdds} -${totalDels}`;
 }
-function resultActionLine(scriptPath, jobId, indent = "    detail: ") {
-  return jobId ? `${indent}node ${scriptPath} result ${jobId}` : `${indent}node ${scriptPath} result    # rerun with the specific job id from status`;
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
-function cancelActionLine(scriptPath, jobId, indent = "    cancel: ") {
-  return jobId ? `${indent}node ${scriptPath} cancel ${jobId}` : `${indent}node ${scriptPath} cancel    # rerun with the specific job id from status`;
+function formatCwdFlag(cwd) {
+  return cwd ? ` --cwd ${shellQuote(cwd)}` : "";
 }
-function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null }) {
+function commandPrefix(scriptPath, subcommand, cwd = null) {
+  return `node ${scriptPath} ${subcommand}${formatCwdFlag(cwd)}`;
+}
+function resultActionLine(scriptPath, jobId, indent = "    detail: ", cwd = null) {
+  return jobId ? `${indent}${commandPrefix(scriptPath, "result", cwd)} ${jobId}` : `${indent}${commandPrefix(scriptPath, "result", cwd)}    # rerun with the specific job id from status`;
+}
+function cancelActionLine(scriptPath, jobId, indent = "    cancel: ", cwd = null) {
+  return jobId ? `${indent}${commandPrefix(scriptPath, "cancel", cwd)} ${jobId}` : `${indent}${commandPrefix(scriptPath, "cancel", cwd)}    # rerun with the specific job id from status`;
+}
+function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null }) {
   const lines = [
     `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
     `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
@@ -6662,19 +7270,19 @@ function formatDoneEvent(session, { duration, diffStat, files, config, diffPath,
     }
   }
   lines.push("  actions:");
-  lines.push(`    review: node ${scriptPath} review --scope working-tree`);
-  lines.push(`    revise: node ${scriptPath} send ${session.threadId} "<message>"`);
-  lines.push(resultActionLine(scriptPath, jobId));
+  lines.push(`    review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`);
+  lines.push(`    revise: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<message>"`);
+  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", cwd));
   return lines.join("\n");
 }
-function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage }) {
+function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage, cwd = null }) {
   const lines = ["  actions:"];
   const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
   if (origin === "upstream:response-chain-lost") {
     lines.push(
-      `    new-task: node ${scriptPath} task --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
+      `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
       `    inspect:  git log --oneline <launch-iso>..HEAD    # audit what committed before the chain loss`,
-      resultActionLine(scriptPath, jobId, "    log:     "),
+      resultActionLine(scriptPath, jobId, "    log:     ", cwd),
       see("response-chain-lost")
     );
     return lines;
@@ -6683,25 +7291,25 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       "    reauth:  run `codex login` (or reauth your upstream proxy if one is in the path)",
       "    do-not:  retry the same thread \u2014 auth is deterministic; the 401 will repeat",
-      resultActionLine(scriptPath, jobId, "    log:    "),
-      cancelActionLine(scriptPath, jobId),
+      resultActionLine(scriptPath, jobId, "    log:    ", cwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
       see("upstream-auth-401")
     );
     return lines;
   }
   if (origin === "upstream:invalid-request") {
     lines.push(
-      `    inspect: node ${scriptPath} result ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
-      `    new-task: node ${scriptPath} task --json --mode default "<fixed prompt>"`,
+      `    inspect: ${commandPrefix(scriptPath, "result", cwd)} ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
+      `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<fixed prompt>"`,
       see("upstream-invalid-request")
     );
     return lines;
   }
   if (origin === "idle") {
     lines.push(
-      `    relaunch: node ${scriptPath} task --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
-      resultActionLine(scriptPath, jobId, "    log:   "),
-      cancelActionLine(scriptPath, jobId),
+      `    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
+      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
       see("idle-timeout")
     );
     return lines;
@@ -6709,17 +7317,17 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (origin === "upstream:compact-proxy") {
     lines.push(
       "    narrow:  split the task, or trim required-reads before resending (the upstream compact proxy ran out of budget mid-turn)",
-      `    resume:  node ${scriptPath} send ${threadId} "<shorter follow-up>"`,
-      resultActionLine(scriptPath, jobId, "    log:   "),
+      `    resume:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<shorter follow-up>"`,
+      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
       see("compact-proxy-502")
     );
     return lines;
   }
   if (origin === "upstream:transport") {
     lines.push(
-      `    retry:   node ${scriptPath} send ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
-      resultActionLine(scriptPath, jobId, "    log:   "),
-      cancelActionLine(scriptPath, jobId),
+      `    retry:   ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
+      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
       see("upstream-transport-drop")
     );
     return lines;
@@ -6727,16 +7335,16 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (typeof origin === "string" && origin.startsWith("pipeline:")) {
     const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
     lines.push(
-      `    inspect:     node ${scriptPath} result ${jobId ?? threadId}    # main task may already be done${stageLine}`,
-      `    rerun-review: node ${scriptPath} review --scope working-tree`,
+      `    inspect:     ${commandPrefix(scriptPath, "result", cwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
+      `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
       see("pipeline-stage-timeout")
     );
     return lines;
   }
   if (typeof origin === "string" && origin.startsWith("bridge")) {
     lines.push(
-      resultActionLine(scriptPath, jobId, "    log:    "),
-      cancelActionLine(scriptPath, jobId),
+      resultActionLine(scriptPath, jobId, "    log:    ", cwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
       see("bridge-unhandled-exit")
     );
     return lines;
@@ -6744,15 +7352,15 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (errorCode === "Unauthorized") {
     lines.push(
       "    login:  codex login",
-      `    retry:  node ${scriptPath} send ${threadId} "<revised prompt>"`,
+      `    retry:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
       see("unauthorized")
     );
     return lines;
   }
   if (errorCode === "ContextWindowExceeded") {
     lines.push(
-      `    new:    node ${scriptPath} task "<shorter prompt>"    # context window full; do not retry the same turn`,
-      resultActionLine(scriptPath, jobId, "    log:   "),
+      `    new:    ${commandPrefix(scriptPath, "task", cwd)} "<shorter prompt>"    # context window full; do not retry the same turn`,
+      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
       see("context-window-exceeded")
     );
     return lines;
@@ -6760,19 +7368,19 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (errorCode === "SandboxError") {
     lines.push(
       "    policy: set config.sandbox_policy: danger-full-access (or re-run with --write)",
-      `    retry:  node ${scriptPath} send ${threadId} "<revised prompt>"`,
+      `    retry:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
       see("sandbox-denial")
     );
     return lines;
   }
   lines.push(
-    `    retry: node ${scriptPath} send ${threadId} "<revised prompt>"`,
-    resultActionLine(scriptPath, jobId, "    log:   "),
-    cancelActionLine(scriptPath, jobId)
+    `    retry: ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
+    resultActionLine(scriptPath, jobId, "    log:   ", cwd),
+    cancelActionLine(scriptPath, jobId, "    cancel: ", cwd)
   );
   return lines;
 }
-function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null }) {
+function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null, cwd = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
@@ -6791,11 +7399,12 @@ function formatErrorEvent(session, { errorCode, message, phase, origin = "turn",
     scriptPath,
     threadId: session.threadId,
     jobId,
-    failingStage
+    failingStage,
+    cwd
   }));
   return lines.join("\n");
 }
-function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null }) {
+function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null, cwd = null }) {
   const lines = [`[PARTIAL] ${session.threadId} commits=[${commits.join(",")}]`];
   if (currentHeadSha) lines.push(`  current_head: ${currentHeadSha}`);
   if (lastOkHeadSha) lines.push(`  last_ok_head: ${lastOkHeadSha}`);
@@ -6808,7 +7417,7 @@ function formatPartialEvent(session, { commits = [], currentHeadSha = null, last
     if (dirtyFiles.length > 20) lines.push(`    ... and ${dirtyFiles.length - 20} more`);
   }
   if (scriptPath && jobId) {
-    lines.push(`  inspect: node ${scriptPath} result ${jobId}`);
+    lines.push(`  inspect: ${commandPrefix(scriptPath, "result", cwd)} ${jobId}`);
   }
   return lines.join("\n");
 }
@@ -6820,7 +7429,7 @@ function formatRetryingEvent(session, { attempt, maxAttempts, backoffMs, origin,
   if (reason) lines.push(`  reason: ${reason}`);
   return lines.join("\n");
 }
-function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath }) {
+function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath, cwd = null }) {
   const lines = [
     `[HANDOFF] ${session.threadId} reason=${reason} | origin=${origin}${errorCode ? ` | code=${errorCode}` : ""}`
   ];
@@ -6846,16 +7455,16 @@ function formatHandoffEvent(session, { reason, origin, errorCode, upstreamReques
   }
   lines.push("  next:");
   if (scriptPath && sessionInfo?.jobId) {
-    lines.push(`    read:     node ${scriptPath} result ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
+    lines.push(`    read:     ${commandPrefix(scriptPath, "result", cwd)} ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
   }
   if (partial?.lastOkHeadSha || partial?.currentHeadSha) {
     lines.push(`    audit:    git log --oneline ${partial.lastOkHeadSha ?? partial.currentHeadSha}..HEAD`);
   }
-  lines.push(`    relaunch: node ${scriptPath} task --json --mode default --prompt-file <rebased prompt>    # seed with last commit + remaining scope`);
+  lines.push(`    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default --prompt-file <rebased prompt>    # seed with last commit + remaining scope`);
   lines.push("    see: skill/references/orchestration-flows.md#recovering-from-upstream-state-loss");
   return lines.join("\n");
 }
-function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null }) {
+function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null, cwd = null }) {
   const lines = [
     `[INCOMPLETE] ${session.threadId} | ${diffStat}`,
     `  diff: ${diffPath}`,
@@ -6868,12 +7477,12 @@ function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCo
     }
   }
   lines.push("  actions:");
-  lines.push(`    fix:  node ${scriptPath} send ${session.threadId} "Complete the missing items"`);
-  lines.push(`    new:  node ${scriptPath} task --write "..."`);
-  lines.push(resultActionLine(scriptPath, jobId));
+  lines.push(`    fix:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "Complete the missing items"`);
+  lines.push(`    new:  ${commandPrefix(scriptPath, "task", cwd)} --write "..."`);
+  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", cwd));
   return lines.join("\n");
 }
-function formatQuestionEvent(session, { requestId, questions, scriptPath }) {
+function formatQuestionEvent(session, { requestId, questions, scriptPath, cwd = null }) {
   const lines = [`[QUESTION] ${session.threadId} ${requestId}`];
   for (const q of questions || []) {
     lines.push(`  "${q.question}"`);
@@ -6890,15 +7499,15 @@ function formatQuestionEvent(session, { requestId, questions, scriptPath }) {
     lines.push("respond:");
     if (q.options && q.options.length > 0) {
       for (const opt of q.options) {
-        lines.push(`  node ${scriptPath} respond ${requestId} --question-id ${q.id} --answer "${opt.label}"`);
+        lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "${opt.label}"`);
       }
     } else {
-      lines.push(`  node ${scriptPath} respond ${requestId} --question-id ${q.id} --answer "<answer>"`);
+      lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "<answer>"`);
     }
   }
   return lines.join("\n");
 }
-function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPath }) {
+function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPath, cwd = null }) {
   const lines = [`[PLAN] ${session.threadId} ${turnId}`];
   lines.push(`  ${planTitle || "(untitled plan)"}`);
   if (steps && steps.length > 0) {
@@ -6911,14 +7520,14 @@ function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPa
   }
   lines.push(`  plan: ${planPath}`);
   lines.push("actions:");
-  lines.push(`  approve: node ${scriptPath} send ${session.threadId} --mode default "Implement the plan."`);
-  lines.push(`  revise:  node ${scriptPath} send ${session.threadId} "<revision instructions>"`);
+  lines.push(`  approve: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} --mode default "Implement the plan."`);
+  lines.push(`  revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<revision instructions>"`);
   return lines.join("\n");
 }
 function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }
-function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null }) {
+function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null, cwd = null }) {
   const lines = [
     `[HEARTBEAT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | pid=${pid ?? "?"}`
   ];
@@ -6928,7 +7537,7 @@ function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAge
     lines.push(`  budget: ${fmtSeconds(budgetRemainingMs)} remaining`);
   }
   if (scriptPath && jobId) {
-    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId })}`);
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
   }
   return lines.join("\n");
 }
@@ -6941,9 +7550,9 @@ function fmtSeconds(ms) {
 }
 var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE"]);
 var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT"]);
-function formatTailCommand({ scriptPath, jobId, timeoutMs = 18e5, exclude = DEFAULT_MONITOR_EXCLUDE }) {
+function formatTailCommand({ scriptPath, jobId, timeoutMs = 18e5, exclude = DEFAULT_MONITOR_EXCLUDE, cwd = null }) {
   const excludeClause = exclude && exclude.length > 0 ? ` --exclude ${Array.from(exclude).join(",")}` : "";
-  return `node ${scriptPath} events ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
+  return `${commandPrefix(scriptPath, "events", cwd)} ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
 }
 function formatCheckpointEvent(session, {
   elapsedMs,
@@ -6956,7 +7565,8 @@ function formatCheckpointEvent(session, {
   commits = [],
   diffStat = null,
   filesChangedSinceStart = null,
-  scriptPath = null
+  scriptPath = null,
+  cwd = null
 }) {
   const head = `[CHECKPOINT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | interval=${fmtSeconds(intervalMs)} | pid=${pid ?? "?"}`;
   const lines = [head];
@@ -6997,7 +7607,7 @@ function formatCheckpointEvent(session, {
     lines.push(`  files-changed-since-turn-start: ${filesChangedSinceStart}`);
   }
   if (scriptPath && jobId) {
-    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId })}`);
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
   }
   return lines.join("\n");
 }
@@ -7128,7 +7738,7 @@ async function runAutoPipeline(options) {
   const {
     session,
     threadId,
-    cwd: cwd2,
+    cwd,
     config,
     scriptPath,
     rootDir,
@@ -7140,6 +7750,7 @@ async function runAutoPipeline(options) {
   } = options;
   const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
   const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
+  const stageTurnMs = Math.max(0, stageMs - 500);
   const completedStages = [];
   const startTime = Date.now();
   const executeInstructions = loadExecuteInstructions(rootDir);
@@ -7152,7 +7763,7 @@ async function runAutoPipeline(options) {
   try {
     logEvent(session, formatPipelineEvent(session, { stage: "diff" }));
     logNdjson(session, "PIPELINE_STAGE", null, { stage: "diff" });
-    const diff1 = captureGitDiff(cwd2, session);
+    const diff1 = captureGitDiff(cwd, session);
     completedStages.push("diff");
     logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
     checkPipelineTimeout();
@@ -7163,10 +7774,12 @@ async function runAutoPipeline(options) {
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "review" });
       try {
-        const reviewResult = await withTimeout(
-          runAppServerReview2(cwd2, {
+        const reviewResult = await withTimeout2(
+          runAppServerReview2(cwd, {
             target: { type: "uncommittedChanges" },
-            model: config.model
+            model: config.model,
+            turnTimeoutMs: stageTurnMs,
+            idleTimeoutMs: stageTurnMs
           }),
           stageMs,
           "auto-review"
@@ -7187,11 +7800,11 @@ async function runAutoPipeline(options) {
         if (reviewFindings.length > 0) {
           logEvent(session, formatPipelineEvent(session, { stage: "fix" }));
           logNdjson(session, "PIPELINE_STAGE", null, { stage: "fix", findingCount: reviewFindings.length });
-          const diffBeforeFix = captureGitDiff(cwd2, session);
+          const diffBeforeFix = captureGitDiff(cwd, session);
           const filesBeforeFix = new Set(diffBeforeFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]));
           const fixPrompt = buildFixPrompt(reviewFindings);
-          await withTimeout(
-            runAppServerTurn2(cwd2, {
+          await withTimeout2(
+            runAppServerTurn2(cwd, {
               resumeThreadId: threadId,
               prompt: fixPrompt,
               model: config.model,
@@ -7199,14 +7812,16 @@ async function runAutoPipeline(options) {
               collaborationMode: buildCollaborationMode("default", config, {
                 developerInstructions: executeInstructions
               }),
-              sandboxPolicy: buildSandboxPolicy("default", config)
+              sandboxPolicy: buildSandboxPolicy("default", config),
+              turnTimeoutMs: stageTurnMs,
+              idleTimeoutMs: stageTurnMs
             }),
             stageMs,
             "auto-fix"
           );
           completedStages.push("fix");
           checkPipelineTimeout();
-          const diffAfterFix = captureGitDiff(cwd2, session);
+          const diffAfterFix = captureGitDiff(cwd, session);
           const filesAfterFix = diffAfterFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]);
           fixFilesTouched = filesAfterFix.filter((f) => !filesBeforeFix.has(f));
           logEvent(session, formatPipelineEvent(session, {
@@ -7233,8 +7848,8 @@ async function runAutoPipeline(options) {
       logEvent(session, formatPipelineEvent(session, { stage: "check" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "check" });
       try {
-        const checkResult = await withTimeout(
-          runAppServerTurn2(cwd2, {
+        const checkResult = await withTimeout2(
+          runAppServerTurn2(cwd, {
             resumeThreadId: threadId,
             prompt: config.post_task_prompt,
             model: config.model,
@@ -7243,7 +7858,9 @@ async function runAutoPipeline(options) {
               developerInstructions: executeInstructions
             }),
             sandboxPolicy: { type: "readOnly" },
-            outputSchema: COMPLETION_CHECK_SCHEMA
+            outputSchema: COMPLETION_CHECK_SCHEMA,
+            turnTimeoutMs: stageTurnMs,
+            idleTimeoutMs: stageTurnMs
           }),
           stageMs,
           "completion-check"
@@ -7292,7 +7909,7 @@ async function runAutoPipeline(options) {
         completedStages.push("check-failed");
       }
     }
-    const finalDiff = captureGitDiff(cwd2, session);
+    const finalDiff = captureGitDiff(cwd, session);
     const duration = Math.round((Date.now() - startTime) / 1e3);
     if (completionResult.complete) {
       logEvent(session, formatDoneEvent(session, {
@@ -7302,7 +7919,8 @@ async function runAutoPipeline(options) {
         config: { model: config.model, effort: config.effort, modeFlow: "plan\u2192default" },
         diffPath: finalDiff.diffPath,
         scriptPath,
-        jobId
+        jobId,
+        cwd
       }));
     } else {
       logEvent(session, formatIncompleteEvent(session, {
@@ -7312,7 +7930,8 @@ async function runAutoPipeline(options) {
         findingCount: reviewFindingCount,
         missingItems: completionResult.missing_items || [],
         scriptPath,
-        jobId
+        jobId,
+        cwd
       }));
     }
     logNdjson(session, "PIPELINE_COMPLETE", null, {
@@ -7338,7 +7957,7 @@ async function runAutoPipeline(options) {
     const errorMessage = error instanceof PipelineTimeoutError ? `Auto-pipeline exceeded ${fmtSeconds(totalMs)}. Completed stages: ${completedStages.join(", ")}` : error.message;
     let finalDiff;
     try {
-      finalDiff = captureGitDiff(cwd2, session);
+      finalDiff = captureGitDiff(cwd, session);
     } catch {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
@@ -7354,7 +7973,8 @@ async function runAutoPipeline(options) {
       failingStage,
       scriptPath,
       jobId,
-      upstreamRequestId
+      upstreamRequestId,
+      cwd
     }));
     logNdjson(session, "PIPELINE_ERROR", null, {
       completedStages,
@@ -7422,7 +8042,7 @@ var PipelineTimeoutError = class extends TimeoutError {
     this.completedStages = completedStages;
   }
 };
-function withTimeout(promise, timeoutMs, label) {
+function withTimeout2(promise, timeoutMs, label) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new TimeoutError(label, timeoutMs));
@@ -7451,7 +8071,8 @@ var APPLY_ATTEMPT_WINDOW_MS = 60 * 60 * 1e3;
 var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest";
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
-  const root = process.env.CLAUDE_PLUGIN_DATA ? path10.join(process.env.CLAUDE_PLUGIN_DATA, "codex-bridge-update.json") : path10.join(os5.homedir(), ".codex-bridge", "update-cache.json");
+  const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
+  const root = pluginDataDir ? path10.join(pluginDataDir, "codex-bridge-update.json") : path10.join(os5.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
@@ -7644,6 +8265,12 @@ var ROOT_DIR = fs13.existsSync(path11.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR 
 var REVIEW_SCHEMA = path11.join(ROOT_DIR, "schemas", "review-output.schema.json");
 var EXECUTE_INSTRUCTIONS_PATH = path11.join(ROOT_DIR, "templates", "execute-instructions.md");
 var PLAN_ENFORCEMENT_PATH = path11.join(ROOT_DIR, "templates", "plan-enforcement.md");
+function shellQuote2(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+function bridgeCommand(subcommand, cwd = null) {
+  return `node ${SCRIPT_PATH} ${subcommand}${cwd ? ` --cwd ${shellQuote2(cwd)}` : ""}`;
+}
 var DEVELOPER_INSTRUCTIONS_FALLBACK = {
   plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
   default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
@@ -7661,15 +8288,77 @@ var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
 var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
 var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 var BRIDGE_CONFIG_SKILL_LAYER = null;
-function getBridgeConfig(cwd2 = null, workspaceRoot = null) {
-  if (!cwd2 && !workspaceRoot) {
+function getBridgeConfig(cwd = null, workspaceRoot = null) {
+  if (!cwd && !workspaceRoot) {
     if (!BRIDGE_CONFIG_SKILL_LAYER) {
       BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
     }
     return BRIDGE_CONFIG_SKILL_LAYER;
   }
-  return loadConfig(ROOT_DIR, cwd2, workspaceRoot);
+  return loadConfig(ROOT_DIR, cwd, workspaceRoot);
+}
+function buildJsonRpcError2(code, message, data) {
+  return data === void 0 ? { code, message } : { code, message, data };
+}
+function rejectServerRequest(message, code, detail) {
+  message._client?.rejectServerRequest?.(
+    message.id,
+    buildJsonRpcError2(code, detail)
+  );
+}
+function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs = null, cwd = null }) {
+  return (message) => {
+    const params = message.params ?? {};
+    const threadId = params.threadId ?? "unknown";
+    const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    if (message.method !== "item/tool/requestUserInput") {
+      logNdjson(session, "SERVER_REQUEST_UNSUPPORTED", message.method, {
+        rpcRequestId: message.id,
+        params
+      });
+      rejectServerRequest(message, -32601, `Unsupported server request: ${message.method}`);
+      return;
+    }
+    const internalId = `req-${threadId.slice(-6)}-${Date.now().toString(36)}`;
+    const entry = {
+      internalId,
+      rpcRequestId: message.id,
+      method: message.method,
+      threadId,
+      firstQuestionId: params.questions?.[0]?.id ?? "q1",
+      params,
+      createdAt: Date.now()
+    };
+    writePendingRequest(sessionDir, threadId, entry);
+    logEvent(session, formatQuestionEvent(session, {
+      requestId: internalId,
+      questions: params.questions ?? [],
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
+    const timeoutMs = questionAnswerMs ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : DEFAULT_CONFIG.question_answer_ms);
+    return waitForResponse(sessionDir, threadId, timeoutMs, internalId).then((response) => {
+      clearPendingRequest(sessionDir, threadId);
+      if (response?.payload) {
+        message._client?.resolveServerRequest?.(message.id, response.payload);
+        logEvent(session, formatConfirmedEvent(session, { requestId: internalId }));
+        logNdjson(session, "CONFIRMED", "serverRequest/resolved", { requestId: internalId });
+        return;
+      }
+      rejectServerRequest(
+        message,
+        -32e3,
+        `requestUserInput timed out after ${timeoutMs}ms without an answer.`
+      );
+      logNdjson(session, "QUESTION_TIMEOUT", null, { requestId: internalId, timeoutMs });
+    }).catch((error) => {
+      clearPendingRequest(sessionDir, threadId);
+      rejectServerRequest(message, -32e3, error?.message ?? "requestUserInput response handling failed.");
+    });
+  };
 }
 function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorCommand }) {
   if (!jobId) return rendered;
@@ -7683,16 +8372,17 @@ function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorComma
 ${parts.join(" \xB7 ")}
 `;
 }
-function buildMonitorHint({ eventsPath, jobId, threadId }) {
+function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
   const identifier = jobId ?? threadId;
   if (!identifier) return null;
   const cliCommand = formatTailCommand({
     scriptPath: SCRIPT_PATH,
     jobId: identifier,
     timeoutMs: 18e5,
-    exclude: DEFAULT_MONITOR_EXCLUDE
+    exclude: DEFAULT_MONITOR_EXCLUDE,
+    cwd
   });
-  const shellFallback = eventsPath ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do echo "$line"; case "$line" in *"[DONE]"*|*"[ERROR]"*|*"[INCOMPLETE]"*) break ;; esac; done` : null;
+  const shellFallback = eventsPath ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*) break ;; esac; done` : null;
   return {
     command: cliCommand,
     shell_fallback: shellFallback,
@@ -7767,7 +8457,7 @@ function extractItemText(item) {
 var COMMANDS = Object.freeze({
   task: {
     synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, read-only sandbox, foreground. Use --mode default to skip planning and execute directly.",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
@@ -7992,6 +8682,65 @@ function resolveCommandCwd(options = {}) {
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
+function resolveStopReviewGateLockPath(workspaceRoot) {
+  return path11.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+}
+function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
+  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
+  const lockExists = fs13.existsSync(lockPath);
+  const reviewGateSuppressionReason = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE ? "official-openai-codex-plugin-active" : officialPlugin.status === OFFICIAL_PLUGIN_STATUS.UNKNOWN ? "official-openai-codex-plugin-status-unknown" : null;
+  return {
+    enabled: lockExists && reviewGateSuppressionReason == null,
+    lockPath,
+    lockExists,
+    officialOpenAICodexPluginStatus: officialPlugin.status,
+    officialOpenAICodexPlugin: officialPlugin.plugin ?? null,
+    officialOpenAICodexPluginDetail: officialPlugin.detail ?? null,
+    reviewGateSuppressedByOfficialPlugin: officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE,
+    reviewGateLockIgnored: lockExists && reviewGateSuppressionReason != null,
+    reviewGateSuppressionReason
+  };
+}
+function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
+  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
+  if (enabled) {
+    fs13.writeFileSync(
+      lockPath,
+      [
+        "# Codex Bridge stop-time review gate",
+        "# Presence of this file enables the Claude Code Stop hook for this project.",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+  } else {
+    fs13.rmSync(lockPath, { force: true });
+  }
+  return readStopReviewGate(workspaceRoot, officialPlugin);
+}
+function applyStopReviewGateSnapshot(snapshot) {
+  const gate = readStopReviewGate(snapshot.workspaceRoot);
+  return {
+    ...snapshot,
+    officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
+    officialOpenAICodexPlugin: gate.officialOpenAICodexPlugin,
+    officialOpenAICodexPluginDetail: gate.officialOpenAICodexPluginDetail,
+    reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
+    reviewGateLockIgnored: gate.reviewGateLockIgnored,
+    reviewGateSuppressionReason: gate.reviewGateSuppressionReason,
+    config: {
+      ...snapshot.config,
+      stopReviewGate: gate.enabled,
+      stopReviewGateLockPath: gate.lockPath,
+      stopReviewGateLockExists: gate.lockExists,
+      officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
+      reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
+      reviewGateLockIgnored: gate.reviewGateLockIgnored,
+      reviewGateSuppressionReason: gate.reviewGateSuppressionReason
+    },
+    needsReview: gate.enabled
+  };
+}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -8009,13 +8758,14 @@ function firstMeaningfulLine(text, fallback) {
   const line = String(text ?? "").split(/\r?\n/).map((value) => value.trim()).find(Boolean);
   return line ?? fallback;
 }
-async function buildSetupReport(cwd2, actionsTaken = []) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd2);
-  const nodeStatus = binaryAvailable("node", ["--version"], { cwd: cwd2 });
-  const npmStatus = binaryAvailable("npm", ["--version"], { cwd: cwd2 });
-  const codexStatus = getCodexAvailability(cwd2);
-  const authStatus = await getCodexAuthStatus(cwd2);
-  const config = getConfig(workspaceRoot);
+async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
+  const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
+  const codexStatus = getCodexAvailability(cwd);
+  const authStatus = await getCodexAuthStatus(cwd);
+  const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
+  const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -8024,8 +8774,12 @@ async function buildSetupReport(cwd2, actionsTaken = []) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
   }
-  if (!config.stopReviewGate) {
-    nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to require a fresh review before stop.");
+  if (reviewGate.reviewGateSuppressedByOfficialPlugin) {
+    nextSteps.push("Use the official OpenAI Codex plugin for stop-time review; Codex Bridge review gate is disabled while it is enabled.");
+  } else if (reviewGate.reviewGateSuppressionReason === "official-openai-codex-plugin-status-unknown") {
+    nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
+  } else if (!reviewGate.enabled) {
+    nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
   }
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
@@ -8034,7 +8788,15 @@ async function buildSetupReport(cwd2, actionsTaken = []) {
     codex: codexStatus,
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(process8.env, workspaceRoot),
-    reviewGateEnabled: Boolean(config.stopReviewGate),
+    reviewGateEnabled: reviewGate.enabled,
+    reviewGateLockPath: reviewGate.lockPath,
+    reviewGateLockExists: reviewGate.lockExists,
+    officialOpenAICodexPluginStatus: reviewGate.officialOpenAICodexPluginStatus,
+    officialOpenAICodexPlugin: reviewGate.officialOpenAICodexPlugin,
+    officialOpenAICodexPluginDetail: reviewGate.officialOpenAICodexPluginDetail,
+    reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
+    reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
+    reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
     actionsTaken,
     nextSteps
   };
@@ -8051,17 +8813,24 @@ async function handleSetup(argv) {
       "REVIEW_GATE_CONFLICT"
     );
   }
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd, maxAgeMs: 0 });
   if (options["enable-review-gate"]) {
-    setConfig(workspaceRoot, "stopReviewGate", true);
-    actionsTaken.push(`Enabled the stop-time review gate for ${workspaceRoot}.`);
+    if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {
+      const reviewGate = setStopReviewGate(workspaceRoot, true, officialPlugin);
+      actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
+    } else if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE) {
+      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin is enabled.");
+    } else {
+      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin status could not be verified.");
+    }
   } else if (options["disable-review-gate"]) {
-    setConfig(workspaceRoot, "stopReviewGate", false);
-    actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+    const reviewGate = setStopReviewGate(workspaceRoot, false, officialPlugin);
+    actionsTaken.push(`Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`);
   }
-  const finalReport = await buildSetupReport(cwd2, actionsTaken);
+  const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
     json: options.json,
     startedAt
@@ -8087,8 +8856,8 @@ async function handleVersion(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json", "check-update"]
   });
-  const cwd2 = resolveCommandCwd(options);
-  const codex = getCodexAvailability(cwd2);
+  const cwd = resolveCommandCwd(options);
+  const codex = getCodexAvailability(cwd);
   const update = await checkForUpdate({
     currentVersion: BRIDGE_VERSION,
     force: Boolean(options["check-update"])
@@ -8132,10 +8901,10 @@ async function handleConfigShow(argv) {
       `config: unknown action '${action}'. Supported: show.`
     );
   }
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const sources = resolveConfigSources(ROOT_DIR, cwd2, workspaceRoot);
-  const effective = getBridgeConfig(cwd2, workspaceRoot);
+  const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
+  const effective = getBridgeConfig(cwd, workspaceRoot);
   const overrides = {};
   for (const [k, v] of Object.entries(effective)) {
     if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
@@ -8252,7 +9021,7 @@ Or rerun with --apply to install automatically.
 }
 function runSkillsAddForApply(jsonMode) {
   try {
-    const result = spawnSync3(
+    const result = spawnSync4(
       "npx",
       ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
       {
@@ -8296,8 +9065,8 @@ async function handleAuthStatus(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd2 = resolveCommandCwd(options);
-  const auth = await getCodexAuthStatus(cwd2);
+  const cwd = resolveCommandCwd(options);
+  const auth = await getCodexAuthStatus(cwd);
   const status = auth.loggedIn ? "logged in" : "not logged in";
   const provider = auth.provider ? ` via ${auth.provider}` : "";
   const lines = [`Auth: ${status}${provider}.`];
@@ -8341,16 +9110,21 @@ function buildMachineReadableHelp() {
 }
 function buildAdversarialReviewPrompt(context, focusText) {
   const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
-  return interpolateTemplate(template, {
-    REVIEW_KIND: "Adversarial Review",
-    TARGET_LABEL: context.target.label,
-    USER_FOCUS: focusText || "No extra focus provided.",
-    REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
-    REVIEW_INPUT: context.content
-  });
+  return interpolateTemplate(
+    template,
+    {
+      TARGET_LABEL: sanitizePromptValue(context.target.label),
+      USER_FOCUS: focusText || "No extra focus provided.",
+      REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
+      REVIEW_INPUT: context.content
+    },
+    {
+      requiredKeys: /* @__PURE__ */ new Set(["TARGET_LABEL", "USER_FOCUS", "REVIEW_COLLECTION_GUIDANCE", "REVIEW_INPUT"])
+    }
+  );
 }
-function ensureCodexAvailable(cwd2) {
-  const availability = getCodexAvailability(cwd2);
+function ensureCodexAvailable(cwd) {
+  const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     throw new CliError(
       "Codex CLI is not installed or is missing required runtime support.",
@@ -8408,14 +9182,14 @@ function findLatestResumableTaskJob(jobs) {
     (job) => job.jobClass === "task" && job.threadId && job.status === "completed"
   ) ?? null;
 }
-async function waitForSingleJobSnapshot(cwd2, reference, options = {}) {
+async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
   const pollIntervalMs = Math.max(100, Number(options.pollIntervalMs) || DEFAULT_STATUS_POLL_INTERVAL_MS);
   const deadline = Date.now() + timeoutMs;
-  let snapshot = buildSingleJobSnapshot(cwd2, reference);
+  let snapshot = buildSingleJobSnapshot(cwd, reference);
   while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
-    snapshot = buildSingleJobSnapshot(cwd2, reference);
+    snapshot = buildSingleJobSnapshot(cwd, reference);
   }
   return {
     ...snapshot,
@@ -8423,8 +9197,8 @@ async function waitForSingleJobSnapshot(cwd2, reference, options = {}) {
     timeoutMs
   };
 }
-async function resolveLatestTrackedTaskThread(cwd2, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+async function resolveLatestTrackedTaskThread(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const sessionId = getCurrentClaudeSessionId();
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.id !== options.excludeJobId);
   const visibleJobs = filterJobsForCurrentClaudeSession(jobs);
@@ -8448,8 +9222,38 @@ async function resolveLatestTrackedTaskThread(cwd2, options = {}) {
 async function executeReviewRun(request) {
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
+  const startedAt = Date.now();
   const reviewConfig = getBridgeConfig(request.cwd, resolveWorkspaceRoot(request.cwd));
   const reviewSessionDir = resolveSessionDir(reviewConfig.session_dir);
+  const logReviewTerminalEvent = (session, result2, { reviewKind, targetLabel }) => {
+    if (result2.status === 0) {
+      logEvent(session, formatDoneEvent(session, {
+        duration: Math.round((Date.now() - startedAt) / 1e3),
+        diffStat: `${reviewKind} review completed: ${targetLabel}`,
+        files: [],
+        config: {
+          model: request.model ?? reviewConfig.model,
+          effort: reviewConfig.effort,
+          modeFlow: reviewKind
+        },
+        diffPath: "not captured for review",
+        scriptPath: SCRIPT_PATH,
+        jobId: request.jobId ?? null,
+        cwd: request.cwd
+      }));
+      return;
+    }
+    const classified = classifyError(result2.error ?? { message: result2.stderr || `${reviewKind} review failed.` });
+    logEvent(session, formatErrorEvent(session, {
+      errorCode: classified.code,
+      message: classified.message,
+      phase: classified.class,
+      origin: "review",
+      scriptPath: SCRIPT_PATH,
+      jobId: request.jobId ?? null,
+      cwd: request.cwd
+    }));
+  };
   const target = resolveReviewTarget(request.cwd, {
     base: request.base,
     scope: request.scope
@@ -8473,6 +9277,8 @@ async function executeReviewRun(request) {
     const result2 = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
+      idleTimeoutMs: Number(reviewConfig.idle_timeout_ms) > 0 ? Number(reviewConfig.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
+      turnTimeoutMs: Number(reviewConfig.turn_default_ms) > 0 ? Number(reviewConfig.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms,
       onProgress: request.onProgress
     });
     if (result2.threadId) {
@@ -8482,6 +9288,10 @@ async function executeReviewRun(request) {
         status: result2.status,
         reviewKind: "native",
         target
+      });
+      logReviewTerminalEvent(reviewSession, result2, {
+        reviewKind: "native",
+        targetLabel: target.label
       });
     }
     const payload2 = {
@@ -8524,6 +9334,8 @@ async function executeReviewRun(request) {
     model: request.model,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
+    idleTimeoutMs: Number(reviewConfig.idle_timeout_ms) > 0 ? Number(reviewConfig.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
+    turnTimeoutMs: Number(reviewConfig.turn_default_ms) > 0 ? Number(reviewConfig.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms,
     onProgress: request.onProgress
   });
   const parsed = parseStructuredOutput(result.finalMessage, {
@@ -8538,6 +9350,10 @@ async function executeReviewRun(request) {
       reviewKind: "adversarial",
       target,
       findingCount: Array.isArray(parsed.parsed?.findings) ? parsed.parsed.findings.length : null
+    });
+    logReviewTerminalEvent(advSession, result, {
+      reviewKind: "adversarial",
+      targetLabel: context.target.label
     });
     if (parsed.parsed && !parsed.parseError) {
       try {
@@ -8590,8 +9406,8 @@ async function executeTaskRun(request) {
     prompt: request.prompt,
     resumeLast: request.resumeLast
   });
-  let resumeThreadId = null;
-  if (request.resumeLast) {
+  let resumeThreadId = request.resumeThreadId ?? null;
+  if (!resumeThreadId && request.resumeLast) {
     const latestThread = await resolveLatestTrackedTaskThread(workspaceRoot, {
       excludeJobId: request.jobId
     });
@@ -8610,7 +9426,7 @@ async function executeTaskRun(request) {
       "MISSING_PROMPT"
     );
   }
-  const result = await runAppServerTurn(workspaceRoot, {
+  const result = await runAppServerTurn(request.cwd, {
     resumeThreadId,
     prompt: request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
@@ -8739,7 +9555,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 function buildTaskRequest({
-  cwd: cwd2,
+  cwd,
   model,
   effort,
   prompt,
@@ -8757,7 +9573,7 @@ function buildTaskRequest({
 }) {
   const opt = (n) => Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null;
   return {
-    cwd: cwd2,
+    cwd,
     model,
     effort,
     prompt,
@@ -8774,9 +9590,9 @@ function buildTaskRequest({
     noPipeline: Boolean(noPipeline)
   };
 }
-function readTaskPrompt(cwd2, options, positionals) {
+function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path11.resolve(cwd2, options["prompt-file"]));
+    return readPromptFileOrThrow(path11.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
@@ -8863,7 +9679,7 @@ async function runForegroundCommand(job, runner, options = {}) {
   });
   return execution;
 }
-function spawnDetachedTaskWorker(cwd2, jobId, logFile = null) {
+function spawnDetachedTaskWorker(cwd, jobId, logFile = null) {
   const scriptPath = SCRIPT_PATH;
   let stdioConfig = "ignore";
   if (logFile) {
@@ -8874,8 +9690,8 @@ function spawnDetachedTaskWorker(cwd2, jobId, logFile = null) {
     } catch {
     }
   }
-  const child = spawn3(process8.execPath, [scriptPath, "task-worker", "--cwd", cwd2, "--job-id", jobId], {
-    cwd: cwd2,
+  const child = spawn3(process8.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+    cwd,
     env: process8.env,
     detached: true,
     stdio: stdioConfig,
@@ -8890,10 +9706,10 @@ function spawnDetachedTaskWorker(cwd2, jobId, logFile = null) {
   }
   return child;
 }
-function enqueueBackgroundTask(cwd2, job, request) {
+function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
-  const child = spawnDetachedTaskWorker(cwd2, job.id, logFile);
+  const child = spawnDetachedTaskWorker(cwd, job.id, logFile);
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -8904,7 +9720,7 @@ function enqueueBackgroundTask(cwd2, job, request) {
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
-  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd2 ?? null, job.workspaceRoot).session_dir);
+  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir);
   return {
     payload: {
       jobId: job.id,
@@ -8915,7 +9731,7 @@ function enqueueBackgroundTask(cwd2, job, request) {
       title: job.title,
       summary: job.summary,
       logFile,
-      monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null })
+      monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null, cwd })
     },
     logFile
   };
@@ -8929,10 +9745,10 @@ async function handleReviewCommand(argv, config) {
       m: "model"
     }
   });
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const focusText = positionals.join(" ").trim();
-  const target = resolveReviewTarget(cwd2, {
+  const target = resolveReviewTarget(cwd, {
     base: options.base,
     scope: options.scope
   });
@@ -8949,7 +9765,7 @@ async function handleReviewCommand(argv, config) {
   await runForegroundCommand(
     job,
     (progress) => executeReviewRun({
-      cwd: cwd2,
+      cwd,
       base: options.base,
       scope: options.scope,
       model: options.model,
@@ -9141,42 +9957,12 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       });
     }
   };
-  bridgeRequest.onServerRequest = (message) => {
-    const params = message.params ?? {};
-    const threadId = params.threadId ?? "unknown";
-    const session2 = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
-    if (message.method === "item/tool/requestUserInput") {
-      const internalId = `req-${threadId.slice(-6)}-${Date.now().toString(36)}`;
-      const entry = {
-        internalId,
-        rpcRequestId: message.id,
-        method: message.method,
-        threadId,
-        firstQuestionId: params.questions?.[0]?.id ?? "q1",
-        params,
-        createdAt: Date.now()
-      };
-      writePendingRequest(sessionDir, threadId, entry);
-      logEvent(session2, formatQuestionEvent(session2, {
-        requestId: internalId,
-        questions: params.questions ?? [],
-        scriptPath: SCRIPT_PATH
-      }));
-      logNdjson(session2, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
-      const questionTimeoutMs = request.questionAnswerMs ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : 3e5);
-      waitForResponse(sessionDir, threadId, questionTimeoutMs, internalId).then((response) => {
-        clearPendingRequest(sessionDir, threadId);
-        if (response && response.payload) {
-          message._client?.sendMessage?.({ id: message.id, result: response.payload });
-          logEvent(session2, formatConfirmedEvent(session2, { requestId: internalId }));
-          logNdjson(session2, "CONFIRMED", "serverRequest/resolved", { requestId: internalId });
-        } else {
-          message._client?.sendMessage?.({ id: message.id, result: { answers: {} } });
-          logNdjson(session2, "QUESTION_TIMEOUT", null, { requestId: internalId });
-        }
-      });
-    }
-  };
+  bridgeRequest.onServerRequest = createBridgeServerRequestHandler({
+    sessionDir,
+    config,
+    questionAnswerMs: request.questionAnswerMs ?? null,
+    cwd: request.cwd
+  });
   const heartbeatState = {
     session: null,
     startTime: Date.now(),
@@ -9217,7 +10003,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   const readGitHead = () => {
     if (!gitCwd) return null;
     try {
-      const r = spawnSync3("git", ["rev-parse", "HEAD"], {
+      const r = spawnSync4("git", ["rev-parse", "HEAD"], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -9230,7 +10016,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   const readGitLogRange = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return [];
     try {
-      const r = spawnSync3(
+      const r = spawnSync4(
         "git",
         ["log", "--no-color", "--no-decorate", "-n", "50", "--pretty=%h %s", `${from}..${to}`],
         { cwd: gitCwd, encoding: "utf8", timeout: 5e3 }
@@ -9247,7 +10033,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
   const readGitDiffStat = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return null;
     try {
-      const r = spawnSync3("git", ["diff", "--shortstat", `${from}..${to}`], {
+      const r = spawnSync4("git", ["diff", "--shortstat", `${from}..${to}`], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -9274,7 +10060,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
             pid: process8.pid,
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
-            scriptPath: SCRIPT_PATH
+            scriptPath: SCRIPT_PATH,
+            cwd: request.cwd
           })
         );
       } catch {
@@ -9319,7 +10106,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
               commits,
               diffStat,
               filesChangedSinceStart,
-              scriptPath: SCRIPT_PATH
+              scriptPath: SCRIPT_PATH,
+              cwd: request.cwd
             })
           );
           logNdjson(heartbeatState.session, "CHECKPOINT", null, {
@@ -9351,7 +10139,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
               phase: heartbeatState.phase ?? "execute",
               origin: "bridge",
               scriptPath: SCRIPT_PATH,
-              jobId: request.jobId ?? null
+              jobId: request.jobId ?? null,
+              cwd: request.cwd
             })
           );
           logNdjson(heartbeatState.session, "ERROR", null, {
@@ -9429,7 +10218,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         outcome: "pending"
       });
       if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
-      const retryResult = await executeTaskRun(bridgeRequest);
+      const retryResult = await executeTaskRun({
+        ...bridgeRequest,
+        resumeThreadId: result.threadId ?? bridgeRequest.resumeThreadId ?? null
+      });
       if (retryResult.exitStatus === 0 || !retryResult.error) {
         retryHistory[retryHistory.length - 1].outcome = "success";
         result = retryResult;
@@ -9443,7 +10235,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
-      threadId: result.threadId ?? null
+      threadId: result.threadId ?? null,
+      cwd: request.cwd
     });
     if (request.jobId && result.rendered && typeof result.rendered === "string") {
       result.rendered = appendTaskFooter(result.rendered, {
@@ -9473,8 +10266,11 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
     if (result.exitStatus !== 0 && result.error) {
       const errorMessage = String(result.error.message ?? result.error);
       const origin = classifyTurnErrorOrigin(result.error);
-      const codexErrorInfo = result.error.codexErrorInfo ?? result.error.codex_error_info ?? null;
-      const errorCode = origin === "idle" ? "ClientTimeout" : codexErrorInfo ?? "CodexError";
+      const codexErrorInfo = normalizeCodexErrorInfo(
+        result.error.codexErrorInfo ?? result.error.codex_error_info ?? null
+      );
+      const classifiedTurnError = classifyError(result.error);
+      const errorCode = origin === "idle" ? "ClientTimeout" : codexErrorInfo?.code ?? classifiedTurnError.code ?? "CodexError";
       const touchedFiles = result.payload?.touchedFiles ?? [];
       const upstreamRequestId = extractUpstreamRequestId(errorMessage);
       const partialDiff = diffGitSnapshot(request.cwd, turnStartSnapshot);
@@ -9494,7 +10290,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
           launchedAtIso: partialDiff.launchedAtIso,
           dirtyFiles: partialDiff.dirtyFiles,
           scriptPath: SCRIPT_PATH,
-          jobId: request.jobId ?? null
+          jobId: request.jobId ?? null,
+          cwd: request.cwd
         }));
         logNdjson(session, "PARTIAL", null, {
           commits: partialDiff.commits,
@@ -9546,7 +10343,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
           partial: partialForEnvelope,
           prompt: handoffForEnvelope.prompt,
           retries: retryHistory,
-          scriptPath: SCRIPT_PATH
+          scriptPath: SCRIPT_PATH,
+          cwd: request.cwd
         }));
         logNdjson(session, "HANDOFF", null, {
           reason: handoffForEnvelope.reason,
@@ -9562,7 +10360,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         origin,
         scriptPath: SCRIPT_PATH,
         jobId: request.jobId ?? null,
-        upstreamRequestId
+        upstreamRequestId,
+        cwd: request.cwd
       }));
       logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
       markTerminalEmitted();
@@ -9570,7 +10369,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         if (partialForEnvelope) result.error.partial = partialForEnvelope;
         if (handoffForEnvelope) result.error.handoff = handoffForEnvelope;
       }
-      if (codexErrorInfo === "SandboxError" && touchedFiles.length > 0) {
+      if (codexErrorInfo?.code === "SandboxError" && touchedFiles.length > 0) {
         const cwdArg = JSON.stringify(request.cwd);
         setPhase("workspace-dirty", {
           command: `git -C ${cwdArg} add -A && git -C ${cwdArg} commit -m "<subject>"`,
@@ -9579,7 +10378,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         return { ...result, session, exitStatus: 0, error: null };
       }
       setPhase("error", {
-        command: `node ${SCRIPT_PATH} send ${result.threadId} "<revised prompt>"`,
+        command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "<revised prompt>"`,
         description: "Retry with an adjusted prompt, or cancel and start fresh."
       }, { errorCode, monitor });
       return { ...result, session };
@@ -9592,10 +10391,11 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         planTitle: result.planText.split("\n")[0]?.slice(0, 80) ?? "Plan",
         steps,
         planPath,
-        scriptPath: SCRIPT_PATH
+        scriptPath: SCRIPT_PATH,
+        cwd: request.cwd
       }));
       setPhase("plan-pending", {
-        command: `node ${SCRIPT_PATH} send ${result.threadId} --mode default "Implement the plan."`,
+        command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
         description: "Approve the plan and switch to execution mode. To revise instead, drop --mode and send revision text."
       }, { planPath, planSteps: steps, monitor });
       return { ...result, session, planPath };
@@ -9625,16 +10425,16 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         const pipelineErrored = Boolean(pipelineResult.error);
         const failedStage = pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff";
         const nextAction = pipelineErrored ? {
-          command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
+          command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
           description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`
         } : {
-          command: `node ${SCRIPT_PATH} send ${result.threadId} "Complete the missing items"`,
+          command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
           description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."
         };
         setPhase("incomplete", nextAction, { pipeline: pipelineResult, monitor });
       } else {
         setPhase("done", {
-          command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
+          command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
           description: "Task finished and passed completion check. Inspect full result or send a follow-up."
         }, { pipeline: pipelineResult, monitor });
       }
@@ -9649,11 +10449,12 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       config: { model: config.model, effort: config.effort, modeFlow: isPlanMode ? "plan\u2192default" : "default" },
       diffPath: diff.diffPath,
       scriptPath: SCRIPT_PATH,
-      jobId: request.jobId ?? null
+      jobId: request.jobId ?? null,
+      cwd: request.cwd
     }));
     markTerminalEmitted();
     setPhase("done", {
-      command: `node ${SCRIPT_PATH} result ${request.jobId ?? result.threadId}`,
+      command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
       description: "Task finished. Inspect full result or send a follow-up."
     }, { diffPath: diff.diffPath, monitor });
     return { ...result, session, diff };
@@ -9671,7 +10472,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
             phase: heartbeatState.phase ?? "unknown",
             origin: "bridge",
             scriptPath: SCRIPT_PATH,
-            jobId: request.jobId ?? null
+            jobId: request.jobId ?? null,
+            cwd: request.cwd
           })
         );
         logNdjson(backstopSession, "ERROR", null, {
@@ -9727,11 +10529,11 @@ async function handleTask(argv) {
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
   const noPipeline = Boolean(options["no-pipeline"]);
   const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
-  const prompt = readTaskPrompt(cwd2, options, positionals);
+  const prompt = readTaskPrompt(cwd, options, positionals);
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
   if (resumeLast && fresh) {
@@ -9747,10 +10549,10 @@ async function handleTask(argv) {
     resumeLast
   });
   if (options.background) {
-    ensureCodexAvailable(cwd2);
+    ensureCodexAvailable(cwd);
     const job2 = buildTaskJob(workspaceRoot, taskMetadata, write);
     const request = buildTaskRequest({
-      cwd: cwd2,
+      cwd,
       model,
       effort,
       prompt,
@@ -9766,7 +10568,7 @@ async function handleTask(argv) {
       questionAnswerMs: questionTimeoutOverride,
       noPipeline
     });
-    const { payload } = enqueueBackgroundTask(cwd2, job2, request);
+    const { payload } = enqueueBackgroundTask(cwd, job2, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
       json: options.json,
       startedAt
@@ -9777,7 +10579,7 @@ async function handleTask(argv) {
   await runForegroundCommand(
     job,
     (progress) => runBridgeTask({
-      cwd: cwd2,
+      cwd,
       model,
       effort,
       prompt,
@@ -9807,7 +10609,7 @@ async function handleTaskWorker(argv) {
   if (!options["job-id"]) {
     throw usageError("Missing required --job-id for task-worker.");
   }
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
@@ -9862,7 +10664,7 @@ async function handleStatus(argv) {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms"],
     booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch"]
   });
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   if (options.watch) {
     if (positionals[0]) {
       throw usageError("`status --watch` does not take a job-id argument; it watches ALL tracked jobs.");
@@ -9872,7 +10674,7 @@ async function handleStatus(argv) {
     }
     const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 1e4 });
     const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
-    await runStatusWatch(cwd2, {
+    await runStatusWatch(cwd, {
       intervalMs,
       overallTimeoutMs,
       all: options.all,
@@ -9882,7 +10684,7 @@ async function handleStatus(argv) {
     return;
   }
   if (options["prune-orphans"] || options.cleanup) {
-    const pruneReport = pruneOrphanedJobs(cwd2);
+    const pruneReport = pruneOrphanedJobs(cwd);
     emitSuccess("status", pruneReport, renderPruneOrphansReport(pruneReport), {
       json: options.json,
       startedAt
@@ -9891,10 +10693,10 @@ async function handleStatus(argv) {
   }
   const reference = positionals[0] ?? "";
   if (reference) {
-    const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd2, reference, {
+    const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd, reference, {
       timeoutMs: options["timeout-ms"],
       pollIntervalMs: options["poll-interval-ms"]
-    }) : buildSingleJobSnapshot(cwd2, reference);
+    }) : buildSingleJobSnapshot(cwd, reference);
     emitSuccess("status", snapshot, renderJobStatusReport(snapshot.job), {
       json: options.json,
       startedAt
@@ -9904,13 +10706,13 @@ async function handleStatus(argv) {
   if (options.wait) {
     throw usageError("`status --wait` requires a job id.");
   }
-  const report = buildStatusSnapshot(cwd2, { all: options.all });
+  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
   emitSuccess("status", report, renderStatusReport(report), {
     json: options.json,
     startedAt
   });
 }
-async function runStatusWatch(cwd2, { intervalMs, overallTimeoutMs, all, json: json2, startedAt }) {
+async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: json2, startedAt }) {
   const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
   let ticks = 0;
   let interrupted = false;
@@ -9921,7 +10723,7 @@ async function runStatusWatch(cwd2, { intervalMs, overallTimeoutMs, all, json: j
   try {
     while (true) {
       ticks += 1;
-      const snapshot = buildStatusSnapshot(cwd2, { all });
+      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all }));
       const activeCount = snapshot.running?.length ?? 0;
       const tickEntry = {
         schema_version: "1.0",
@@ -9988,16 +10790,16 @@ async function handleAwaitArtifact(argv) {
   if (!jobRef || !artifactPath) {
     throw usageError("`await-artifact <job-id> <path>` requires both a job reference and a file path.");
   }
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path11.isAbsolute(artifactPath) ? artifactPath : path11.resolve(cwd2, artifactPath);
+  const resolvedPath = path11.isAbsolute(artifactPath) ? artifactPath : path11.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
     let jobSnapshot;
     try {
-      jobSnapshot = buildSingleJobSnapshot(cwd2, jobRef);
+      jobSnapshot = buildSingleJobSnapshot(cwd, jobRef);
     } catch (e) {
       if (e && e.code === "JOB_NOT_FOUND") {
         throw e;
@@ -10077,8 +10879,8 @@ async function handleAwaitArtifact(argv) {
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
 }
-function pruneOrphanedJobs(cwd2) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd2);
+function pruneOrphanedJobs(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = listJobs(workspaceRoot);
   const reaped = [];
   const skipped = [];
@@ -10153,9 +10955,9 @@ function handleResult(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveResultJob(cwd2, reference);
+  const { workspaceRoot, job } = resolveResultJob(cwd, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
   const payload = {
     job,
@@ -10244,17 +11046,17 @@ async function handleWait(argv) {
     valueOptions: ["cwd", "timeout-ms"],
     booleanOptions: ["json"]
   });
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   if (!reference) {
     throw usageError("wait requires <job-id-or-thread-id>");
   }
   let job;
   try {
-    job = resolveResultJob(cwd2, reference).job;
+    job = resolveResultJob(cwd, reference).job;
   } catch (err) {
     if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd2, reference).job;
+      job = buildSingleJobSnapshot(cwd, reference).job;
     } else {
       throw err;
     }
@@ -10265,11 +11067,11 @@ async function handleWait(argv) {
       "JOB_HAS_NO_THREAD"
     );
   }
-  const config = getBridgeConfig(cwd2);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path11.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const TERMINAL = /\[(DONE|ERROR|INCOMPLETE)\]/;
+  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
   if (result.timedOut) {
     throw new CliError(
@@ -10304,7 +11106,7 @@ async function handleEvents(argv) {
     valueOptions: ["cwd", "timeout-ms", "filter", "exclude"],
     booleanOptions: ["json", "follow"]
   });
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   if (!reference) {
     throw usageError("events requires <job-id-or-thread-id>");
@@ -10316,10 +11118,10 @@ async function handleEvents(argv) {
   }
   let job;
   try {
-    job = resolveResultJob(cwd2, reference).job;
+    job = resolveResultJob(cwd, reference).job;
   } catch (err) {
     if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd2, reference).job;
+      job = buildSingleJobSnapshot(cwd, reference).job;
     } else {
       throw err;
     }
@@ -10330,7 +11132,7 @@ async function handleEvents(argv) {
       "JOB_HAS_NO_THREAD"
     );
   }
-  const config = getBridgeConfig(cwd2);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const eventsPath = path11.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
@@ -10499,7 +11301,7 @@ function handleTaskResumeCandidate(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const sessionId = getCurrentClaudeSessionId();
   const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst(listJobs(workspaceRoot)));
@@ -10530,13 +11332,13 @@ async function handleCancel(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
-  const cwd2 = resolveCommandCwd(options);
+  const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd2, reference, { env: process8.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process8.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
-  const interrupt = await interruptAppServerTurn(cwd2, { threadId, turnId });
+  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,
@@ -10579,12 +11381,12 @@ async function handleCancel(argv) {
     startedAt
   });
 }
-function resolvePromptInput(options, positionals, cwd2) {
+function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path11.resolve(cwd2, options["prompt-file"]));
+    return readPromptFileOrThrow(path11.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path11.resolve(cwd2, positionals[0]);
+    const candidate = path11.resolve(cwd, positionals[0]);
     try {
       if (fs13.existsSync(candidate) && fs13.statSync(candidate).isFile()) {
         return fs13.readFileSync(candidate, "utf8");
@@ -10627,12 +11429,13 @@ async function handleSend(argv) {
   }
   const threadId = rawThreadId.trim();
   const promptParts = positionals.slice(1);
-  const cwd2 = resolveCommandCwd(options);
-  const prompt = resolvePromptInput(options, promptParts, cwd2);
+  const cwd = resolveCommandCwd(options);
+  const prompt = resolvePromptInput(options, promptParts, cwd);
   if (!prompt) {
     throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
   }
-  const config = getBridgeConfig(cwd2);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getBridgeConfig(cwd, workspaceRoot);
   const modeOverride = options.mode;
   const sessionDir = resolveSessionDir(config.session_dir);
   const sendIsPlanMode = modeOverride === "plan";
@@ -10645,12 +11448,12 @@ async function handleSend(argv) {
     onProgress: null,
     // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
     // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
-    idleTimeoutMs: idleTimeoutOverride != null ? idleTimeoutOverride : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 3e5,
+    idleTimeoutMs: idleTimeoutOverride != null ? idleTimeoutOverride : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
     // Turn timeout: per-invocation override > the mode-appropriate config key
     // (turn_plan_ms for plan-mode sends, turn_default_ms otherwise) > built-in
     // default. `send` gets a single --turn-timeout-ms flag that maps onto the
     // right budget based on the resolved mode.
-    turnTimeoutMs: turnTimeoutOverride ?? (sendIsPlanMode ? Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : 3e5 : Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : 6e5),
+    turnTimeoutMs: turnTimeoutOverride ?? (sendIsPlanMode ? Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : DEFAULT_CONFIG.turn_plan_ms : Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
       logNdjson(s, "TURN_PARAMS", "turn/start", {
@@ -10672,7 +11475,13 @@ async function handleSend(argv) {
         itemType: item?.type ?? null,
         text: extractItemText(item)
       });
-    }
+    },
+    onServerRequest: createBridgeServerRequestHandler({
+      sessionDir,
+      config,
+      questionAnswerMs: questionTimeoutOverride ?? null,
+      cwd
+    })
   };
   const resolvedSandboxMode = modeOverride === "default" ? "default" : "plan";
   turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
@@ -10682,15 +11491,79 @@ async function handleSend(argv) {
       developerInstructions: loadDeveloperInstructions(modeOverride)
     });
   }
-  ensureCodexAvailable(cwd2);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const result = await runAppServerTurn(workspaceRoot, turnOptions);
+  ensureCodexAvailable(cwd);
+  const result = await runAppServerTurn(cwd, turnOptions);
   if (result.status !== 0) {
     const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
+    const session2 = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    const classified = classifyError(errLike);
+    logEvent(session2, formatErrorEvent(session2, {
+      errorCode: classified.code,
+      message: classified.message,
+      phase: classified.class,
+      origin: "send",
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session2, "ERROR", "turn/completed", { error: classified });
     emitError(errLike, { json: options.json, command: "send" });
     return;
   }
-  const session = findSession(sessionDir, threadId);
+  const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+  if (result.planDetected && result.planText) {
+    const planPath = writePlan(session, result.planText);
+    const steps = extractPlanSteps(result.planText);
+    logEvent(session, formatPlanEvent(session, {
+      turnId: result.turnId,
+      planTitle: result.planText.split("\n")[0]?.slice(0, 80) ?? "Plan",
+      steps,
+      planPath,
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session, "PLAN", "item/completed", {
+      turnId: result.turnId ?? null,
+      planPath,
+      planDetected: true
+    });
+    const eventsPath2 = session?.eventsPath ?? null;
+    const renderedLines2 = [`Plan updated for ${threadId}.`];
+    if (eventsPath2) renderedLines2.push(`  events: ${eventsPath2}`);
+    emitSuccess(
+      "send",
+      {
+        threadId,
+        status: result.status,
+        turnId: result.turnId ?? null,
+        eventsPath: eventsPath2,
+        phase: "plan-pending",
+        planPath,
+        planSteps: steps,
+        finalMessage: result.finalMessage ?? null
+      },
+      `${renderedLines2.join("\n")}
+`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  logEvent(session, formatDoneEvent(session, {
+    duration: Math.round((Date.now() - startedAt) / 1e3),
+    diffStat: "send follow-up",
+    files: [],
+    config: {
+      model: config.model,
+      effort: turnOptions.effort,
+      modeFlow: modeOverride ?? "resume"
+    },
+    diffPath: "not captured for send",
+    scriptPath: SCRIPT_PATH,
+    cwd
+  }));
+  logNdjson(session, "DONE", "turn/completed", {
+    turnId: result.turnId ?? null,
+    status: result.status
+  });
   const eventsPath = session?.eventsPath ?? null;
   const renderedLines = [`Sent to ${threadId}. Status: ${result.status}`];
   if (eventsPath) renderedLines.push(`  events: ${eventsPath}`);
@@ -10721,20 +11594,20 @@ async function handleSteer(argv) {
     throw invalidThreadIdError(rawThreadId, "thread-id");
   }
   const threadId = rawThreadId.trim();
-  const cwd2 = resolveCommandCwd(options);
-  const prompt = resolvePromptInput(options, promptParts, cwd2);
+  const cwd = resolveCommandCwd(options);
+  const prompt = resolvePromptInput(options, promptParts, cwd);
   if (!prompt) {
     throw validationError("steer requires a prompt", "MISSING_PROMPT");
   }
-  ensureCodexAvailable(cwd2);
-  await withAppServer(cwd2, async (client) => {
+  ensureCodexAvailable(cwd);
+  await withAppServer(cwd, async (client) => {
     await client.request("turn/steer", {
       threadId,
       input: [{ type: "text", text: prompt }],
       expectedTurnId: turnId
     });
   });
-  const config = getBridgeConfig(cwd2);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
   if (session) {
@@ -10756,7 +11629,8 @@ async function handleRespond(argv) {
   if (!requestId) {
     throw usageError("respond requires <request-id>");
   }
-  const config = getBridgeConfig(cwd);
+  const cwd = resolveCommandCwd(options);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const pending = readPendingRequestById(sessionDir, requestId);
   if (!pending) {
@@ -10808,7 +11682,8 @@ async function handleSummary(argv) {
   if (!threadId) {
     throw usageError("summary requires <thread-id>");
   }
-  const config = getBridgeConfig(cwd);
+  const cwd = resolveCommandCwd(options);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
   if (!session) {

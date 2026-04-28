@@ -6,11 +6,15 @@ import path from "node:path";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
-const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
+const LEGACY_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
+const STATE_LOCK_FILE_NAME = "state.lock";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+const LOCK_TIMEOUT_MS = 5_000;
+const STALE_LOCK_MS = 30_000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -38,7 +42,7 @@ export function resolveStateDir(cwd) {
   const slugSource = path.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[LEGACY_PLUGIN_DATA_ENV];
   const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
   return path.join(stateRoot, `${slug}-${hash}`);
 }
@@ -47,12 +51,74 @@ export function resolveStateFile(cwd) {
   return path.join(resolveStateDir(cwd), STATE_FILE_NAME);
 }
 
+function resolveStateLockFile(cwd) {
+  return path.join(resolveStateDir(cwd), STATE_LOCK_FILE_NAME);
+}
+
 export function resolveJobsDir(cwd) {
   return path.join(resolveStateDir(cwd), JOBS_DIR_NAME);
 }
 
 export function ensureStateDir(cwd) {
   fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+}
+
+function sleepSync(ms) {
+  const buffer = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
+}
+
+function acquireStateLock(cwd) {
+  ensureStateDir(cwd);
+  const lockFile = resolveStateLockFile(cwd);
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      const fd = fs.openSync(lockFile, "wx");
+      fs.writeFileSync(fd, `${process.pid}\n${new Date().toISOString()}\n`, "utf8");
+      // Capture this lock's inode so the release closure can validate that the
+      // file on disk is still ours before unlinking it. If our lock was reaped
+      // as stale by a sibling process and a different inode now lives at the
+      // path, unlinking would corrupt the new holder's lock.
+      let ownedIno = null;
+      try { ownedIno = fs.fstatSync(fd).ino; } catch { /* noop */ }
+      return () => {
+        try { fs.closeSync(fd); } catch { /* noop */ }
+        try {
+          if (ownedIno !== null) {
+            const stat = fs.statSync(lockFile);
+            if (stat.ino !== ownedIno) {
+              // Another holder owns the file now; do not unlink.
+              return;
+            }
+          }
+          fs.unlinkSync(lockFile);
+        } catch (releaseError) {
+          // ENOENT is fine — already unlinked by a stale-lock cleanup race.
+          if (releaseError?.code !== "ENOENT") {
+            // Best effort: do not throw out of a finally-style release.
+          }
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const stat = fs.statSync(lockFile);
+        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+          fs.unlinkSync(lockFile);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - startedAt > LOCK_TIMEOUT_MS) {
+        throw new Error(`Timed out waiting for state lock: ${lockFile}`);
+      }
+      sleepSync(50);
+    }
+  }
 }
 
 // Probe whether a pid is a live process. `process.kill(pid, 0)` throws
@@ -74,10 +140,8 @@ function pidIsAlive(pid) {
 }
 
 // Walks the job list, looking for `queued`/`running` entries whose backing
-// pid is no longer alive, and transitions them to `orphaned`. This runs
-// transparently on every loadState so orphan piles drain themselves over
-// time without any manual cleanup. Addresses
-// `unexpected-bridge-observations/06-stop-gate-review-accumulates-orphaned-running-tasks.md`.
+// pid is no longer alive, and transitions them to `orphaned`. Callers that
+// persist this result must do so under `state.lock`.
 function reapOrphans(jobs) {
   if (!Array.isArray(jobs) || jobs.length === 0) return { jobs, reaped: 0 };
   let changed = 0;
@@ -107,32 +171,36 @@ export function loadState(cwd) {
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     const rawJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
-    const { jobs, reaped } = reapOrphans(rawJobs);
-    const state = {
+    return {
       ...defaultState(),
       ...parsed,
       config: {
         ...defaultState().config,
         ...(parsed.config ?? {})
       },
-      jobs,
+      jobs: rawJobs,
     };
-    // Only persist when the reaper actually changed something — avoids
-    // noisy rewrites on every status/result call.
-    if (reaped > 0) {
-      try {
-        fs.writeFileSync(stateFile, `${JSON.stringify({
-          version: parsed.version ?? STATE_VERSION,
-          config: state.config,
-          jobs: state.jobs,
-        }, null, 2)}\n`, "utf8");
-      } catch {
-        // Reaper write failures must not fail the caller — stale entries
-        // just get re-reaped on the next load.
+  } catch (error) {
+    // Corrupt state.json: a re-throw here wedges every state-touching command
+    // because saveStateUnlocked itself calls loadState for previousJobs. To
+    // avoid that cascade while still preserving forensic data, rename the
+    // corrupt file to a sibling `.corrupt-<ts>` and fall back to defaults.
+    let renamedPath = null;
+    try {
+      const candidate = `${stateFile}.corrupt-${Date.now()}`;
+      fs.renameSync(stateFile, candidate);
+      renamedPath = candidate;
+    } catch (renameError) {
+      // EXDEV (cross-device), ENOENT (already gone), and EACCES are all
+      // best-effort situations — the warning below still records the issue.
+      if (renameError && renameError.code !== "ENOENT" && renameError.code !== "EXDEV") {
+        // swallow other rename errors as well; the goal is recovery not strict accounting
       }
     }
-    return state;
-  } catch {
+    process.emitWarning(
+      `State file at ${stateFile} was corrupt (${error?.message ?? error}); preserved at ${renamedPath ?? "<unable to rename>"}`,
+      "CodexBridgeStateWarning"
+    );
     return defaultState();
   }
 }
@@ -149,10 +217,39 @@ function removeFileIfExists(filePath) {
   }
 }
 
-export function saveState(cwd, state) {
+function writeJsonFileAtomic(filePath, payload) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  const fd = fs.openSync(tempPath, "w");
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tempPath, filePath);
+  } catch (renameError) {
+    // Rename failed (cross-device EXDEV, permission, or other). Sweep the
+    // straggling temp file before propagating so we do not leak `.tmp`
+    // siblings on every retry.
+    try { fs.unlinkSync(tempPath); } catch (cleanupError) {
+      if (cleanupError?.code !== "ENOENT") {
+        // best effort; do not mask the original error
+      }
+    }
+    throw renameError;
+  }
+}
+
+function saveStateUnlocked(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
-  const nextJobs = pruneJobs(state.jobs ?? []);
+  const { jobs: reapedJobs } = reapOrphans(state.jobs ?? []);
+  const nextJobs = pruneJobs(reapedJobs);
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -171,14 +268,28 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
   return nextState;
 }
 
+export function saveState(cwd, state) {
+  const release = acquireStateLock(cwd);
+  try {
+    return saveStateUnlocked(cwd, state);
+  } finally {
+    release();
+  }
+}
+
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  mutate(state);
-  return saveState(cwd, state);
+  const release = acquireStateLock(cwd);
+  try {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveStateUnlocked(cwd, state);
+  } finally {
+    release();
+  }
 }
 
 export function generateJobId(prefix = "job") {

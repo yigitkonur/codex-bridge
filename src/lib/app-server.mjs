@@ -18,6 +18,8 @@ import { terminateProcessTree } from "./process.mjs";
 
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
+export const APP_SERVER_INITIALIZE_TIMEOUT_MS = 10_000;
+export const APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 /** @type {ClientInfo} */
 const DEFAULT_CLIENT_INFO = {
@@ -50,7 +52,30 @@ function createProtocolError(message, data) {
   return error;
 }
 
-class AppServerClientBase {
+function timeoutError(message) {
+  const error = new Error(message);
+  error.code = "ETIMEDOUT";
+  return error;
+}
+
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(timeoutError(message)), ms);
+      timer.unref?.();
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function serverRequestError(method) {
+  return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
+}
+
+export class AppServerClientBase {
   constructor(cwd, options = {}) {
     this.cwd = cwd;
     this.options = options;
@@ -63,6 +88,8 @@ class AppServerClientBase {
     this.notificationHandler = null;
     this.lineBuffer = "";
     this.transport = "unknown";
+    this.serverRequestHandler = null;
+    this.listeners = new Map();
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
@@ -73,23 +100,87 @@ class AppServerClientBase {
     this.notificationHandler = handler;
   }
 
+  on(eventName, handler) {
+    if (!this.listeners.has(eventName)) {
+      this.listeners.set(eventName, new Set());
+    }
+    this.listeners.get(eventName).add(handler);
+    return this;
+  }
+
+  off(eventName, handler) {
+    this.listeners.get(eventName)?.delete(handler);
+    return this;
+  }
+
+  emit(eventName, payload) {
+    for (const handler of this.listeners.get(eventName) ?? []) {
+      try {
+        handler(payload);
+      } catch {
+        // Listener failures must not break the transport.
+      }
+    }
+  }
+
   /**
    * @template {AppServerMethod} M
    * @param {M} method
    * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+   * @param {{ signal?: AbortSignal }} [options]
    * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
    */
-  request(method, params) {
+  request(method, params, options = {}) {
     if (this.closed) {
       throw new Error("codex app-server client is closed.");
+    }
+
+    const signal = options.signal ?? null;
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error("request aborted"));
     }
 
     const id = this.nextId;
     this.nextId += 1;
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
-      this.sendMessage({ id, method, params });
+      let abortHandler = null;
+      const cleanupAbort = () => {
+        if (signal && abortHandler) {
+          signal.removeEventListener("abort", abortHandler);
+          abortHandler = null;
+        }
+      };
+
+      const wrappedResolve = (value) => {
+        cleanupAbort();
+        resolve(value);
+      };
+      const wrappedReject = (error) => {
+        cleanupAbort();
+        reject(error);
+      };
+
+      this.pending.set(id, { resolve: wrappedResolve, reject: wrappedReject, method });
+
+      if (signal) {
+        abortHandler = () => {
+          if (this.pending.get(id)) {
+            this.pending.delete(id);
+          }
+          cleanupAbort();
+          reject(signal.reason ?? new Error("request aborted"));
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+
+      try {
+        this.sendMessage({ id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        cleanupAbort();
+        reject(error);
+      }
     });
   }
 
@@ -151,43 +242,31 @@ class AppServerClientBase {
 
   handleServerRequest(message) {
     const method = message.method;
-    const params = message.params ?? {};
 
-    if (method === "item/tool/requestUserInput") {
-      if (this.serverRequestHandler) {
-        // Attach client ref so handler can respond on the same connection
-        message._client = this;
-        this.serverRequestHandler(message);
-      } else {
-        this.sendMessage({ id: message.id, result: { answers: {} } });
-      }
+    if (this.serverRequestHandler) {
+      message._client = this;
+      Promise.resolve(this.serverRequestHandler(message)).catch((error) => {
+        this.rejectServerRequest(
+          message.id,
+          buildJsonRpcError(-32000, error?.message ?? `Server request handler failed for ${method}.`)
+        );
+      });
       return;
     }
 
-    if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-      this.sendMessage({ id: message.id, result: { decision: "accept" } });
-      return;
-    }
-
-    if (method === "item/permissions/requestApproval") {
-      const permissions = params.permissions ?? {};
-      this.sendMessage({ id: message.id, result: { permissions, scope: "session" } });
-      return;
-    }
-
-    if (method === "mcpServer/elicitation/request") {
-      this.sendMessage({ id: message.id, result: { action: "accept", content: null } });
-      return;
-    }
-
-    this.sendMessage({
-      id: message.id,
-      error: buildJsonRpcError(-32601, `Unsupported server request: ${method}`)
-    });
+    this.rejectServerRequest(message.id, serverRequestError(method));
   }
 
   setServerRequestHandler(handler) {
     this.serverRequestHandler = handler;
+  }
+
+  resolveServerRequest(id, result) {
+    this.sendMessage({ id, result: result ?? {} });
+  }
+
+  rejectServerRequest(id, error) {
+    this.sendMessage({ id, error });
   }
 
   handleExit(error) {
@@ -197,11 +276,13 @@ class AppServerClientBase {
 
     this.exitResolved = true;
     this.exitError = error ?? null;
+    this.closed = true;
 
     for (const pending of this.pending.values()) {
       pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
     }
     this.pending.clear();
+    this.emit("exit", this.exitError);
     this.resolveExit(undefined);
   }
 
@@ -249,10 +330,14 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       this.handleLine(line);
     });
 
-    await this.request("initialize", {
-      clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server."
+    );
     this.notify("initialized", {});
   }
 
@@ -289,7 +374,22 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       }, 50).unref?.();
     }
 
-    await this.exitPromise;
+    try {
+      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
+    } catch (error) {
+      if (this.proc && this.proc.exitCode === null) {
+        if (process.platform === "win32") {
+          try {
+            terminateProcessTree(this.proc.pid);
+          } catch {
+            // Best effort.
+          }
+        } else {
+          this.proc.kill("SIGKILL");
+        }
+      }
+      this.handleExit(error);
+    }
   }
 
   sendMessage(message) {
@@ -298,7 +398,14 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     if (!stdin) {
       throw new Error("codex app-server stdin is not available.");
     }
-    stdin.write(line);
+    if (stdin.destroyed || !stdin.writable) {
+      throw new Error("codex app-server stdin is closed.");
+    }
+    stdin.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
   }
 }
 
@@ -310,7 +417,7 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
   }
 
   async initialize() {
-    await new Promise((resolve, reject) => {
+    await withTimeout(new Promise((resolve, reject) => {
       const target = parseBrokerEndpoint(this.endpoint);
       this.socket = net.createConnection({ path: target.path });
       this.socket.setEncoding("utf8");
@@ -327,12 +434,16 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
       this.socket.on("close", () => {
         this.handleExit(this.exitError);
       });
-    });
+    }), APP_SERVER_INITIALIZE_TIMEOUT_MS, "Timed out connecting to codex app-server broker.");
 
-    await this.request("initialize", {
-      clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server broker connection."
+    );
     this.notify("initialized", {});
   }
 
@@ -346,7 +457,12 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
     if (this.socket) {
       this.socket.end();
     }
-    await this.exitPromise;
+    try {
+      await withTimeout(this.exitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
+    } catch (error) {
+      this.socket?.destroy();
+      this.handleExit(error);
+    }
   }
 
   sendMessage(message) {
@@ -355,7 +471,14 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
     if (!socket) {
       throw new Error("codex app-server broker connection is not connected.");
     }
-    socket.write(line);
+    if (socket.destroyed || !socket.writable) {
+      throw new Error("codex app-server broker connection is closed.");
+    }
+    socket.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
   }
 }
 
@@ -375,7 +498,12 @@ export class CodexAppServerClient {
     const client = brokerEndpoint
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
-    await client.initialize();
+    try {
+      await client.initialize();
+    } catch (error) {
+      await client.close().catch(() => {});
+      throw error;
+    }
     return client;
   }
 }

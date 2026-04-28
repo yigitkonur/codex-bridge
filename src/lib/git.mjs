@@ -4,6 +4,7 @@ import path from "node:path";
 import { CliError } from "./cli-errors.mjs";
 import { isProbablyText } from "./fs.mjs";
 import { formatCommandFailure, runCommand, runCommandChecked } from "./process.mjs";
+import { sanitizePromptValue } from "./prompts.mjs";
 
 const MAX_UNTRACKED_BYTES = 24 * 1024;
 const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
@@ -165,7 +166,7 @@ export function resolveReviewTarget(cwd, options = {}) {
   if (baseRef) {
     return {
       mode: "branch",
-      label: `branch diff against ${baseRef}`,
+      label: `branch diff against ${sanitizePromptValue(baseRef)}`,
       baseRef,
       explicit: true
     };
@@ -195,7 +196,7 @@ export function resolveReviewTarget(cwd, options = {}) {
     const detectedBase = detectDefaultBranch(cwd);
     return {
       mode: "branch",
-      label: `branch diff against ${detectedBase}`,
+      label: `branch diff against ${sanitizePromptValue(detectedBase)}`,
       baseRef: detectedBase,
       explicit: true
     };
@@ -212,7 +213,7 @@ export function resolveReviewTarget(cwd, options = {}) {
   const detectedBase = detectDefaultBranch(cwd);
   return {
     mode: "branch",
-    label: `branch diff against ${detectedBase}`,
+    label: `branch diff against ${sanitizePromptValue(detectedBase)}`,
     baseRef: detectedBase,
     explicit: false
   };

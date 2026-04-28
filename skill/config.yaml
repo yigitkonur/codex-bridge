@@ -4,9 +4,7 @@ codex_bridge:
   # "default" — Codex executes directly (may ask questions if allow_questions: true)
   #
   # Override on a single run with `codex-bridge task --mode <plan|default> …`.
-  # Foreground only: `task --background --mode …` stores the override in the
-  # job record but the detached worker reads this value, so switching modes
-  # for background launches requires editing the file.
+  # Background launches preserve the override in the stored job record.
   mode: "plan"
 
   # Default model (inherits from Codex config if not set here)
@@ -88,4 +86,4 @@ codex_bridge:
   # turn_default_ms: 1800000      # Per-turn ceiling for execute turns (30 min)
   # pipeline_stage_ms: 300000     # Auto-pipeline per-stage cap — review / fix / check (5 min)
   # pipeline_total_ms: 900000     # Auto-pipeline total cap across all stages (15 min)
-  # question_answer_ms: 300000    # requestUserInput wait before auto-answering {} (5 min)
+  # question_answer_ms: 300000    # requestUserInput wait before rejecting unanswered request (5 min)

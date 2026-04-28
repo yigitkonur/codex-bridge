@@ -45,6 +45,37 @@ export type {
 export type ThreadStartParams = Omit<RawThreadStartParams, "persistExtendedHistory">;
 export type ThreadResumeParams = Omit<RawThreadResumeParams, "persistExtendedHistory">;
 
+export interface TurnSteerParams {
+  threadId: string;
+  turnId: string;
+  input: UserInput[];
+}
+
+export interface TurnSteerResponse {
+  turnId: string;
+}
+
+export interface AccountReadParams {
+  refreshToken?: boolean;
+}
+
+export interface AccountReadResponse {
+  account?: { type?: string; email?: string } | null;
+  requiresOpenaiAuth?: boolean;
+}
+
+export interface ConfigReadParams {
+  includeLayers?: boolean;
+  cwd?: string;
+}
+
+export interface ConfigReadResponse {
+  config?: {
+    model_provider?: string;
+    model_providers?: Record<string, { name?: string }>;
+  };
+}
+
 export interface CodexAppServerClientOptions {
   env?: NodeJS.ProcessEnv;
   clientInfo?: ClientInfo;
@@ -62,7 +93,10 @@ export interface AppServerMethodMap {
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "review/start": { params: ReviewStartParams; result: ReviewStartResponse };
   "turn/start": { params: TurnStartParams; result: TurnStartResponse };
+  "turn/steer": { params: TurnSteerParams; result: TurnSteerResponse };
   "turn/interrupt": { params: TurnInterruptParams; result: TurnInterruptResponse };
+  "account/read": { params: AccountReadParams; result: AccountReadResponse };
+  "config/read": { params: ConfigReadParams; result: ConfigReadResponse };
 }
 
 export type AppServerMethod = keyof AppServerMethodMap;

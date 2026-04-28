@@ -88,10 +88,9 @@ const DEFAULT_CONFIG = {
   pipeline_stage_ms: 300_000,
   pipeline_total_ms: 900_000,
   // How long `requestUserInput` waits for a human/orchestrator to answer
-  // before auto-answering `{answers: {}}`. Five minutes is tight for
-  // thoughtful decisions; make it configurable so a slow loop (human in a
-  // meeting, or a subagent orchestrator with its own deliberation latency)
-  // isn't silently coerced into a no-op answer.
+  // before rejecting the server request. Five minutes is tight for thoughtful
+  // decisions; make it configurable so a slow loop can widen the window
+  // without silently coercing the turn into a no-op answer.
   question_answer_ms: 300_000,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
