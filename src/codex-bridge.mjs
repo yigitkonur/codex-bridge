@@ -60,6 +60,7 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  setConfig,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
@@ -824,6 +825,18 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     );
   } else {
     fs.rmSync(lockPath, { force: true });
+    // Clear any legacy `config.stopReviewGate: true` persisted before the
+    // lock-file rollout. Without this, readStopReviewGate's migration path
+    // (lines 763-792) sees the stale flag, recreates the lock, and turns
+    // disable into a no-op for users on migrated state.
+    try {
+      setConfig(workspaceRoot, "stopReviewGate", false);
+    } catch {
+      // Best-effort: if state can't be written, the lock is already gone
+      // and the next read will still report the gate as disabled — only
+      // workspaces that re-trigger the migration would see the flag flip
+      // back. Don't fail the disable command.
+    }
   }
   return readStopReviewGate(workspaceRoot, officialPlugin);
 }
