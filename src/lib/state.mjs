@@ -336,8 +336,19 @@ export function upsertJob(cwd, jobPatch) {
 // same `pidIsAlive` probe used by the writer here so reads see a reaped
 // view immediately, but we never write back: on-disk reaping remains the
 // writer's responsibility, keeping read-only paths read-only.
-export function listJobs(cwd) {
-  const { jobs: reapedJobs } = reapOrphans(loadState(cwd).jobs);
+//
+// Pass `{ raw: true }` to bypass the in-memory reap and observe the
+// untouched on-disk status. The `--prune-orphans` writer needs this: it
+// matches `running`/`queued` with dead PIDs and persists the transition to
+// `orphaned`. With the default reaped view, those entries already report
+// as `orphaned` in-memory and would slip past the writer's filter, leaving
+// the disk state untouched.
+export function listJobs(cwd, options = {}) {
+  const jobs = loadState(cwd).jobs;
+  if (options && options.raw) {
+    return jobs;
+  }
+  const { jobs: reapedJobs } = reapOrphans(jobs);
   return reapedJobs;
 }
 

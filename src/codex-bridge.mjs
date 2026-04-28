@@ -3667,7 +3667,13 @@ async function handleAwaitArtifact(argv) {
 // suitable for both JSON and rendered output.
 function pruneOrphanedJobs(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = listJobs(workspaceRoot);
+  // The default `listJobs` view reaps stale-PID `running`/`queued` jobs to
+  // `orphaned` in-memory so read-only consumers see crashes promptly. The
+  // prune-orphans writer is the one that must actually persist that
+  // transition, so it asks for the raw on-disk view; otherwise the entries
+  // it's meant to reap arrive already labelled `orphaned` and slip past
+  // the active-status filter below.
+  const jobs = listJobs(workspaceRoot, { raw: true });
   const reaped = [];
   const skipped = [];
   const ts = new Date().toISOString();
