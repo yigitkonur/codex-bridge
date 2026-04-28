@@ -8324,9 +8324,15 @@ async function handleSetup(argv) {
     }
   } else if (options["disable-review-gate"]) {
     const result = setStopReviewGate(workspaceRoot, false, officialPlugin);
-    actionsTaken.push(
-      `Disabled the stop-time review gate for ${workspaceRoot} (removed lock at ${result.lockPath}).`
-    );
+    if (result.lockExists) {
+      actionsTaken.push(
+        `Failed to remove the stop-time review gate lock at ${result.lockPath}; the gate is still active. Please remove the lock file manually.`
+      );
+    } else {
+      actionsTaken.push(
+        `Disabled the stop-time review gate for ${workspaceRoot} (removed lock at ${result.lockPath}).`
+      );
+    }
   }
   const finalReport = await buildSetupReport(cwd2, actionsTaken);
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {

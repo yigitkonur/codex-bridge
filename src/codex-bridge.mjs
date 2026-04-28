@@ -791,9 +791,19 @@ async function handleSetup(argv) {
     }
   } else if (options["disable-review-gate"]) {
     const result = setStopReviewGate(workspaceRoot, false, officialPlugin);
-    actionsTaken.push(
-      `Disabled the stop-time review gate for ${workspaceRoot} (removed lock at ${result.lockPath}).`
-    );
+    if (result.lockExists) {
+      // Lock removal failed (read-only checkout, stale root-owned lock,
+      // permission denied, etc.). The Stop hook keys off this lock, so the
+      // gate is still active despite our disable intent — surface the
+      // failure instead of claiming success.
+      actionsTaken.push(
+        `Failed to remove the stop-time review gate lock at ${result.lockPath}; the gate is still active. Please remove the lock file manually.`
+      );
+    } else {
+      actionsTaken.push(
+        `Disabled the stop-time review gate for ${workspaceRoot} (removed lock at ${result.lockPath}).`
+      );
+    }
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken);
