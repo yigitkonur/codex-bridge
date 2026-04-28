@@ -26,6 +26,8 @@ Delegate coding tasks to Codex and manage the workflow via Monitor notifications
 
 **Path note:** every example uses `${CLAUDE_SKILL_DIR}`. If that environment variable isn't set in your harness, substitute the install path directly (`~/.claude/skills/codex-bridge` for the default user-scope install, or wherever your skill installer placed this skill). Never rely on a bare `codex-bridge` binary — it doesn't exist; you always invoke `node <scriptPath>`.
 
+**Claude Code plugin install:** when installed as a Claude Code plugin instead of a standalone skill, prefer the native slash commands: `/codex-bridge:task`, `/codex-bridge:review`, `/codex-bridge:adversarial-review`, `/codex-bridge:status`, `/codex-bridge:result`, `/codex-bridge:events`, `/codex-bridge:wait`, `/codex-bridge:send`, `/codex-bridge:respond`, and `/codex-bridge:cancel`. The command files invoke `node "${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge.mjs"` and use the `codex-bridge:codex-bridge-runner` subagent for substantial task delegation, so Claude Code gets a fresh worker context while the bridge remains the source of truth for job IDs and Monitor hints. Plugin hooks export the Claude session id for job scoping. If the official OpenAI Codex plugin/skill is enabled, prefer it for standard `/codex:*` review-gate behavior; use `codex-bridge` when the official plugin is unavailable or when the user explicitly wants `codex-bridge` orchestration, Monitor-ready event files, or `/codex-bridge:*` commands. The `codex-bridge` stop-time review gate is project-specific and opt-in only: `/codex-bridge:setup --enable-review-gate` creates `.codex-bridge-stop-review-gate.lock` in the git root, but that mode is suppressed while the official OpenAI Codex plugin is enabled; without the lock file, the Stop hook exits without running Codex.
+
 ## Identifiers (the single biggest source of derailment — read this first)
 
 Two kinds of IDs flow through every task. Use the right one or commands fail:
@@ -102,7 +104,7 @@ Six independent timeout budgets, each resolved `CLI flag → config.yaml key →
 | Execute turn (also send turns in default mode) | 30 min | `turn_default_ms` | `--turn-default-ms` (task) / `--turn-timeout-ms` (send) |
 | Per-stage pipeline (review/fix/check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
 | Pipeline total | 15 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
-| Question unanswered (auto-answers `{answers:{}}`) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
+| Question unanswered (server request rejected) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | No-event idle (per turn) | 5 min | `idle_timeout_ms` | `--idle-timeout-ms` |
 
 Idle fires a `[ERROR] … | ClientTimeout` with `origin: idle` (v1.4.1+; pre-1.4.1 this collapsed to `origin: turn`); pipeline-stage timeouts fire with `origin: pipeline:<lastCompleted>` and a separate `failing_stage: <actualStage>` field. If Monitor goes silent and `status <id>` still reports `running` past the relevant timeout plus ~60 s buffer, the task is genuinely stuck — `cancel <id>` recovers.
@@ -176,7 +178,7 @@ That footer is your source of truth — do **not** pattern-match the `Thread rea
 | `--turn-plan-ms <ms>` | Override per-turn timeout for plan turns | Long-form planning across many specs |
 | `--pipeline-stage-timeout-ms <ms>` | Override per-stage pipeline budget | Large diffs; native reviewer needs longer |
 | `--pipeline-total-timeout-ms <ms>` | Override total pipeline budget | Very large runs |
-| `--question-timeout-ms <ms>` | How long `requestUserInput` waits before auto-answering `{}` | Slow loops / humans deliberating |
+| `--question-timeout-ms <ms>` | How long `requestUserInput` waits before rejecting the unanswered request | Slow loops / humans deliberating |
 | `--idle-timeout-ms <ms>` | Override the no-event idle watchdog | Reasoning-heavy tasks that go quiet between app-server events |
 
 All values are milliseconds; malformed (non-positive / non-numeric) inputs throw `usage` (exit 2). Example of a scaffold that needs extra execute time:
@@ -362,7 +364,7 @@ Each task writes artifacts to `~/.codex-bridge/sessions/` (or `config.session_di
 - `{threadId}.diff` — `git diff HEAD` snapshot captured by the pipeline.
 - `{threadId}.plan.md` — Written when Codex emits a structured `item/completed` with `type: "plan"`.
 
-A `{threadId}.pending.json` / `.response.json` pair appears transiently while a `requestUserInput` is in flight (consumed-on-read). `{threadId}.review.json`, `[REVIEW]`, `[PHASE]` have writer helpers but no active call sites — don't build tooling that depends on them.
+A `{threadId}.pending.json` / `.response.json` pair appears transiently while a `requestUserInput` is in flight (consumed-on-read). `{threadId}.review.json` is written by adversarial review; `[REVIEW]` and `[PHASE]` remain reserved helper formats.
 
 ## Troubleshooting
 

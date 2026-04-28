@@ -1,0 +1,117 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+
+function readText(relativePath) {
+  return fs.readFileSync(new URL(relativePath, root), "utf8");
+}
+
+function readJson(relativePath) {
+  return JSON.parse(readText(relativePath));
+}
+
+function listMarkdownFiles(relativeDir) {
+  return fs
+    .readdirSync(new URL(relativeDir, root))
+    .filter((entry) => entry.endsWith(".md"))
+    .sort();
+}
+
+test("Claude plugin manifest version matches package and skill metadata", () => {
+  const manifest = readJson(".claude-plugin/plugin.json");
+  const pkg = readJson("package.json");
+  const skill = readText("skill/SKILL.md");
+
+  assert.equal(manifest.version, pkg.version);
+  assert.match(skill, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
+});
+
+test("Claude plugin exposes command coverage for bridge orchestration", () => {
+  const expectedCommands = [
+    "adversarial-review.md",
+    "auth-status.md",
+    "await-artifact.md",
+    "cancel.md",
+    "config.md",
+    "events.md",
+    "respond.md",
+    "result.md",
+    "review.md",
+    "send.md",
+    "setup.md",
+    "status.md",
+    "steer.md",
+    "summary.md",
+    "task.md",
+    "update.md",
+    "version.md",
+    "wait.md"
+  ];
+
+  assert.deepEqual(listMarkdownFiles("commands/"), expectedCommands);
+
+  for (const command of expectedCommands) {
+    const body = readText(path.join("commands", command));
+    assert.match(body, /CLAUDE_PLUGIN_ROOT/);
+    assert.match(body, /skill\/scripts\/codex-bridge\.mjs|codex-bridge-runner/);
+  }
+});
+
+test("task command routes substantial work through the runner subagent and Monitor", () => {
+  const taskCommand = readText("commands/task.md");
+
+  assert.match(taskCommand, /subagent_type: "codex-bridge:codex-bridge-runner"/);
+  assert.match(taskCommand, /task-resume-candidate --json/);
+  assert.match(taskCommand, /result\.monitor\.tool_hint/);
+  assert.match(taskCommand, /\[DONE\].*\[ERROR\].*\[INCOMPLETE\]/s);
+});
+
+test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () => {
+  const hooksConfig = readJson("hooks/hooks.json");
+  const sessionHook = readText("hooks/session-lifecycle-hook.mjs");
+  const stopHook = readText("hooks/stop-review-gate-hook.mjs");
+
+  assert.deepEqual(Object.keys(hooksConfig.hooks).sort(), ["SessionEnd", "SessionStart", "Stop"]);
+  assert.match(JSON.stringify(hooksConfig), /session-lifecycle-hook\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /stop-review-gate-hook\.mjs/);
+  assert.match(sessionHook, /CODEX_COMPANION_SESSION_ID/);
+  assert.match(sessionHook, /CODEX_BRIDGE_PLUGIN_DATA/);
+  assert.doesNotMatch(sessionHook, /appendEnvVar\(CLAUDE_PLUGIN_DATA_ENV/);
+  assert.match(sessionHook, /status", "--prune-orphans", "--json"/);
+  assert.match(stopHook, /setup", "--json"/);
+  assert.match(stopHook, /stop_hook_active/);
+  assert.match(stopHook, /reviewGateEnabled !== true/);
+  assert.match(stopHook, /Run a stop-gate review of the previous Claude turn\./);
+  assert.match(stopHook, /\.codex-bridge-stop-review-gate\.lock/);
+  assert.match(stopHook, /if \(!activation\.active\)/);
+  assert.doesNotMatch(stopHook, /CODEX_BRIDGE_STOP_REVIEW_GATE/);
+  assert.match(stopHook, /decision: "block"/);
+  assert.match(stopHook, /skill", "scripts", "codex-bridge\.mjs"/);
+});
+
+test("setup owns project-scoped review gate lock creation", () => {
+  const bridge = readText("src/codex-bridge.mjs");
+  const setupCommand = readText("commands/setup.md");
+
+  assert.match(bridge, /\.codex-bridge-stop-review-gate\.lock/);
+  assert.match(bridge, /detectOfficialOpenAICodexPlugin/);
+  assert.match(bridge, /OFFICIAL_PLUGIN_STATUS\.ABSENT/);
+  assert.match(bridge, /setStopReviewGate\(workspaceRoot, true, officialPlugin\)/);
+  assert.match(bridge, /setStopReviewGate\(workspaceRoot, false, officialPlugin\)/);
+  assert.doesNotMatch(setupCommand, /CODEX_BRIDGE_STOP_REVIEW_GATE/);
+  assert.match(setupCommand, /project-specific/);
+  assert.match(setupCommand, /official OpenAI Codex plugin/);
+});
+
+test("runner subagent remains a thin forwarding wrapper", () => {
+  const runner = readText("agents/codex-bridge-runner.md");
+
+  assert.match(runner, /name: codex-bridge-runner/);
+  assert.match(runner, /Use exactly one `Bash` call/);
+  assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs" task/);
+  assert.match(runner, /Do not inspect the repository/);
+  assert.match(runner, /Return the stdout of the bridge command exactly as-is/);
+});

@@ -508,7 +508,7 @@ function extractItemText(item) {
 // table as the CLI contract and update it in the same commit as any flag move.
 const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -721,6 +721,25 @@ function normalizeReasoningEffort(effort) {
   return normalized;
 }
 
+// Re-split argv elements that the shell didn't tokenize for us. Two shapes
+// fall through here:
+//
+//   1. Slash-command wrappers (commands/*.md) that expand `$ARGUMENTS`
+//      INTO ONE quoted argv element — the legacy single-element form.
+//   2. Round-6 mixed-up form: a wrapper hard-codes some flags AND quotes
+//      `$ARGUMENTS`, e.g. `setup --json "$ARGUMENTS"`. With user input
+//      `--enable-review-gate --json`, the shell yields two argv elements
+//      `["--json", "--enable-review-gate --json"]` — the second is a
+//      collapsed flag bag that strict parseArgs would reject as an unknown
+//      single flag named `"--enable-review-gate --json"`.
+//
+// We must NOT re-split task/adversarial-review prompt content, where a
+// quoted prompt like `"write the plan"` arrives as one whitespace-bearing
+// element by design. Heuristic: only re-split when the element clearly
+// looks like a flag bag — its first non-whitespace character is `-`.
+// Prompts almost never start with `-`; if a user really wants a leading-
+// hyphen prompt they pass it after `--`. This keeps prompt fidelity for
+// `task`/`adversarial-review`/`send` while fixing the flag-collapse case.
 function normalizeArgv(argv) {
   if (argv.length === 1) {
     const [raw] = argv;
@@ -729,7 +748,18 @@ function normalizeArgv(argv) {
     }
     return splitRawArgumentString(raw);
   }
-  return argv;
+  const out = [];
+  for (const element of argv) {
+    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
+      const tokens = splitRawArgumentString(element);
+      if (tokens.length > 1) {
+        out.push(...tokens);
+        continue;
+      }
+    }
+    out.push(element);
+  }
+  return out;
 }
 
 function parseCommandInput(argv, config = {}) {
@@ -814,17 +844,26 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
 function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
-    fs.writeFileSync(
-      lockPath,
-      [
-        "# Codex Bridge stop-time review gate",
-        "# Presence of this file enables the Claude Code Stop hook for this project.",
-        ""
-      ].join("\n"),
-      "utf8"
-    );
+    try {
+      fs.writeFileSync(
+        lockPath,
+        [
+          "# Codex Bridge stop-time review gate",
+          "# Presence of this file enables the Claude Code Stop hook for this project.",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+    } catch {
+      // Setup reports the lock absence; a failed gate write must not crash the
+      // otherwise-useful setup health check.
+    }
   } else {
-    fs.rmSync(lockPath, { force: true });
+    try {
+      fs.rmSync(lockPath, { force: true });
+    } catch {
+      // Setup reports if the lock remains present after the removal attempt.
+    }
     // Clear any legacy `config.stopReviewGate: true` persisted before the
     // lock-file rollout. Without this, readStopReviewGate's migration path
     // (lines 763-792) sees the stale flag, recreates the lock, and turns
@@ -956,7 +995,13 @@ async function handleSetup(argv) {
   if (options["enable-review-gate"]) {
     if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {
       const reviewGate = setStopReviewGate(workspaceRoot, true, officialPlugin);
-      actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
+      if (reviewGate.enabled && reviewGate.lockExists) {
+        actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
+      } else {
+        actionsTaken.push(
+          `Failed to create the stop-time review gate lock at ${reviewGate.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
+        );
+      }
     } else if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE) {
       actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin is enabled.");
     } else {
@@ -964,7 +1009,15 @@ async function handleSetup(argv) {
     }
   } else if (options["disable-review-gate"]) {
     const reviewGate = setStopReviewGate(workspaceRoot, false, officialPlugin);
-    actionsTaken.push(`Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`);
+    if (reviewGate.lockExists) {
+      actionsTaken.push(
+        `Failed to remove the stop-time review gate lock at ${reviewGate.lockPath}; the gate is still active. Please remove the lock file manually.`
+      );
+    } else {
+      actionsTaken.push(
+        `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
+      );
+    }
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
@@ -1838,7 +1891,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
 }
 
 function buildTaskRequest({
-  cwd, model, effort, prompt, write, resumeLast, jobId, mode,
+  cwd, model, effort, prompt, write, readOnly, resumeLast, jobId, mode,
   idleTimeoutMs, noPipeline,
   turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs
 }) {
@@ -1849,6 +1902,7 @@ function buildTaskRequest({
     effort,
     prompt,
     write,
+    readOnly: Boolean(readOnly),
     resumeLast,
     jobId,
     mode: mode ?? null,
@@ -2227,10 +2281,19 @@ async function runBridgeTask(request) {
     // wins regardless of plan/write flags. When no override is set, the
     // mode-derived default applies (plan → readOnly, --write → workspaceWrite,
     // plain exec → readOnly).
-    sandboxPolicy: buildSandboxPolicy(
-      isPlanMode || !request.write ? "plan" : "default",
-      config
-    ),
+    //
+    // `request.readOnly` is the one explicit override that bypasses
+    // `config.sandbox_policy` entirely. Used by the stop-time review-gate
+    // hook to guarantee the gate-time review can never mutate the repo even
+    // when the user has set `sandbox_policy: danger-full-access`. The Stop
+    // hook only ALLOWs/BLOCKs the previous turn — it must not double as a
+    // license to write at session shutdown.
+    sandboxPolicy: request.readOnly
+      ? { type: "readOnly" }
+      : buildSandboxPolicy(
+          isPlanMode || !request.write ? "plan" : "default",
+          config
+        ),
     effort: isPlanMode ? "xhigh" : (request.effort ?? config.effort ?? "high"),
     // Turn timeout resolution (most specific wins): CLI flag → config.yaml
     // key → built-in default. Plan and execute turns use separate budgets
@@ -3218,7 +3281,7 @@ async function handleTask(argv) {
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
       "question-timeout-ms"
     ],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
     aliasMap: {
       m: "model"
     }
@@ -3266,6 +3329,18 @@ async function handleTask(argv) {
   // and spend a billed Codex turn. Mirrors the check the --background path already does.
   requireTaskRequest(prompt, resumeLast);
   const write = Boolean(options.write);
+  // `--read-only` forces sandboxPolicy: { type: "readOnly" } regardless of
+  // `config.sandbox_policy` (including `danger-full-access`). Mutually
+  // exclusive with `--write` — that combination is incoherent. Used by the
+  // stop-time review-gate hook to ensure stop-hook reviews never mutate the
+  // repo even when the user has opted into a wide-open default policy.
+  const readOnly = Boolean(options["read-only"]);
+  if (write && readOnly) {
+    throw conflictError(
+      "Choose either --write or --read-only, not both.",
+      "WRITE_READ_ONLY_CONFLICT"
+    );
+  }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -3281,6 +3356,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      readOnly,
       resumeLast,
       jobId: job.id,
       mode: options.mode ?? null,
@@ -3310,6 +3386,7 @@ async function handleTask(argv) {
         effort,
         prompt,
         write,
+        readOnly,
         resumeLast,
         jobId: job.id,
         mode: options.mode ?? null,
@@ -4813,8 +4890,10 @@ async function main() {
   }
 
   // Per-subcommand --help / -h short-circuits before the handler runs so we
-  // never fire a Codex turn just to answer a discovery query.
-  if (COMMANDS[subcommand] && detectHelpFlag(argv)) {
+  // never fire a Codex turn just to answer a discovery query. Pass the full
+  // rawArgv so the per-subcommand prompt-skipping in detectHelpFlag sees the
+  // subcommand at index 0.
+  if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
     printSubcommandUsage(subcommand);
     return;
   }

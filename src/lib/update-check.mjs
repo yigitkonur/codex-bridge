@@ -34,7 +34,12 @@ const GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/rel
 const USER_AGENT = "codex-bridge-update-check";
 
 function cachePath() {
-  const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
+  // Prefer the bridge-scoped variable that the SessionStart hook
+  // (hooks/session-lifecycle-hook.mjs) exports so plugin-managed
+  // installs land their update cache alongside their state. Fall
+  // back to the generic CLAUDE_PLUGIN_DATA, then to a $HOME slug.
+  const pluginDataDir =
+    process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
   const root = pluginDataDir
     ? path.join(pluginDataDir, "codex-bridge-update.json")
     : path.join(os.homedir(), ".codex-bridge", "update-cache.json");
