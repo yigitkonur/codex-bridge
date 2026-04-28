@@ -19,7 +19,7 @@ Selection guidance:
 Forwarding rules:
 
 - Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge.mjs" task ...`.
-- If the request includes `--background`, preserve it. The bridge will return a `jobId` and Monitor-ready envelope quickly.
+- If the request includes `--background`, preserve it AND forward `--json` (add `--json` if it is not already present). Without `--json`, the bridge prints a short text line for background tasks that omits `result.monitor.tool_hint`, breaking Monitor handoff. With `--json`, the bridge returns a `jobId` and a Monitor-ready envelope quickly.
 - If the request includes `--wait`, do not forward `--wait`; omit `--background` and run the task in the foreground.
 - If neither `--background` nor `--wait` is present, prefer foreground for a small bounded request and `--background --json` for broad, multi-step, or long-running work.
 - Default to adding `--write` unless the user explicitly asks for read-only review, diagnosis, or research without edits.
