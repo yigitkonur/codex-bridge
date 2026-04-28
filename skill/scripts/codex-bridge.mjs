@@ -331,7 +331,7 @@ function detectJsonFlag(argv) {
     if (arg === "--") break;
     if (arg === "--json" || arg === "--json=true" || arg === "-j") return true;
     if (arg === "--json=false") return false;
-    if (typeof arg === "string" && /\s/.test(arg)) {
+    if (typeof arg === "string" && /\s/.test(arg) && !arg.includes('"') && !arg.includes("'")) {
       for (const token of arg.split(/\s+/)) {
         if (token === "--") return result;
         if (token === "--json" || token === "--json=true" || token === "-j") return true;
@@ -345,7 +345,7 @@ function detectHelpFlag(argv) {
   for (const arg of argv) {
     if (arg === "--") break;
     if (arg === "--help" || arg === "-h" || arg === "--help=true") return true;
-    if (typeof arg === "string" && /\s/.test(arg)) {
+    if (typeof arg === "string" && /\s/.test(arg) && !arg.includes('"') && !arg.includes("'")) {
       for (const token of arg.split(/\s+/)) {
         if (token === "--") return false;
         if (token === "--help" || token === "-h" || token === "--help=true") return true;
