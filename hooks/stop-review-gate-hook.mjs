@@ -259,22 +259,28 @@ function maybeMigrateLegacyGate(cwd, input, activation) {
   const probePayload = parseJson(probe.stdout);
   const result = probePayload?.result;
   if (!probePayload?.ok || !result) return activation;
-  if (result.stopReviewGateConfig !== true) return activation;
   if (result.reviewGateSuppressedByOfficialPlugin === true) return activation;
-  if (result.reviewGateLockExists === true) return activation;
+
+  // `setup --json` also reads the gate state and can migrate legacy
+  // `config.stopReviewGate: true` into the project lock file. Do not keep
+  // using the pre-probe inactive activation after setup had that chance.
+  const activationAfterProbe = reviewGateActivation(cwd);
+  if (activationAfterProbe.active) return activationAfterProbe;
+  if (result.stopReviewGateConfig !== true) return activationAfterProbe;
+  if (result.reviewGateLockExists === true) return activationAfterProbe;
 
   try {
-    fs.mkdirSync(path.dirname(activation.lockPath), { recursive: true });
+    fs.mkdirSync(path.dirname(activationAfterProbe.lockPath), { recursive: true });
     const payload = {
       enabledAt: new Date().toISOString(),
       enabledBy: "codex-bridge-stop-hook-legacy-migration"
     };
-    fs.writeFileSync(activation.lockPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fs.writeFileSync(activationAfterProbe.lockPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   } catch {
     // Lock-write failure is non-fatal: the next setup --json call will
     // surface the gate as inactive and the hook returns inert. The user
     // can rerun `codex-bridge setup --enable-review-gate` to retry.
-    return activation;
+    return activationAfterProbe;
   }
 
   return reviewGateActivation(cwd);

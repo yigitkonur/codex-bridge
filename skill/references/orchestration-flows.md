@@ -140,8 +140,9 @@ Exit 7 `WAIT_TIMEOUT` on deadline. Cheapest blocking primitive.
 ## Standalone Review
 
 ```
-review --scope working-tree
-  → [REVIEW] notification with verdict + findings
+review --scope working-tree --json
+  → read command stdout / result.codex.stdout for verdict + findings
+  → no [REVIEW] notification is emitted; do not wait on the event stream
   → You decide: fix issues or accept
 ```
 
@@ -313,4 +314,3 @@ The rebase step requires judgement: which commits were actually wanted, which un
 - [ ] Verify `handoff.partial.commits` against `git log` before trusting the list (the bridge's snapshot is best-effort; it can miss commits made outside the turn's cwd).
 - [ ] Capture `handoff.upstream_request_id` before discarding the envelope — if you need to escalate later, that's the only correlation handle to the upstream proxy.
 - [ ] Keep the original `handoff.prompt.promptFilePath` around: the rebased prompt supersedes it, but the original is the audit trail.
-

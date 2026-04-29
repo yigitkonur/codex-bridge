@@ -60,10 +60,16 @@ test("official plugin detection accepts claude plugin list wrapper shapes", () =
     JSON.stringify({ plugins: [{ id: "codex@openai-codex", enabled: true }] }),
     JSON.stringify({ result: { plugins: [{ id: "codex@openai-codex", enabled: true }] } })
   ]) {
+    let spawnCalled = false;
     const result = detectOfficialOpenAICodexPlugin({
-      spawnSync: () => ({ status: 0, stdout, stderr: "" })
+      maxAgeMs: 0,
+      spawnSync: () => {
+        spawnCalled = true;
+        return { status: 0, stdout, stderr: "" };
+      }
     });
 
+    assert.equal(spawnCalled, true);
     assert.equal(result.status, "active");
   }
 });
