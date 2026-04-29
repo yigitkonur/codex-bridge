@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +50,53 @@ function collectPluginRootReferences(value) {
     }
   }
   return references;
+}
+
+function runHook(relativePath, input, env = {}) {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(rootPath, relativePath)],
+    {
+      cwd: rootPath,
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_BRIDGE_HOOK_DISABLE: "",
+        ...env,
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+function resolveTestJobsDir(pluginData, workspaceRoot) {
+  const canonical = fs.realpathSync.native(workspaceRoot);
+  const slugSource = path.basename(workspaceRoot) || "workspace";
+  const slug =
+    slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ||
+    "workspace";
+  const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+  return path.join(pluginData, "state", `${slug}-${hash}`, "jobs");
+}
+
+function writeJobMetadata(jobsDir, id, workspaceRoot, sessionId) {
+  fs.mkdirSync(jobsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(jobsDir, `${id}.json`),
+    `${JSON.stringify({ id, workspaceRoot, sessionId }, null, 2)}\n`,
+  );
+}
+
+function writeRewakeSignal(jobsDir, id, text) {
+  fs.mkdirSync(path.join(jobsDir, id), { recursive: true });
+  fs.writeFileSync(path.join(jobsDir, id, "rewake.signal"), text);
+}
+
+function writeEvents(jobsDir, id, text) {
+  fs.mkdirSync(path.join(jobsDir, id), { recursive: true });
+  fs.writeFileSync(path.join(jobsDir, id, "events.jsonl"), text);
 }
 
 const expectedCommands = [
@@ -275,6 +323,101 @@ test("plugin SessionEnd hook logs prune failures while allowing shutdown", () =>
   } finally {
     fs.rmSync(tempHome, { recursive: true, force: true });
   }
+});
+
+test("UserPromptSubmit resume intent reads Claude's documented prompt field", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+
+  const output = runHook(
+    "plugin/hooks/user-prompt-submit.mjs",
+    { hook_event_name: "UserPromptSubmit", prompt: "continue" },
+    { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
+  );
+
+  assert.equal(output.continue, true);
+  assert.equal(output.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(output.hookSpecificOutput.additionalContext, /resume-intent detected/);
+});
+
+test("UserPromptSubmit rewake delivery is scoped to current workspace and session", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+  const workspaceA = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-a-"));
+  const workspaceB = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-b-"));
+  const jobsA = resolveTestJobsDir(pluginData, workspaceA);
+  const jobsB = resolveTestJobsDir(pluginData, workspaceB);
+
+  writeJobMetadata(jobsA, "task-aaaaaa-bbbbbb", workspaceA, "session-a");
+  writeRewakeSignal(jobsA, "task-aaaaaa-bbbbbb", "[DONE] current");
+  writeJobMetadata(jobsA, "task-cccccc-dddddd", workspaceA, "session-other");
+  writeRewakeSignal(jobsA, "task-cccccc-dddddd", "[DONE] wrong session");
+  writeJobMetadata(jobsB, "task-eeeeee-ffffff", workspaceB, "session-a");
+  writeRewakeSignal(jobsB, "task-eeeeee-ffffff", "[DONE] wrong workspace");
+
+  const output = runHook(
+    "plugin/hooks/user-prompt-submit.mjs",
+    {
+      hook_event_name: "UserPromptSubmit",
+      prompt: "status?",
+      cwd: workspaceA,
+      session_id: "session-a",
+    },
+    { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
+  );
+
+  const context = output.hookSpecificOutput.additionalContext;
+  assert.match(context, /task-aaaaaa-bbbbbb: \[DONE\] current/);
+  assert.doesNotMatch(context, /wrong session/);
+  assert.doesNotMatch(context, /wrong workspace/);
+  assert.equal(fs.existsSync(path.join(jobsA, "task-aaaaaa-bbbbbb", "rewake.signal")), false);
+  assert.equal(
+    fs.readdirSync(path.join(jobsA, "task-aaaaaa-bbbbbb")).some((entry) => entry.startsWith("rewake.signal.claimed-")),
+    true,
+  );
+  assert.equal(fs.existsSync(path.join(jobsA, "task-cccccc-dddddd", "rewake.signal")), true);
+  assert.equal(fs.existsSync(path.join(jobsB, "task-eeeeee-ffffff", "rewake.signal")), true);
+});
+
+test("SubagentStop reports only the job id correlated from subagent output", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+  const jobs = resolveTestJobsDir(pluginData, workspace);
+
+  writeJobMetadata(jobs, "task-aaaaaa-bbbbbb", workspace, "session-a");
+  writeEvents(jobs, "task-aaaaaa-bbbbbb", "[DONE] matched\n");
+  writeJobMetadata(jobs, "task-cccccc-dddddd", workspace, "session-other");
+  writeEvents(jobs, "task-cccccc-dddddd", "[ERROR] wrong session\n");
+
+  const output = runHook(
+    "plugin/hooks/subagent-stop.mjs",
+    {
+      hook_event_name: "SubagentStop",
+      agent_type: "codex-bridge:codex-bridge-runner",
+      last_assistant_message: "Job: task-aaaaaa-bbbbbb",
+      cwd: workspace,
+      session_id: "session-a",
+    },
+    { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
+  );
+
+  assert.equal(output.continue, true);
+  assert.equal(output.hookSpecificOutput.hookEventName, "SubagentStop");
+  assert.match(output.hookSpecificOutput.additionalContext, /Task task-aaaaaa-bbbbbb -> \[DONE\]/);
+  assert.doesNotMatch(output.hookSpecificOutput.additionalContext, /task-cccccc-dddddd/);
+
+  const uncorrelated = runHook(
+    "plugin/hooks/subagent-stop.mjs",
+    {
+      hook_event_name: "SubagentStop",
+      agent_type: "codex-bridge:codex-bridge-runner",
+      cwd: workspace,
+      session_id: "session-a",
+    },
+    { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
+  );
+  assert.deepEqual(uncorrelated, { continue: true });
 });
 
 test("setup owns project-scoped review gate lock creation", () => {

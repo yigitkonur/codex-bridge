@@ -10,9 +10,10 @@
 // run /codex-bridge:result.
 //
 // In v2.0.0 the artifact registry lands in T15. Until then, this hook
-// is a no-op for codex-bridge subagents (it can't read events that
-// don't exist yet). The structure ships now so the registration is in
-// place; the behavior activates as T15 wires the events.jsonl writer.
+// is a no-op for codex-bridge subagents unless it can correlate the
+// subagent's output to a bridge job id. The structure ships now so the
+// registration is in place; the behavior activates as T15 wires the
+// events.jsonl writer.
 //
 // Failure mode: any error logs to ~/.codex-bridge/hook-errors and the
 // hook emits {"continue": true}.
@@ -24,12 +25,22 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+import {
+  currentSessionId,
+  jobMatchesHookContext,
+  readJobMetadata,
+  resolveHookCwd,
+  resolveJobsDir,
+  resolveWorkspaceRoot,
+} from "./hook-state.mjs";
+
 const HOOK_NAME = "subagent-stop";
 const BRIDGE_AGENT_TYPES = new Set([
   "codex-bridge:codex-bridge-runner",
   "codex-bridge:codex-bridge-reviewer",
 ]);
 const TERMINAL_TAG_PATTERN = /\[(?:DONE|ERROR|INCOMPLETE)[^\]]*\]/;
+const JOB_ID_PATTERN = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/i;
 
 function logHookError(err) {
   try {
@@ -55,46 +66,71 @@ function readStdinJson() {
   return JSON.parse(raw);
 }
 
-function findLatestTerminalTag() {
-  // The artifact registry layout (T15) places one events.jsonl per task
-  // at ~/.codex-bridge/jobs/<task_id>/events.jsonl. Without a task_id
-  // in the SubagentStop input, the best we can do is scan for the most
-  // recently-modified events.jsonl and extract its last terminal tag.
-  const jobsRoot = path.join(os.homedir(), ".codex-bridge", "jobs");
-  if (!fs.existsSync(jobsRoot)) return null;
-  let entries;
+function extractJobId(value) {
+  if (value == null) return null;
+  const text =
+    typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const match = JOB_ID_PATTERN.exec(text);
+  return match ? match[0] : null;
+}
+
+function extractJobIdFromTranscript(filePath) {
+  if (!filePath) return null;
   try {
-    entries = fs.readdirSync(jobsRoot);
-  } catch {
-    return null;
-  }
-  let bestPath = null;
-  let bestMtime = 0;
-  for (const entry of entries) {
-    const eventsPath = path.join(jobsRoot, entry, "events.jsonl");
+    const stat = fs.statSync(filePath);
+    const maxBytes = 256 * 1024;
+    const start = Math.max(0, stat.size - maxBytes);
+    const fd = fs.openSync(filePath, "r");
     try {
-      const stat = fs.statSync(eventsPath);
-      if (stat.mtimeMs > bestMtime) {
-        bestMtime = stat.mtimeMs;
-        bestPath = eventsPath;
-      }
-    } catch {
-      // Skip missing/unreadable.
-    }
-  }
-  if (!bestPath) return null;
-  try {
-    const text = fs.readFileSync(bestPath, "utf8");
-    const lines = text.split(/\r?\n/).filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const m = TERMINAL_TAG_PATTERN.exec(lines[i]);
-      if (m) {
-        const taskId = path.basename(path.dirname(bestPath));
-        return { taskId, tag: m[0], rawLine: lines[i] };
-      }
+      const buffer = Buffer.alloc(stat.size - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      return extractJobId(buffer.toString("utf8"));
+    } finally {
+      fs.closeSync(fd);
     }
   } catch (err) {
     logHookError(err);
+  }
+  return null;
+}
+
+function resolveJobId(input) {
+  const directFields = [
+    input.job_id,
+    input.jobId,
+    input.last_assistant_message,
+    input.assistant_message,
+    input.subagent_result,
+    input.output,
+  ];
+  for (const field of directFields) {
+    const jobId = extractJobId(field);
+    if (jobId) return jobId;
+  }
+
+  return extractJobIdFromTranscript(
+    input.agent_transcript_path ?? input.transcript_path,
+  );
+}
+
+function findTerminalTagForJob(input, jobId) {
+  const cwd = resolveHookCwd(input);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const sessionId = currentSessionId(input);
+  const jobsRoot = resolveJobsDir(cwd);
+  const job = readJobMetadata(jobsRoot, jobId);
+  if (!jobMatchesHookContext(job, { workspaceRoot, sessionId })) return null;
+
+  const eventsPath = path.join(jobsRoot, jobId, "events.jsonl");
+  try {
+    const text = fs.readFileSync(eventsPath, "utf8");
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = TERMINAL_TAG_PATTERN.exec(lines[i]);
+      if (m) return { taskId: jobId, tag: m[0], rawLine: lines[i] };
+    }
+  } catch (err) {
+    if (err?.code !== "ENOENT") logHookError(err);
   }
   return null;
 }
@@ -122,7 +158,8 @@ function main() {
 
   let block = null;
   try {
-    const terminal = findLatestTerminalTag();
+    const jobId = resolveJobId(input);
+    const terminal = jobId ? findTerminalTagForJob(input, jobId) : null;
     if (terminal) {
       block = `## Codex-Bridge subagent finished (${agentType})\nTask ${terminal.taskId} -> ${terminal.tag}\nFull output: \`/codex-bridge:result ${terminal.taskId}\``;
     }

@@ -3,10 +3,11 @@
 //
 // Two responsibilities, both forward-looking:
 //
-// 1. Rewake-signal delivery: scan ~/.codex-bridge/jobs/<task_id>/rewake.signal
-//    for terminal-tag events written by long-running background tasks
-//    (the asyncRewake-equivalent pattern that T22 wires up). Read +
-//    unlink each signal, prepend a brief "while you were away" block to
+// 1. Rewake-signal delivery: scan the bridge state directory for the
+//    current cwd/session, then atomically claim matching
+//    jobs/<task_id>/rewake.signal files written by long-running
+//    background tasks (the asyncRewake-equivalent pattern that T22
+//    wires up). Prepend a brief "while you were away" block to
 //    additionalContext so the orchestrator sees the completion before
 //    its next reasoning step.
 //
@@ -32,6 +33,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+
+import {
+  currentSessionId,
+  jobMatchesHookContext,
+  readJobMetadata,
+  resolveHookCwd,
+  resolveJobsDir,
+  resolveWorkspaceRoot,
+} from "./hook-state.mjs";
 
 const HOOK_NAME = "user-prompt-submit";
 const RESUME_INTENT_PATTERN =
@@ -61,12 +71,17 @@ function readStdinJson() {
   return JSON.parse(raw);
 }
 
-function jobsDir() {
-  return path.join(os.homedir(), ".codex-bridge", "jobs");
+function claimRewakeSignal(signalPath) {
+  const claimedPath = `${signalPath}.claimed-${process.pid}-${Date.now()}`;
+  fs.renameSync(signalPath, claimedPath);
+  return claimedPath;
 }
 
-function consumePendingRewakeSignals() {
-  const root = jobsDir();
+function consumePendingRewakeSignals(input) {
+  const cwd = resolveHookCwd(input);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const sessionId = currentSessionId(input);
+  const root = resolveJobsDir(cwd);
   if (!fs.existsSync(root)) return [];
   const messages = [];
   let entries;
@@ -78,9 +93,11 @@ function consumePendingRewakeSignals() {
   for (const entry of entries) {
     const signalPath = path.join(root, entry, "rewake.signal");
     if (!fs.existsSync(signalPath)) continue;
+    const job = readJobMetadata(root, entry);
+    if (!jobMatchesHookContext(job, { workspaceRoot, sessionId })) continue;
     try {
-      const text = fs.readFileSync(signalPath, "utf8").trim();
-      fs.unlinkSync(signalPath);
+      const claimedPath = claimRewakeSignal(signalPath);
+      const text = fs.readFileSync(claimedPath, "utf8").trim();
       if (text) messages.push(`- ${entry}: ${text}`);
     } catch (err) {
       logHookError(err);
@@ -108,7 +125,7 @@ function main() {
 
   // 1. Rewake-signal delivery.
   try {
-    const messages = consumePendingRewakeSignals();
+    const messages = consumePendingRewakeSignals(input);
     if (messages.length > 0) {
       blocks.push(
         ["## Codex-Bridge: while you were away", ...messages].join("\n"),
@@ -124,7 +141,7 @@ function main() {
   // the prompt clearly matches resume intent; the orchestrator can
   // verify a recent thread exists before acting.
   try {
-    const prompt = (input.user_prompt ?? "").trim();
+    const prompt = (input.prompt ?? input.user_prompt ?? "").trim();
     if (RESUME_INTENT_PATTERN.test(prompt)) {
       blocks.push(
         [
