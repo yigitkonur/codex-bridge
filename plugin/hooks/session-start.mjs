@@ -56,11 +56,15 @@ function readStdinJson() {
   return JSON.parse(raw);
 }
 
-function appendEnvFile(line) {
+function shellEscape(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+function appendEnvVar(name, value) {
   const envFile = process.env.CLAUDE_ENV_FILE;
-  if (!envFile) return;
+  if (!envFile || value == null || value === "") return;
   try {
-    fs.appendFileSync(envFile, `${line}\n`);
+    fs.appendFileSync(envFile, `export ${name}=${shellEscape(value)}\n`);
   } catch {
     // Non-fatal — env-file persistence is best-effort.
   }
@@ -167,13 +171,8 @@ function main() {
   }
 
   // Preserve legacy env-var behavior (matches session-lifecycle-hook.mjs).
-  if (input.session_id) {
-    appendEnvFile(`export ${SESSION_ID_ENV}=${JSON.stringify(input.session_id)}`);
-  }
-  const pluginData = process.env.CLAUDE_PLUGIN_DATA;
-  if (pluginData) {
-    appendEnvFile(`export ${PLUGIN_DATA_ENV}=${JSON.stringify(pluginData)}`);
-  }
+  appendEnvVar(SESSION_ID_ENV, input.session_id);
+  appendEnvVar(PLUGIN_DATA_ENV, process.env.CLAUDE_PLUGIN_DATA);
 
   // Best-effort context injection.
   let additionalContext = null;
