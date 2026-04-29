@@ -53,6 +53,7 @@ import {
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
 import { jobDir, listTasks, readMeta, readVerdict, writeMeta, writeVerdict } from "./lib/registry.mjs";
+import { loadBrief, renderBriefAsMarkdown } from "./lib/brief.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
 import {
@@ -3507,9 +3508,10 @@ async function handleTask(argv) {
       "idle-timeout-ms",
       "turn-plan-ms", "turn-default-ms",
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
-      "question-timeout-ms"
+      "question-timeout-ms",
+      "brief", "intercepted-from"
     ],
-    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
       m: "model"
     }
@@ -3542,6 +3544,25 @@ async function handleTask(argv) {
   let cwd = resolveCommandCwd(options);
   const stateCwd = cwd;
   const workspaceRoot = resolveCommandWorkspace(options);
+
+  // --brief @path.json | <inline-json> loads + validates the structured
+  // brief (T16) and projects it into the prompt as a rendered markdown
+  // block. The verbatim brief.json + brief.md are persisted in the
+  // artifact registry alongside meta.json (T15) so the original intent
+  // is recoverable even if the prompt template later changes.
+  let brief = null;
+  let briefHash = null;
+  if (options.brief) {
+    const result = loadBrief(options.brief);
+    if (!result.ok) {
+      throw new CliError(result.message, {
+        code: result.code,
+        exitClass: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+      });
+    }
+    brief = result.brief;
+    briefHash = result.briefHash;
+  }
 
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
