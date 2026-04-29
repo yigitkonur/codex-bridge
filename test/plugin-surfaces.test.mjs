@@ -93,12 +93,12 @@ test("marketplace keeps the v2 scaffold on a noncanonical alpha channel", () => 
 });
 
 test("Claude plugin exposes command coverage for bridge orchestration", () => {
-  assert.deepEqual(listMarkdownFiles("commands/"), expectedCommands);
+  assert.deepEqual(listMarkdownFiles("plugin/commands/"), expectedCommands);
 
   for (const command of expectedCommands) {
-    const body = readText(path.join("commands", command));
+    const body = readText(path.join("plugin/commands", command));
     assert.match(body, /CLAUDE_PLUGIN_ROOT/);
-    assert.match(body, /skill\/scripts\/codex-bridge\.mjs|codex-bridge-runner/);
+    assert.match(body, /scripts\/codex-bridge\.mjs|codex-bridge-runner/);
   }
 });
 
@@ -162,7 +162,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
 });
 
 test("task command routes substantial work through the runner subagent and Monitor", () => {
-  const taskCommand = readText("commands/task.md");
+  const taskCommand = readText("plugin/commands/task.md");
 
   assert.match(taskCommand, /subagent_type: "codex-bridge:codex-bridge-runner"/);
   assert.match(taskCommand, /task-resume-candidate --json/);
@@ -220,7 +220,7 @@ test("stop review hook re-reads activation after legacy setup migration", () => 
 
 test("setup owns project-scoped review gate lock creation", () => {
   const bridge = readText("src/codex-bridge.mjs");
-  const setupCommand = readText("commands/setup.md");
+  const setupCommand = readText("plugin/commands/setup.md");
 
   assert.match(bridge, /\.codex-bridge-stop-review-gate\.lock/);
   assert.match(bridge, /detectOfficialOpenAICodexPlugin/);
