@@ -63,8 +63,8 @@ export type CanonicalTag =
   | "DONE" | "ERROR" | "INCOMPLETE"
   | "PLAN" | "QUESTION" | "CONFIRMED"
   | "CHECKPOINT" | "HEARTBEAT"
-  | "PIPELINE:plan" | "PIPELINE:execute" | "PIPELINE:review" | "PIPELINE:fix" | "PIPELINE:check"
-  | "PIPELINE:plan:done" | "PIPELINE:execute:done" | "PIPELINE:review:done" | "PIPELINE:fix:done" | "PIPELINE:check:done"
+  | "PIPELINE:diff" | "PIPELINE:plan" | "PIPELINE:execute" | "PIPELINE:review" | "PIPELINE:fix" | "PIPELINE:check"
+  | "PIPELINE:diff:done" | "PIPELINE:plan:done" | "PIPELINE:execute:done" | "PIPELINE:review:done" | "PIPELINE:fix:done" | "PIPELINE:check:done"
   | "PIPELINE:done" | "PIPELINE:failed"
   | "RETRYING" | "PARTIAL" | "HANDOFF" | "WARNING"
   | "DIRECTIVES";

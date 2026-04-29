@@ -29,7 +29,7 @@ Single source of truth for the tags adapters emit. SKILL.md and references must 
 
 | Tag | Meaning |
 |---|---|
-| `[PIPELINE:<stage>]` | Stage entered (`plan`, `execute`, `review`, `fix`, `check`) |
+| `[PIPELINE:<stage>]` | Stage entered (`diff`, `plan`, `execute`, `review`, `fix`, `check`) |
 | `[PIPELINE:<stage>:done]` | Stage completed |
 | `[PIPELINE:done]` | All stages complete |
 | `[PIPELINE:failed]` | A stage failed; pipeline halted |

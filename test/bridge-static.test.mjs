@@ -4,6 +4,12 @@ import test from "node:test";
 
 const bridge = fs.readFileSync(new URL("../src/codex-bridge.mjs", import.meta.url), "utf8");
 const broker = fs.readFileSync(new URL("../src/app-server-broker.mjs", import.meta.url), "utf8");
+const autoPipeline = fs.readFileSync(new URL("../src/lib/auto-pipeline.mjs", import.meta.url), "utf8");
+const adapterTypes = fs.readFileSync(new URL("../src/adapters/index.d.ts", import.meta.url), "utf8");
+const adapterEventVocabulary = fs.readFileSync(
+  new URL("../src/adapters/_interface/EVENT_VOCABULARY.md", import.meta.url),
+  "utf8"
+);
 
 test("broker forwards server requests and tracks downstream responses", () => {
   assert.match(broker, /setServerRequestHandler\(routeServerRequest\)/);
@@ -54,4 +60,20 @@ test("review sessions emit terminal events", () => {
   assert.match(review, /logReviewTerminalEvent/);
   assert.match(review, /formatDoneEvent/);
   assert.match(review, /formatErrorEvent/);
+});
+
+test("adapter canonical tag contract includes live auto-pipeline stages", () => {
+  const emittedStages = new Set(
+    Array.from(
+      autoPipeline.matchAll(/logNdjson\(session,\s*"PIPELINE_STAGE"[\s\S]*?\{\s*stage:\s*"([^"]+)"/g),
+      (match) => match[1]
+    )
+  );
+  assert.deepEqual([...emittedStages].sort(), ["check", "diff", "fix", "review"]);
+
+  for (const stage of emittedStages) {
+    assert.match(adapterTypes, new RegExp(`"PIPELINE:${stage}"`));
+    assert.match(adapterTypes, new RegExp(`"PIPELINE:${stage}:done"`));
+    assert.match(adapterEventVocabulary, new RegExp(`\\b${stage}\\b`));
+  }
 });
