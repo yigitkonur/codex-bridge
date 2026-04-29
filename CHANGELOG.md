@@ -13,7 +13,7 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 Structural rewrite from user-level skill to hook-driven Claude Code plugin.
 22,061 → 3,626 words of teaching surface (-84%); 3 → 7 hooks; new artifact
-registry + brief schema + closed-loop iterate. Migration notes in
+registry + brief schema + staged iterate helper. Migration notes in
 [`MIGRATION.md`](MIGRATION.md).
 
 - Adapter abstraction at `src/adapters/` — codex-only in v2.0; future backends
@@ -46,9 +46,9 @@ registry + brief schema + closed-loop iterate. Migration notes in
   `review.json`, `verdict.json`, `lock`. POSIX flock prevents concurrent
   writers (`TASK_DIR_LOCKED`).
 - New CLI subcommands: `merge` (gated; refuses if verdict ≠ approved; fast-
-  forward or `--pr`), `verdict` (read/write/discard), `verdicts --pending`
-  (used by Stop gate), `iterate` (closed-loop dispatch → review → verdict →
-  re-dispatch up to N rounds with linked `parent_task_id`).
+  forward only), `verdict` (read/write/discard), `verdicts --pending`
+  (used by Stop gate), `iterate` (staged helper that returns `next_action`
+  for the manual task → review → verdict workflow).
 - New slash commands: `/codex-bridge:merge`, `/codex-bridge:verdict`,
   `/codex-bridge:iterate`. All existing `/codex-bridge:*` commands keep their
   signatures; `/codex-bridge:adversarial-review` adds `--brief` + `--concern`.
@@ -58,8 +58,8 @@ registry + brief schema + closed-loop iterate. Migration notes in
   `<role>/<operating_stance>/<attack_surface>/<finding_bar>/<calibration_rules>/<grounding_rules>/<final_check>`
   skeleton with the new `<orchestrator_concerns>` block carrying
   `{{OPUS_CONCERNS}}`.
-- Five-layer config resolution (CLI flag → `.codex-bridge.local.md` → cwd
-  yaml → workspace-root yaml → user yaml → built-in defaults). New keys:
+- Config resolution layers built-in defaults, installed-root `config.yaml`,
+  workspace-root `config.yaml`, then cwd `config.yaml`. New keys:
   `default_backend`, `trust_budget`, `worktree_default`, `monitor_verbosity`,
   `event_log_retention_days`, `adapter_routing`.
 - New error codes: `BRIEF_FILE_NOT_FOUND`, `BRIEF_INVALID_JSON`,
@@ -75,16 +75,19 @@ registry + brief schema + closed-loop iterate. Migration notes in
   `notification-format.md` 4,865 → 231, `monitor-patterns.md` 3,062 → 223.
   New: `brief-composition.md` (renamed from `prompt-writing.md`), `AGENTS.md`
   (re-bloat prevention rules). Deleted: `command-reference.md`,
-  `config-reference.md`, `ndjson-guide.md` (owned by `--help` / `--schema`).
+  `config-reference.md`, `ndjson-guide.md` (owned by runtime help and JSON
+  output).
 - CI lint (`test/skill-word-budget.test.mjs`): SKILL.md ≤ 1,500 words; each
   `references/*.md` ≤ 800 words. Banned files stay deleted.
 
 ### Changed — v2.0.0
 
-- Envelope `schema_version` bumps from `1.0` to `2.0`. New `result.*` fields:
+- Envelope `schema_version` remains `1.0` while new `result.*` fields are
+  additive:
   `task_id`, `task_dir`, `worktree`, `isolation_mode`, `provenance`,
-  `iteration_chain`, `active_backend`, `adapter_capabilities`. Legacy `1.0`
-  envelopes available with `--legacy-envelope` for one minor cycle.
+  `iteration_chain`, `active_backend`, `adapter_capabilities`. The
+  `--legacy-envelope` flag is accepted for compatibility but does not select a
+  separate schema version yet.
 - `BRIDGE_CAPABILITIES` gains `backend-adapter`, `brief-schema`,
   `artifact-registry`, `iteration-chain`.
 - esbuild emits both `skill/` (legacy, deprecated in Phase 4) and `plugin/`

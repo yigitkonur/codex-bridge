@@ -31,7 +31,7 @@ Migrating from the v1.x skill at `~/.agents/skills/codex-bridge/`? See [MIGRATIO
 The v1.x version of codex-bridge was a 22K-word user-level skill that taught Claude how to drive the bridge by reading prose. v2.0 turns most of that teaching into runtime enforcement:
 
 - **PreToolUse(Agent)** intercepts Explore-class subagent spawns and reroutes them through codex-bridge for cheap-fast read-heavy work. Plan and general-purpose subagents pass through unchanged.
-- **PreToolUse(Bash)** auto-rejects `task --write` invocations that omit `--worktree-auto`. Worktree isolation is the canonical contract for write-mode work; the user's main checkout is never touched by a worker.
+- **PreToolUse(Bash)** auto-rejects `task --write` invocations that omit `--worktree-auto`. Worktree isolation is the canonical contract for write-mode work; check `result.isolation_mode` because branch-only fallback, explicit `--cwd`, or user opt-out can still run in the requested checkout.
 - **PostToolUse(Bash)** parses the `--json` envelope and emits the literal Monitor invocation as `additionalContext` — Claude arms it on the next turn without you having to teach the rule.
 - **SessionStart** injects running-job status into context so every session boots oriented.
 - **Stop** blocks if any approved-but-unmerged verdict is pending, with one-line resolution hints.
@@ -42,12 +42,12 @@ The skill is now ~3,600 words instead of 22,000. The runtime owns the wiring; SK
 
 ```bash
 # delegate substantial work, isolated in a worktree, with concerns flowing into review
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --write --worktree-auto --json --brief @brief.json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --write --worktree-auto --json --brief @brief.json "Read brief.json and implement its worker_assignment."
 
 # adversarial review using the brief's specific_concerns as {{OPUS_CONCERNS}}
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --task <task_id> --brief @brief.json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --scope branch --base main --brief @brief.json
 
-# closed loop: dispatch → review → verdict → re-dispatch up to 3 rounds
+# staged loop helper: returns next_action for manual task -> review -> verdict
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" iterate <task_id> --max 3 --brief @brief.json
 ```
 
@@ -60,7 +60,6 @@ Write-mode work doesn't auto-land. Each task produces a worktree at `<repo>/../.
 ```
 /codex-bridge:verdict <task_id> --set approved --summary "Tests green; concerns dismissed."
 /codex-bridge:merge <task_id>             # gated; refuses if verdict ≠ approved
-/codex-bridge:merge <task_id> --pr        # opens a GitHub PR with brief + verdict as body
 ```
 
 The Stop hook blocks session exit while approved-but-unmerged verdicts exist. `/codex-bridge:verdict <task_id> --discard` is the explicit "do nothing with this" sink.
@@ -113,15 +112,14 @@ CODEX_BRIDGE_HOOK_DISABLE=all claude
 
 ## config
 
-Five-layer resolution (highest precedence first):
+Config files resolve from lowest to highest precedence:
 
-1. CLI flag (e.g., `--backend codex`).
-2. `<cwd>/.codex-bridge.local.md` (gitignored, per-user-per-project).
-3. `<cwd>/.codex-bridge.yaml`.
-4. `<git-root>/.codex-bridge.yaml`.
-5. `~/.codex-bridge/config.yaml`.
+1. Built-in defaults.
+2. `${CLAUDE_PLUGIN_ROOT}/config.yaml` when present.
+3. `<git-root>/config.yaml`.
+4. `<cwd>/config.yaml`.
 
-`config show --json --schema` prints the merged config plus its JSON schema. Use it to debug "why isn't my config taking effect?".
+CLI flags still override the relevant per-command values. `config show --json` prints the merged config and source paths; use it to debug "why isn't my config taking effect?".
 
 ## artifact registry
 
@@ -138,7 +136,7 @@ verdict.json     # post-review decision
 lock             # POSIX flock; held while worker alive
 ```
 
-`cleanup --age-days 30` walks `meta.completed_at` and removes terminal directories; `--archive` tarballs first.
+Cleanup automation is staged; until it lands, inspect `status --json` and remove terminal job directories manually when you no longer need their artifacts.
 
 ## status, events, wait
 
@@ -153,7 +151,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" events <task_id> --follow
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" wait <task_id> --timeout-ms 1800000 --json
 ```
 
-Schema docs are emitted by the runtime: `events --schema --json`, `version --json`, `<sub> --help --json`. Don't trust prose for things the runtime can tell you directly.
+Runtime docs are emitted by `version --json`, `config show --json`, and `<sub> --help`. Don't trust prose for things the runtime can tell you directly.
 
 ## links
 

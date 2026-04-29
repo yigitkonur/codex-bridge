@@ -13,16 +13,16 @@ v2.0 is a structural rewrite. The CLI surface stays compatible; the install path
 | Worktree-per-dispatch | manual | auto-injected for write-mode by PreToolUse hook |
 | Monitor auto-arm | manual (rule taught in SKILL.md) | automatic via PostToolUse hook |
 | Brief schema | none | `plugin/schemas/brief.schema.json` |
-| Closed-loop iterate | none | `/codex-bridge:iterate` + reviewer subagent |
+| Iterate workflow | none | staged `/codex-bridge:iterate` helper + reviewer subagent |
 | Verdict + merge gate | none | `/codex-bridge:verdict` + gated `/codex-bridge:merge` |
 | Adapter abstraction | none | `src/adapters/` (codex-only in v2.0; future backends are mechanical) |
 
 ## Compatibility
 
 - **CLI flags** — every existing flag stays. New flags are additive.
-- **Envelope schema** — bumps from `1.0` to `2.0` because of additions to `result.*` (`worktree`, `task_dir`, `provenance`, etc.). The bridge keeps emitting `schema_version: "1.0"` envelopes when invoked with `--legacy-envelope` for one minor cycle. Drop after v2.1.
+- **Envelope schema** — remains `1.0` while additions to `result.*` (`worktree`, `task_dir`, `provenance`, etc.) are additive. The `--legacy-envelope` flag is accepted for compatibility but does not select a separate schema version yet.
 - **Slash commands** — `/codex-bridge:*` namespace unchanged. New commands (`merge`, `verdict`, `iterate`) are net additions.
-- **Artifact layout** — flat `~/.codex-bridge/sessions/<threadId>.*` is read for backward compat for one minor version. New tasks write per-task directories at `~/.codex-bridge/jobs/<task_id>/`. Run `cleanup --migrate-flat-files` to do a one-shot promotion.
+- **Artifact layout** — flat `~/.codex-bridge/sessions/<threadId>.*` remains readable for backward compatibility. New tasks write per-task directories at `~/.codex-bridge/jobs/<task_id>/`; there is no automated promotion command yet, so keep old session files until you are sure you no longer need them.
 
 ## Rollback
 
@@ -70,8 +70,8 @@ If you want to keep the v1.x skill running while you adopt the v2.0 plugin:
 | File / surface | Reason |
 |---|---|
 | `references/command-reference.md` | `<sub> --help --json` is canonical. |
-| `references/config-reference.md` | `config show --json --schema` is canonical. |
-| `references/ndjson-guide.md` | `events --schema --json` is canonical. |
+| `references/config-reference.md` | `config show --json` is canonical. |
+| `references/ndjson-guide.md` | Runtime event output is canonical. |
 | Envelope JSON examples in SKILL.md | Owned by `--help --json` output. |
 | Exit-code tables in SKILL.md | Emitted in every error envelope's `error.class`/`error.code`. |
 | Timeout matrix in SKILL.md | Owned by per-subcommand `--help`. |
