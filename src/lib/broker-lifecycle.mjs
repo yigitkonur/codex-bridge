@@ -147,14 +147,16 @@ function createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs }) 
 }
 
 function resolveBrokerScriptPath({ moduleUrl = import.meta.url, existsSync = fs.existsSync } = {}) {
-  // Bundled mode places the broker at skill/app-server-broker.mjs (relative to
-  // skill/scripts/codex-bridge.mjs). Source mode places it at
-  // src/adapters/codex/broker.mjs (relative to src/lib/broker-lifecycle.mjs).
+  // Three possible broker locations:
+  //   plugin/scripts/app-server-broker.mjs — sibling of plugin/scripts/codex-bridge.mjs (canonical from v2.0)
+  //   skill/app-server-broker.mjs — one level up from skill/scripts/codex-bridge.mjs (legacy layout)
+  //   src/adapters/codex/broker.mjs — source mode, relative to src/lib/broker-lifecycle.mjs
+  const pluginBroker = new URL("./app-server-broker.mjs", moduleUrl);
   const bundledBroker = new URL("../app-server-broker.mjs", moduleUrl);
   const sourceBroker = new URL("../adapters/codex/broker.mjs", moduleUrl);
   const candidates = isSourceBrokerLifecycleUrl(moduleUrl)
-    ? [sourceBroker, bundledBroker]
-    : [bundledBroker, sourceBroker];
+    ? [sourceBroker, pluginBroker, bundledBroker]
+    : [pluginBroker, bundledBroker, sourceBroker];
   for (const url of candidates) {
     const p = fileURLToPath(url);
     if (existsSync(p)) return p;
