@@ -30,6 +30,7 @@ import { spawnSync } from "node:child_process";
 
 const HOOK_NAME = "pre-tool-agent";
 const DISPATCH_TIMEOUT_MS = 8000;
+const PREFLIGHT_TIMEOUT_MS = 5000;
 
 const DEFAULT_ROUTING = {
   Explore: { backend: "codex", mode: "read-only" },
@@ -94,7 +95,27 @@ function classifyRoute(routing, subagentType) {
   return null;
 }
 
-function dispatchToCodexBridge(bundle, prompt, subagentType, mode) {
+function preflightCodexBridge(bundle, cwd) {
+  const result = spawnSync(process.execPath, [bundle, "auth-status", "--json"], {
+    cwd,
+    timeout: PREFLIGHT_TIMEOUT_MS,
+    encoding: "utf8",
+    env: process.env,
+  });
+  if (result.error || result.status !== 0) {
+    return { ok: false, stderr: result.stderr, status: result.status };
+  }
+  try {
+    const envelope = JSON.parse(result.stdout);
+    return envelope?.ok === true && envelope?.result?.loggedIn === true
+      ? { ok: true }
+      : { ok: false, status: result.status, stderr: result.stdout };
+  } catch (err) {
+    return { ok: false, parseError: err.message };
+  }
+}
+
+function dispatchToCodexBridge(bundle, cwd, prompt, subagentType, mode) {
   // Spawn `codex-bridge task --background --json --worktree-auto
   // --intercepted-from <subagent_type>` with the prompt on argv. The
   // bridge returns immediately with a jobId + monitor.tool_hint envelope.
@@ -115,6 +136,7 @@ function dispatchToCodexBridge(bundle, prompt, subagentType, mode) {
   args.push(prompt);
 
   const result = spawnSync(process.execPath, args, {
+    cwd,
     timeout: DISPATCH_TIMEOUT_MS,
     encoding: "utf8",
     env: process.env,
@@ -199,10 +221,22 @@ function main() {
     process.stdout.write('{"continue":true}');
     return;
   }
+  const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+  const preflight = preflightCodexBridge(bundle, cwd);
+  if (!preflight.ok) {
+    logHookError(
+      new Error(
+        `preflight failed for subagent_type=${subagentType}: status=${preflight.status ?? "?"} stderr=${preflight.stderr ?? "?"} parseError=${preflight.parseError ?? "?"}`,
+      ),
+    );
+    process.stdout.write('{"continue":true}');
+    return;
+  }
 
   let dispatch;
   try {
-    dispatch = dispatchToCodexBridge(bundle, prompt ?? "", subagentType, route.mode);
+    dispatch = dispatchToCodexBridge(bundle, cwd, prompt ?? "", subagentType, route.mode);
   } catch (err) {
     logHookError(err);
     process.stdout.write('{"continue":true}');
