@@ -79,6 +79,41 @@ test("createSubagentWorktree refuses to clobber an existing branch", () => {
   }
 });
 
+test("createSubagentWorktree rejects unsafe task IDs before building paths", () => {
+  const repo = makeTempRepo();
+  try {
+    assert.throws(
+      () =>
+        createSubagentWorktree({
+          cwd: repo,
+          taskId: "../escape",
+          backend: "codex",
+        }),
+      /taskId must be a safe path segment/,
+    );
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test("createSubagentWorktree treats shell metacharacters in baseRef as a ref, not a command", () => {
+  const repo = makeTempRepo();
+  const marker = path.join(repo, "shell-injection-marker");
+  try {
+    assert.throws(() =>
+      createSubagentWorktree({
+        cwd: repo,
+        taskId: "task-safe",
+        backend: "codex",
+        baseRef: `HEAD; touch ${marker}`,
+      }),
+    );
+    assert.equal(fs.existsSync(marker), false);
+  } finally {
+    cleanup(repo);
+  }
+});
+
 test("pruneWorktreeOnCancel removes worktree + branch idempotently", () => {
   const repo = makeTempRepo();
   try {
@@ -89,18 +124,74 @@ test("pruneWorktreeOnCancel removes worktree + branch idempotently", () => {
     });
     assert.ok(fs.existsSync(created.path));
 
-    pruneWorktreeOnCancel({ cwd: repo, taskId: "task-prune", branch: created.branch });
+    const pruned = pruneWorktreeOnCancel({ cwd: repo, taskId: "task-prune", branch: created.branch });
+    assert.equal(pruned.pruned, true);
+    assert.equal(pruned.branchDeleted, true);
     assert.ok(!fs.existsSync(created.path));
 
     // Idempotent — second call doesn't throw.
-    assert.doesNotThrow(() =>
-      pruneWorktreeOnCancel({
+    assert.doesNotThrow(() => {
+      const second = pruneWorktreeOnCancel({
         cwd: repo,
         taskId: "task-prune",
         branch: created.branch,
+      });
+      assert.equal(second.pruned, true);
+      assert.equal(second.branchDeleted, true);
+    });
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test("createSubagentWorktree refuses branch-only fallback with dirty parent checkout", () => {
+  const repo = makeTempRepo();
+  const blockedRoot = path.join(os.tmpdir(), `codex-bridge-blocked-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(blockedRoot, "not a directory");
+  try {
+    fs.writeFileSync(path.join(repo, "dirty.txt"), "dirty\n");
+    assert.throws(
+      () =>
+        createSubagentWorktree({
+          cwd: repo,
+          taskId: "task-dirty",
+          backend: "codex",
+          worktreeRoot: blockedRoot,
+        }),
+      /branch-only fallback is unsafe with a dirty working tree/,
+    );
+    assert.equal(execSync("git branch --show-current", { cwd: repo }).toString().trim(), "main");
+  } finally {
+    fs.rmSync(blockedRoot, { force: true });
+    cleanup(repo);
+  }
+});
+
+test("createSubagentWorktree records the previous ref when using branch-only fallback", () => {
+  const repo = makeTempRepo();
+  const blockedRoot = path.join(os.tmpdir(), `codex-bridge-blocked-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(blockedRoot, "not a directory");
+  try {
+    const result = createSubagentWorktree({
+      cwd: repo,
+      taskId: "task-fallback",
+      backend: "codex",
+      worktreeRoot: blockedRoot,
+    });
+    assert.equal(result.isolation_mode, "branch-only");
+    assert.equal(result.previous_ref, "main");
+    assert.equal(execSync("git branch --show-current", { cwd: repo }).toString().trim(), result.branch);
+
+    assert.doesNotThrow(() =>
+      pruneWorktreeOnCancel({
+        cwd: repo,
+        taskId: "task-fallback",
+        branch: result.branch,
+        previousRef: result.previous_ref,
       }),
     );
   } finally {
+    fs.rmSync(blockedRoot, { force: true });
     cleanup(repo);
   }
 });
