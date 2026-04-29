@@ -9,6 +9,10 @@ import { sanitizePromptValue } from "./prompts.mjs";
 const MAX_UNTRACKED_BYTES = 24 * 1024;
 const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+const REGULAR_FILE_READ_FLAGS =
+  fs.constants.O_RDONLY |
+  (fs.constants.O_NOFOLLOW ?? 0) |
+  (fs.constants.O_NONBLOCK ?? 0);
 
 function git(cwd, args, options = {}) {
   return runCommand("git", args, { cwd, ...options });
@@ -223,26 +227,89 @@ function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
 
+function realpathSync(filePath) {
+  return fs.realpathSync.native ? fs.realpathSync.native(filePath) : fs.realpathSync(filePath);
+}
+
+function isPathInside(parentPath, candidatePath) {
+  const relative = path.relative(parentPath, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function readFileDescriptor(fd, size) {
+  const buffer = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const bytesRead = fs.readSync(fd, buffer, offset, buffer.length - offset, offset);
+    if (bytesRead === 0) {
+      break;
+    }
+    offset += bytesRead;
+  }
+  return buffer.subarray(0, offset);
+}
+
 function formatUntrackedFile(cwd, relativePath) {
-  const absolutePath = path.join(cwd, relativePath);
+  let repoRoot;
+  try {
+    repoRoot = realpathSync(cwd);
+  } catch {
+    return `### ${relativePath}\n(skipped: repository root is unreadable)`;
+  }
+
+  const absolutePath = path.resolve(repoRoot, relativePath);
+  if (!isPathInside(repoRoot, absolutePath)) {
+    return `### ${relativePath}\n(skipped: path resolves outside repository)`;
+  }
+
   let stat;
   try {
-    stat = fs.statSync(absolutePath);
+    stat = fs.lstatSync(absolutePath);
   } catch {
     return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+  }
+  if (stat.isSymbolicLink()) {
+    return `### ${relativePath}\n(skipped: symlink)`;
   }
   if (stat.isDirectory()) {
     return `### ${relativePath}\n(skipped: directory)`;
   }
-  if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+  if (!stat.isFile()) {
+    return `### ${relativePath}\n(skipped: non-regular file)`;
   }
 
-  let buffer;
+  let resolvedPath;
   try {
-    buffer = fs.readFileSync(absolutePath);
+    resolvedPath = realpathSync(absolutePath);
   } catch {
     return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+  }
+  if (!isPathInside(repoRoot, resolvedPath)) {
+    return `### ${relativePath}\n(skipped: path resolves outside repository)`;
+  }
+
+  let fd;
+  let buffer;
+  try {
+    fd = fs.openSync(resolvedPath, REGULAR_FILE_READ_FLAGS);
+    const readStat = fs.fstatSync(fd);
+    if (!readStat.isFile()) {
+      return `### ${relativePath}\n(skipped: non-regular file)`;
+    }
+    if (readStat.size > MAX_UNTRACKED_BYTES) {
+      return `### ${relativePath}\n(skipped: ${readStat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    }
+    buffer = readFileDescriptor(fd, readStat.size);
+  } catch {
+    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Ignore close failures after the read decision has already been made.
+      }
+    }
   }
   if (!isProbablyText(buffer)) {
     return `### ${relativePath}\n(skipped: binary file)`;
@@ -270,7 +337,7 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
   } else {
     const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
     const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    const untrackedBody = state.untracked.join("\n");
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
