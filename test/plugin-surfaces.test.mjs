@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
 const rootPath = fileURLToPath(root);
+const pluginCli = path.join(rootPath, "plugin/scripts/codex-bridge.mjs");
 
 function readText(relativePath) {
   return fs.readFileSync(new URL(relativePath, root), "utf8");
@@ -159,6 +160,20 @@ function runStopGateHarness(harness, overrides = {}) {
   });
 }
 
+function runBundledPluginCli(args, env = {}) {
+  return JSON.parse(
+    execFileSync(process.execPath, [pluginCli, ...args], {
+      cwd: rootPath,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_BRIDGE_NO_UPDATE_CHECK: "1",
+        ...env
+      }
+    })
+  );
+}
+
 test("Claude plugin manifest version matches package and skill metadata", () => {
   const manifest = readJson(".claude-plugin/plugin.json");
   const pkg = readJson("package.json");
@@ -266,6 +281,40 @@ test("task command routes substantial work through the runner subagent and Monit
   assert.match(taskCommand, /task-resume-candidate --json/);
   assert.match(taskCommand, /result\.monitor\.tool_hint/);
   assert.match(taskCommand, /\[DONE\].*\[ERROR\].*\[INCOMPLETE\]/s);
+});
+
+test("bundled plugin CLI exposes the verdict command", () => {
+  const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-verdict-"));
+  const payload = runBundledPluginCli(
+    ["verdict", "task-bundled", "--set", "approved", "--summary", "ok", "--json"],
+    { CODEX_BRIDGE_REGISTRY: registry }
+  );
+
+  assert.equal(payload.ok, true);
+  assert.equal(payload.command, "verdict");
+  assert.equal(payload.result.verdict.verdict, "approved");
+});
+
+test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => {
+  const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-pending-"));
+  const env = { CODEX_BRIDGE_REGISTRY: registry };
+
+  runBundledPluginCli(["verdict", "task-approved", "--set", "approved", "--json"], env);
+  runBundledPluginCli(["verdict", "task-must", "--set", "must-fix", "--json"], env);
+
+  let pending = runBundledPluginCli(["verdicts", "--pending", "--json"], env).result.pending;
+  assert.deepEqual(pending.map((entry) => entry.task_id), ["task-approved", "task-must"]);
+
+  const approvedPath = path.join(registry, "task-approved", "verdict.json");
+  const approved = JSON.parse(fs.readFileSync(approvedPath, "utf8"));
+  fs.writeFileSync(
+    approvedPath,
+    `${JSON.stringify({ ...approved, merged_at: "2026-04-29T00:00:00.000Z" }, null, 2)}\n`,
+    "utf8"
+  );
+
+  pending = runBundledPluginCli(["verdicts", "--pending", "--json"], env).result.pending;
+  assert.deepEqual(pending.map((entry) => entry.task_id), ["task-must"]);
 });
 
 test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () => {

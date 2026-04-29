@@ -680,6 +680,20 @@ const COMMANDS = Object.freeze({
     synopsis: "task-resume-candidate [--json]",
     summary: "Report the latest resumable task for this Claude session (useful before `task --resume`).",
     examples: ["codex-bridge task-resume-candidate --json"]
+  },
+  verdict: {
+    synopsis: "verdict <task_id> [--set approved|needs-attention|must-fix] [--summary <text>] [--finding <text>] [--reviewer <name>] [--discard] [--json]",
+    summary: "Read, write, or discard a task's post-review verdict artifact.",
+    examples: [
+      "codex-bridge verdict task-abc",
+      "codex-bridge verdict task-abc --set approved --summary \"review passed\" --json",
+      "codex-bridge verdict task-abc --discard"
+    ]
+  },
+  verdicts: {
+    synopsis: "verdicts --pending [--json]",
+    summary: "List unresolved task verdicts that still need merge, iteration, or discard.",
+    examples: ["codex-bridge verdicts --pending --json"]
   }
 });
 
@@ -4735,13 +4749,17 @@ async function handleVerdictsPending(argv) {
     booleanOptions: ["json", "pending"],
   });
 
+  const pendingVerdicts = new Set(["approved", "needs-attention", "must-fix"]);
   const tasks = listTasks();
   const pending = [];
   for (const taskId of tasks) {
     const verdict = readVerdict(taskId);
     if (!verdict) continue;
-    if (verdict.verdict === "approved" || verdict.verdict === "needs-attention") {
-      const meta = readMeta(taskId);
+    const meta = readMeta(taskId);
+    if (verdict.merged_at || meta?.merged_at || meta?.phase === "merged") {
+      continue;
+    }
+    if (pendingVerdicts.has(verdict.verdict)) {
       pending.push({
         task_id: taskId,
         verdict: verdict.verdict,
@@ -4867,6 +4885,25 @@ async function handleMerge(argv) {
       { code: "MERGE_INTERNAL", class: "internal" },
     );
   }
+
+  const mergedAt = nowIso();
+  writeVerdict(taskId, {
+    ...verdict,
+    merged_at: mergedAt,
+    merge: mergeResult,
+  });
+  const {
+    schema_version: _schemaVersion,
+    task_id: _taskId,
+    written_at: _writtenAt,
+    ...metaBody
+  } = meta;
+  writeMeta(taskId, {
+    ...metaBody,
+    phase: "merged",
+    merged_at: mergedAt,
+    merge: mergeResult,
+  });
 
   const payload = {
     task_id: taskId,
