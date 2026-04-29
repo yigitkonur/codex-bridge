@@ -5,7 +5,7 @@
     {
       "name": "codex-bridge",
       "source": ".",
-      "version": "2.0.0",
+      "version": "2.0.0-alpha.0",
       "description": "Hook-driven Codex delegator with worktree isolation and closed-loop iteration"
     }
   ]
