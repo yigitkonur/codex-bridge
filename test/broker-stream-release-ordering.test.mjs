@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { __testHooks__ } from "../src/app-server-broker.mjs";
+import { __testHooks__ } from "../src/adapters/codex/broker.mjs";
 
 const { createStreamTracker } = __testHooks__;
 

@@ -1,11 +1,11 @@
 /**
- * @typedef {import("./app-server-protocol").AppServerNotification} AppServerNotification
- * @typedef {import("./app-server-protocol").ReviewTarget} ReviewTarget
- * @typedef {import("./app-server-protocol").ThreadItem} ThreadItem
- * @typedef {import("./app-server-protocol").ThreadResumeParams} ThreadResumeParams
- * @typedef {import("./app-server-protocol").ThreadStartParams} ThreadStartParams
- * @typedef {import("./app-server-protocol").Turn} Turn
- * @typedef {import("./app-server-protocol").UserInput} UserInput
+ * @typedef {import("../adapters/codex/protocol").AppServerNotification} AppServerNotification
+ * @typedef {import("../adapters/codex/protocol").ReviewTarget} ReviewTarget
+ * @typedef {import("../adapters/codex/protocol").ThreadItem} ThreadItem
+ * @typedef {import("../adapters/codex/protocol").ThreadResumeParams} ThreadResumeParams
+ * @typedef {import("../adapters/codex/protocol").ThreadStartParams} ThreadStartParams
+ * @typedef {import("../adapters/codex/protocol").Turn} Turn
+ * @typedef {import("../adapters/codex/protocol").UserInput} UserInput
  * @typedef {((update: string | { message: string, phase: string | null, threadId?: string | null, turnId?: string | null, stderrMessage?: string | null, logTitle?: string | null, logBody?: string | null }) => void)} ProgressReporter
  * @typedef {{
  *   threadId: string,
@@ -36,7 +36,7 @@
  * }} TurnCaptureState
  */
 import { readJsonFile } from "./fs.mjs";
-import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "../adapters/codex/protocol.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { CliError } from "./cli-errors.mjs";
 import { binaryAvailable } from "./process.mjs";

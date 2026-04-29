@@ -5,9 +5,9 @@ import net from "node:net";
 import path from "node:path";
 import process from "node:process";
 
-import { parseArgs } from "./lib/args.mjs";
-import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
-import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { parseArgs } from "../../lib/args.mjs";
+import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./protocol.mjs";
+import { parseBrokerEndpoint } from "../../lib/broker-endpoint.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 
 const bridge = fs.readFileSync(new URL("../src/codex-bridge.mjs", import.meta.url), "utf8");
-const broker = fs.readFileSync(new URL("../src/app-server-broker.mjs", import.meta.url), "utf8");
+const broker = fs.readFileSync(new URL("../src/adapters/codex/broker.mjs", import.meta.url), "utf8");
 
 test("broker forwards server requests and tracks downstream responses", () => {
   assert.match(broker, /setServerRequestHandler\(routeServerRequest\)/);

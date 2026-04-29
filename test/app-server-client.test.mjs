@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
-import { AppServerClientBase } from "../src/lib/app-server.mjs";
+import { AppServerClientBase } from "../src/adapters/codex/protocol.mjs";
 
-const appServerSource = fs.readFileSync(new URL("../src/lib/app-server.mjs", import.meta.url), "utf8");
+const appServerSource = fs.readFileSync(new URL("../src/adapters/codex/protocol.mjs", import.meta.url), "utf8");
 
 class FakeClient extends AppServerClientBase {
   constructor() {

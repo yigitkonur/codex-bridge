@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AppServerClientBase } from "../src/lib/app-server.mjs";
+import { AppServerClientBase } from "../src/adapters/codex/protocol.mjs";
 
 class FakeClient extends AppServerClientBase {
   constructor() {
