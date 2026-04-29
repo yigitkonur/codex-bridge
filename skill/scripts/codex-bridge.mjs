@@ -741,7 +741,7 @@ function readStdinIfPiped() {
   return fs.readFileSync(0, "utf8");
 }
 
-// src/lib/app-server.mjs
+// src/adapters/codex/protocol.mjs
 import net2 from "node:net";
 import process6 from "node:process";
 import { spawn as spawn2 } from "node:child_process";
@@ -1888,6 +1888,17 @@ async function isBrokerEndpointReady(endpoint) {
     return false;
   }
 }
+function resolveBrokerScriptPath() {
+  const candidates = [
+    new URL("../app-server-broker.mjs", import.meta.url),
+    new URL("../adapters/codex/broker.mjs", import.meta.url)
+  ];
+  for (const url of candidates) {
+    const p = fileURLToPath(url);
+    if (fs5.existsSync(p)) return p;
+  }
+  return fileURLToPath(candidates[0]);
+}
 async function ensureBrokerSession(cwd, options = {}) {
   const existing = loadBrokerSession(cwd);
   if (existing && await isBrokerEndpointReady(existing.endpoint)) {
@@ -1909,7 +1920,7 @@ async function ensureBrokerSession(cwd, options = {}) {
   const endpoint = endpointFactory(sessionDir, options.platform);
   const pidFile = path5.join(sessionDir, "broker.pid");
   const logFile = path5.join(sessionDir, "broker.log");
-  const scriptPath = options.scriptPath ?? fileURLToPath(new URL("../app-server-broker.mjs", import.meta.url));
+  const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
   const child = spawnBrokerProcess({
     scriptPath,
     cwd,
@@ -1971,7 +1982,7 @@ function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir =
   }
 }
 
-// src/lib/app-server.mjs
+// src/adapters/codex/protocol.mjs
 var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 var BROKER_BUSY_RPC_CODE = -32001;
 var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
@@ -2087,9 +2098,9 @@ var AppServerClientBase = class {
   /**
    * @template {AppServerMethod} M
    * @param {M} method
-   * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+   * @param {import("./protocol").AppServerRequestParams<M>} params
    * @param {{ signal?: AbortSignal }} [options]
-   * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
+   * @returns {Promise<import("./protocol").AppServerResponse<M>>}
    */
   request(method, params, options = {}) {
     if (this.closed) {
