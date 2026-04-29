@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { existsTask } from "./registry.mjs";
 
 export const BRIEF_SCHEMA_VERSION = "1.0";
 export const VALID_BACKENDS = new Set(["codex"]);
@@ -137,6 +138,16 @@ function validateBriefShape(brief) {
     if (!isObject(tbo)) {
       errors.push("trust_budget_override must be an object");
     } else {
+      const allowedTrustBudgetKeys = new Set([
+        "auto_merge_max_diff_lines",
+        "auto_merge_max_files",
+        "auto_merge_max_iterations",
+      ]);
+      for (const key of Object.keys(tbo)) {
+        if (!allowedTrustBudgetKeys.has(key)) {
+          errors.push(`unknown trust_budget_override field: ${key}`);
+        }
+      }
       for (const [key, min] of [
         ["auto_merge_max_diff_lines", 0],
         ["auto_merge_max_files", 0],
@@ -216,6 +227,16 @@ export function loadBrief(arg) {
   const errors = validateBriefShape(brief);
   if (errors.length > 0) {
     return fail(ERR.SCHEMA_VIOLATION, `brief failed schema validation`, errors);
+  }
+
+  if (
+    brief.parent_task_id !== undefined &&
+    !existsTask(brief.parent_task_id)
+  ) {
+    return fail(
+      ERR.PARENT_NOT_FOUND,
+      `brief.parent_task_id not found: ${brief.parent_task_id}`,
+    );
   }
 
   if (

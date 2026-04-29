@@ -10,6 +10,7 @@ import {
   loadBrief,
   renderBriefAsMarkdown,
 } from "../src/lib/brief.mjs";
+import { ensureJobDir } from "../src/lib/registry.mjs";
 
 function withTempBrief(briefObj, fn) {
   const file = path.join(os.tmpdir(), `brief-${Date.now()}-${Math.random()}.json`);
@@ -18,6 +19,22 @@ function withTempBrief(briefObj, fn) {
     return fn(file);
   } finally {
     fs.unlinkSync(file);
+  }
+}
+
+function withTempRegistry(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brief-registry-"));
+  const prev = process.env.CODEX_BRIDGE_REGISTRY;
+  process.env.CODEX_BRIDGE_REGISTRY = dir;
+  try {
+    return fn(dir);
+  } finally {
+    if (prev === undefined) {
+      delete process.env.CODEX_BRIDGE_REGISTRY;
+    } else {
+      process.env.CODEX_BRIDGE_REGISTRY = prev;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -118,10 +135,23 @@ test("loadBrief rejects parent_task_id with bad pattern", () => {
 });
 
 test("loadBrief accepts parent_task_id=task-abc.123", () => {
-  const r = loadBrief(
-    JSON.stringify({ ...minimal(), parent_task_id: "task-abc.123" }),
-  );
-  assert.equal(r.ok, true);
+  withTempRegistry(() => {
+    ensureJobDir("task-abc.123");
+    const r = loadBrief(
+      JSON.stringify({ ...minimal(), parent_task_id: "task-abc.123" }),
+    );
+    assert.equal(r.ok, true);
+  });
+});
+
+test("loadBrief rejects missing parent_task_id", () => {
+  withTempRegistry(() => {
+    const r = loadBrief(
+      JSON.stringify({ ...minimal(), parent_task_id: "task-missing" }),
+    );
+    assert.equal(r.ok, false);
+    assert.equal(r.code, "BRIEF_PARENT_NOT_FOUND");
+  });
 });
 
 test("loadBrief rejects too many specific_concerns", () => {
@@ -149,6 +179,16 @@ test("loadBrief validates trust_budget_override fields", () => {
     }),
   );
   assert.equal(r2.ok, false);
+  const r3 = loadBrief(
+    JSON.stringify({
+      ...minimal(),
+      trust_budget_override: { auto_merge_max_file: 1 },
+    }),
+  );
+  assert.equal(r3.ok, false);
+  assert.ok(
+    r3.details.some((e) => e.includes("unknown trust_budget_override field")),
+  );
 });
 
 test("loadBrief computes a stable briefHash (SHA-256 of the raw text)", () => {
