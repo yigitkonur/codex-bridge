@@ -51,8 +51,8 @@ import {
     withAppServer
   } from "./adapters/codex/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, createSubagentWorktree, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { writeMeta } from "./lib/registry.mjs";
+import { collectReviewContext, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
+import { readMeta, readVerdict, writeMeta } from "./lib/registry.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
 import {
@@ -4631,6 +4631,89 @@ function resolvePromptInput(options, positionals, cwd) {
   return readStdinIfPiped();
 }
 
+// merge <task_id> — gated merge of a worktree branch back into its base.
+// Refuses to proceed unless the registry has verdict.json with verdict=approved.
+// Performs a fast-forward merge (no merge commit, no rebase). On conflict
+// or if the merge isn't ff-eligible, leaves the worktree intact and returns
+// MERGE_CONFLICT so the orchestrator can re-run /codex-bridge:iterate.
+async function handleMerge(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "no-tests", "pr"],
+  });
+  const taskId = positionals[0];
+  if (!taskId) {
+    throw usageError("merge requires a task_id positional argument");
+  }
+  const cwd = resolveCommandCwd(options);
+
+  const verdict = readVerdict(taskId);
+  if (!verdict) {
+    throw notFoundError(
+      `no verdict found for ${taskId}; run /codex-bridge:verdict <task_id> --set <verdict> first`,
+    );
+  }
+  if (verdict.verdict !== "approved") {
+    throw new CliError(
+      `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run /codex-bridge:iterate or /codex-bridge:verdict --set approved.`,
+      { code: "VERDICT_NOT_APPROVED", exitClass: "conflict" },
+    );
+  }
+
+  const meta = readMeta(taskId);
+  if (!meta) {
+    throw notFoundError(
+      `no meta.json found for ${taskId}; the task was not dispatched via --worktree-auto`,
+    );
+  }
+  const branch = meta.worktree?.branch;
+  const baseRef = meta.worktree?.base_ref ?? "main";
+  if (!branch) {
+    throw new CliError(
+      `meta.json for ${taskId} missing worktree.branch — task may not have been dispatched via --worktree-auto`,
+      { code: "MERGE_META_INVALID", exitClass: "internal" },
+    );
+  }
+
+  if (options.pr) {
+    // --pr (push + gh pr create) deferred — needs additional plumbing for
+    // PR body composition from brief + verdict. Track in a follow-up.
+    throw new CliError(
+      "--pr mode not yet implemented; ff-merge into the base ref is the only supported strategy in v2.0. Drop --pr or wait for the follow-up.",
+      { code: "MERGE_PR_NOT_IMPLEMENTED", exitClass: "internal" },
+    );
+  }
+
+  let mergeResult;
+  try {
+    mergeResult = mergeSubagentBranch({
+      cwd,
+      taskId,
+      branch,
+      baseRef,
+      runTests: !options["no-tests"],
+    });
+  } catch (err) {
+    throw new CliError(
+      `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
+      { code: "MERGE_CONFLICT", exitClass: "conflict" },
+    );
+  }
+
+  const payload = {
+    task_id: taskId,
+    merge: mergeResult,
+    verdict: verdict.verdict,
+  };
+  emitSuccess(
+    "merge",
+    payload,
+    `Merged ${branch} into ${baseRef} (${mergeResult.commit_sha?.slice(0, 8) ?? "?"})\n`,
+    { json: options.json, startedAt },
+  );
+}
+
 async function handleSend(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: [
@@ -5073,7 +5156,8 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   events: handleEvents,
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel,
-  "await-artifact": handleAwaitArtifact
+  "await-artifact": handleAwaitArtifact,
+  merge: handleMerge
 });
 
 // Node's default SIGPIPE handling terminates the process when a downstream

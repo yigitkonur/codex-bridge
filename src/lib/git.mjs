@@ -675,6 +675,74 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
   return { pruned: !fs.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
 }
 
+// mergeSubagentBranch({ cwd, taskId, branch, baseRef, runTests })
+// Fast-forward merge of a subagent branch into its base ref. Throws on
+// conflict / non-ff history / missing branch. On success returns
+// { strategy: "ff", commit_sha, base_ref, branch, tests_passed }.
+//
+// Design:
+// - Always git-fetch the base ref first so a stale local base doesn't
+//   silently merge against an old SHA.
+// - --ff-only: refuses to create merge commits. If the branch isn't a
+//   linear descendant of base, the merge fails and the user reruns
+//   /codex-bridge:iterate (which rebases the branch onto fresh base).
+// - runTests is honored when meta.json carries an acceptance_criteria
+//   tests_command — a follow-up will read that and execute it after
+//   the merge but before pushing. v1 just records null.
+// - On success, prunes the worktree (the branch lives on in main from
+//   here; the worktree is no longer needed).
+export function mergeSubagentBranch({ cwd, taskId, branch, baseRef = "main", runTests = true }) {
+  if (!taskId) throw new Error("mergeSubagentBranch: taskId is required");
+  if (!branch) throw new Error("mergeSubagentBranch: branch is required");
+
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+
+  // Refresh base ref from remote so we merge against the latest tip.
+  // Best-effort: if there's no `origin` remote, skip the fetch.
+  tryRunGit(repoRoot, `fetch origin ${baseRef}`);
+
+  // Switch to base ref. Refuse if working tree is dirty.
+  const dirty = tryRunGit(repoRoot, "status --porcelain");
+  if (dirty && dirty.trim().length > 0) {
+    throw new Error(
+      `repo is dirty; commit or stash before merging. Status: ${dirty.trim()}`,
+    );
+  }
+
+  runGit(repoRoot, `checkout ${baseRef}`, { swallowStderr: true });
+
+  // Verify the branch is reachable.
+  const branchSha = tryRunGit(repoRoot, `rev-parse --verify ${branch}`);
+  if (!branchSha) {
+    throw new Error(`branch ${branch} does not exist`);
+  }
+
+  // ff-only merge.
+  try {
+    runGit(repoRoot, `merge --ff-only ${branch}`, { swallowStderr: true });
+  } catch (err) {
+    throw new Error(
+      `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`,
+    );
+  }
+
+  const commitSha = runGit(repoRoot, "rev-parse HEAD", { swallowStderr: true })
+    .toString()
+    .trim();
+
+  // Clean up the worktree — the branch lives on in base from here.
+  pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
+
+  return {
+    strategy: "ff",
+    commit_sha: commitSha,
+    base_ref: baseRef,
+    branch,
+    tests_passed: runTests ? null : false, // null = not yet measured; false = skipped
+  };
+}
+
 // listSubagentWorktrees(cwd) -> [{ path, branch, head, locked }]
 // Filtered list of git worktrees that look like ours (path under
 // .codex-bridge-worktrees/, branch matching subagent/...).
