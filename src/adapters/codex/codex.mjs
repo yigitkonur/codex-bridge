@@ -35,11 +35,11 @@
  *   onItemCompleted: ((item: ThreadItem, context: { threadId: string | null }) => void) | null
  * }} TurnCaptureState
  */
-import { readJsonFile } from "./fs.mjs";
-import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "../adapters/codex/protocol.mjs";
-import { loadBrokerSession } from "./broker-lifecycle.mjs";
-import { CliError } from "./cli-errors.mjs";
-import { binaryAvailable } from "./process.mjs";
+import { readJsonFile } from "../../lib/fs.mjs";
+import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./protocol.mjs";
+import { loadBrokerSession } from "../../lib/broker-lifecycle.mjs";
+import { CliError } from "../../lib/cli-errors.mjs";
+import { binaryAvailable } from "../../lib/process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";

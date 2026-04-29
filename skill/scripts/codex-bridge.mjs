@@ -2494,7 +2494,7 @@ var CodexAppServerClient = class {
   }
 };
 
-// src/lib/codex.mjs
+// src/adapters/codex/codex.mjs
 var SERVICE_NAME = "claude_code_codex_plugin";
 var TASK_THREAD_PREFIX = "Codex Companion Task";
 var TURN_INTERRUPT_GRACE_MS = 3e4;

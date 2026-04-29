@@ -92,7 +92,7 @@ test("request() with non-aborted signal still resolves normally and removes the 
 
 test("captureTurn aborts startRequest pending entry when state.completion wins the race", async () => {
   // Late-import to avoid circular metadata at module-load time.
-  const { captureTurn } = await import("../src/lib/codex.mjs");
+  const { captureTurn } = await import("../src/adapters/codex/codex.mjs");
 
   const client = new FakeClient();
 

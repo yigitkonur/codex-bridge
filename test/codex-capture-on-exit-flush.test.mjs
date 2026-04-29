@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { captureTurn } from "../src/lib/codex.mjs";
+import { captureTurn } from "../src/adapters/codex/codex.mjs";
 
 class FakeTurnClient {
   constructor() {
