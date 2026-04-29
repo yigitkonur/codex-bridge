@@ -220,3 +220,13 @@ test("workspace-dirty recovery emits incomplete before generic error handling", 
   assert.match(errorBranch, /formatIncompleteEvent\(session/);
   assert.match(errorBranch, /markTerminalEmitted\(\);\s*return \{ \.\.\.result, session, exitStatus: 0, error: null \};/);
 });
+
+test("worktree-auto keeps job state anchored to the launch workspace", { skip: "T18 forward-looking — bridge handleTask not yet refactored" }, () => {
+  const task = bridge.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  assert.match(task, /const stateCwd = cwd;/);
+  assert.match(task, /const job = buildTaskJob\(workspaceRoot, taskMetadata, write\);/);
+});
+
+test("background task-worker receives the original workspace root", { skip: "T18 forward-looking — bridge handleTask not yet refactored" }, () => {
+  assert.match(bridge, /function spawnDetachedTaskWorker\(cwd, workspaceRoot, jobId, logFile = null\)/);
+});

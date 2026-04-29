@@ -1762,7 +1762,7 @@ async function executeReviewRun(request) {
 
 
 async function executeTaskRun(request) {
-  const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const workspaceRoot = resolveWorkspaceRoot(request.stateCwd ?? request.cwd);
   ensureCodexAvailable(request.cwd);
 
   const taskMetadata = buildTaskRunMetadata({
@@ -1950,7 +1950,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
 }
 
 function buildTaskRequest({
-  cwd, model, effort, prompt, write, readOnly, resumeLast, jobId, mode,
+  cwd, stateCwd, model, effort, prompt, write, readOnly, resumeLast, jobId, mode,
   idleTimeoutMs, noPipeline,
   turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs,
   backend = null,
@@ -1958,6 +1958,7 @@ function buildTaskRequest({
   const opt = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null);
   return {
     cwd,
+    stateCwd: stateCwd ?? cwd,
     model,
     effort,
     prompt,
@@ -2127,7 +2128,7 @@ async function runForegroundCommand(job, runner, options = {}) {
   return execution;
 }
 
-function spawnDetachedTaskWorker(cwd, jobId, logFile = null) {
+function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   const scriptPath = SCRIPT_PATH;
   // Capture the detached child's stderr to a sibling of the per-job `.log`
   // so silent crashes (e.g. an uncaught exception before the first progress
@@ -2145,7 +2146,16 @@ function spawnDetachedTaskWorker(cwd, jobId, logFile = null) {
       // itself must never fail because observability couldn't.
     }
   }
-  const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+  const child = spawn(process.execPath, [
+    scriptPath,
+    "task-worker",
+    "--cwd",
+    cwd,
+    "--workspace-root",
+    workspaceRoot,
+    "--job-id",
+    jobId
+  ], {
     cwd,
     env: process.env,
     detached: true,
@@ -2163,6 +2173,10 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
+<<<<<<< HEAD
+=======
+  const child = spawnDetachedTaskWorker(cwd, job.workspaceRoot, job.id, logFile);
+>>>>>>> 7e860af (review: address codex findings on PR #51)
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -2241,7 +2255,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       title: job.title,
       summary: job.summary,
       logFile,
-      monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null, cwd })
+      monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null, cwd: request.stateCwd ?? job.workspaceRoot })
     },
     logFile
   };
@@ -2315,7 +2329,8 @@ async function handleReview(argv) {
 // timeout, and auto-pipeline.
 
 async function runBridgeTask(request) {
-  const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const stateCwd = request.stateCwd ?? request.cwd;
+  const workspaceRoot = resolveWorkspaceRoot(stateCwd);
   const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
   const adapter = await resolveCommandAdapter({
     cwd: request.cwd ?? null,
@@ -2787,7 +2802,7 @@ async function runBridgeTask(request) {
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
-            cwd: request.cwd,
+            cwd: stateCwd,
           })
         );
       } catch {
@@ -2855,7 +2870,7 @@ async function runBridgeTask(request) {
               diffStat,
               filesChangedSinceStart,
               scriptPath: SCRIPT_PATH,
-              cwd: request.cwd,
+              cwd: stateCwd,
             })
           );
           logNdjson(heartbeatState.session, "CHECKPOINT", null, {
@@ -2910,6 +2925,7 @@ async function runBridgeTask(request) {
               scriptPath: SCRIPT_PATH,
               jobId: request.jobId ?? null,
               cwd: request.cwd,
+              stateCwd,
             })
           );
           logNdjson(heartbeatState.session, "ERROR", null, {
@@ -3046,7 +3062,7 @@ async function runBridgeTask(request) {
     eventsPath: computedEventsPath,
     jobId: request.jobId ?? null,
     threadId: result.threadId ?? null,
-    cwd: request.cwd
+    cwd: stateCwd
   });
 
   // Non-JSON foreground footer. Append a single handle-advertising line so
@@ -3134,6 +3150,7 @@ async function runBridgeTask(request) {
         scriptPath: SCRIPT_PATH,
         jobId: request.jobId ?? null,
         cwd: request.cwd,
+        stateCwd,
       }));
       logNdjson(session, "PARTIAL", null, {
         commits: partialDiff.commits,
@@ -3194,6 +3211,7 @@ async function runBridgeTask(request) {
         retries: retryHistory,
         scriptPath: SCRIPT_PATH,
         cwd: request.cwd,
+        stateCwd,
       }));
       logNdjson(session, "HANDOFF", null, {
         reason: handoffForEnvelope.reason,
@@ -3203,6 +3221,23 @@ async function runBridgeTask(request) {
       });
     }
 
+<<<<<<< HEAD
+=======
+    logEvent(session, formatErrorEvent(session, {
+      errorCode,
+      message: errorMessage,
+      phase: isPlanMode ? "plan" : "execution",
+      origin,
+      scriptPath: SCRIPT_PATH,
+      jobId: request.jobId ?? null,
+      upstreamRequestId,
+      cwd: request.cwd,
+      stateCwd,
+    }));
+    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
+    markTerminalEmitted();
+
+>>>>>>> 7e860af (review: address codex findings on PR #51)
     // Attach partial + handoff to the thrown-error surface so
     // `runForegroundCommand`'s `emitError` → `buildErrorEnvelope` can
     // propagate them into the JSON envelope under `error.partial` /
@@ -3314,6 +3349,7 @@ async function runBridgeTask(request) {
       runAppServerTurn,
       runAppServerReview,
       jobId: request.jobId ?? null,
+      stateCwd,
       // Timeouts: CLI flag → config.yaml → built-in default, same pattern as
       // the turn/idle budgets. runAutoPipeline treats `null` as "use your own
       // resolution order" so we only pass resolved numbers when we have
@@ -3338,7 +3374,7 @@ async function runBridgeTask(request) {
           : "diff";
       const nextAction = pipelineErrored
         ? {
-            command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
+            command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
             description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`,
           }
         : {
@@ -3348,7 +3384,7 @@ async function runBridgeTask(request) {
       setPhase("incomplete", nextAction, { pipeline: pipelineResult, monitor });
     } else {
       setPhase("done", {
-        command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
+        command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
         description: "Task finished and passed completion check. Inspect full result or send a follow-up."
       }, { pipeline: pipelineResult, monitor });
     }
@@ -3370,10 +3406,11 @@ async function runBridgeTask(request) {
     scriptPath: SCRIPT_PATH,
     jobId: request.jobId ?? null,
     cwd: request.cwd,
+    stateCwd,
   }));
   markTerminalEmitted();
   setPhase("done", {
-    command: `${bridgeCommand("result", request.cwd)} ${request.jobId ?? result.threadId}`,
+    command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
     description: "Task finished. Inspect full result or send a follow-up."
   }, { diffPath: diff.diffPath, monitor });
 
@@ -3425,6 +3462,7 @@ async function runBridgeTask(request) {
             scriptPath: SCRIPT_PATH,
             jobId: request.jobId ?? null,
             cwd: request.cwd,
+            stateCwd,
           })
         );
         logNdjson(backstopSession, "ERROR", null, {
@@ -3493,52 +3531,8 @@ async function handleTask(argv) {
   const quietMode = Boolean(options.quiet) || (Boolean(options.json) && options.quiet !== false);
 
   let cwd = resolveCommandCwd(options);
+  const stateCwd = cwd;
   const workspaceRoot = resolveCommandWorkspace(options);
-
-  // --worktree-auto isolates write-mode tasks inside a per-task worktree
-  // at <repoRoot>/../.codex-bridge-worktrees/<task_id> on a branch named
-  // subagent/codex/<task_id>. The branch + worktree are created here
-  // BEFORE adapter dispatch; the dispatch then runs with cwd pointing
-  // at the worktree path. The PreToolUse(Bash) hook in T24 enforces
-  // this flag for write-mode invocations to prevent half-baked diffs
-  // landing in the user's main checkout.
-  let worktreeInfo = null;
-  if (options["worktree-auto"]) {
-    if (Boolean(options["read-only"])) {
-      throw conflictError(
-        "--worktree-auto is only meaningful for write-mode tasks; --read-only conflicts.",
-        "WORKTREE_READ_ONLY_CONFLICT",
-      );
-    }
-    const wtTaskId = generateJobId();
-    try {
-      worktreeInfo = createSubagentWorktree({
-        cwd,
-        taskId: wtTaskId,
-        backend: "codex",
-      });
-      try {
-        writeMeta(wtTaskId, {
-          backend: "codex",
-          worktree: worktreeInfo,
-          isolation_mode: worktreeInfo.isolation_mode,
-          base_ref: worktreeInfo.base_ref,
-          base_sha: worktreeInfo.base_sha,
-          phase: "queued",
-        });
-      } catch {
-        // Registry writes are best-effort — never block dispatch.
-      }
-      if (worktreeInfo.isolation_mode === "worktree") {
-        cwd = worktreeInfo.path;
-      }
-    } catch (err) {
-      throw new CliError(
-        `failed to create subagent worktree for ${wtTaskId}: ${err.message ?? err}`,
-        { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" },
-      );
-    }
-  }
 
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
@@ -3572,6 +3566,7 @@ async function handleTask(argv) {
     prompt,
     resumeLast
   });
+<<<<<<< HEAD
   const adapter = await resolveCommandAdapter({
     cwd,
     workspaceRoot,
@@ -3579,13 +3574,61 @@ async function handleTask(argv) {
     taskMetadata,
   });
   ensureCodexRuntimeAdapter(adapter);
+=======
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+
+  // --worktree-auto isolates write-mode tasks inside a per-task worktree
+  // at <repoRoot>/../.codex-bridge-worktrees/<job_id> on a branch named
+  // subagent/codex/<job_id>. Validate the full task request before creating
+  // git state; after this point, cwd is execution-only and state stays anchored
+  // to stateCwd/workspaceRoot so result/status/events keep finding the job.
+  let worktreeInfo = null;
+  if (options["worktree-auto"]) {
+    if (!write) {
+      throw conflictError(
+        "--worktree-auto requires --write.",
+        "WORKTREE_WRITE_REQUIRED",
+      );
+    }
+    ensureCodexAvailable(cwd);
+    try {
+      worktreeInfo = createSubagentWorktree({
+        cwd,
+        taskId: job.id,
+        backend: "codex",
+        allowBranchFallback: false,
+      });
+      if (worktreeInfo.isolation_mode !== "worktree") {
+        throw new Error(`expected isolated worktree, got ${worktreeInfo.isolation_mode}`);
+      }
+      try {
+        writeMeta(job.id, {
+          backend: "codex",
+          worktree: worktreeInfo,
+          isolation_mode: worktreeInfo.isolation_mode,
+          base_ref: worktreeInfo.base_ref,
+          base_sha: worktreeInfo.base_sha,
+          phase: "queued",
+        });
+      } catch {
+        // Registry writes are best-effort — never block dispatch.
+      }
+      cwd = worktreeInfo.path;
+    } catch (err) {
+      throw new CliError(
+        `failed to create subagent worktree for ${job.id}: ${err.message ?? err}`,
+        { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" },
+      );
+    }
+  }
+>>>>>>> 7e860af (review: address codex findings on PR #51)
 
   if (options.background) {
     ensureCodexAvailable(cwd);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write);
     const request = buildTaskRequest({
       cwd,
+      stateCwd,
       model,
       effort,
       prompt,
@@ -3611,12 +3654,12 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
   await runForegroundCommand(
     job,
     (progress) =>
       runBridgeTask({
         cwd,
+        stateCwd,
         model,
         effort,
         prompt,
@@ -3644,7 +3687,7 @@ async function handleTask(argv) {
 
 async function handleTaskWorker(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "job-id"]
+    valueOptions: ["cwd", "workspace-root", "job-id"]
   });
 
   if (!options["job-id"]) {
@@ -3652,7 +3695,9 @@ async function handleTaskWorker(argv) {
   }
 
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"]
+    ? path.resolve(process.cwd(), options["workspace-root"])
+    : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(

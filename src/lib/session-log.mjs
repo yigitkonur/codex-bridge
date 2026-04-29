@@ -320,7 +320,12 @@ function cancelActionLine(scriptPath, jobId, indent = "    cancel: ", cwd = null
     : `${indent}${commandPrefix(scriptPath, "cancel", cwd)}    # rerun with the specific job id from status`;
 }
 
-export function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null }) {
+function jobCommandCwd(cwd, stateCwd) {
+  return stateCwd ?? cwd;
+}
+
+export function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
   const lines = [
     `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
     `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
@@ -335,7 +340,7 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
   lines.push("  actions:");
   lines.push(`    review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`);
   lines.push(`    revise: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<message>"`);
-  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", cwd));
+  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", jobCwd));
   return lines.join("\n");
 }
 
@@ -351,9 +356,10 @@ export function formatDoneEvent(session, { duration, diffStat, files, config, di
 // `skill/references/error-recovery.md` so an agent can pull the full recovery
 // recipe in one read without relying on memory. Anchors are kept stable; new
 // origins MUST register an anchor in error-recovery.md before landing here.
-function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage, cwd = null }) {
+function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage, cwd = null, stateCwd = null }) {
   const lines = ["  actions:"];
   const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
 
   if (origin === "upstream:response-chain-lost") {
     // Chain-lost: the upstream resp_id is dead. Same-thread `send` will repeat
@@ -362,7 +368,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
       `    inspect:  git log --oneline <launch-iso>..HEAD    # audit what committed before the chain loss`,
-      resultActionLine(scriptPath, jobId, "    log:     ", cwd),
+      resultActionLine(scriptPath, jobId, "    log:     ", jobCwd),
       see("response-chain-lost"),
     );
     return lines;
@@ -372,8 +378,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       "    reauth:  run `codex login` (or reauth your upstream proxy if one is in the path)",
       "    do-not:  retry the same thread — auth is deterministic; the 401 will repeat",
-      resultActionLine(scriptPath, jobId, "    log:    ", cwd),
-      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
+      resultActionLine(scriptPath, jobId, "    log:    ", jobCwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
       see("upstream-auth-401"),
     );
     return lines;
@@ -381,7 +387,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
 
   if (origin === "upstream:invalid-request") {
     lines.push(
-      `    inspect: ${commandPrefix(scriptPath, "result", cwd)} ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
+      `    inspect: ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
       `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<fixed prompt>"`,
       see("upstream-invalid-request"),
     );
@@ -391,8 +397,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (origin === "idle") {
     lines.push(
       `    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
-      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
-      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
+      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
       see("idle-timeout"),
     );
     return lines;
@@ -402,7 +408,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       "    narrow:  split the task, or trim required-reads before resending (the upstream compact proxy ran out of budget mid-turn)",
       `    resume:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<shorter follow-up>"`,
-      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
+      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
       see("compact-proxy-502"),
     );
     return lines;
@@ -411,8 +417,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (origin === "upstream:transport") {
     lines.push(
       `    retry:   ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
-      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
-      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
+      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
       see("upstream-transport-drop"),
     );
     return lines;
@@ -424,7 +430,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     // review rather than retry the whole task.
     const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
     lines.push(
-      `    inspect:     ${commandPrefix(scriptPath, "result", cwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
+      `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
       `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
       see("pipeline-stage-timeout"),
     );
@@ -435,8 +441,8 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   // tripped a safety net. Action is to inspect logs + file a report.
   if (typeof origin === "string" && origin.startsWith("bridge")) {
     lines.push(
-      resultActionLine(scriptPath, jobId, "    log:    ", cwd),
-      cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
+      resultActionLine(scriptPath, jobId, "    log:    ", jobCwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
       see("bridge-unhandled-exit"),
     );
     return lines;
@@ -454,7 +460,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   if (errorCode === "ContextWindowExceeded") {
     lines.push(
       `    new:    ${commandPrefix(scriptPath, "task", cwd)} "<shorter prompt>"    # context window full; do not retry the same turn`,
-      resultActionLine(scriptPath, jobId, "    log:   ", cwd),
+      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
       see("context-window-exceeded"),
     );
     return lines;
@@ -472,13 +478,13 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
   // `origin: turn` failures without a more specific branch above.
   lines.push(
     `    retry: ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
-    resultActionLine(scriptPath, jobId, "    log:   ", cwd),
-    cancelActionLine(scriptPath, jobId, "    cancel: ", cwd),
+    resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
+    cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
   );
   return lines;
 }
 
-export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null, cwd = null }) {
+export function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null, cwd = null, stateCwd = null }) {
   const lines = [
     `[ERROR] ${session.threadId} failed | ${errorCode}`,
     `  ${message}`,
@@ -499,6 +505,7 @@ export function formatErrorEvent(session, { errorCode, message, phase, origin = 
     jobId,
     failingStage,
     cwd,
+    stateCwd,
   }));
   return lines.join("\n");
 }
@@ -511,7 +518,8 @@ export function formatErrorEvent(session, { errorCode, message, phase, origin = 
 // `git log` when a chain-lost 400 dropped into the `internal` bucket.
 // Non-terminal by itself; the paired `[ERROR]` / `[HANDOFF]` is what trips
 // Monitor self-termination.
-export function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null, cwd = null }) {
+export function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null, cwd = null, stateCwd = null }) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
   const lines = [`[PARTIAL] ${session.threadId} commits=[${commits.join(",")}]`];
   if (currentHeadSha) lines.push(`  current_head: ${currentHeadSha}`);
   if (lastOkHeadSha) lines.push(`  last_ok_head: ${lastOkHeadSha}`);
@@ -524,7 +532,7 @@ export function formatPartialEvent(session, { commits = [], currentHeadSha = nul
     if (dirtyFiles.length > 20) lines.push(`    ... and ${dirtyFiles.length - 20} more`);
   }
   if (scriptPath && jobId) {
-    lines.push(`  inspect: ${commandPrefix(scriptPath, "result", cwd)} ${jobId}`);
+    lines.push(`  inspect: ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId}`);
   }
   return lines.join("\n");
 }
@@ -549,7 +557,8 @@ export function formatRetryingEvent(session, { attempt, maxAttempts, backoffMs, 
 // the same data lives under `error.handoff` in the JSON envelope. Pairs with
 // `[ERROR]` — Monitor treats the pair as a terminal combo (HANDOFF first,
 // ERROR last so the existing TERMINAL_TAG_REGEX still fires on ERROR).
-export function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath, cwd = null }) {
+export function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath, cwd = null, stateCwd = null }) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
   const lines = [
     `[HANDOFF] ${session.threadId} reason=${reason} | origin=${origin}${errorCode ? ` | code=${errorCode}` : ""}`,
   ];
@@ -575,7 +584,7 @@ export function formatHandoffEvent(session, { reason, origin, errorCode, upstrea
   }
   lines.push("  next:");
   if (scriptPath && sessionInfo?.jobId) {
-    lines.push(`    read:     ${commandPrefix(scriptPath, "result", cwd)} ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
+    lines.push(`    read:     ${commandPrefix(scriptPath, "result", jobCwd)} ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
   }
   if (partial?.lastOkHeadSha || partial?.currentHeadSha) {
     lines.push(`    audit:    git log --oneline ${partial.lastOkHeadSha ?? partial.currentHeadSha}..HEAD`);
@@ -585,7 +594,8 @@ export function formatHandoffEvent(session, { reason, origin, errorCode, upstrea
   return lines.join("\n");
 }
 
-export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null, cwd = null }) {
+export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
   const lines = [
     `[INCOMPLETE] ${session.threadId} | ${diffStat}`,
     `  diff: ${diffPath}`,
@@ -600,7 +610,7 @@ export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, fi
   lines.push("  actions:");
   lines.push(`    fix:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "Complete the missing items"`);
   lines.push(`    new:  ${commandPrefix(scriptPath, "task", cwd)} --write "..."`);
-  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", cwd));
+  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", jobCwd));
   return lines.join("\n");
 }
 
