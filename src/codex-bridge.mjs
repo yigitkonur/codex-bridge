@@ -15,7 +15,6 @@ import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
-import codexAdapter from "./adapters/codex/index.mjs";
 import {
   CliError,
   emitError,
@@ -1044,8 +1043,7 @@ const BRIDGE_CAPABILITIES = Object.freeze([
   "per-subcommand-help",
   "machine-readable-help",
   "workspace-config-override",
-  "update-check",
-  "backend-adapter"
+  "update-check"
 ]);
 
 async function handleVersion(argv) {
@@ -1074,8 +1072,6 @@ async function handleVersion(argv) {
       detail: codex.detail ?? null
     },
     capabilities: [...BRIDGE_CAPABILITIES],
-    active_backend: codexAdapter.name,
-    adapter_capabilities: codexAdapter.capabilities(),
     update: {
       latest_version: update.latestVersion ?? null,
       has_update: Boolean(update.hasUpdate),

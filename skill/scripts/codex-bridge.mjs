@@ -714,47 +714,6 @@ function splitRawArgumentString(raw) {
   return tokens;
 }
 
-// src/adapters/codex/index.mjs
-var NOT_IMPLEMENTED = (verb) => () => {
-  const err = new Error(
-    `codex adapter '${verb}' not implemented yet (lands in T2-T5; bridge currently calls src/adapters/codex/codex.mjs directly)`
-  );
-  err.code = "NOT_IMPLEMENTED";
-  throw err;
-};
-var adapter = {
-  name: "codex",
-  displayName: "OpenAI Codex",
-  capabilities() {
-    return {
-      supports_plan_mode: true,
-      supports_questions: true,
-      supports_streaming: true,
-      supports_resume: true,
-      supports_steering: true,
-      supports_background: true,
-      supports_auto_pipeline: true,
-      supports_adversarial_review: true,
-      supports_worktree: true,
-      supports_artifact_registry: true,
-      input_modalities: ["text"],
-      output_modalities: ["text", "diff", "structured"],
-      max_prompt_chars: 512e3,
-      billing_model: "subscription",
-      auth_strategy: "oauth-cli",
-      transport: "json-rpc-unix-socket"
-    };
-  },
-  validateConfig(_config) {
-    return { valid: true, errors: [] };
-  },
-  dispatch: NOT_IMPLEMENTED("dispatch"),
-  streamEvents: NOT_IMPLEMENTED("streamEvents"),
-  getResult: NOT_IMPLEMENTED("getResult"),
-  cancel: NOT_IMPLEMENTED("cancel")
-};
-var codex_default = adapter;
-
 // src/lib/thread-id.mjs
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isThreadId(value) {
@@ -9738,8 +9697,7 @@ var BRIDGE_CAPABILITIES = Object.freeze([
   "per-subcommand-help",
   "machine-readable-help",
   "workspace-config-override",
-  "update-check",
-  "backend-adapter"
+  "update-check"
 ]);
 async function handleVersion(argv) {
   const startedAt = Date.now();
@@ -9762,8 +9720,6 @@ async function handleVersion(argv) {
       detail: codex.detail ?? null
     },
     capabilities: [...BRIDGE_CAPABILITIES],
-    active_backend: codex_default.name,
-    adapter_capabilities: codex_default.capabilities(),
     update: {
       latest_version: update.latestVersion ?? null,
       has_update: Boolean(update.hasUpdate),
