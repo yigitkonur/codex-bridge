@@ -592,6 +592,14 @@ const COMMANDS = Object.freeze({
       "codex-bridge adversarial-review --scope branch --base main"
     ]
   },
+  iterate: {
+    synopsis: "iterate <task_id_or_prompt> [--max <n>] [--brief <path>] [--backend <name>] [--write] [--json]",
+    summary: "Return the staged closed-loop iterate envelope and next manual task/review/verdict action.",
+    examples: [
+      'codex-bridge iterate "Implement the brief" --max 3 --json',
+      "codex-bridge iterate task-abc --max 2"
+    ]
+  },
   summary: {
     synopsis: "summary <thread-id> [--tail <n>] [--json]",
     summary: "Generate a readable transcript from the NDJSON session log (default tail=200).",
@@ -4720,23 +4728,83 @@ async function handleIterate(argv) {
   );
 }
 
+const VERDICT_VALUES = new Set(["approved", "needs-attention", "must-fix"]);
+
+function validateVerdictValue(verdict, optionName = "--set") {
+  if (!VERDICT_VALUES.has(verdict)) {
+    throw usageError(
+      `${optionName} must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`,
+    );
+  }
+}
+
+function readVerdictPayloadFromStdin() {
+  const raw = readStdinIfPiped().trim();
+  if (!raw) {
+    throw usageError("--payload-stdin requires a JSON object on stdin");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw usageError(`--payload-stdin must be valid JSON: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw usageError("--payload-stdin must be a JSON object");
+  }
+  validateVerdictValue(parsed.verdict, "payload.verdict");
+  if (parsed.findings != null && !Array.isArray(parsed.findings)) {
+    throw usageError("payload.findings must be an array when provided");
+  }
+  return {
+    verdict: parsed.verdict,
+    summary: typeof parsed.summary === "string" ? parsed.summary : null,
+    findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+    reviewer: typeof parsed.reviewer === "string" ? parsed.reviewer : null,
+  };
+}
+
 // verdict <task_id> — read or write the post-review verdict.
 //   read mode  (no flags):           prints current verdict.json
 //   write mode (--set <verdict>):    persists { verdict, summary?, finding?, reviewer? }
+//   stdin mode (--payload-stdin):     persists a JSON payload without shell-arg interpolation
 //   --discard:                       removes the registry directory
 async function handleVerdict(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["set", "summary", "finding", "reviewer", "cwd"],
-    booleanOptions: ["json", "discard"],
+    booleanOptions: ["json", "discard", "payload-stdin"],
   });
   const taskId = positionals[0];
   if (!taskId) {
     throw usageError("verdict requires a task_id positional argument");
   }
 
+<<<<<<< HEAD
   // discard mode: remove only verdict.json so the rest of the registry
   // entry (meta.json, session-log.jsonl, etc.) is preserved for audit.
+=======
+  if (options["payload-stdin"]) {
+    if (options.discard || options.set || options.summary || options.finding || options.reviewer) {
+      throw conflictError(
+        "--payload-stdin cannot be combined with --discard, --set, --summary, --finding, or --reviewer",
+        "VERDICT_PAYLOAD_CONFLICT",
+      );
+    }
+    const payload = readVerdictPayloadFromStdin();
+    writeVerdict(taskId, payload);
+    const stored = readVerdict(taskId);
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "set", verdict: stored },
+      `Verdict for ${taskId}: ${stored.verdict}\n`,
+      { json: options.json, startedAt },
+    );
+    return;
+  }
+
+  // discard mode: remove the registry directory entirely
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
   if (options.discard) {
     const target = path.join(jobDir(taskId), "verdict.json");
     let removed = false;
@@ -4756,11 +4824,7 @@ async function handleVerdict(argv) {
   // write mode: persist a new verdict
   if (options.set) {
     const verdict = options.set;
-    if (!["approved", "needs-attention", "must-fix"].includes(verdict)) {
-      throw usageError(
-        `--set must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`,
-      );
-    }
+    validateVerdictValue(verdict);
     const payload = {
       verdict,
       summary: options.summary ?? null,

@@ -72,6 +72,23 @@ function runHook(relativePath, input, env = {}) {
   return JSON.parse(result.stdout);
 }
 
+function runBridge(relativePath, args, { input = undefined, env = {} } = {}) {
+  return spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL(relativePath, root)), ...args],
+    {
+      cwd: rootPath,
+      encoding: "utf8",
+      input,
+      env: {
+        ...process.env,
+        CODEX_BRIDGE_NO_UPDATE_CHECK: "1",
+        ...env,
+      },
+    },
+  );
+}
+
 function resolveTestJobsDir(pluginData, workspaceRoot) {
   const canonical = fs.realpathSync.native(workspaceRoot);
   const slugSource = path.basename(workspaceRoot) || "workspace";
@@ -295,6 +312,20 @@ test("bundled plugin CLI exposes the verdict command", () => {
   assert.equal(payload.ok, true);
   assert.equal(payload.command, "verdict");
   assert.equal(payload.result.verdict.verdict, "approved");
+});
+
+test("bundled plugin CLI exposes the staged iterate dispatcher", () => {
+  const help = runBridge("plugin/scripts/codex-bridge.mjs", ["help", "--json"]);
+  assert.equal(help.status, 0, help.stderr || help.stdout);
+  const helpPayload = JSON.parse(help.stdout);
+  assert.ok(helpPayload.result.commands.some((command) => command.name === "iterate"));
+
+  const result = runBridge("plugin/scripts/codex-bridge.mjs", ["iterate", "demo task", "--json"]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.command, "iterate");
+  assert.equal(payload.result.status, "not-yet-orchestrated");
+  assert.equal(payload.result.iteration_max, 3);
 });
 
 test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => {
@@ -794,4 +825,16 @@ test("canonical plugin manifest paths resolve inside the plugin package", () => 
   assert.equal(payload.ok, true);
   assert.equal(payload.result.sources.skill_config_exists, true);
   assert.match(payload.result.sources.skill_config_path, /plugin[/\\]config\.yaml$/);
+});
+
+test("reviewer subagent uses structured review output and stdin verdict payloads", { skip: "T21 stage 2 forward-looking — reviewer agent body not yet finalized" }, () => {
+  const reviewer = readText("plugin/agents/codex-bridge-reviewer.md");
+
+  assert.match(reviewer, /adversarial-review --json/);
+  assert.match(reviewer, /result\.result\.verdict/);
+  assert.match(reviewer, /--payload-stdin/);
+  assert.match(reviewer, /single-quoted heredoc delimiter/);
+});
+
+test("verdict stdin payload preserves untrusted review text as data", { skip: "T21 stage 2 forward-looking — verdict --payload-stdin not yet wired" }, () => {
 });

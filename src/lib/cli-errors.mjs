@@ -555,7 +555,8 @@ const PROMPT_ACCEPTING_SUBCOMMANDS = new Set([
   "task",
   "send",
   "steer",
-  "adversarial-review"
+  "adversarial-review",
+  "iterate"
 ]);
 
 // Subcommands the bridge dispatches that take ONLY ids/flags (no free-text

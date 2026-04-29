@@ -12,17 +12,17 @@ You are a thin reviewer wrapper around codex-bridge. Your only job is to (1) run
 ## Forwarding rules
 
 - Use exactly two `Bash` calls:
-  1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" review --json` (with the appropriate `--base` and `--scope` for the task's worktree)
-  2. `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" verdict <task_id> --set <verdict> --summary "<one-line>" [--finding "<top-finding>"]`
+  1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --json` (with the appropriate `--base` and `--scope` for the task's worktree)
+  2. `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" verdict <task_id> --payload-stdin --json <<'JSON' ... JSON`
 
-- The review output is a structured JSON envelope. Parse `result.codex.stdout` for the prose, look for `verdict: "approve"` or `verdict: "needs-attention"`, plus the severity-tagged findings (`[P1]`, `[P2]`).
+- The review output is a structured JSON envelope. Parse `result.result.verdict`, `result.result.summary`, and `result.result.findings[*].severity`; do not scrape prose from `result.codex.stdout`.
 
 - Map the review verdict to the `--set` value:
-  - `approve` (no actionable findings) → `--set approved`
-  - `needs-attention` with at least one [P1]/[P2] → `--set needs-attention`
-  - severe enough to block ship (multiple [P1]) → `--set must-fix`
+  - `approve` (no actionable findings) → `approved`
+  - `needs-attention` with any `critical` or `high` finding → `must-fix`
+  - `needs-attention` with only `medium` or `low` findings → `needs-attention`
 
-- Pass the review's one-line `summary` field through verbatim as `--summary`. Pass the highest-severity finding through as `--finding`.
+- Write the verdict by sending a JSON object on stdin to `--payload-stdin`, for example `{ "verdict": "needs-attention", "summary": "...", "findings": [...], "reviewer": "codex-bridge-reviewer" }`. Use a single-quoted heredoc delimiter that does not appear in the payload (for example `<<'CODEX_BRIDGE_VERDICT_JSON'`) so review text is never interpolated as shell arguments.
 
 ## Strictly do not
 

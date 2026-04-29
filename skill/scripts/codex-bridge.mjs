@@ -4,8 +4,11 @@ import fs14 from "node:fs";
 import os7 from "node:os";
 import path12 from "node:path";
 <<<<<<< HEAD
+<<<<<<< HEAD
 import process9 from "node:process";
 =======
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
 import process8 from "node:process";
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -469,7 +472,8 @@ var PROMPT_ACCEPTING_SUBCOMMANDS = /* @__PURE__ */ new Set([
   "task",
   "send",
   "steer",
-  "adversarial-review"
+  "adversarial-review",
+  "iterate"
 ]);
 var NON_PROMPT_SUBCOMMANDS = /* @__PURE__ */ new Set([
   "respond",
@@ -4770,7 +4774,10 @@ function renderCancelReport(job) {
 import fs9 from "node:fs";
 import path7 from "node:path";
 import os4 from "node:os";
+<<<<<<< HEAD
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
 
 // node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
@@ -7582,6 +7589,7 @@ var COMPLETION_CHECK_SCHEMA = {
   additionalProperties: false
 };
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 // src/lib/config.mjs
 function readConfigFile(filePath) {
@@ -12110,6 +12118,8 @@ function renderCancelReport(job) {
 
 =======
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
 // src/lib/session-log.mjs
 import fs10 from "node:fs";
 import path8 from "node:path";
@@ -13465,6 +13475,7 @@ function writeCache(entry) {
     fs13.mkdirSync(path11.dirname(p), { recursive: true });
     fs13.writeFileSync(p, JSON.stringify(entry, null, 2));
 <<<<<<< HEAD
+<<<<<<< HEAD
     return true;
   } catch {
     return false;
@@ -13517,6 +13528,8 @@ function releaseCacheLock(lock) {
     fs13.unlinkSync(lock.lockPath);
 =======
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
   } catch {
   }
 }
@@ -13689,6 +13702,7 @@ function spawnDetachedAutoApply(targetVersion) {
     }
     const fd = fs14.openSync(logFile, "a");
 <<<<<<< HEAD
+<<<<<<< HEAD
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
@@ -13717,6 +13731,8 @@ function spawnDetachedAutoApply(targetVersion) {
       } catch {
       }
 =======
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
     const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
@@ -14018,6 +14034,14 @@ var COMMANDS = Object.freeze({
       "codex-bridge adversarial-review --scope branch --base main"
     ]
   },
+  iterate: {
+    synopsis: "iterate <task_id_or_prompt> [--max <n>] [--brief <path>] [--backend <name>] [--write] [--json]",
+    summary: "Return the staged closed-loop iterate envelope and next manual task/review/verdict action.",
+    examples: [
+      'codex-bridge iterate "Implement the brief" --max 3 --json',
+      "codex-bridge iterate task-abc --max 2"
+    ]
+  },
   summary: {
     synopsis: "summary <thread-id> [--tail <n>] [--json]",
     summary: "Generate a readable transcript from the NDJSON session log (default tail=200).",
@@ -14226,10 +14250,14 @@ function parseCommandInput(argv, config = {}) {
 }
 function resolveCommandCwd(options = {}) {
 <<<<<<< HEAD
+<<<<<<< HEAD
   return options.cwd ? path12.resolve(process9.cwd(), options.cwd) : process9.cwd();
 =======
   return options.cwd ? path12.resolve(process8.cwd(), options.cwd) : process8.cwd();
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+  return options.cwd ? path12.resolve(process8.cwd(), options.cwd) : process8.cwd();
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
@@ -16286,9 +16314,12 @@ async function handleTask(argv) {
   const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
   let cwd = resolveCommandCwd(options);
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stateCwd = cwd;
 =======
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
   const workspaceRoot = resolveCommandWorkspace(options);
   let worktreeInfo = null;
   if (options["worktree-auto"]) {
@@ -17257,6 +17288,7 @@ function resolvePromptInput(options, positionals, cwd) {
   return readStdinIfPiped();
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
 function readReviewedBranchHeadSha(verdict) {
   const candidates = [
     verdict?.branch_head_sha,
@@ -17272,16 +17304,86 @@ function readReviewedBranchHeadSha(verdict) {
   }
   return null;
 =======
+=======
+async function handleIterate(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["max", "brief", "backend", "cwd"],
+    booleanOptions: ["json", "write"]
+  });
+  if (positionals.length === 0) {
+    throw usageError("iterate requires either a task_id or a prompt as positional");
+  }
+  const max = options.max ? Number.parseInt(options.max, 10) : 3;
+  if (!Number.isInteger(max) || max < 1 || max > 10) {
+    throw usageError(`--max must be an integer between 1 and 10 (got ${JSON.stringify(options.max)})`);
+  }
+  const payload = {
+    iteration_max: max,
+    iterations: [],
+    next_action: {
+      command: `node "\${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --worktree-auto --write --json ${JSON.stringify(positionals.join(" "))}`,
+      description: "iterate orchestration is staged for a follow-up; for now run task \u2192 review \u2192 verdict \u2192 merge manually, or use the codex-bridge-reviewer subagent to collapse review+verdict into one call."
+    },
+    status: "not-yet-orchestrated"
+  };
+  emitSuccess(
+    "iterate",
+    payload,
+    `iterate orchestration is staged (--max=${max}); see result.next_action for the manual workflow.
+`,
+    { json: options.json, startedAt }
+  );
+}
+var VERDICT_VALUES = /* @__PURE__ */ new Set(["approved", "needs-attention", "must-fix"]);
+function validateVerdictValue(verdict, optionName = "--set") {
+  if (!VERDICT_VALUES.has(verdict)) {
+    throw usageError(
+      `${optionName} must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`
+    );
+  }
+}
+function readVerdictPayloadFromStdin() {
+  const raw = readStdinIfPiped().trim();
+  if (!raw) {
+    throw usageError("--payload-stdin requires a JSON object on stdin");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw usageError(`--payload-stdin must be valid JSON: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw usageError("--payload-stdin must be a JSON object");
+  }
+  validateVerdictValue(parsed.verdict, "payload.verdict");
+  if (parsed.findings != null && !Array.isArray(parsed.findings)) {
+    throw usageError("payload.findings must be an array when provided");
+  }
+  return {
+    verdict: parsed.verdict,
+    summary: typeof parsed.summary === "string" ? parsed.summary : null,
+    findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+    reviewer: typeof parsed.reviewer === "string" ? parsed.reviewer : null
+  };
+}
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
 async function handleVerdict(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["set", "summary", "finding", "reviewer", "cwd"],
+<<<<<<< HEAD
     booleanOptions: ["json", "discard"]
+=======
+    booleanOptions: ["json", "discard", "payload-stdin"]
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
   });
   const taskId = positionals[0];
   if (!taskId) {
     throw usageError("verdict requires a task_id positional argument");
   }
+<<<<<<< HEAD
   if (options.discard) {
     const target = path12.join(jobDir(taskId), "verdict.json");
     let removed = false;
@@ -17293,6 +17395,36 @@ async function handleVerdict(argv) {
       "verdict",
       { task_id: taskId, action: "discarded", removed },
       `Discarded verdict for ${taskId}
+=======
+  if (options["payload-stdin"]) {
+    if (options.discard || options.set || options.summary || options.finding || options.reviewer) {
+      throw conflictError(
+        "--payload-stdin cannot be combined with --discard, --set, --summary, --finding, or --reviewer",
+        "VERDICT_PAYLOAD_CONFLICT"
+      );
+    }
+    const payload = readVerdictPayloadFromStdin();
+    writeVerdict(taskId, payload);
+    const stored2 = readVerdict(taskId);
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "set", verdict: stored2 },
+      `Verdict for ${taskId}: ${stored2.verdict}
+`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  if (options.discard) {
+    const dir = jobDir(taskId);
+    if (fs14.existsSync(dir)) {
+      fs14.rmSync(dir, { recursive: true, force: true });
+    }
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "discarded" },
+      `Discarded ${taskId}
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
 `,
       { json: options.json, startedAt }
     );
@@ -17300,11 +17432,15 @@ async function handleVerdict(argv) {
   }
   if (options.set) {
     const verdict = options.set;
+<<<<<<< HEAD
     if (!["approved", "needs-attention", "must-fix"].includes(verdict)) {
       throw usageError(
         `--set must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`
       );
     }
+=======
+    validateVerdictValue(verdict);
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
     const payload = {
       verdict,
       summary: options.summary ?? null,
@@ -17341,22 +17477,30 @@ async function handleVerdictsPending(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json", "pending"]
   });
+<<<<<<< HEAD
   if (!options.pending) {
     throw usageError(
       "verdicts requires --pending (only mode currently supported)"
     );
   }
   const pendingVerdicts = /* @__PURE__ */ new Set(["approved", "needs-attention", "must-fix"]);
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
   const tasks = listTasks();
   const pending = [];
   for (const taskId of tasks) {
     const verdict = readVerdict(taskId);
     if (!verdict) continue;
+<<<<<<< HEAD
     const meta = readMeta(taskId);
     if (verdict.merged_at || meta?.merged_at || meta?.phase === "merged") {
       continue;
     }
     if (pendingVerdicts.has(verdict.verdict)) {
+=======
+    if (verdict.verdict === "approved" || verdict.verdict === "needs-attention") {
+      const meta = readMeta(taskId);
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
       pending.push({
         task_id: taskId,
         verdict: verdict.verdict,
@@ -17375,7 +17519,10 @@ async function handleVerdictsPending(argv) {
     rendered,
     { json: options.json, startedAt }
   );
+<<<<<<< HEAD
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
 }
 async function handleMerge(argv) {
   const startedAt = Date.now();
@@ -17392,14 +17539,19 @@ async function handleMerge(argv) {
   if (!verdict) {
     throw notFoundError(
 <<<<<<< HEAD
+<<<<<<< HEAD
       `no verdict found for ${taskId}; run review and record an approved verdict before merging`
 =======
       `no verdict found for ${taskId}; run /codex-bridge:verdict <task_id> --set <verdict> first`
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+      `no verdict found for ${taskId}; run /codex-bridge:verdict <task_id> --set <verdict> first`
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
     );
   }
   if (verdict.verdict !== "approved") {
     throw new CliError(
+<<<<<<< HEAD
 <<<<<<< HEAD
       `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run review or iterate before approving this task.`,
       { code: "VERDICT_NOT_APPROVED", class: "conflict" }
@@ -17414,6 +17566,10 @@ async function handleMerge(argv) {
       `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run /codex-bridge:iterate or /codex-bridge:verdict --set approved.`,
       { code: "VERDICT_NOT_APPROVED", exitClass: "conflict" }
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+      `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run /codex-bridge:iterate or /codex-bridge:verdict --set approved.`,
+      { code: "VERDICT_NOT_APPROVED", exitClass: "conflict" }
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
     );
   }
   const meta = readMeta(taskId);
@@ -17428,20 +17584,28 @@ async function handleMerge(argv) {
     throw new CliError(
       `meta.json for ${taskId} missing worktree.branch \u2014 task may not have been dispatched via --worktree-auto`,
 <<<<<<< HEAD
+<<<<<<< HEAD
       { code: "MERGE_META_INVALID", class: "internal" }
 =======
       { code: "MERGE_META_INVALID", exitClass: "internal" }
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+      { code: "MERGE_META_INVALID", exitClass: "internal" }
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
     );
   }
   if (options.pr) {
     throw new CliError(
       "--pr mode not yet implemented; ff-merge into the base ref is the only supported strategy in v2.0. Drop --pr or wait for the follow-up.",
 <<<<<<< HEAD
+<<<<<<< HEAD
       { code: "MERGE_PR_NOT_IMPLEMENTED", class: "internal" }
 =======
       { code: "MERGE_PR_NOT_IMPLEMENTED", exitClass: "internal" }
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+      { code: "MERGE_PR_NOT_IMPLEMENTED", exitClass: "internal" }
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
     );
   }
   let mergeResult;
@@ -17451,6 +17615,7 @@ async function handleMerge(argv) {
       taskId,
       branch,
       baseRef,
+<<<<<<< HEAD
 <<<<<<< HEAD
       expectedBranchSha: reviewedBranchHeadSha,
       worktreePath: meta.worktree?.path,
@@ -17487,6 +17652,8 @@ async function handleMerge(argv) {
     verdict: verdict.verdict,
     reviewed_branch_head_sha: reviewedBranchHeadSha
 =======
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
       runTests: !options["no-tests"]
     });
   } catch (err) {
@@ -17495,6 +17662,7 @@ async function handleMerge(argv) {
       { code: "MERGE_CONFLICT", exitClass: "conflict" }
     );
   }
+<<<<<<< HEAD
   const mergedAt = nowIso2();
   const {
     schema_version: _verdictSchemaVersion,
@@ -17519,11 +17687,16 @@ async function handleMerge(argv) {
     merged_at: mergedAt,
     merge: mergeResult
   });
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
   const payload = {
     task_id: taskId,
     merge: mergeResult,
     verdict: verdict.verdict
+<<<<<<< HEAD
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
   };
   emitSuccess(
     "merge",
@@ -17920,12 +18093,19 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   cancel: handleCancel,
   "await-artifact": handleAwaitArtifact,
 <<<<<<< HEAD
+<<<<<<< HEAD
   merge: handleMerge
 =======
   merge: handleMerge,
   verdict: handleVerdict,
   verdicts: handleVerdictsPending
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+  merge: handleMerge,
+  verdict: handleVerdict,
+  verdicts: handleVerdictsPending,
+  iterate: handleIterate
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
 });
 process9.on("SIGPIPE", () => {
 });
@@ -17943,10 +18123,14 @@ function writeCrashLog(kind, error) {
     fs14.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
 <<<<<<< HEAD
+<<<<<<< HEAD
     const file = path12.join(crashDir, `${ts}-${process9.pid}.log`);
 =======
     const file = path12.join(crashDir, `${ts}-${process8.pid}.log`);
 >>>>>>> c25eea8 (review: address codex findings on PR #53)
+=======
+    const file = path12.join(crashDir, `${ts}-${process8.pid}.log`);
+>>>>>>> 8c735ee (review: address codex findings on PR #54)
     const payload = {
       kind,
       ts,
