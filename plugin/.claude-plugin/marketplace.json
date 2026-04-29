@@ -1,0 +1,12 @@
+{
+  "name": "codex-bridge",
+  "description": "Single-plugin marketplace for codex-bridge. Adds /plugin marketplace add github:yigitkonur/codex-bridge as the canonical install path.",
+  "plugins": [
+    {
+      "name": "codex-bridge",
+      "source": ".",
+      "version": "2.0.0",
+      "description": "Hook-driven Codex delegator with worktree isolation and closed-loop iteration"
+    }
+  ]
+}
