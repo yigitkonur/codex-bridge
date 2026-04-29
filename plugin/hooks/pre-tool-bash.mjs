@@ -61,24 +61,41 @@ function readStdinJson() {
   return JSON.parse(raw);
 }
 
-// Tokenize a shell command into rough flags. We don't need a full shell
-// parser — we just need to detect specific flags by literal substring.
-// false positives in pathological cases (a flag inside a quoted prompt
-// argument) are acceptable; the orchestrator can override with the env
-// opt-out if a particular invocation needs to skip the hook.
-function flagPresent(command, flag) {
-  const re = new RegExp(`(?:^|\\s)${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|=|$)`);
-  return re.test(command);
+function unquoteInlineValue(value) {
+  const trimmed = String(value ?? "").trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
+
+// Detect enabled boolean flags using the same important convention as the
+// bridge parser: --flag=false is false; bare --flag and other inline values
+// are enabled. This is intentionally not a full shell parser.
+function booleanFlagEnabled(command, flag) {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?:^|\\s)${escaped}(?:=([^\\s]+)|\\s|$)`, "g");
+  let match;
+  while ((match = re.exec(command)) !== null) {
+    const inlineValue = match[1];
+    if (inlineValue === undefined) return true;
+    if (unquoteInlineValue(inlineValue).toLowerCase() === "false") continue;
+    return true;
+  }
+  return false;
 }
 
 function classifyCommand(command) {
   if (!command || typeof command !== "string") return null;
   if (!BRIDGE_TASK_PATTERN.test(command)) return null;
 
-  const isWrite = flagPresent(command, "--write");
-  const isReadOnly = flagPresent(command, "--read-only");
-  const hasWorktreeAuto = flagPresent(command, "--worktree-auto");
-  const hasCwd = flagPresent(command, "--cwd");
+  const isWrite = booleanFlagEnabled(command, "--write");
+  const isReadOnly = booleanFlagEnabled(command, "--read-only");
+  const hasWorktreeAuto = booleanFlagEnabled(command, "--worktree-auto");
 
   if (isWrite && isReadOnly) {
     return { decision: "conflict" };
@@ -87,7 +104,7 @@ function classifyCommand(command) {
     // Read-only or default tasks don't need a worktree.
     return { decision: "pass-through" };
   }
-  if (hasWorktreeAuto || hasCwd) {
+  if (hasWorktreeAuto) {
     return { decision: "pass-through" };
   }
   return { decision: "rewrite-needed" };
