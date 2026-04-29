@@ -2,8 +2,25 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { __testHooks__ } from "../src/app-server-broker.mjs";
+import { AppServerClientBase } from "../src/lib/app-server.mjs";
 
-const { createStreamTracker } = __testHooks__;
+const {
+  beginStreamTracking,
+  cleanupDisconnectedSocket,
+  createStreamTracker,
+  finalizeStreamTracking
+} = __testHooks__;
+
+class FakeAppClient extends AppServerClientBase {
+  constructor() {
+    super(process.cwd());
+    this.sent = [];
+  }
+
+  sendMessage(message) {
+    this.sent.push(message);
+  }
+}
 
 // Sentinel object stands in for a downstream socket. The tracker only checks
 // reference equality on it and never calls socket methods, so a plain object
@@ -11,6 +28,120 @@ const { createStreamTracker } = __testHooks__;
 function makeSocket(id = "downstream") {
   return { id };
 }
+
+test("disconnected downstream keeps orphaned stream lock until upstream completion", () => {
+  const owner = makeSocket("owner");
+  const tracker = createStreamTracker();
+  const pendingServerRequests = new Map();
+  const rejected = [];
+
+  const upstream = {
+    id: "prompt-1",
+    _client: {
+      rejectServerRequest(id, error) {
+        rejected.push({ id, error });
+      }
+    }
+  };
+  pendingServerRequests.set("prompt-1", { socket: owner, upstream });
+
+  tracker.registerStream(owner, new Set(["tid-root"]));
+
+  const preFixTracker = createStreamTracker();
+  preFixTracker.registerStream(owner, new Set(["tid-root"]));
+  preFixTracker.clearStreamStateIfMatch(owner);
+  assert.equal(
+    preFixTracker.getActiveStreamSocket(),
+    null,
+    "pre-fix disconnect cleanup released stream ownership before upstream completion"
+  );
+
+  const cleanupResult = cleanupDisconnectedSocket(owner, null, tracker, pendingServerRequests);
+  assert.equal(cleanupResult.retainedUpstreamOwnership, true);
+  assert.equal(
+    tracker.getActiveStreamSocket(),
+    owner,
+    "socket disconnect must not release the orphaned upstream stream"
+  );
+  assert.equal(pendingServerRequests.size, 0);
+  assert.deepEqual(rejected, [
+    {
+      id: "prompt-1",
+      error: {
+        code: -32000,
+        message: "Downstream bridge connection closed before resolving server request."
+      }
+    }
+  ]);
+
+  tracker.maybeReleaseStream(
+    { method: "turn/completed", params: { threadId: "tid-root" } },
+    owner
+  );
+  assert.equal(
+    tracker.getActiveStreamSocket(),
+    null,
+    "upstream completion remains the release point for orphaned streams"
+  );
+});
+
+test("disconnected downstream reports active request ownership as retained", () => {
+  const owner = makeSocket("owner");
+  const tracker = createStreamTracker();
+  const cleanupResult = cleanupDisconnectedSocket(owner, owner, tracker, new Map());
+
+  assert.equal(
+    cleanupResult.retainedUpstreamOwnership,
+    true,
+    "socket disconnect must not clear a request still awaiting its upstream response"
+  );
+});
+
+test("stream releases when completion shares upstream chunk with start response", async () => {
+  const tracker = createStreamTracker();
+  const socket = makeSocket();
+  const client = new FakeAppClient();
+  const params = { threadId: "tid-root" };
+  const routed = [];
+  let activeRequestSocket = socket;
+
+  client.setNotificationHandler((message) => {
+    const target = activeRequestSocket ?? tracker.getActiveStreamSocket();
+    if (!target) {
+      return;
+    }
+    tracker.noteStreamThreads(message);
+    routed.push({ target, message });
+    tracker.maybeReleaseStream(message, target);
+  });
+
+  beginStreamTracking(tracker, socket, "turn/start", params);
+  const request = client.request("turn/start", params);
+  assert.deepEqual(client.sent, [{ id: 1, method: "turn/start", params }]);
+
+  client.handleChunk(
+    `${JSON.stringify({ id: 1, result: {} })}\n` +
+      `${JSON.stringify({ method: "turn/completed", params: { threadId: "tid-root" } })}\n`
+  );
+
+  assert.equal(routed.length, 1, "completion notification should still be forwarded");
+  assert.equal(
+    tracker.getActiveStreamSocket(),
+    null,
+    "same-chunk completion must release stream ownership before the broker await resumes"
+  );
+
+  const result = await request;
+  finalizeStreamTracking(tracker, socket, "turn/start", params, result, true);
+  activeRequestSocket = null;
+
+  assert.deepEqual(result, {});
+  assert.equal(
+    tracker.getActiveStreamSocket(),
+    null,
+    "response finalization must not resurrect a stream already released by same-chunk completion"
+  );
+});
 
 test("stream releases when sub-thread completion arrives BEFORE its collabAgentToolCall registration", () => {
   const tracker = createStreamTracker();

@@ -22,6 +22,26 @@ function buildStreamThreadIds(method, params, result) {
   return threadIds;
 }
 
+function beginStreamTracking(streamTracker, socket, method, params) {
+  if (!STREAMING_METHODS.has(method)) {
+    return false;
+  }
+  streamTracker.registerStream(socket, buildStreamThreadIds(method, params ?? {}, null));
+  return true;
+}
+
+function finalizeStreamTracking(streamTracker, socket, method, params, result, keepStream) {
+  if (!STREAMING_METHODS.has(method)) {
+    return false;
+  }
+  if (keepStream) {
+    streamTracker.addStreamThreadIds(socket, buildStreamThreadIds(method, params ?? {}, result));
+  } else {
+    streamTracker.clearStreamStateIfMatch(socket);
+  }
+  return true;
+}
+
 // Encapsulates the broker's stream-ownership state machine. Extracted so the
 // stream-release ordering invariants (incl. early-arrival completion
 // reconciliation) can be exercised directly in tests without spinning up a
@@ -46,6 +66,46 @@ function createStreamTracker() {
     activeStreamThreadIds = threadIds instanceof Set ? threadIds : new Set(threadIds ?? []);
     activeCompletedThreadIds = new Set();
     pendingThreadCompletions = new Set();
+  }
+
+  function addStreamThreadIds(socket, threadIds) {
+    if (activeStreamSocket !== socket || !activeStreamThreadIds) {
+      return false;
+    }
+
+    const justAdded = [];
+    for (const threadId of threadIds ?? []) {
+      if (!threadId) {
+        continue;
+      }
+      if (!activeStreamThreadIds.has(threadId)) {
+        activeStreamThreadIds.add(threadId);
+        justAdded.push(threadId);
+      }
+    }
+
+    // Drain any pre-arrived completions for the threads we just registered.
+    let drainedAny = false;
+    if (pendingThreadCompletions) {
+      for (const threadId of justAdded) {
+        if (pendingThreadCompletions.has(threadId)) {
+          pendingThreadCompletions.delete(threadId);
+          if (!activeCompletedThreadIds) {
+            activeCompletedThreadIds = new Set();
+          }
+          activeCompletedThreadIds.add(threadId);
+          drainedAny = true;
+        }
+      }
+    }
+    // Only re-evaluate release when we actually reconciled a pending
+    // completion — otherwise the empty-threads vacuous-truth path in
+    // tryReleaseStream could incorrectly release a stream whose first
+    // collabAgentToolCall arrived with no receiver threads.
+    if (drainedAny) {
+      tryReleaseStream(socket);
+    }
+    return true;
   }
 
   function clearAllStreamState() {
@@ -101,38 +161,7 @@ function createStreamTracker() {
     if (!activeStreamThreadIds) {
       return;
     }
-    const justAdded = [];
-    for (const threadId of item.receiverThreadIds ?? []) {
-      if (!threadId) {
-        continue;
-      }
-      if (!activeStreamThreadIds.has(threadId)) {
-        activeStreamThreadIds.add(threadId);
-        justAdded.push(threadId);
-      }
-    }
-    // Drain any pre-arrived completions for the threads we just registered:
-    // their turn/completed notification fired before this collabAgentToolCall.
-    let drainedAny = false;
-    if (pendingThreadCompletions) {
-      for (const threadId of justAdded) {
-        if (pendingThreadCompletions.has(threadId)) {
-          pendingThreadCompletions.delete(threadId);
-          if (!activeCompletedThreadIds) {
-            activeCompletedThreadIds = new Set();
-          }
-          activeCompletedThreadIds.add(threadId);
-          drainedAny = true;
-        }
-      }
-    }
-    // Only re-evaluate release when we actually reconciled a pending
-    // completion — otherwise the empty-threads vacuous-truth path in
-    // tryReleaseStream could incorrectly release a stream whose first
-    // collabAgentToolCall arrived with no receiver threads.
-    if (drainedAny) {
-      tryReleaseStream(activeStreamSocket);
-    }
+    addStreamThreadIds(activeStreamSocket, item.receiverThreadIds ?? []);
   }
 
   function maybeReleaseStream(message, target) {
@@ -171,6 +200,7 @@ function createStreamTracker() {
   return {
     getActiveStreamSocket,
     registerStream,
+    addStreamThreadIds,
     clearAllStreamState,
     clearStreamStateIfMatch,
     clearStreamStateOnFailedStreamStart,
@@ -224,6 +254,24 @@ function safeResolveServerRequest(message, result) {
   }
 }
 
+function cleanupDisconnectedSocket(socket, activeRequestSocket, streamTracker, pendingServerRequests) {
+  const retainedUpstreamOwnership =
+    activeRequestSocket === socket || streamTracker.getActiveStreamSocket() === socket;
+
+  for (const [key, pending] of pendingServerRequests) {
+    if (pending.socket !== socket) {
+      continue;
+    }
+    pendingServerRequests.delete(key);
+    safeRejectServerRequest(
+      pending.upstream,
+      buildJsonRpcError(-32000, "Downstream bridge connection closed before resolving server request.")
+    );
+  }
+
+  return { retainedUpstreamOwnership };
+}
+
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (subcommand !== "serve") {
@@ -253,22 +301,11 @@ async function main() {
   let server = null;
   let shuttingDown = false;
 
-  function clearSocketOwnership(socket) {
-    if (activeRequestSocket === socket) {
-      activeRequestSocket = null;
-      activeRequestToken = null;
-    }
-    streamTracker.clearStreamStateIfMatch(socket);
-    for (const [key, pending] of pendingServerRequests) {
-      if (pending.socket !== socket) {
-        continue;
-      }
-      pendingServerRequests.delete(key);
-      safeRejectServerRequest(
-        pending.upstream,
-        buildJsonRpcError(-32000, "Downstream bridge connection closed before resolving server request.")
-      );
-    }
+  function cleanupDisconnectedDownstream(socket) {
+    // A downstream socket closing is not upstream settlement. Keep request and
+    // stream ownership bound to the closed socket until the upstream request
+    // rejects/resolves or the stream releases through turn/completed.
+    cleanupDisconnectedSocket(socket, activeRequestSocket, streamTracker, pendingServerRequests);
   }
 
   function cleanupBrokerFiles() {
@@ -470,14 +507,25 @@ async function main() {
         const requestToken = Symbol(message.method);
         activeRequestSocket = socket;
         activeRequestToken = requestToken;
+        if (isStreaming) {
+          // AppServerClientBase resolves the start response and continues
+          // processing any later JSONL lines in the same upstream chunk before
+          // this await resumes. Register now so same-chunk stream
+          // notifications are tracked instead of only forwarded.
+          beginStreamTracking(streamTracker, socket, message.method, message.params ?? {});
+        }
 
         try {
           const result = await appClient.request(message.method, message.params ?? {});
-          const responseSent = send(socket, { id: message.id, result });
-          if (isStreaming && responseSent && sockets.has(socket) && !socket.destroyed) {
-            streamTracker.registerStream(
+          send(socket, { id: message.id, result });
+          if (isStreaming) {
+            finalizeStreamTracking(
+              streamTracker,
               socket,
-              buildStreamThreadIds(message.method, message.params ?? {}, result)
+              message.method,
+              message.params ?? {},
+              result,
+              true
             );
           }
           if (activeRequestToken === requestToken) {
@@ -496,8 +544,8 @@ async function main() {
           // Only clear stream ownership if THIS failed request was the stream
           // itself. A failed non-stream request on the same socket must not
           // orphan an in-flight turn — stream ownership is released by
-          // turn/completed or by socket close/error, not by unrelated per-
-          // request failures.
+          // turn/completed or upstream exit, not by unrelated per-request
+          // failures or downstream socket disconnects.
           if (isStreaming) {
             streamTracker.clearStreamStateOnFailedStreamStart(socket);
           }
@@ -507,12 +555,12 @@ async function main() {
 
     socket.on("close", () => {
       sockets.delete(socket);
-      clearSocketOwnership(socket);
+      cleanupDisconnectedDownstream(socket);
     });
 
     socket.on("error", () => {
       sockets.delete(socket);
-      clearSocketOwnership(socket);
+      cleanupDisconnectedDownstream(socket);
     });
   });
 
@@ -555,5 +603,8 @@ if (invokedDirectly) {
 export const __testHooks__ = {
   createStreamTracker,
   buildStreamThreadIds,
+  beginStreamTracking,
+  cleanupDisconnectedSocket,
+  finalizeStreamTracking,
   STREAMING_METHODS
 };

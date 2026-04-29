@@ -1,8 +1,24 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 
+export const DEFAULT_RUN_COMMAND_TIMEOUT_MS = 10_000;
+
+function resolveRunCommandTimeout(timeout) {
+  if (timeout == null) {
+    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  }
+
+  const parsed = Number(timeout);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  }
+
+  return Math.max(1, Math.floor(parsed));
+}
+
 export function runCommand(command, args = [], options = {}) {
-  const result = spawnSync(command, args, {
+  const spawnSyncImpl = options.spawnSync ?? spawnSync;
+  const result = spawnSyncImpl(command, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
@@ -10,6 +26,7 @@ export function runCommand(command, args = [], options = {}) {
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
     shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
+    timeout: resolveRunCommandTimeout(options.timeout),
     windowsHide: true
   });
 

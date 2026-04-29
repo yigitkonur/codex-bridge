@@ -5,7 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { listJobs, resolveStateFile, resolveStateDir, upsertJob } from "../src/lib/state.mjs";
+import {
+  listJobs,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateFile,
+  resolveStateDir,
+  saveState,
+  upsertJob,
+  writeJobFile
+} from "../src/lib/state.mjs";
 
 function runWorker({ pluginData, cwd, jobId }) {
   const script = `
@@ -53,6 +62,88 @@ test("concurrent state writers preserve all jobs", async () => {
       jobs.map((job) => job.id).sort(),
       jobIds.sort()
     );
+  } finally {
+    if (previousBridgePluginData == null) {
+      delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_BRIDGE_PLUGIN_DATA = previousBridgePluginData;
+    }
+    if (previousClaudePluginData == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previousClaudePluginData;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("pruning caps terminal history without deleting old active jobs", () => {
+  const previousBridgePluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+  const previousClaudePluginData = process.env.CLAUDE_PLUGIN_DATA;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-active-prune-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+  process.env.CODEX_BRIDGE_PLUGIN_DATA = root;
+  delete process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    const activeRecords = [
+      {
+        id: "old-running",
+        status: "running",
+        phase: "run",
+        pid: process.pid,
+        updatedAt: "2025-01-01T00:00:00.000Z",
+        logFile: resolveJobLogFile(workspace, "old-running")
+      },
+      {
+        id: "old-queued",
+        status: "queued",
+        phase: "queued",
+        pid: process.pid,
+        updatedAt: "2025-01-01T00:00:01.000Z",
+        logFile: resolveJobLogFile(workspace, "old-queued")
+      }
+    ];
+
+    for (const record of activeRecords) {
+      fs.writeFileSync(record.logFile, `${record.id}\n`, "utf8");
+      writeJobFile(workspace, record.id, record);
+    }
+
+    const terminalRecords = Array.from({ length: 60 }, (_, index) => ({
+      id: `terminal-${String(index).padStart(2, "0")}`,
+      status: "completed",
+      phase: "done",
+      pid: null,
+      updatedAt: new Date(Date.UTC(2025, 0, 2, 0, 0, index)).toISOString()
+    }));
+
+    const stateFile = resolveStateFile(workspace);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(
+      stateFile,
+      `${JSON.stringify({
+        version: 1,
+        config: {},
+        jobs: [...activeRecords, ...terminalRecords]
+      }, null, 2)}\n`,
+      "utf8"
+    );
+    saveState(workspace, { config: {}, jobs: [...activeRecords, ...terminalRecords] });
+
+    const jobs = listJobs(workspace, { raw: true });
+    const jobIds = new Set(jobs.map((job) => job.id));
+    assert.equal(jobIds.has("old-running"), true);
+    assert.equal(jobIds.has("old-queued"), true);
+    assert.equal(jobs.filter((job) => job.status !== "queued" && job.status !== "running").length, 50);
+    assert.equal(jobs.length, 52);
+    assert.equal(jobIds.has("terminal-00"), false);
+    assert.equal(jobIds.has("terminal-59"), true);
+
+    for (const record of activeRecords) {
+      assert.equal(fs.existsSync(resolveJobFile(workspace, record.id)), true);
+      assert.equal(fs.existsSync(record.logFile), true);
+    }
   } finally {
     if (previousBridgePluginData == null) {
       delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
