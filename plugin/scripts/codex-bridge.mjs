@@ -3398,7 +3398,7 @@ var jsYaml = {
   safeDump
 };
 
-// src/lib/config.mjs
+// src/lib/runtime-options.mjs
 var DEFAULT_CONFIG = {
   mode: "plan",
   model: "gpt-5.4",
@@ -3490,6 +3490,7 @@ var DEFAULT_CONFIG = {
   question_answer_ms: 3e5,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
+<<<<<<< HEAD
 function readConfigFile(filePath) {
   try {
     const raw = fs.readFileSync(filePath, "utf8");
@@ -3539,6 +3540,8 @@ function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
 function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
 }
+=======
+>>>>>>> 46bc2f8 (test: stabilize baseline tests on PR #42)
 function resolveEffort(config, options = {}) {
   return options.effort ?? config.effort ?? "high";
 }
@@ -3593,6 +3596,7 @@ var COMPLETION_CHECK_SCHEMA = {
   additionalProperties: false
 };
 
+<<<<<<< HEAD
 // src/adapters/index.mjs
 var REQUIRED_FIELDS = ["name", "displayName"];
 var REQUIRED_METHODS = ["capabilities", "validateConfig", "dispatch", "streamEvents", "getResult", "cancel"];
@@ -7681,6 +7685,45 @@ function renderCancelReport(job) {
   lines.push("- Check `codex-bridge status` for the updated queue.");
   return `${lines.join("\n").trimEnd()}
 `;
+=======
+// src/lib/config.mjs
+function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
+  const readYaml = (p) => {
+    try {
+      const raw = fs8.readFileSync(p, "utf8");
+      const doc = jsYaml.load(raw) ?? {};
+      const bridge = doc.codex_bridge ?? doc;
+      return typeof bridge === "object" && bridge !== null ? bridge : {};
+    } catch {
+      return {};
+    }
+  };
+  const skillConfigPath = skillDir ? path6.join(skillDir, "config.yaml") : path6.join(os3.homedir(), ".codex-bridge", "config.yaml");
+  const skillLayer = readYaml(skillConfigPath);
+  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path6.join(workspaceRoot, "config.yaml") : null;
+  const workspaceLayer = workspaceConfigPath && fs8.existsSync(workspaceConfigPath) ? readYaml(workspaceConfigPath) : {};
+  const overrideConfigPath = overrideDir ? path6.join(overrideDir, "config.yaml") : null;
+  const overrideLayer = overrideConfigPath && fs8.existsSync(overrideConfigPath) ? readYaml(overrideConfigPath) : {};
+  return {
+    ...DEFAULT_CONFIG,
+    ...skillLayer,
+    ...workspaceLayer,
+    ...overrideLayer
+  };
+}
+function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
+  const skillConfigPath = skillDir ? path6.join(skillDir, "config.yaml") : path6.join(os3.homedir(), ".codex-bridge", "config.yaml");
+  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path6.join(workspaceRoot, "config.yaml") : null;
+  const overrideConfigPath = overrideDir ? path6.join(overrideDir, "config.yaml") : null;
+  return {
+    skillConfigPath,
+    skillConfigExists: fs8.existsSync(skillConfigPath),
+    workspaceConfigPath,
+    workspaceConfigExists: workspaceConfigPath ? fs8.existsSync(workspaceConfigPath) : false,
+    overrideConfigPath,
+    overrideConfigExists: overrideConfigPath ? fs8.existsSync(overrideConfigPath) : false
+  };
+>>>>>>> 46bc2f8 (test: stabilize baseline tests on PR #42)
 }
 
 // src/lib/session-log.mjs

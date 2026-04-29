@@ -12,7 +12,7 @@ import {
   formatPipelineEvent,
   fmtSeconds,
 } from "../../lib/session-log.mjs";
-import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "../../lib/config.mjs";
+import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "../../lib/runtime-options.mjs";
 import { extractUpstreamRequestId } from "../../lib/cli-errors.mjs";
 
 // Default budgets. Runtime callers may override via `stageTimeoutMs` /
