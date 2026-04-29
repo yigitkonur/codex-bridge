@@ -1,0 +1,100 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: bundle + sanity-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: install
+        run: npm ci
+
+      - name: build skill bundle
+        run: npm run build
+
+      - name: verify committed bundle matches fresh build
+        run: |
+          # The skill bundle ships via `npx skills add yigitkonur/codex-bridge`,
+          # which clones the repo and uses the tree as-is — no build step on the
+          # user's machine. So every main-branch commit must carry an up-to-date
+          # bundle. Any diff here means the contributor forgot to commit their
+          # `npm run build` output.
+          if ! git diff --quiet --exit-code -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates; then
+            echo "::error::committed skill bundle is stale. run 'npm run build' and commit the changes."
+            git --no-pager diff --stat -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates
+            exit 1
+          fi
+
+      - name: verify bundle outputs exist
+        run: |
+          for f in \
+            skill/scripts/codex-bridge.mjs \
+            skill/app-server-broker.mjs \
+            skill/prompts/adversarial-review.md \
+            skill/schemas/review-output.schema.json \
+            skill/templates/execute-instructions.md \
+            skill/templates/plan-enforcement.md; do
+            test -s "$f" || { echo "missing or empty: $f"; exit 1; }
+          done
+
+      - name: sanity — help --json parses
+        run: |
+          node skill/scripts/codex-bridge.mjs help --json > /tmp/help.json
+          node -e "const j = require('/tmp/help.json'); if (!j.ok || !Array.isArray(j.result.commands) || j.result.commands.length < 10) { console.error('help envelope failed sanity'); process.exit(1); }"
+
+      - name: sanity — version --json parses
+        run: |
+          # `version` spawns the codex binary to query its version; codex isn't
+          # installed on CI, so accept either a valid envelope or a non-zero
+          # exit with a known error code (auth/dependency_failed).
+          set +e
+          OUT=$(node skill/scripts/codex-bridge.mjs version --json 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUT"
+          if [ $STATUS -eq 0 ]; then
+            node -e "const j = $OUT; if (!j.ok || j.result.schema_version !== '1.0') process.exit(1);"
+          else
+            # CI without codex installed → exit 7 is acceptable
+            if [ $STATUS -ne 7 ] && [ $STATUS -ne 3 ] && [ $STATUS -ne 4 ]; then
+              echo "unexpected exit status $STATUS"; exit 1
+            fi
+          fi
+
+      - name: sanity — unknown subcommand returns envelope
+        run: |
+          set +e
+          OUT=$(node skill/scripts/codex-bridge.mjs does-not-exist --json 2>&1)
+          STATUS=$?
+          set -e
+          test "$STATUS" = 2 || { echo "expected exit 2, got $STATUS"; exit 1; }
+          node -e "const j = $OUT; if (j.ok !== false || j.error.code !== 'UNKNOWN_SUBCOMMAND') { console.error(j); process.exit(1); }"
+
+      - name: sanity — invalid thread-id rejected
+        run: |
+          set +e
+          OUT=$(node skill/scripts/codex-bridge.mjs send thr_abc 'hi' --json 2>&1)
+          STATUS=$?
+          set -e
+          test "$STATUS" = 6 || { echo "expected exit 6, got $STATUS"; exit 1; }
+          node -e "const j = $OUT; if (j.error.code !== 'INVALID_THREAD_ID') { console.error(j); process.exit(1); }"
