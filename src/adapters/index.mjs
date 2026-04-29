@@ -124,19 +124,17 @@ export async function selectAdapter(options = {}) {
     );
   }
 
+  const routedBackend = (config) =>
+    options.subagentType
+      ? config?.adapter_routing?.[options.subagentType]?.backend
+      : undefined;
   const candidates = [
     options.backend,
     options.envBackend,
     options.metaBackend,
-    options.subagentType
-      ? options.cwdConfig?.adapter_routing?.[options.subagentType]?.backend
-      : undefined,
-    options.subagentType
-      ? options.workspaceConfig?.adapter_routing?.[options.subagentType]?.backend
-      : undefined,
-    options.subagentType
-      ? options.userConfig?.adapter_routing?.[options.subagentType]?.backend
-      : undefined,
+    routedBackend(options.cwdConfig),
+    routedBackend(options.workspaceConfig),
+    routedBackend(options.userConfig),
     options.cwdConfig?.default_backend,
     options.workspaceConfig?.default_backend,
     options.userConfig?.default_backend,

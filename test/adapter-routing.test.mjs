@@ -95,6 +95,46 @@ test("subagentType routing resolves through workspaceConfig.adapter_routing", as
   assert.equal(adapter.name, "codex");
 });
 
+test("cwd adapter_routing wins over workspace and user routing", async () => {
+  _resetAdapterCache();
+  await assert.rejects(
+    selectAdapter({
+      subagentType: "Explore",
+      cwdConfig: {
+        adapter_routing: { Explore: { backend: "cwd-route" } },
+      },
+      workspaceConfig: {
+        adapter_routing: { Explore: { backend: "workspace-route" } },
+      },
+      userConfig: {
+        adapter_routing: { Explore: { backend: "user-route" } },
+      },
+    }),
+    (err) =>
+      err instanceof AdapterError &&
+      err.code === "BACKEND_INCAPABLE" &&
+      err.message.includes("cwd-route"),
+  );
+});
+
+test("user adapter_routing wins over default backend layers", async () => {
+  _resetAdapterCache();
+  await assert.rejects(
+    selectAdapter({
+      subagentType: "Explore",
+      workspaceConfig: { default_backend: "workspace-backend" },
+      userConfig: {
+        adapter_routing: { Explore: { backend: "user-route" } },
+        default_backend: "user-backend",
+      },
+    }),
+    (err) =>
+      err instanceof AdapterError &&
+      err.code === "BACKEND_INCAPABLE" &&
+      err.message.includes("user-route"),
+  );
+});
+
 test("loadAdapter caches resolved adapters between calls", async () => {
   _resetAdapterCache();
   const first = await loadAdapter("codex");
