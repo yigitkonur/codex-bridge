@@ -107,6 +107,7 @@ const expectedCommands = [
   "cancel.md",
   "config.md",
   "events.md",
+  "iterate.md",
   "merge.md",
   "respond.md",
   "result.md",

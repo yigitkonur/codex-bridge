@@ -4669,6 +4669,57 @@ function readReviewedBranchHeadSha(verdict) {
   return null;
 }
 
+// iterate <prompt|task_id> — closed-loop dispatcher that runs task →
+// review → verdict and re-dispatches on needs-attention until either
+// approved or iteration_max is hit.
+//
+// v2.0.0 ships the dispatch surface: argument parsing, dispatcher entry,
+// envelope shape. The actual orchestration (spawning task --background,
+// polling for [DONE], running review, persisting verdict, re-briefing
+// from review findings) lands as a focused follow-up. The reviewer
+// agent (plugin/agents/codex-bridge-reviewer.md) is callable today and
+// covers the review→verdict half of the loop.
+async function handleIterate(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["max", "brief", "backend", "cwd"],
+    booleanOptions: ["json", "write"],
+  });
+  if (positionals.length === 0) {
+    throw usageError("iterate requires either a task_id or a prompt as positional");
+  }
+  const max = options.max ? Number.parseInt(options.max, 10) : 3;
+  if (!Number.isInteger(max) || max < 1 || max > 10) {
+    throw usageError(`--max must be an integer between 1 and 10 (got ${JSON.stringify(options.max)})`);
+  }
+
+  // For v2.0.0, return a structured stub envelope so the slash command
+  // and dispatcher are exercised end-to-end. Manual workflow remains:
+  //   /codex-bridge:task --worktree-auto --write "..."
+  //   /codex-bridge:review <task_id> --json
+  //   /codex-bridge:verdict <task_id> --set <verdict>
+  //   /codex-bridge:merge <task_id>            # if approved
+  //   <repeat with --resume-last>              # if needs-attention
+  // The codex-bridge-reviewer agent (plugin/agents/codex-bridge-reviewer.md)
+  // collapses review+verdict into one subagent call.
+  const payload = {
+    iteration_max: max,
+    iterations: [],
+    next_action: {
+      command: `node "\${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --worktree-auto --write --json ${JSON.stringify(positionals.join(" "))}`,
+      description:
+        "iterate orchestration is staged for a follow-up; for now run task → review → verdict → merge manually, or use the codex-bridge-reviewer subagent to collapse review+verdict into one call.",
+    },
+    status: "not-yet-orchestrated",
+  };
+  emitSuccess(
+    "iterate",
+    payload,
+    `iterate orchestration is staged (--max=${max}); see result.next_action for the manual workflow.\n`,
+    { json: options.json, startedAt },
+  );
+}
+
 // verdict <task_id> — read or write the post-review verdict.
 //   read mode  (no flags):           prints current verdict.json
 //   write mode (--set <verdict>):    persists { verdict, summary?, finding?, reviewer? }
@@ -5383,7 +5434,8 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   "await-artifact": handleAwaitArtifact,
   merge: handleMerge,
   verdict: handleVerdict,
-  verdicts: handleVerdictsPending
+  verdicts: handleVerdictsPending,
+  iterate: handleIterate
 });
 
 // Node's default SIGPIPE handling terminates the process when a downstream
