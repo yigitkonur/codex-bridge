@@ -6,11 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runAutoPipeline } from "../src/lib/auto-pipeline.mjs";
+import { runAutoPipeline } from "../src/adapters/codex/pipeline.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
-const AUTO_PIPELINE_SRC = path.join(REPO_ROOT, "src", "lib", "auto-pipeline.mjs");
+const AUTO_PIPELINE_SRC = path.join(REPO_ROOT, "src", "adapters", "codex", "pipeline.mjs");
 
 function makeTempSession() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "auto-pipeline-watchdog-"));

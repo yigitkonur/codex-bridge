@@ -8175,7 +8175,7 @@ function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIME
   });
 }
 
-// src/lib/auto-pipeline.mjs
+// src/adapters/codex/pipeline.mjs
 import fs11 from "node:fs";
 import path9 from "node:path";
 var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;

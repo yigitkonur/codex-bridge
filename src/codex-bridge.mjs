@@ -140,7 +140,7 @@ import {
   waitForResponse,
   clearPendingRequest,
 } from "./lib/pending-requests.mjs";
-import { runAutoPipeline } from "./lib/auto-pipeline.mjs";
+import { runAutoPipeline } from "./adapters/codex/pipeline.mjs";
 import { checkForUpdate, formatUpdateNotice, shouldAttemptApply, markApplyAttempted } from "./lib/update-check.mjs";
 
 // Hot-path auto-apply. On every non-json, non-update/version invocation the

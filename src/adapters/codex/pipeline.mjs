@@ -11,9 +11,9 @@ import {
   formatIncompleteEvent,
   formatPipelineEvent,
   fmtSeconds,
-} from "./session-log.mjs";
-import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "./config.mjs";
-import { extractUpstreamRequestId } from "./cli-errors.mjs";
+} from "../../lib/session-log.mjs";
+import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "../../lib/config.mjs";
+import { extractUpstreamRequestId } from "../../lib/cli-errors.mjs";
 
 // Default budgets. Runtime callers may override via `stageTimeoutMs` /
 // `totalTimeoutMs` on runAutoPipeline options, which in turn resolve from
