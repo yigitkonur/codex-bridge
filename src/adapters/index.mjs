@@ -89,8 +89,8 @@ export async function selectAdapter(options = {}) {
     options.subagentType
       ? options.workspaceConfig?.adapter_routing?.[options.subagentType]?.backend
       : undefined,
-    options.workspaceConfig?.default_backend,
     options.cwdConfig?.default_backend,
+    options.workspaceConfig?.default_backend,
     options.userConfig?.default_backend,
     options.defaultBackend ?? "codex",
   ];

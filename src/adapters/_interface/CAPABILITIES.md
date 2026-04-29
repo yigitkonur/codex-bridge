@@ -42,8 +42,8 @@ Hooks and SKILL.md branch on capabilities via the version envelope and per-job `
 2. `CODEX_BRIDGE_BACKEND` environment variable
 3. `<task_id>/meta.json::backend` (looked up via the artifact registry for `result`/`cancel`/`events`/`wait`/`status`)
 4. `adapter_routing[<subagent_type>]` (in user/project config)
-5. workspace-root `.codex-bridge.yaml::default_backend`
-6. cwd `.codex-bridge.yaml::default_backend`
+5. cwd `.codex-bridge.yaml::default_backend`
+6. workspace-root `.codex-bridge.yaml::default_backend`
 7. user `~/.codex-bridge/config.yaml::default_backend`
 8. built-in default (`codex`)
 
