@@ -171,7 +171,10 @@ function parseArgs(argv, config = {}) {
       continue;
     }
     if (token.startsWith("--")) {
-      const [rawKey, inlineValue] = token.slice(2).split("=", 2);
+      const rawOption = token.slice(2);
+      const equalsIndex = rawOption.indexOf("=");
+      const rawKey = equalsIndex === -1 ? rawOption : rawOption.slice(0, equalsIndex);
+      const inlineValue = equalsIndex === -1 ? void 0 : rawOption.slice(equalsIndex + 1);
       const key2 = aliasMap[rawKey] ?? rawKey;
       if (booleanOptions.has(key2)) {
         options[key2] = inlineValue === void 0 ? true : inlineValue !== "false";
@@ -272,27 +275,23 @@ import process4 from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-// src/lib/state.mjs
-import { createHash } from "node:crypto";
-import fs2 from "node:fs";
-import os from "node:os";
-import path2 from "node:path";
-
-// src/lib/official-plugin.mjs
-var OFFICIAL_PLUGIN_STATUS = Object.freeze({
-  ACTIVE: "active",
-  ABSENT: "absent",
-  UNKNOWN: "unknown"
-});
-
-// src/lib/git.mjs
-import fs from "node:fs";
-
 // src/lib/process.mjs
 import { spawnSync } from "node:child_process";
 import process3 from "node:process";
+var DEFAULT_RUN_COMMAND_TIMEOUT_MS = 1e4;
+function resolveRunCommandTimeout(timeout) {
+  if (timeout == null) {
+    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  }
+  const parsed = Number(timeout);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  }
+  return Math.max(1, Math.floor(parsed));
+}
 function runCommand(command, args = [], options = {}) {
-  const result = spawnSync(command, args, {
+  const spawnSyncImpl = options.spawnSync ?? spawnSync;
+  const result = spawnSyncImpl(command, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
@@ -300,6 +299,7 @@ function runCommand(command, args = [], options = {}) {
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
     shell: process3.platform === "win32" ? process3.env.SHELL || true : false,
+    timeout: resolveRunCommandTimeout(options.timeout),
     windowsHide: true
   });
   const normalizedStatus = result.status != null ? result.status : result.signal ? 128 : 1;
@@ -387,7 +387,21 @@ function formatCommandFailure(result) {
   return parts.join(": ");
 }
 
+// src/lib/state.mjs
+import { createHash } from "node:crypto";
+import fs2 from "node:fs";
+import os from "node:os";
+import path2 from "node:path";
+
+// src/lib/official-plugin.mjs
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+
 // src/lib/git.mjs
+import fs from "node:fs";
 var MAX_UNTRACKED_BYTES = 24 * 1024;
 var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
 var REGULAR_FILE_READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
@@ -558,7 +572,7 @@ async function ensureBrokerSession(cwd, options = {}) {
       logFile,
       sessionDir,
       pid: child.pid ?? null,
-      killProcess: options.killProcess ?? null
+      killProcess: options.killProcess ?? terminateProcessTree
     });
     return null;
   }
@@ -608,6 +622,7 @@ var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 var BROKER_BUSY_RPC_CODE = -32001;
 var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
 var APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5e3;
+var SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS = 150;
 var DEFAULT_CLIENT_INFO = {
   title: "Codex Bridge",
   name: "codex_bridge",
@@ -655,6 +670,21 @@ function withTimeout(promise, ms, message) {
 }
 function serverRequestError(method) {
   return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
+}
+async function loadReadySavedBrokerEndpoint(cwd) {
+  const brokerSession = loadBrokerSession(cwd);
+  if (!brokerSession) {
+    return null;
+  }
+  const endpoint = brokerSession.endpoint ?? null;
+  try {
+    if (endpoint && await waitForBrokerEndpoint(endpoint, SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS)) {
+      return endpoint;
+    }
+  } catch {
+  }
+  clearBrokerSession(cwd);
+  return null;
 }
 var AppServerClientBase = class {
   constructor(cwd, options = {}) {
@@ -1019,22 +1049,47 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
 var CodexAppServerClient = class {
   static async connect(cwd, options = {}) {
     let brokerEndpoint = null;
+    let brokerEndpointSource = null;
     if (!options.disableBroker) {
-      brokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process5.env[BROKER_ENDPOINT_ENV] ?? null;
+      const explicitBrokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process5.env[BROKER_ENDPOINT_ENV] ?? null;
+      if (explicitBrokerEndpoint) {
+        brokerEndpoint = explicitBrokerEndpoint;
+        brokerEndpointSource = "explicit";
+      }
       if (!brokerEndpoint && options.reuseExistingBroker) {
-        brokerEndpoint = loadBrokerSession(cwd)?.endpoint ?? null;
+        brokerEndpoint = await loadReadySavedBrokerEndpoint(cwd);
+        if (brokerEndpoint) {
+          brokerEndpointSource = "saved";
+        }
       }
       if (!brokerEndpoint && !options.reuseExistingBroker) {
         const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
         brokerEndpoint = brokerSession?.endpoint ?? null;
+        if (brokerEndpoint) {
+          brokerEndpointSource = "managed";
+        }
       }
     }
-    const client = brokerEndpoint ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint }) : new SpawnedCodexAppServerClient(cwd, options);
+    const createBrokerClient = options._createBrokerClient ?? ((clientCwd, clientOptions) => new BrokerCodexAppServerClient(clientCwd, clientOptions));
+    const createDirectClient = options._createDirectClient ?? ((clientCwd, clientOptions) => new SpawnedCodexAppServerClient(clientCwd, clientOptions));
+    const client = brokerEndpoint ? createBrokerClient(cwd, { ...options, brokerEndpoint }) : createDirectClient(cwd, options);
     try {
       await client.initialize();
     } catch (error) {
       await client.close().catch(() => {
       });
+      if (brokerEndpointSource === "saved") {
+        clearBrokerSession(cwd);
+        const fallbackClient = createDirectClient(cwd, options);
+        try {
+          await fallbackClient.initialize();
+        } catch (fallbackError) {
+          await fallbackClient.close().catch(() => {
+          });
+          throw fallbackError;
+        }
+        return fallbackClient;
+      }
       throw error;
     }
     return client;
@@ -1053,6 +1108,24 @@ function buildStreamThreadIds(method, params, result) {
   }
   return threadIds;
 }
+function beginStreamTracking(streamTracker, socket, method, params) {
+  if (!STREAMING_METHODS.has(method)) {
+    return false;
+  }
+  streamTracker.registerStream(socket, buildStreamThreadIds(method, params ?? {}, null));
+  return true;
+}
+function finalizeStreamTracking(streamTracker, socket, method, params, result, keepStream) {
+  if (!STREAMING_METHODS.has(method)) {
+    return false;
+  }
+  if (keepStream) {
+    streamTracker.addStreamThreadIds(socket, buildStreamThreadIds(method, params ?? {}, result));
+  } else {
+    streamTracker.clearStreamStateIfMatch(socket);
+  }
+  return true;
+}
 function createStreamTracker() {
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
@@ -1066,6 +1139,38 @@ function createStreamTracker() {
     activeStreamThreadIds = threadIds instanceof Set ? threadIds : new Set(threadIds ?? []);
     activeCompletedThreadIds = /* @__PURE__ */ new Set();
     pendingThreadCompletions = /* @__PURE__ */ new Set();
+  }
+  function addStreamThreadIds(socket, threadIds) {
+    if (activeStreamSocket !== socket || !activeStreamThreadIds) {
+      return false;
+    }
+    const justAdded = [];
+    for (const threadId of threadIds ?? []) {
+      if (!threadId) {
+        continue;
+      }
+      if (!activeStreamThreadIds.has(threadId)) {
+        activeStreamThreadIds.add(threadId);
+        justAdded.push(threadId);
+      }
+    }
+    let drainedAny = false;
+    if (pendingThreadCompletions) {
+      for (const threadId of justAdded) {
+        if (pendingThreadCompletions.has(threadId)) {
+          pendingThreadCompletions.delete(threadId);
+          if (!activeCompletedThreadIds) {
+            activeCompletedThreadIds = /* @__PURE__ */ new Set();
+          }
+          activeCompletedThreadIds.add(threadId);
+          drainedAny = true;
+        }
+      }
+    }
+    if (drainedAny) {
+      tryReleaseStream(socket);
+    }
+    return true;
   }
   function clearAllStreamState() {
     activeStreamSocket = null;
@@ -1109,32 +1214,7 @@ function createStreamTracker() {
     if (!activeStreamThreadIds) {
       return;
     }
-    const justAdded = [];
-    for (const threadId of item.receiverThreadIds ?? []) {
-      if (!threadId) {
-        continue;
-      }
-      if (!activeStreamThreadIds.has(threadId)) {
-        activeStreamThreadIds.add(threadId);
-        justAdded.push(threadId);
-      }
-    }
-    let drainedAny = false;
-    if (pendingThreadCompletions) {
-      for (const threadId of justAdded) {
-        if (pendingThreadCompletions.has(threadId)) {
-          pendingThreadCompletions.delete(threadId);
-          if (!activeCompletedThreadIds) {
-            activeCompletedThreadIds = /* @__PURE__ */ new Set();
-          }
-          activeCompletedThreadIds.add(threadId);
-          drainedAny = true;
-        }
-      }
-    }
-    if (drainedAny) {
-      tryReleaseStream(activeStreamSocket);
-    }
+    addStreamThreadIds(activeStreamSocket, item.receiverThreadIds ?? []);
   }
   function maybeReleaseStream(message, target) {
     if (message?.method !== "turn/completed" || activeStreamSocket !== target) {
@@ -1165,6 +1245,7 @@ function createStreamTracker() {
   return {
     getActiveStreamSocket,
     registerStream,
+    addStreamThreadIds,
     clearAllStreamState,
     clearStreamStateIfMatch,
     clearStreamStateOnFailedStreamStart,
@@ -1210,6 +1291,20 @@ function safeResolveServerRequest(message, result) {
   } catch {
   }
 }
+function cleanupDisconnectedSocket(socket, activeRequestSocket, streamTracker, pendingServerRequests) {
+  const retainedUpstreamOwnership = activeRequestSocket === socket || streamTracker.getActiveStreamSocket() === socket;
+  for (const [key, pending] of pendingServerRequests) {
+    if (pending.socket !== socket) {
+      continue;
+    }
+    pendingServerRequests.delete(key);
+    safeRejectServerRequest(
+      pending.upstream,
+      buildJsonRpcError2(-32e3, "Downstream bridge connection closed before resolving server request.")
+    );
+  }
+  return { retainedUpstreamOwnership };
+}
 async function main() {
   const [subcommand, ...argv] = process6.argv.slice(2);
   if (subcommand !== "serve") {
@@ -1234,22 +1329,8 @@ async function main() {
   const sockets = /* @__PURE__ */ new Set();
   let server = null;
   let shuttingDown = false;
-  function clearSocketOwnership(socket) {
-    if (activeRequestSocket === socket) {
-      activeRequestSocket = null;
-      activeRequestToken = null;
-    }
-    streamTracker.clearStreamStateIfMatch(socket);
-    for (const [key, pending] of pendingServerRequests) {
-      if (pending.socket !== socket) {
-        continue;
-      }
-      pendingServerRequests.delete(key);
-      safeRejectServerRequest(
-        pending.upstream,
-        buildJsonRpcError2(-32e3, "Downstream bridge connection closed before resolving server request.")
-      );
-    }
+  function cleanupDisconnectedDownstream(socket) {
+    cleanupDisconnectedSocket(socket, activeRequestSocket, streamTracker, pendingServerRequests);
   }
   function cleanupBrokerFiles() {
     if (listenTarget.kind === "unix" && fs4.existsSync(listenTarget.path)) {
@@ -1436,13 +1517,20 @@ async function main() {
         const requestToken = Symbol(message.method);
         activeRequestSocket = socket;
         activeRequestToken = requestToken;
+        if (isStreaming) {
+          beginStreamTracking(streamTracker, socket, message.method, message.params ?? {});
+        }
         try {
           const result = await appClient.request(message.method, message.params ?? {});
-          const responseSent = send(socket, { id: message.id, result });
-          if (isStreaming && responseSent && sockets.has(socket) && !socket.destroyed) {
-            streamTracker.registerStream(
+          send(socket, { id: message.id, result });
+          if (isStreaming) {
+            finalizeStreamTracking(
+              streamTracker,
               socket,
-              buildStreamThreadIds(message.method, message.params ?? {}, result)
+              message.method,
+              message.params ?? {},
+              result,
+              true
             );
           }
           if (activeRequestToken === requestToken) {
@@ -1466,11 +1554,11 @@ async function main() {
     });
     socket.on("close", () => {
       sockets.delete(socket);
-      clearSocketOwnership(socket);
+      cleanupDisconnectedDownstream(socket);
     });
     socket.on("error", () => {
       sockets.delete(socket);
-      clearSocketOwnership(socket);
+      cleanupDisconnectedDownstream(socket);
     });
   });
   process6.on("SIGTERM", async () => {
@@ -1504,6 +1592,9 @@ if (invokedDirectly) {
 var __testHooks__ = {
   createStreamTracker,
   buildStreamThreadIds,
+  beginStreamTracking,
+  cleanupDisconnectedSocket,
+  finalizeStreamTracking,
   STREAMING_METHODS
 };
 export {
