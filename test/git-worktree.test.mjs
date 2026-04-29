@@ -7,6 +7,7 @@ import { execSync } from "node:child_process";
 
 import {
   createSubagentWorktree,
+  mergeSubagentBranch,
   pruneWorktreeOnCancel,
   listSubagentWorktrees,
 } from "../src/lib/git.mjs";
@@ -219,6 +220,97 @@ test("createSubagentWorktree records the previous ref when using branch-only fal
     );
   } finally {
     fs.rmSync(blockedRoot, { force: true });
+    cleanup(repo);
+  }
+});
+
+test("mergeSubagentBranch fast-forwards the reviewed branch head and prunes clean worktree", () => {
+  const repo = makeTempRepo();
+  try {
+    const created = createSubagentWorktree({
+      cwd: repo,
+      taskId: "task-merge",
+      backend: "codex",
+    });
+    fs.writeFileSync(path.join(created.path, "merged.txt"), "merged\n");
+    execSync("git add merged.txt", { cwd: created.path });
+    execSync('git commit -m "work"', { cwd: created.path });
+    const branchSha = execSync(`git rev-parse ${created.branch}`, { cwd: repo }).toString().trim();
+
+    const result = mergeSubagentBranch({
+      cwd: repo,
+      taskId: "task-merge",
+      branch: created.branch,
+      baseRef: "main",
+      expectedBranchSha: branchSha,
+      worktreePath: created.path,
+    });
+
+    assert.equal(result.strategy, "ff");
+    assert.equal(result.commit_sha, branchSha);
+    assert.ok(fs.existsSync(path.join(repo, "merged.txt")));
+    assert.ok(!fs.existsSync(created.path));
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test("mergeSubagentBranch refuses to prune a dirty task worktree", () => {
+  const repo = makeTempRepo();
+  try {
+    const created = createSubagentWorktree({
+      cwd: repo,
+      taskId: "task-dirty",
+      backend: "codex",
+    });
+    const branchSha = execSync(`git rev-parse ${created.branch}`, { cwd: repo }).toString().trim();
+    fs.writeFileSync(path.join(created.path, "uncommitted.txt"), "not committed\n");
+
+    assert.throws(
+      () =>
+        mergeSubagentBranch({
+          cwd: repo,
+          taskId: "task-dirty",
+          branch: created.branch,
+          baseRef: "main",
+          expectedBranchSha: branchSha,
+          worktreePath: created.path,
+        }),
+      /task worktree is dirty/,
+    );
+    assert.ok(fs.existsSync(created.path));
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test("mergeSubagentBranch rejects a branch head that was not reviewed", () => {
+  const repo = makeTempRepo();
+  try {
+    const created = createSubagentWorktree({
+      cwd: repo,
+      taskId: "task-stale-verdict",
+      backend: "codex",
+    });
+    const reviewedSha = execSync(`git rev-parse ${created.branch}`, { cwd: repo }).toString().trim();
+    fs.writeFileSync(path.join(created.path, "later.txt"), "later\n");
+    execSync("git add later.txt", { cwd: created.path });
+    execSync('git commit -m "later"', { cwd: created.path });
+
+    assert.throws(
+      () =>
+        mergeSubagentBranch({
+          cwd: repo,
+          taskId: "task-stale-verdict",
+          branch: created.branch,
+          baseRef: "main",
+          expectedBranchSha: reviewedSha,
+          worktreePath: created.path,
+        }),
+      /approved verdict reviewed/,
+    );
+    assert.ok(fs.existsSync(created.path));
+  } finally {
     cleanup(repo);
   }
 });

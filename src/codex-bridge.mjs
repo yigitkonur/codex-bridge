@@ -635,6 +635,14 @@ const COMMANDS = Object.freeze({
     summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
     examples: ["codex-bridge cancel task-abc"]
   },
+  merge: {
+    synopsis: "merge <task_id> [--no-tests] [--pr] [--json]",
+    summary: "Fast-forward merge an approved worktree task branch back into its recorded base ref.",
+    examples: [
+      "codex-bridge merge task-abc --json",
+      "codex-bridge merge task-abc --no-tests"
+    ]
+  },
   "await-artifact": {
     synopsis: "await-artifact <job-id> <path> [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
     summary: "Block until <path> exists and is stable (size unchanged across consecutive polls), or the target job reaches a terminal state, or timeout. Primitive for multi-job orchestration when success = 'artifact exists at path'. Exit 7 on timeout or job-terminal-without-artifact.",
@@ -4631,8 +4639,24 @@ function resolvePromptInput(options, positionals, cwd) {
   return readStdinIfPiped();
 }
 
+function readReviewedBranchHeadSha(verdict) {
+  const candidates = [
+    verdict?.branch_head_sha,
+    verdict?.reviewed_branch_head_sha,
+    verdict?.branchHeadSha,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const normalized = candidate.trim();
+    if (/^[a-f0-9]{40}$/i.test(normalized)) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
 // merge <task_id> — gated merge of a worktree branch back into its base.
-// Refuses to proceed unless the registry has verdict.json with verdict=approved.
+// Refuses to proceed unless verdict.json is approved for this exact branch SHA.
 // Performs a fast-forward merge (no merge commit, no rebase). On conflict
 // or if the merge isn't ff-eligible, leaves the worktree intact and returns
 // MERGE_CONFLICT so the orchestrator can re-run /codex-bridge:iterate.
@@ -4651,13 +4675,20 @@ async function handleMerge(argv) {
   const verdict = readVerdict(taskId);
   if (!verdict) {
     throw notFoundError(
-      `no verdict found for ${taskId}; run /codex-bridge:verdict <task_id> --set <verdict> first`,
+      `no verdict found for ${taskId}; run review and record an approved verdict before merging`,
     );
   }
   if (verdict.verdict !== "approved") {
     throw new CliError(
-      `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run /codex-bridge:iterate or /codex-bridge:verdict --set approved.`,
+      `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run review or iterate before approving this task.`,
       { code: "VERDICT_NOT_APPROVED", exitClass: "conflict" },
+    );
+  }
+  const reviewedBranchHeadSha = readReviewedBranchHeadSha(verdict);
+  if (!reviewedBranchHeadSha) {
+    throw new CliError(
+      `approved verdict for ${taskId} is missing branch_head_sha; rerun review so the approval is bound to the reviewed branch head`,
+      { code: "VERDICT_HEAD_SHA_MISSING", exitClass: "conflict" },
     );
   }
 
@@ -4692,6 +4723,8 @@ async function handleMerge(argv) {
       taskId,
       branch,
       baseRef,
+      expectedBranchSha: reviewedBranchHeadSha,
+      worktreePath: meta.worktree?.path,
       runTests: !options["no-tests"],
     });
   } catch (err) {
@@ -4705,6 +4738,7 @@ async function handleMerge(argv) {
     task_id: taskId,
     merge: mergeResult,
     verdict: verdict.verdict,
+    reviewed_branch_head_sha: reviewedBranchHeadSha,
   };
   emitSuccess(
     "merge",

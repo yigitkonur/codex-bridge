@@ -9,10 +9,10 @@ allowed-tools: Bash(node:*), Bash(git:*), Bash(gh:*)
 
 The bridge:
 
-1. Reads `~/.codex-bridge/jobs/<task_id>/verdict.json` and refuses unless `verdict === "approved"`. If you haven't reviewed the task yet, run `/codex-bridge:review <task_id>` then `/codex-bridge:verdict <task_id> --set approved` first.
+1. Reads `~/.codex-bridge/jobs/<task_id>/verdict.json` and refuses unless `verdict === "approved"` and `branch_head_sha` matches the branch tip that was reviewed. If you haven't reviewed the task yet, run `/codex-bridge:review <task_id>` and record an approved verdict for that exact head first.
 2. Reads `~/.codex-bridge/jobs/<task_id>/meta.json` to find the branch (`subagent/codex/<task_id>`) and base ref captured at dispatch time.
 3. `git fetch origin <base_ref>`, then `git checkout <base_ref>` (refuses if the working tree is dirty), then `git merge --ff-only <branch>`. If the branch isn't a linear descendant of base, the merge fails and the worktree is left intact — rebase or rerun `/codex-bridge:iterate <task_id>` to refresh.
-4. On success, prunes the worktree (`git worktree remove --force` + `git branch -D`) and returns `result.merge.{strategy, commit_sha, base_ref, branch, tests_passed}`.
+4. Refuses to prune a dirty task worktree, then on success prunes the clean worktree (`git worktree remove --force` + `git branch -D`) and returns `result.merge.{strategy, commit_sha, base_ref, branch, tests_passed}`.
 
 Present the bridge's stdout verbatim. Do NOT call this command if the verdict isn't already approved — the bridge enforces this, but layering retry logic on top would mask review-loop bypasses.
 

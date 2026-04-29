@@ -675,7 +675,7 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
   return { pruned: !fs.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
 }
 
-// mergeSubagentBranch({ cwd, taskId, branch, baseRef, runTests })
+// mergeSubagentBranch({ cwd, taskId, branch, baseRef, expectedBranchSha, worktreePath, runTests })
 // Fast-forward merge of a subagent branch into its base ref. Throws on
 // conflict / non-ff history / missing branch. On success returns
 // { strategy: "ff", commit_sha, base_ref, branch, tests_passed }.
@@ -691,9 +691,20 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
 //   the merge but before pushing. v1 just records null.
 // - On success, prunes the worktree (the branch lives on in main from
 //   here; the worktree is no longer needed).
-export function mergeSubagentBranch({ cwd, taskId, branch, baseRef = "main", runTests = true }) {
+export function mergeSubagentBranch({
+  cwd,
+  taskId,
+  branch,
+  baseRef = "main",
+  expectedBranchSha,
+  worktreePath,
+  runTests = true,
+}) {
   if (!taskId) throw new Error("mergeSubagentBranch: taskId is required");
   if (!branch) throw new Error("mergeSubagentBranch: branch is required");
+  if (!expectedBranchSha) {
+    throw new Error("mergeSubagentBranch: expectedBranchSha is required");
+  }
 
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
@@ -710,13 +721,29 @@ export function mergeSubagentBranch({ cwd, taskId, branch, baseRef = "main", run
     );
   }
 
-  runGit(repoRoot, `checkout ${baseRef}`, { swallowStderr: true });
+  const expectedSha = String(expectedBranchSha).trim();
+  const taskWorktreePath = worktreePath ?? path.join(defaultWorktreeRoot(repoRoot), taskId);
+  if (taskWorktreePath && fs.existsSync(taskWorktreePath) && path.resolve(taskWorktreePath) !== repoRoot) {
+    const taskDirty = tryRunGit(taskWorktreePath, "status --porcelain --untracked-files=all");
+    if (taskDirty && taskDirty.trim().length > 0) {
+      throw new Error(
+        `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.trim()}`,
+      );
+    }
+  }
 
   // Verify the branch is reachable.
-  const branchSha = tryRunGit(repoRoot, `rev-parse --verify ${branch}`);
+  const branchSha = tryRunGit(repoRoot, `rev-parse --verify ${branch}`)?.trim();
   if (!branchSha) {
     throw new Error(`branch ${branch} does not exist`);
   }
+  if (branchSha !== expectedSha) {
+    throw new Error(
+      `branch ${branch} is at ${branchSha}, but approved verdict reviewed ${expectedSha}; rerun review before merging`,
+    );
+  }
+
+  runGit(repoRoot, `checkout ${baseRef}`, { swallowStderr: true });
 
   // ff-only merge.
   try {
