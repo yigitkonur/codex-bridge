@@ -52,7 +52,7 @@ import {
   } from "./adapters/codex/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
-import { readMeta, readVerdict, writeMeta } from "./lib/registry.mjs";
+import { jobDir, listTasks, readMeta, readVerdict, writeMeta, writeVerdict } from "./lib/registry.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
 import {
@@ -4655,6 +4655,121 @@ function readReviewedBranchHeadSha(verdict) {
   return null;
 }
 
+// verdict <task_id> — read or write the post-review verdict.
+//   read mode  (no flags):           prints current verdict.json
+//   write mode (--set <verdict>):    persists { verdict, summary?, finding?, reviewer? }
+//   --discard:                       removes the registry directory
+async function handleVerdict(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["set", "summary", "finding", "reviewer", "cwd"],
+    booleanOptions: ["json", "discard"],
+  });
+  const taskId = positionals[0];
+  if (!taskId) {
+    throw usageError("verdict requires a task_id positional argument");
+  }
+
+  // discard mode: remove the registry directory entirely
+  if (options.discard) {
+    const dir = jobDir(taskId);
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "discarded" },
+      `Discarded ${taskId}\n`,
+      { json: options.json, startedAt },
+    );
+    return;
+  }
+
+  // write mode: persist a new verdict
+  if (options.set) {
+    const verdict = options.set;
+    if (!["approved", "needs-attention", "must-fix"].includes(verdict)) {
+      throw usageError(
+        `--set must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`,
+      );
+    }
+    const payload = {
+      verdict,
+      summary: options.summary ?? null,
+      findings: options.finding ? [options.finding] : [],
+      reviewer: options.reviewer ?? null,
+    };
+    writeVerdict(taskId, payload);
+    const stored = readVerdict(taskId);
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "set", verdict: stored },
+      `Verdict for ${taskId}: ${verdict}\n`,
+      { json: options.json, startedAt },
+    );
+    return;
+  }
+
+  // read mode
+  const stored = readVerdict(taskId);
+  if (!stored) {
+    throw notFoundError(
+      `no verdict found for ${taskId}; use --set to create one`,
+    );
+  }
+  emitSuccess(
+    "verdict",
+    { task_id: taskId, verdict: stored },
+    JSON.stringify(stored, null, 2) + "\n",
+    { json: options.json, startedAt },
+  );
+}
+
+// verdicts --pending — flat list of tasks with verdict=approved (not yet merged)
+// or verdict=needs-attention (awaiting iterate or discard).
+// Used by the Stop gate (T14) to block session close on unresolved work.
+async function handleVerdictsPending(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "pending"],
+  });
+
+  const tasks = listTasks();
+  const pending = [];
+  for (const taskId of tasks) {
+    const verdict = readVerdict(taskId);
+    if (!verdict) continue;
+    if (verdict.verdict === "approved" || verdict.verdict === "needs-attention") {
+      const meta = readMeta(taskId);
+      pending.push({
+        task_id: taskId,
+        verdict: verdict.verdict,
+        summary: verdict.summary ?? null,
+        decided_at: verdict.decided_at,
+        branch: meta?.worktree?.branch ?? null,
+      });
+    }
+  }
+
+  const rendered =
+    pending.length === 0
+      ? "No pending verdicts.\n"
+      : pending
+          .map(
+            (p) =>
+              `${p.task_id}  ${p.verdict}  ${p.branch ?? "(no branch)"}  ${p.summary ?? ""}`,
+          )
+          .join("\n") + "\n";
+
+  emitSuccess(
+    "verdicts",
+    { count: pending.length, pending },
+    rendered,
+    { json: options.json, startedAt },
+  );
+}
+
 // merge <task_id> — gated merge of a worktree branch back into its base.
 // Refuses to proceed unless verdict.json is approved for this exact branch SHA.
 // Performs a fast-forward merge (no merge commit, no rebase). On conflict
@@ -5210,7 +5325,9 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel,
   "await-artifact": handleAwaitArtifact,
-  merge: handleMerge
+  merge: handleMerge,
+  verdict: handleVerdict,
+  verdicts: handleVerdictsPending
 });
 
 // Node's default SIGPIPE handling terminates the process when a downstream
