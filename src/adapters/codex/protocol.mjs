@@ -1,20 +1,20 @@
 /**
  * @typedef {Error & { data?: unknown, rpcCode?: number }} ProtocolError
- * @typedef {import("./app-server-protocol").AppServerMethod} AppServerMethod
- * @typedef {import("./app-server-protocol").AppServerNotification} AppServerNotification
- * @typedef {import("./app-server-protocol").AppServerNotificationHandler} AppServerNotificationHandler
- * @typedef {import("./app-server-protocol").ClientInfo} ClientInfo
- * @typedef {import("./app-server-protocol").CodexAppServerClientOptions} CodexAppServerClientOptions
- * @typedef {import("./app-server-protocol").InitializeCapabilities} InitializeCapabilities
+ * @typedef {import("./protocol").AppServerMethod} AppServerMethod
+ * @typedef {import("./protocol").AppServerNotification} AppServerNotification
+ * @typedef {import("./protocol").AppServerNotificationHandler} AppServerNotificationHandler
+ * @typedef {import("./protocol").ClientInfo} ClientInfo
+ * @typedef {import("./protocol").CodexAppServerClientOptions} CodexAppServerClientOptions
+ * @typedef {import("./protocol").InitializeCapabilities} InitializeCapabilities
  */
 import fs from "node:fs";
 import net from "node:net";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
-import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
-import { clearBrokerSession, ensureBrokerSession, loadBrokerSession, waitForBrokerEndpoint } from "./broker-lifecycle.mjs";
-import { terminateProcessTree } from "./process.mjs";
+import { parseBrokerEndpoint } from "../../lib/broker-endpoint.mjs";
+import { clearBrokerSession, ensureBrokerSession, loadBrokerSession, waitForBrokerEndpoint } from "../../lib/broker-lifecycle.mjs";
+import { terminateProcessTree } from "../../lib/process.mjs";
 
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
@@ -154,9 +154,9 @@ export class AppServerClientBase {
   /**
    * @template {AppServerMethod} M
    * @param {M} method
-   * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+   * @param {import("./protocol").AppServerRequestParams<M>} params
    * @param {{ signal?: AbortSignal }} [options]
-   * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
+   * @returns {Promise<import("./protocol").AppServerResponse<M>>}
    */
   request(method, params, options = {}) {
     if (this.closed) {

@@ -111,6 +111,21 @@ async function isBrokerEndpointReady(endpoint) {
   }
 }
 
+function resolveBrokerScriptPath() {
+  // Bundled mode places the broker at skill/app-server-broker.mjs (relative to
+  // skill/scripts/codex-bridge.mjs). Source mode places it at
+  // src/adapters/codex/broker.mjs (relative to src/lib/broker-lifecycle.mjs).
+  const candidates = [
+    new URL("../app-server-broker.mjs", import.meta.url),
+    new URL("../adapters/codex/broker.mjs", import.meta.url),
+  ];
+  for (const url of candidates) {
+    const p = fileURLToPath(url);
+    if (fs.existsSync(p)) return p;
+  }
+  return fileURLToPath(candidates[0]);
+}
+
 export async function ensureBrokerSession(cwd, options = {}) {
   const existing = loadBrokerSession(cwd);
   if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
@@ -134,9 +149,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
   const endpoint = endpointFactory(sessionDir, options.platform);
   const pidFile = path.join(sessionDir, "broker.pid");
   const logFile = path.join(sessionDir, "broker.log");
-  const scriptPath =
-    options.scriptPath ??
-    fileURLToPath(new URL("../app-server-broker.mjs", import.meta.url));
+  const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
 
   const child = spawnBrokerProcess({
     scriptPath,

@@ -20,7 +20,7 @@ await build({
 });
 
 await build({
-  entryPoints: ["src/app-server-broker.mjs"],
+  entryPoints: ["src/adapters/codex/broker.mjs"],
   bundle: true,
   platform: "node",
   format: "esm",
