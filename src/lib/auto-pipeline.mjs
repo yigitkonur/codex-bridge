@@ -53,25 +53,35 @@ export async function runAutoPipeline(options) {
   // "use the built-in default".
   const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
   const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
-  // Per-turn watchdog budget. The outer `withTimeout` wrapper around each
-  // stage call rejects when the stage clock hits `stageMs`, but it does not
-  // tear the in-flight Codex turn down — the request just keeps running until
-  // the underlying app-server eventually responds (or never does). We pass
-  // these into runAppServerTurn / runAppServerReview so captureTurn's own
-  // `idleTimeoutMs` / `turnTimeoutMs` watchers fire slightly before the outer
-  // wrapper, giving the inner code a chance to issue `turn/interrupt` and
-  // settle cleanly. The 500ms grace keeps the outer wrapper as the
-  // load-bearing safety net.
-  const stageTurnMs = Math.max(0, stageMs - 500);
-
   const completedStages = [];
   const startTime = Date.now();
   const executeInstructions = loadExecuteInstructions(rootDir);
 
+  const remainingPipelineMs = () => totalMs - (Date.now() - startTime);
+
   const checkPipelineTimeout = () => {
-    if (Date.now() - startTime > totalMs) {
+    if (remainingPipelineMs() <= 0) {
       throw new PipelineTimeoutError(completedStages, totalMs);
     }
+  };
+
+  const buildStageDeadline = () => {
+    const remainingMs = remainingPipelineMs();
+    if (remainingMs <= 0) {
+      throw new PipelineTimeoutError(completedStages, totalMs);
+    }
+
+    const timeoutMs = Math.min(stageMs, remainingMs);
+    const totalLimited = remainingMs < stageMs;
+    return {
+      timeoutMs,
+      // Keep the inner watchdog from preempting the pipeline-total timer with
+      // a stage-timeout result when the remaining total budget is the limiter.
+      turnTimeoutMs: totalLimited ? 0 : Math.max(0, timeoutMs - 500),
+      timeoutErrorFactory: totalLimited
+        ? () => new PipelineTimeoutError(completedStages, totalMs)
+        : null,
+    };
   };
 
   // Pipeline-level accumulators for the end-of-run summary event and the
@@ -95,21 +105,24 @@ export async function runAutoPipeline(options) {
     let reviewVerdict = "approve";
     let reviewFindings = [];
     let reviewFindingCount = 0;
+    let unstructuredReviewAttention = false;
 
     if (config.auto_review) {
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "review" });
 
       try {
+        const reviewDeadline = buildStageDeadline();
         const reviewResult = await withTimeout(
           runAppServerReview(cwd, {
             target: { type: "uncommittedChanges" },
             model: config.model,
-            turnTimeoutMs: stageTurnMs,
-            idleTimeoutMs: stageTurnMs,
+            turnTimeoutMs: reviewDeadline.turnTimeoutMs,
+            idleTimeoutMs: reviewDeadline.turnTimeoutMs,
           }),
-          stageMs,
-          "auto-review"
+          reviewDeadline.timeoutMs,
+          "auto-review",
+          reviewDeadline.timeoutErrorFactory
         );
 
         // Inner watchdog (idleTimeoutMs / turnTimeoutMs in captureTurn) can
@@ -136,7 +149,7 @@ export async function runAutoPipeline(options) {
           const detail = innerMessage ? `: ${innerMessage}` : "";
 
           if (isTimeout) {
-            const reviewError = new TimeoutError("auto-review", stageTurnMs);
+            const reviewError = new TimeoutError("auto-review", reviewDeadline.turnTimeoutMs);
             reviewError.message =
               `auto-review did not complete cleanly (status ${reviewResult.status}${detail}).`;
             throw reviewError;
@@ -159,6 +172,7 @@ export async function runAutoPipeline(options) {
           reviewVerdict = parsed.verdict;
           reviewFindings = parsed.findings;
           reviewFindingCount = reviewFindings.length;
+          unstructuredReviewAttention = reviewVerdict !== "approve" && reviewFindingCount === 0;
         }
         logEvent(session, formatPipelineEvent(session, {
           stage: "review",
@@ -175,25 +189,65 @@ export async function runAutoPipeline(options) {
           // report exactly which files the fix stage wrote (distinct from
           // Codex's own earlier writes).
           const diffBeforeFix = captureGitDiff(cwd, session);
-          const filesBeforeFix = new Set(diffBeforeFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]));
+          const diffContentBeforeFix = readCapturedDiffContent(diffBeforeFix);
 
           const fixPrompt = buildFixPrompt(reviewFindings);
-          await withTimeout(
-            runAppServerTurn(cwd, {
-              resumeThreadId: threadId,
-              prompt: fixPrompt,
-              model: config.model,
-              effort: "high",
-              collaborationMode: buildCollaborationMode("default", config, {
-                developerInstructions: executeInstructions,
+          let fixResult;
+          let fixDeadline;
+          try {
+            fixDeadline = buildStageDeadline();
+            fixResult = await withTimeout(
+              runAppServerTurn(cwd, {
+                resumeThreadId: threadId,
+                prompt: fixPrompt,
+                model: config.model,
+                effort: "high",
+                collaborationMode: buildCollaborationMode("default", config, {
+                  developerInstructions: executeInstructions,
+                }),
+                sandboxPolicy: buildSandboxPolicy("default", config),
+                turnTimeoutMs: fixDeadline.turnTimeoutMs,
+                idleTimeoutMs: fixDeadline.turnTimeoutMs,
               }),
-              sandboxPolicy: buildSandboxPolicy("default", config),
-              turnTimeoutMs: stageTurnMs,
-              idleTimeoutMs: stageTurnMs,
-            }),
-            stageMs,
-            "auto-fix"
-          );
+              fixDeadline.timeoutMs,
+              "auto-fix",
+              fixDeadline.timeoutErrorFactory
+            );
+          } catch (error) {
+            if (error instanceof TimeoutError) {
+              throw error;
+            }
+            const detail = error instanceof Error ? error.message : String(error);
+            throw new PipelineStageError(
+              "fix",
+              `auto-fix failed before producing a result${detail ? `: ${detail}` : ""}.`,
+              error instanceof Error ? error : null
+            );
+          }
+
+          const fixStatus = fixResult?.status;
+          if (fixStatus !== 0) {
+            const innerError = fixResult?.error ?? null;
+            const innerMessage = innerError?.message ?? "";
+            const isTimeout =
+              innerError?.code === "TurnTimeout" ||
+              /Turn timed out after \d+ms\./.test(innerMessage) ||
+              /No events received for \d+s/.test(innerMessage);
+            const detail = innerMessage ? `: ${innerMessage}` : "";
+
+            if (isTimeout) {
+              const fixError = new TimeoutError("auto-fix", fixDeadline.turnTimeoutMs);
+              fixError.message =
+                `auto-fix did not complete cleanly (status ${fixStatus}${detail}).`;
+              throw fixError;
+            }
+
+            throw new PipelineStageError(
+              "fix",
+              `auto-fix failed (status ${fixStatus}${detail}).`,
+              innerError
+            );
+          }
 
           completedStages.push("fix");
           checkPipelineTimeout();
@@ -201,8 +255,13 @@ export async function runAutoPipeline(options) {
           // Capture diff after fix; derive the exact file list the fix
           // stage touched.
           const diffAfterFix = captureGitDiff(cwd, session);
-          const filesAfterFix = diffAfterFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]);
-          fixFilesTouched = filesAfterFix.filter((f) => !filesBeforeFix.has(f));
+          const diffContentAfterFix = readCapturedDiffContent(diffAfterFix);
+          fixFilesTouched = collectStageTouchedFiles(
+            diffBeforeFix,
+            diffContentBeforeFix,
+            diffAfterFix,
+            diffContentAfterFix
+          );
 
           logEvent(session, formatPipelineEvent(session, {
             stage: "fix",
@@ -214,6 +273,9 @@ export async function runAutoPipeline(options) {
         }
       } catch (error) {
         if (error instanceof TimeoutError) {
+          throw error;
+        }
+        if (error instanceof PipelineStageError) {
           throw error;
         }
         // Review failed but not a timeout — log and continue
@@ -235,6 +297,7 @@ export async function runAutoPipeline(options) {
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "check" });
 
       try {
+        const checkDeadline = buildStageDeadline();
         const checkResult = await withTimeout(
           runAppServerTurn(cwd, {
             resumeThreadId: threadId,
@@ -246,11 +309,12 @@ export async function runAutoPipeline(options) {
             }),
             sandboxPolicy: { type: "readOnly" },
             outputSchema: COMPLETION_CHECK_SCHEMA,
-            turnTimeoutMs: stageTurnMs,
-            idleTimeoutMs: stageTurnMs,
+            turnTimeoutMs: checkDeadline.turnTimeoutMs,
+            idleTimeoutMs: checkDeadline.turnTimeoutMs,
           }),
-          stageMs,
-          "completion-check"
+          checkDeadline.timeoutMs,
+          "completion-check",
+          checkDeadline.timeoutErrorFactory
         );
 
         completedStages.push("check");
@@ -300,19 +364,51 @@ export async function runAutoPipeline(options) {
         if (error instanceof TimeoutError) {
           throw error;
         }
-        logNdjson(session, "PIPELINE_ERROR", null, { stage: "check", error: error.message });
+        const message = error instanceof Error ? error.message : String(error);
+        const detail = message || "check failed";
+        completionResult = {
+          complete: false,
+          missing_items: [
+            `Completion check failed before producing a result: ${detail}`,
+          ],
+          summary: "completion-check failed",
+        };
+        logNdjson(session, "PIPELINE_ERROR", null, { stage: "check", error: detail });
         logEvent(session, formatPipelineEvent(session, {
           stage: "check",
           suffix: "failed",
-          detail: error.message ?? "check failed"
+          detail
         }));
         completedStages.push("check-failed");
       }
     }
 
+    if (unstructuredReviewAttention) {
+      const missingItem =
+        "Native review reported needs-attention but did not include parseable file/line findings, so auto-fix could not run.";
+      const existingMissingItems = Array.isArray(completionResult.missing_items)
+        ? completionResult.missing_items
+        : [];
+      completionResult = {
+        complete: false,
+        missing_items: existingMissingItems.includes(missingItem)
+          ? existingMissingItems
+          : [...existingMissingItems, missingItem],
+        summary: completionResult.complete
+          ? "native review needs attention"
+          : (typeof completionResult.summary === "string" ? completionResult.summary : "native review needs attention"),
+      };
+    }
+
     // Stage 4: Final git diff and notification
     const finalDiff = captureGitDiff(cwd, session);
     const duration = Math.round((Date.now() - startTime) / 1000);
+    const missingItems = Array.isArray(completionResult.missing_items)
+      ? completionResult.missing_items
+      : [];
+    const completionSummary = typeof completionResult.summary === "string"
+      ? completionResult.summary
+      : null;
 
     if (completionResult.complete) {
       logEvent(session, formatDoneEvent(session, {
@@ -331,7 +427,7 @@ export async function runAutoPipeline(options) {
         diffPath: finalDiff.diffPath,
         verdict: reviewVerdict,
         findingCount: reviewFindingCount,
-        missingItems: completionResult.missing_items || [],
+        missingItems,
         scriptPath,
         jobId,
         cwd,
@@ -342,6 +438,8 @@ export async function runAutoPipeline(options) {
       completedStages,
       duration,
       complete: completionResult.complete,
+      missingItems,
+      completionSummary,
       touchedFiles: fixFilesTouched,
     });
 
@@ -362,6 +460,8 @@ export async function runAutoPipeline(options) {
       completedStages,
       duration,
       diff: finalDiff,
+      missingItems,
+      completionSummary,
       touchedFiles: fixFilesTouched,
     };
 
@@ -454,20 +554,182 @@ function buildFixPrompt(findings) {
   return lines.join("\n");
 }
 
+function readCapturedDiffContent(diff) {
+  if (!diff?.diffPath) {
+    return "";
+  }
+  try {
+    return fs.readFileSync(diff.diffPath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function collectStageTouchedFiles(diffBefore, diffContentBefore, diffAfter, diffContentAfter) {
+  const beforeStats = mapFormattedDiffFiles(diffBefore?.files ?? []);
+  const afterStats = mapFormattedDiffFiles(diffAfter?.files ?? []);
+  const beforeBlocks = splitDiffBlocksByPath(diffContentBefore);
+  const afterBlocks = splitDiffBlocksByPath(diffContentAfter);
+  const orderedFiles = uniqueStrings([
+    ...afterStats.keys(),
+    ...beforeStats.keys(),
+    ...afterBlocks.keys(),
+    ...beforeBlocks.keys(),
+  ]);
+
+  return orderedFiles.filter((file) => {
+    const beforeSignal = beforeBlocks.get(file) ?? beforeStats.get(file) ?? null;
+    const afterSignal = afterBlocks.get(file) ?? afterStats.get(file) ?? null;
+    return beforeSignal !== afterSignal;
+  });
+}
+
+function mapFormattedDiffFiles(files) {
+  const map = new Map();
+  for (const file of files) {
+    const parsed = parseFormattedDiffFile(file);
+    if (parsed) {
+      map.set(parsed.path, parsed.stat);
+    }
+  }
+  return map;
+}
+
+function parseFormattedDiffFile(file) {
+  const match = String(file).match(/^[A-Z]\s+(.+?)\s+\(\+[\d-]+\s+-[\d-]+\)$/);
+  if (!match) {
+    return null;
+  }
+  return { path: match[1], stat: file };
+}
+
+function splitDiffBlocksByPath(diffContent) {
+  const blocks = new Map();
+  let currentPath = null;
+  let currentLines = [];
+
+  const flush = () => {
+    if (currentPath) {
+      blocks.set(currentPath, currentLines.join("\n"));
+    }
+  };
+
+  for (const line of String(diffContent ?? "").split("\n")) {
+    const nextPath = parseDiffGitHeader(line);
+    if (nextPath) {
+      flush();
+      currentPath = nextPath;
+      currentLines = [line];
+    } else if (currentPath) {
+      currentLines.push(line);
+    }
+  }
+
+  flush();
+  return blocks;
+}
+
+function parseDiffGitHeader(line) {
+  const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+  if (!match) {
+    return null;
+  }
+  return match[2];
+}
+
+function uniqueStrings(values) {
+  const seen = new Set();
+  const unique = [];
+  for (const value of values) {
+    if (typeof value !== "string" || value.length === 0 || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique;
+}
+
 function parseReviewText(reviewText) {
-  // Native review returns plain text, not structured findings.
-  // The auto-fix stage (stage 2b) requires structured findings with
-  // severity/file/line data. Since native review doesn't provide that,
-  // the fix stage is effectively a no-op for native reviews.
-  //
-  // When adversarial review is used instead, findings ARE structured
-  // and the fix stage will activate. This is a known limitation —
-  // a future version could switch auto-review to adversarial mode.
+  const findings = parseNativeReviewFindings(reviewText);
+  if (findings.length > 0) {
+    return { verdict: "needs-attention", findings };
+  }
+
   const lower = reviewText.toLowerCase();
-  const hasIssues = lower.includes("needs-attention") || lower.includes("finding") || lower.includes("issue");
+  const reviewTextWithoutNoIssuePhrases = lower
+    .replace(/\bno\s+(?:actionable\s+)?(?:issues?|findings?|problems?|concerns?)\b/g, "")
+    .replace(/\b(?:issues?|findings?|problems?|concerns?):\s*(?:none|n\/a)\b/g, "");
+  const explicitAttention =
+    lower.includes("needs-attention") ||
+    /\bneeds attention\b/.test(lower) ||
+    /\brequires attention\b/.test(lower);
+  const hasIssues =
+    explicitAttention ||
+    /\b(?:findings?|issues?|problems?|concerns?|regressions?)\b/.test(reviewTextWithoutNoIssuePhrases);
   return {
     verdict: hasIssues ? "needs-attention" : "approve",
     findings: [],
+  };
+}
+
+function parseNativeReviewFindings(reviewText) {
+  const lines = reviewText.split(/\r?\n/);
+  const findings = [];
+  let current = null;
+
+  const flush = () => {
+    if (!current) return;
+    const recommendation = current.body
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n");
+    findings.push({
+      severity: current.severity,
+      title: current.title,
+      file: current.file,
+      line_start: current.lineStart,
+      line_end: current.lineEnd,
+      recommendation,
+    });
+    current = null;
+  };
+
+  for (const line of lines) {
+    const header = parseNativeFindingHeader(line);
+    if (header) {
+      flush();
+      current = { ...header, body: [] };
+      continue;
+    }
+
+    if (current && (/^(?:\s{2,}|\t+)\S/.test(line) || line.trim() === "")) {
+      current.body.push(line);
+    }
+  }
+
+  flush();
+  return findings;
+}
+
+function parseNativeFindingHeader(line) {
+  const match = line.match(/^\s*[-*]\s+\[(P\d+)\]\s+(.+?)\s+(?:\u2014|\u2013|--|-)\s+(.+?):(\d+)(?:-(\d+))?\s*$/i);
+  if (!match) return null;
+
+  const lineStart = Number.parseInt(match[4], 10);
+  if (!Number.isInteger(lineStart) || lineStart < 1) return null;
+
+  const parsedLineEnd = match[5] ? Number.parseInt(match[5], 10) : lineStart;
+  const lineEnd = Number.isInteger(parsedLineEnd) && parsedLineEnd >= lineStart
+    ? parsedLineEnd
+    : lineStart;
+
+  return {
+    severity: match[1].toUpperCase(),
+    title: match[2].trim(),
+    file: match[3].trim(),
+    lineStart,
+    lineEnd,
   };
 }
 
@@ -512,10 +774,12 @@ class PipelineTimeoutError extends TimeoutError {
   }
 }
 
-export function withTimeout(promise, timeoutMs, label) {
+export function withTimeout(promise, timeoutMs, label, timeoutErrorFactory = null) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new TimeoutError(label, timeoutMs));
+      reject(typeof timeoutErrorFactory === "function"
+        ? timeoutErrorFactory()
+        : new TimeoutError(label, timeoutMs));
     }, timeoutMs);
     if (timer.unref) timer.unref();
 
