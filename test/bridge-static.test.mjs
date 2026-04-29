@@ -230,3 +230,7 @@ test("worktree-auto keeps job state anchored to the launch workspace", { skip: "
 test("background task-worker receives the original workspace root", { skip: "T18 forward-looking — bridge handleTask not yet refactored" }, () => {
   assert.match(bridge, /function spawnDetachedTaskWorker\(cwd, workspaceRoot, jobId, logFile = null\)/);
 });
+
+test("background task-worker reads queued jobs from original workspace root", { skip: "T26 stage forward-looking — workspace-root flag not yet wired" }, () => {});
+
+test("worktree-auto exposes the returned task id as the registry id", { skip: "T26 stage forward-looking — taskId surface not yet refactored" }, () => {});

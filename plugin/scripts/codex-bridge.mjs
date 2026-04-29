@@ -958,7 +958,6 @@ function detectOfficialOpenAICodexPlugin(options = {}) {
 // src/lib/git.mjs
 import fs3 from "node:fs";
 import path3 from "node:path";
-import { execSync as childExecSync } from "node:child_process";
 
 // src/lib/process.mjs
 import { spawnSync as spawnSync2 } from "node:child_process";
@@ -1449,12 +1448,14 @@ function collectReviewContext(cwd, target, options = {}) {
   };
 }
 function runGit(cwd, args, opts = {}) {
-  return childExecSync(`git ${args}`, {
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
+    throw new TypeError("runGit: args must be an array of strings");
+  }
+  return runCommandChecked("git", args, {
     cwd,
-    encoding: "utf8",
     stdio: ["ignore", "pipe", opts.swallowStderr ? "pipe" : "inherit"],
-    ...opts
-  });
+    maxBuffer: opts.maxBuffer
+  }).stdout;
 }
 function tryRunGit(cwd, args) {
   try {
@@ -1471,6 +1472,24 @@ function buildBranchName({ taskId, backend, branchPrefix }) {
   const back = backend ?? "codex";
   return `${prefix}/${back}/${taskId}`;
 }
+function assertSafeGitRefToken(value, label) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  if (value.startsWith("-") || !/^[A-Za-z0-9._/-]+$/.test(value) || value.includes("..") || value.includes("//") || value.includes("@{") || value.endsWith(".lock")) {
+    throw new Error(`${label} contains unsafe git ref characters: ${JSON.stringify(value)}`);
+  }
+}
+function assertValidBranchName(cwd, branch) {
+  assertSafeGitRefToken(branch, "branch");
+  runGit(cwd, ["check-ref-format", "--branch", branch], { swallowStderr: true });
+}
+function resolveCommitSha(cwd, ref, label = "ref") {
+  assertSafeGitRefToken(ref, label);
+  return runGit(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], {
+    swallowStderr: true
+  }).trim();
+}
 function createSubagentWorktree({
   cwd,
   taskId,
@@ -1483,14 +1502,13 @@ function createSubagentWorktree({
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
   const resolvedBaseRef = baseRef ?? getCurrentBranch(cwd) ?? detectDefaultBranch(cwd) ?? "HEAD";
-  const baseSha = runGit(repoRoot, `rev-parse ${resolvedBaseRef}`, {
-    swallowStderr: true
-  }).toString().trim();
+  const baseSha = resolveCommitSha(repoRoot, resolvedBaseRef, "baseRef");
   const branch = buildBranchName({ taskId, backend, branchPrefix });
+  assertValidBranchName(repoRoot, branch);
   const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
   const wtPath = path3.join(root, taskId);
   const createdAt = (/* @__PURE__ */ new Date()).toISOString();
-  const branchExists = tryRunGit(repoRoot, `rev-parse --verify ${branch}`);
+  const branchExists = tryRunGit(repoRoot, ["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}`]);
   if (branchExists !== null) {
     throw new Error(
       `createSubagentWorktree: branch ${branch} already exists; remove or rename before retrying`
@@ -1498,7 +1516,7 @@ function createSubagentWorktree({
   }
   try {
     fs3.mkdirSync(root, { recursive: true });
-    runGit(repoRoot, `worktree add -b ${branch} "${wtPath}" ${baseSha}`, {
+    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha], {
       swallowStderr: true
     });
     return {
@@ -1510,23 +1528,9 @@ function createSubagentWorktree({
       created_at: createdAt
     };
   } catch (err) {
-    tryRunGit(repoRoot, `worktree remove --force "${wtPath}"`);
-    try {
-      runGit(repoRoot, `checkout -b ${branch} ${baseSha}`, { swallowStderr: true });
-    } catch (innerErr) {
-      throw new Error(
-        `createSubagentWorktree: worktree fallback also failed: ${innerErr.message ?? innerErr}`
-      );
-    }
-    return {
-      isolation_mode: "branch-only",
-      path: cwd,
-      branch,
-      base_ref: resolvedBaseRef,
-      base_sha: baseSha,
-      created_at: createdAt,
-      fallback_reason: err.message ?? String(err)
-    };
+    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    tryRunGit(repoRoot, ["branch", "-D", branch]);
+    throw new Error(`createSubagentWorktree: worktree creation failed: ${err.message ?? err}`);
   }
 }
 function pruneWorktreeOnCancel({ cwd, taskId, branch }) {
@@ -1535,10 +1539,11 @@ function pruneWorktreeOnCancel({ cwd, taskId, branch }) {
   const root = defaultWorktreeRoot(repoRoot);
   const wtPath = path3.join(root, taskId);
   if (fs3.existsSync(wtPath)) {
-    tryRunGit(repoRoot, `worktree remove --force "${wtPath}"`);
+    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
   }
   if (branch) {
-    tryRunGit(repoRoot, `branch -D ${branch}`);
+    assertValidBranchName(repoRoot, branch);
+    tryRunGit(repoRoot, ["branch", "-D", branch]);
   }
   return { pruned: !fs3.existsSync(wtPath), branchDeleted: !!branch };
 }
@@ -1547,26 +1552,29 @@ function mergeSubagentBranch({ cwd, taskId, branch, baseRef = "main", runTests =
   if (!branch) throw new Error("mergeSubagentBranch: branch is required");
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
-  tryRunGit(repoRoot, `fetch origin ${baseRef}`);
-  const dirty = tryRunGit(repoRoot, "status --porcelain");
+  assertSafeGitRefToken(baseRef, "baseRef");
+  assertValidBranchName(repoRoot, branch);
+  tryRunGit(repoRoot, ["fetch", "origin", baseRef]);
+  const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
   if (dirty && dirty.trim().length > 0) {
     throw new Error(
       `repo is dirty; commit or stash before merging. Status: ${dirty.trim()}`
     );
   }
-  runGit(repoRoot, `checkout ${baseRef}`, { swallowStderr: true });
-  const branchSha = tryRunGit(repoRoot, `rev-parse --verify ${branch}`);
+  resolveCommitSha(repoRoot, baseRef, "baseRef");
+  runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
+  const branchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}`]);
   if (!branchSha) {
     throw new Error(`branch ${branch} does not exist`);
   }
   try {
-    runGit(repoRoot, `merge --ff-only ${branch}`, { swallowStderr: true });
+    runGit(repoRoot, ["merge", "--ff-only", branch], { swallowStderr: true });
   } catch (err) {
     throw new Error(
       `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`
     );
   }
-  const commitSha = runGit(repoRoot, "rev-parse HEAD", { swallowStderr: true }).toString().trim();
+  const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true }).trim();
   pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
   return {
     strategy: "ff",
@@ -10329,16 +10337,28 @@ function getJobKindLabel(kind, jobClass) {
   if (jobClass === "task") return "task";
   return "job";
 }
-function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, kindLabel, summary, write = false }) {
+function createCompanionJob({
+  id = null,
+  prefix,
+  kind,
+  title,
+  workspaceRoot,
+  jobClass,
+  kindLabel,
+  summary,
+  write = false,
+  ...extra
+}) {
   return createJobRecord({
-    id: generateJobId(prefix),
+    id: id ?? generateJobId(prefix),
     kind,
     kindLabel: kindLabel ?? getJobKindLabel(kind, jobClass),
     title,
     workspaceRoot,
     jobClass,
     summary,
-    write
+    write,
+    ...extra
   });
 }
 function createTrackedProgress(job, options = {}) {
@@ -10353,8 +10373,9 @@ function createTrackedProgress(job, options = {}) {
     })
   };
 }
-function buildTaskJob(workspaceRoot, taskMetadata, write) {
+function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
   return createCompanionJob({
+    id: options.id ?? null,
     prefix: "task",
     kind: "task",
     title: taskMetadata.title,
@@ -10362,11 +10383,17 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
     jobClass: "task",
     kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
-    write
+    write,
+    ...options.worktree ? {
+      registryTaskId: options.id ?? null,
+      worktree: options.worktree,
+      isolation_mode: options.worktree.isolation_mode
+    } : {}
   });
 }
 function buildTaskRequest({
   cwd,
+  workspaceRoot,
   model,
   effort,
   prompt,
@@ -10386,6 +10413,7 @@ function buildTaskRequest({
   const opt = (n) => Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null;
   return {
     cwd,
+    workspaceRoot: workspaceRoot ?? null,
     model,
     effort,
     prompt,
@@ -10492,7 +10520,7 @@ async function runForegroundCommand(job, runner, options = {}) {
   });
   return execution;
 }
-function spawnDetachedTaskWorker(cwd, jobId, logFile = null) {
+function spawnDetachedTaskWorker(cwd, jobId, logFile = null, workspaceRoot = null) {
   const scriptPath = SCRIPT_PATH;
   let stdioConfig = "ignore";
   if (logFile) {
@@ -10503,7 +10531,11 @@ function spawnDetachedTaskWorker(cwd, jobId, logFile = null) {
     } catch {
     }
   }
-  const child = spawn3(process8.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+  const args = [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId];
+  if (workspaceRoot) {
+    args.push("--workspace-root", workspaceRoot);
+  }
+  const child = spawn3(process8.execPath, args, {
     cwd,
     env: process8.env,
     detached: true,
@@ -10522,7 +10554,7 @@ function spawnDetachedTaskWorker(cwd, jobId, logFile = null) {
 function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
-  const child = spawnDetachedTaskWorker(cwd, job.id, logFile);
+  const child = spawnDetachedTaskWorker(cwd, job.id, logFile, job.workspaceRoot);
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -10543,6 +10575,8 @@ function enqueueBackgroundTask(cwd, job, request) {
       status: "queued",
       title: job.title,
       summary: job.summary,
+      registryTaskId: job.registryTaskId ?? null,
+      worktree: job.worktree ?? null,
       logFile,
       monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null, cwd })
     },
@@ -10615,7 +10649,7 @@ async function handleReview(argv) {
   });
 }
 async function runBridgeTask(request) {
-  const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const workspaceRoot = request.workspaceRoot ?? resolveWorkspaceRoot(request.cwd);
   const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
   const sessionDir = resolveSessionDir(config.session_dir);
   const effectiveMode = request.mode ?? config.mode ?? "plan";
@@ -11382,6 +11416,7 @@ async function handleTask(argv) {
     briefHash2 = result.briefHash;
   }
   let worktreeInfo = null;
+  const worktreeTaskId = options["worktree-auto"] ? generateJobId("task") : null;
   if (options["worktree-auto"]) {
     if (Boolean(options["read-only"])) {
       throw conflictError(
@@ -11389,15 +11424,14 @@ async function handleTask(argv) {
         "WORKTREE_READ_ONLY_CONFLICT"
       );
     }
-    const wtTaskId = generateJobId();
     try {
       worktreeInfo = createSubagentWorktree({
         cwd,
-        taskId: wtTaskId,
+        taskId: worktreeTaskId,
         backend: "codex"
       });
       try {
-        writeMeta(wtTaskId, {
+        writeMeta(worktreeTaskId, {
           backend: "codex",
           worktree: worktreeInfo,
           isolation_mode: worktreeInfo.isolation_mode,
@@ -11409,11 +11443,11 @@ async function handleTask(argv) {
         });
         if (brief) {
           fs15.writeFileSync(
-            path13.join(jobDir(wtTaskId), "brief.json"),
+            path13.join(jobDir(worktreeTaskId), "brief.json"),
             JSON.stringify(brief, null, 2) + "\n"
           );
           fs15.writeFileSync(
-            path13.join(jobDir(wtTaskId), "brief.md"),
+            path13.join(jobDir(worktreeTaskId), "brief.md"),
             renderBriefAsMarkdown(brief) + "\n"
           );
         }
@@ -11424,7 +11458,7 @@ async function handleTask(argv) {
       }
     } catch (err) {
       throw new CliError(
-        `failed to create subagent worktree for ${wtTaskId}: ${err.message ?? err}`,
+        `failed to create subagent worktree for ${worktreeTaskId}: ${err.message ?? err}`,
         { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" }
       );
     }
@@ -11453,11 +11487,13 @@ async function handleTask(argv) {
     prompt,
     resumeLast
   });
+  const taskJobOptions = worktreeInfo ? { id: worktreeTaskId, worktree: worktreeInfo } : {};
   if (options.background) {
     ensureCodexAvailable(cwd);
-    const job2 = buildTaskJob(workspaceRoot, taskMetadata, write);
+    const job2 = buildTaskJob(workspaceRoot, taskMetadata, write, taskJobOptions);
     const request = buildTaskRequest({
       cwd,
+      workspaceRoot,
       model,
       effort,
       prompt,
@@ -11481,11 +11517,12 @@ async function handleTask(argv) {
     });
     return;
   }
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, taskJobOptions);
   await runForegroundCommand(
     job,
     (progress) => runBridgeTask({
       cwd,
+      workspaceRoot,
       model,
       effort,
       prompt,
@@ -11511,13 +11548,13 @@ async function handleTask(argv) {
 }
 async function handleTaskWorker(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "job-id"]
+    valueOptions: ["cwd", "job-id", "workspace-root"]
   });
   if (!options["job-id"]) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path13.resolve(process8.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
