@@ -120,6 +120,42 @@ const expectedCommands = [
   "wait.md"
 ];
 
+function makeStopGateHarness(fakeBridgeSource) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-stop-gate-"));
+  const pluginRoot = path.join(tempRoot, "plugin");
+  const hookDir = path.join(pluginRoot, "hooks");
+  const scriptsDir = path.join(pluginRoot, "scripts");
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(hookDir, { recursive: true });
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.copyFileSync(new URL("plugin/hooks/stop-gate.mjs", root), path.join(hookDir, "stop-gate.mjs"));
+  fs.writeFileSync(path.join(scriptsDir, "codex-bridge.mjs"), fakeBridgeSource);
+  fs.writeFileSync(path.join(workspace, ".codex-bridge-stop-review-gate.lock"), "");
+  return {
+    tempRoot,
+    hookPath: path.join(hookDir, "stop-gate.mjs"),
+    workspace
+  };
+}
+
+function runStopGateHarness(harness) {
+  return spawnSync(process.execPath, [harness.hookPath], {
+    cwd: harness.workspace,
+    input: JSON.stringify({
+      cwd: harness.workspace,
+      session_id: "session-stop-gate-test",
+      stop_hook_active: false
+    }),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CODEX_BRIDGE_PLUGIN_DATA: path.join(harness.tempRoot, "plugin-data"),
+      CLAUDE_PLUGIN_DATA: path.join(harness.tempRoot, "claude-data")
+    }
+  });
+}
+
 test("Claude plugin manifest version matches package and skill metadata", () => {
   const manifest = readJson(".claude-plugin/plugin.json");
   const pkg = readJson("package.json");
@@ -418,6 +454,86 @@ test("SubagentStop reports only the job id correlated from subagent output", () 
     { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
   );
   assert.deepEqual(uncorrelated, { continue: true });
+});
+
+test("plugin Stop hook blocks when an active gate cannot verify setup", () => {
+  const harness = makeStopGateHarness(`
+import process from "node:process";
+
+const [command] = process.argv.slice(2);
+if (command === "status") {
+  process.stdout.write(JSON.stringify({ ok: true, result: { running: [] } }));
+} else if (command === "setup") {
+  process.stderr.write("setup unavailable");
+  process.exit(4);
+} else if (command === "task") {
+  process.stdout.write(JSON.stringify({ ok: true, result: { rawOutput: "ALLOW: ok" } }));
+} else {
+  process.exit(2);
+}
+`);
+
+  try {
+    const result = runStopGateHarness(harness);
+    assert.equal(result.status, 0);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.decision, "block");
+    assert.match(payload.reason, /setup could not verify the bridge runtime/);
+  } finally {
+    fs.rmSync(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("plugin Stop hook blocks when an active gate finds Codex not ready", () => {
+  const harness = makeStopGateHarness(`
+import process from "node:process";
+
+const [command] = process.argv.slice(2);
+if (command === "status") {
+  process.stdout.write(JSON.stringify({ ok: true, result: { running: [] } }));
+} else if (command === "setup") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      reviewGateEnabled: true,
+      reviewGateLockExists: true,
+      ready: false
+    }
+  }));
+} else if (command === "task") {
+  process.stdout.write(JSON.stringify({ ok: true, result: { rawOutput: "ALLOW: ok" } }));
+} else {
+  process.exit(2);
+}
+`);
+
+  try {
+    const result = runStopGateHarness(harness);
+    assert.equal(result.status, 0);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.decision, "block");
+    assert.match(payload.reason, /Codex is not ready/);
+  } finally {
+    fs.rmSync(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("plugin Stop hook leaves timeout margin for its blocking timeout result", () => {
+  const hooksConfig = readJson("plugin/hooks/hooks.json");
+  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  const hookTimeoutMs = hooksConfig.hooks.Stop[0].hooks[0].timeout * 1000;
+  const match = stopHook.match(/const STOP_REVIEW_TIMEOUT_MINUTES = (\d+);/);
+
+  assert.ok(match, "Stop hook must define its internal timeout in minutes");
+  assert.ok(Number(match[1]) * 60 * 1000 <= hookTimeoutMs - 60_000);
+});
+
+test("plugin Stop hook migrates legacy gate state with setup's public fields", () => {
+  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+
+  assert.doesNotMatch(stopHook, /stopReviewGateConfig/);
+  assert.match(stopHook, /reviewGateLockExists/);
+  assert.match(stopHook, /reviewGateEnabled/);
 });
 
 test("setup owns project-scoped review gate lock creation", () => {

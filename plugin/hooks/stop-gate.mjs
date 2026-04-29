@@ -10,7 +10,11 @@ import { fileURLToPath } from "node:url";
 
 const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
-const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
+// hooks.json gives the Stop hook 15 minutes. Keep the inner Codex turn
+// shorter so this process has time to emit a blocking decision before Claude
+// Code kills the hook command.
+const STOP_REVIEW_TIMEOUT_MINUTES = 14;
+const STOP_REVIEW_TIMEOUT_MS = STOP_REVIEW_TIMEOUT_MINUTES * 60 * 1000;
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 // Probe both install layouts so this hook works whether the user
@@ -66,6 +70,10 @@ function stderrLine(message) {
 
 function emitBlock(reason) {
   process.stdout.write(`${JSON.stringify({ decision: "block", reason })}\n`);
+}
+
+function blockReason(reason, runningNote) {
+  return runningNote ? `${runningNote} ${reason}` : reason;
 }
 
 function resolveProjectRoot(cwd) {
@@ -272,9 +280,17 @@ function maybeMigrateLegacyGate(cwd, input, activation) {
   const probePayload = parseJson(probe.stdout);
   const result = probePayload?.result;
   if (!probePayload?.ok || !result) return activation;
-  if (result.stopReviewGateConfig !== true) return activation;
-  if (result.reviewGateSuppressedByOfficialPlugin === true) return activation;
-  if (result.reviewGateLockExists === true) return activation;
+  if (
+    result.reviewGateSuppressedByOfficialPlugin === true ||
+    result.reviewGateLockIgnored === true ||
+    result.reviewGateSuppressionReason
+  ) {
+    return activation;
+  }
+  if (result.reviewGateLockExists === true || result.reviewGateEnabled === true) {
+    const migrated = reviewGateActivation(cwd);
+    if (migrated.active) return migrated;
+  }
 
   try {
     fs.mkdirSync(path.dirname(activation.lockPath), { recursive: true });
@@ -311,28 +327,53 @@ function main() {
 
   const setup = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });
   const setupPayload = parseJson(setup.stdout);
+  const setupResult = setupPayload?.result;
 
-  if (!setupPayload?.ok) {
-    stderrLine(runningNote);
+  if (!setupPayload?.ok || !setupResult) {
+    emitBlock(
+      blockReason(
+        `Codex Bridge stop-time review gate is enabled (${activation.lockPath}), but setup could not verify the bridge runtime. Run /codex-bridge:setup or remove the lock file to disable the gate.`,
+        runningNote
+      )
+    );
     return;
   }
 
-  if (setupPayload.result?.reviewGateEnabled !== true) {
-    if (setupPayload.result?.reviewGateLockIgnored) {
+  if (setupResult.reviewGateEnabled !== true) {
+    if (
+      setupResult.reviewGateLockIgnored ||
+      setupResult.reviewGateSuppressedByOfficialPlugin ||
+      setupResult.reviewGateSuppressionReason
+    ) {
       stderrLine(
         `Codex Bridge stop-time review gate lock is present but ignored: ${
-          setupPayload.result?.reviewGateSuppressionReason ?? "review-gate-suppressed"
+          setupResult.reviewGateSuppressionReason ?? "review-gate-suppressed"
         }.`
       );
+      stderrLine(runningNote);
+      return;
     }
-    stderrLine(runningNote);
+    emitBlock(
+      blockReason(
+        `Codex Bridge stop-time review gate lock is present (${activation.lockPath}), but setup did not confirm the gate is enabled. Run /codex-bridge:setup or remove the lock file to disable the gate.`,
+        runningNote
+      )
+    );
     return;
   }
 
-  if (!setupPayload.result?.ready) {
-    stderrLine(`Codex Bridge stop-time review gate is enabled (${activation.lockPath}), but Codex is not ready. Run /codex-bridge:setup.`);
-    stderrLine(runningNote);
+  if (!setupResult.ready) {
+    emitBlock(
+      blockReason(
+        `Codex Bridge stop-time review gate is enabled (${activation.lockPath}), but Codex is not ready. Run /codex-bridge:setup or remove the lock file to disable the gate.`,
+        runningNote
+      )
+    );
     return;
+  }
+
+  if (runningNote) {
+    stderrLine(`${runningNote} The stop-time Codex Bridge review will still run before allowing this session to stop.`);
   }
 
   // `--read-only` forces the gate-time review onto a read-only sandbox even
@@ -372,7 +413,7 @@ function main() {
   }
 
   if (review.error?.code === "ETIMEDOUT") {
-    emitBlock("The stop-time Codex Bridge review timed out after 15 minutes. Run /codex-bridge:review --wait manually or disable the gate.");
+    emitBlock(`The stop-time Codex Bridge review timed out after ${STOP_REVIEW_TIMEOUT_MINUTES} minutes. Run /codex-bridge:review --wait manually or disable the gate.`);
     return;
   }
 
