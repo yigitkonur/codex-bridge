@@ -14,6 +14,7 @@ import {
 
 function makeTempRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-git-"));
+  fs.rmSync(defaultWorktreeRootForRepo(dir), { recursive: true, force: true });
   execSync("git init -b main", { cwd: dir });
   execSync('git config user.email "test@example.com"', { cwd: dir });
   execSync('git config user.name "test"', { cwd: dir });
@@ -21,6 +22,10 @@ function makeTempRepo() {
   execSync("git add README.md", { cwd: dir });
   execSync('git commit -m "initial"', { cwd: dir });
   return dir;
+}
+
+function defaultWorktreeRootForRepo(repo) {
+  return path.resolve(repo, "..", ".codex-bridge-worktrees");
 }
 
 function cleanup(repo) {
@@ -36,10 +41,7 @@ function cleanup(repo) {
   }
   fs.rmSync(repo, { recursive: true, force: true });
   // Sibling dir for worktrees.
-  fs.rmSync(path.resolve(repo, "..", ".codex-bridge-worktrees"), {
-    recursive: true,
-    force: true,
-  });
+  fs.rmSync(defaultWorktreeRootForRepo(repo), { recursive: true, force: true });
 }
 
 test("createSubagentWorktree creates a worktree at the expected path", () => {
@@ -330,6 +332,33 @@ test("listSubagentWorktrees only returns codex-bridge worktrees", () => {
     assert.ok(ours, "subagent/codex/task-listed should be in list");
     assert.match(ours.path, /\.codex-bridge-worktrees\/task-listed$/);
   } finally {
+    cleanup(repo);
+  }
+});
+
+test("createSubagentWorktree fallback removes partial branch from failed worktree add", () => {
+  const repo = makeTempRepo();
+  const altRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-altroot-"));
+  const stalePath = path.join(altRoot, "task-fallback");
+  fs.mkdirSync(stalePath, { recursive: true });
+  fs.writeFileSync(path.join(stalePath, "stale.txt"), "stale");
+  try {
+    const result = createSubagentWorktree({
+      cwd: repo,
+      taskId: "task-fallback",
+      backend: "codex",
+      worktreeRoot: altRoot,
+    });
+    assert.equal(result.isolation_mode, "branch-only");
+    assert.equal(result.branch, "subagent/codex/task-fallback");
+    assert.equal(result.path, repo);
+  } finally {
+    try {
+      execSync("git checkout main", { cwd: repo, stdio: "ignore" });
+    } catch {
+      // Best-effort cleanup; the temp repo is removed below.
+    }
+    fs.rmSync(altRoot, { recursive: true, force: true });
     cleanup(repo);
   }
 });
