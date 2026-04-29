@@ -1,6 +1,10 @@
 ---
 name: codex-bridge
-description: Pre-release stub for the codex-bridge skill. Slim final content lands in T27 of the v2.0.0 redesign. Until then this file exists so the plugin manifest's `skills: ["./skills/codex-bridge"]` declaration resolves to a real surface and the plugin is installable in isolation.
+description: >-
+  Pre-release stub for the codex-bridge skill. Slim final content lands in T27 of
+  the v2.0.0 redesign. Until then this file exists so the plugin manifest's
+  `skills: ["./skills/codex-bridge"]` declaration resolves to a real surface
+  and the plugin is installable in isolation.
 version: 2.0.0-alpha.0
 ---
 

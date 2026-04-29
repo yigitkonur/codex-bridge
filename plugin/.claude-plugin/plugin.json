@@ -2,7 +2,7 @@
   "$schema": "https://code.claude.com/schemas/plugin.schema.json",
   "name": "codex-bridge",
   "version": "2.0.0-alpha.0",
-  "description": "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge. Adapter abstraction in place for future backends (gemini, aider, claude-cli, ollama).",
+  "description": "Pre-release codex-bridge plugin scaffold with a placeholder skill and empty hooks config for incremental plugin surface rollout.",
   "homepage": "https://github.com/yigitkonur/codex-bridge",
   "license": "MIT",
   "author": {
@@ -21,8 +21,5 @@
     "iteration"
   ],
   "skills": ["./skills/codex-bridge"],
-  "commands": "./commands",
-  "agents": "./agents",
-  "hooks": "./hooks/hooks.json",
-  "minClaudeCode": "1.0.0"
+  "hooks": "./hooks/hooks.json"
 }
