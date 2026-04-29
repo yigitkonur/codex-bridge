@@ -38,16 +38,15 @@ jobs:
 
       - name: verify committed bundle matches fresh build
         run: |
-          # The skill bundle ships via `npx skills add yigitkonur/codex-bridge`,
-          # which clones the repo and uses the tree as-is — no build step on the
-          # user's machine. So every main-branch commit must carry an up-to-date
-          # bundle. Any diff here means the contributor forgot to commit their
-          # `npm run build` output.
-          BUNDLE_STATUS=$(git status --porcelain -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates)
-          if [ -n "$BUNDLE_STATUS" ]; then
-            echo "::error::committed skill bundle is stale. run 'npm run build' and commit the changes."
-            echo "$BUNDLE_STATUS"
-            git --no-pager diff --stat -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates
+          # Both the skill/ bundle (legacy install via npx skills add) and the
+          # plugin/ bundle (canonical v2.0+ install) ship as committed artifacts —
+          # no build step runs on the end-user's machine. Any diff here means a
+          # contributor forgot to run `npm run build` before committing.
+          if ! git diff --quiet --exit-code -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates \
+                                               plugin/scripts plugin/prompts plugin/schemas plugin/templates; then
+            echo "::error::committed bundle is stale. run 'npm run build' and commit the changes."
+            git --no-pager diff --stat -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates \
+                                          plugin/scripts plugin/prompts plugin/schemas plugin/templates
             exit 1
           fi
 
@@ -59,7 +58,13 @@ jobs:
             skill/prompts/adversarial-review.md \
             skill/schemas/review-output.schema.json \
             skill/templates/execute-instructions.md \
-            skill/templates/plan-enforcement.md; do
+            skill/templates/plan-enforcement.md \
+            plugin/scripts/codex-bridge.mjs \
+            plugin/scripts/app-server-broker.mjs \
+            plugin/prompts/adversarial-review.md \
+            plugin/schemas/review-output.schema.json \
+            plugin/templates/execute-instructions.md \
+            plugin/templates/plan-enforcement.md; do
             test -s "$f" || { echo "missing or empty: $f"; exit 1; }
           done
 
