@@ -1,0 +1,80 @@
+# Writing Effective Codex Prompts
+
+## What Codex sees before your prompt
+
+Your prompt is not sent verbatim. Two bridge-side additions modify what Codex reads:
+
+1. **`[ORCHESTRATOR DIRECTIVE]` preamble** (when `skip_meta_skills: true`, the shipped default). Framework-agnostic — roughly: "Don't invoke your own planning, brainstorming, ceremony, or meta-skill chains before execution. Don't create scaffold documents (specs, plans, design memos) under paths like `docs/`, `plans/`, `specs/`, or similar before touching the deliverable — unless the task explicitly asks for such an artifact as its output." Plan-mode turns get a "produce a concise inline [PLAN] and stop" tail; execute turns get "execute directly." Set `skip_meta_skills: false` in `config.yaml` if you're running without an orchestrator and specifically want Codex's default chain to run.
+2. **`prompt_footer`** (shipped default tells Codex to ask questions via the `requestUserInput` tool with distinct options rather than plain-text prose). If you disable this, Codex often asks mid-task questions as assistant text instead, and `[QUESTION]` events never fire. Customize in `config.yaml`.
+
+So Codex actually reads: `[ORCHESTRATOR DIRECTIVE] …\n\n<your prompt>\n\n<prompt_footer>`. Write your prompt knowing those bookends already exist — don't repeat the directive; don't fight the footer.
+
+## How to deliver the prompt
+
+`readTaskPrompt` precedence: `--prompt-file <path>` wins, then positional argv (joined with single space), then piped stdin.
+
+- **Multi-paragraph markdown (the templates and any prompt with structure):** save to a file and pass `--prompt-file mission.md`. Argv positionals are joined with single spaces, **dropping every newline** — multi-paragraph prompts delivered via argv arrive at Codex squashed into one line.
+- **One-shot pipe:** `cat prompt.md | node "$SCRIPT_PATH" task --json`.
+- **Trivial single-line prompt:** bare argv is fine.
+
+Plan-mode vs execute-mode changes what Codex expects:
+
+| Mode | Codex expects | Tuning |
+|---|---|---|
+| `--mode plan` (default) | Analyze, ask questions, produce a `[PLAN]` — no file writes | `effort: "xhigh"` forced; sandbox per `sandbox_policy` (ships as `"danger-full-access"` — plan mode is a reasoning constraint, not a sandbox one); `turn_plan_ms` = 30 min default |
+| `--mode default` | Execute directly; produce a diff; may still ask questions via `requestUserInput` | `effort` from `config.effort` (shipped default `xhigh`) or `--effort`; sandbox per `sandbox_policy`; `turn_default_ms` = 30 min default |
+
+## Every Prompt Should Answer
+
+1. **What** — exactly what the worker should do
+2. **Where** — which files or directories matter
+3. **Boundaries** — what must not be touched
+4. **Success** — what counts as done
+5. **Verification** — which commands prove success
+
+## Good Prompt Structure
+
+```markdown
+## Objective
+Add JWT authentication to the Express API.
+
+## Scope
+- Files: src/auth/, src/middleware/
+- New files allowed: src/auth/jwt.ts
+- Do not touch: src/db/, src/config/
+
+## Constraints
+- Use jsonwebtoken package (already installed)
+- Tokens expire in 1 hour, refresh tokens in 7 days
+- Follow existing middleware pattern in src/middleware/cors.ts
+
+## Required Checks
+npm test
+npm run lint
+
+## Deliverable
+- Implement the change
+- Report touched files
+- Report test results
+```
+
+## Strong Patterns
+
+- Exact file paths
+- Explicit non-goals ("do NOT refactor existing endpoints")
+- Concrete acceptance criteria
+- Concrete verification commands
+
+## Weak Patterns
+
+- "Fix this" without success criteria
+- Mixing unrelated tasks in one prompt
+- Vague scope with no file boundaries
+- Relying on the worker to invent verification
+
+## When to Split
+
+- Two prompts can run independently → split
+- One is implementation, another is verification → split
+- One is research, another is coding → split
+- Different effort levels needed → split
