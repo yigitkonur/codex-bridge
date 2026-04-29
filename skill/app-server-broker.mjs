@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // src/app-server-broker.mjs
-import fs3 from "node:fs";
+import fs4 from "node:fs";
 import net3 from "node:net";
 import path4 from "node:path";
 import process6 from "node:process";
@@ -264,7 +264,7 @@ function parseBrokerEndpoint(endpoint) {
 }
 
 // src/lib/broker-lifecycle.mjs
-import fs2 from "node:fs";
+import fs3 from "node:fs";
 import net from "node:net";
 import os2 from "node:os";
 import path3 from "node:path";
@@ -274,7 +274,7 @@ import { fileURLToPath } from "node:url";
 
 // src/lib/state.mjs
 import { createHash } from "node:crypto";
-import fs from "node:fs";
+import fs2 from "node:fs";
 import os from "node:os";
 import path2 from "node:path";
 
@@ -284,6 +284,9 @@ var OFFICIAL_PLUGIN_STATUS = Object.freeze({
   ABSENT: "absent",
   UNKNOWN: "unknown"
 });
+
+// src/lib/git.mjs
+import fs from "node:fs";
 
 // src/lib/process.mjs
 import { spawnSync } from "node:child_process";
@@ -387,6 +390,7 @@ function formatCommandFailure(result) {
 // src/lib/git.mjs
 var MAX_UNTRACKED_BYTES = 24 * 1024;
 var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+var REGULAR_FILE_READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
 function git(cwd, args, options = {}) {
   return runCommand("git", args, { cwd, ...options });
 }
@@ -429,7 +433,7 @@ function resolveStateDir(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let canonicalWorkspaceRoot = workspaceRoot;
   try {
-    canonicalWorkspaceRoot = fs.realpathSync.native(workspaceRoot);
+    canonicalWorkspaceRoot = fs2.realpathSync.native(workspaceRoot);
   } catch {
     canonicalWorkspaceRoot = workspaceRoot;
   }
@@ -444,7 +448,7 @@ function resolveStateDir(cwd) {
 // src/lib/broker-lifecycle.mjs
 var BROKER_STATE_FILE = "broker.json";
 function createBrokerSessionDir(prefix = "cxc-") {
-  return fs2.mkdtempSync(path3.join(os2.tmpdir(), prefix));
+  return fs3.mkdtempSync(path3.join(os2.tmpdir(), prefix));
 }
 function connectToEndpoint(endpoint) {
   const target = parseBrokerEndpoint(endpoint);
@@ -469,7 +473,7 @@ async function waitForBrokerEndpoint(endpoint, timeoutMs = 2e3) {
   return false;
 }
 function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process4.env }) {
-  const logFd = fs2.openSync(logFile, "a");
+  const logFd = fs3.openSync(logFile, "a");
   const child = spawn(process4.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
     cwd,
     env,
@@ -477,7 +481,7 @@ function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env =
     stdio: ["ignore", logFd, logFd]
   });
   child.unref();
-  fs2.closeSync(logFd);
+  fs3.closeSync(logFd);
   return child;
 }
 function resolveBrokerStateFile(cwd) {
@@ -485,25 +489,25 @@ function resolveBrokerStateFile(cwd) {
 }
 function loadBrokerSession(cwd) {
   const stateFile = resolveBrokerStateFile(cwd);
-  if (!fs2.existsSync(stateFile)) {
+  if (!fs3.existsSync(stateFile)) {
     return null;
   }
   try {
-    return JSON.parse(fs2.readFileSync(stateFile, "utf8"));
+    return JSON.parse(fs3.readFileSync(stateFile, "utf8"));
   } catch {
     return null;
   }
 }
 function saveBrokerSession(cwd, session) {
   const stateDir = resolveStateDir(cwd);
-  fs2.mkdirSync(stateDir, { recursive: true });
-  fs2.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}
+  fs3.mkdirSync(stateDir, { recursive: true });
+  fs3.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}
 `, "utf8");
 }
 function clearBrokerSession(cwd) {
   const stateFile = resolveBrokerStateFile(cwd);
-  if (fs2.existsSync(stateFile)) {
-    fs2.unlinkSync(stateFile);
+  if (fs3.existsSync(stateFile)) {
+    fs3.unlinkSync(stateFile);
   }
 }
 async function isBrokerEndpointReady(endpoint) {
@@ -575,25 +579,25 @@ function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir =
     } catch {
     }
   }
-  if (pidFile && fs2.existsSync(pidFile)) {
-    fs2.unlinkSync(pidFile);
+  if (pidFile && fs3.existsSync(pidFile)) {
+    fs3.unlinkSync(pidFile);
   }
-  if (logFile && fs2.existsSync(logFile)) {
-    fs2.unlinkSync(logFile);
+  if (logFile && fs3.existsSync(logFile)) {
+    fs3.unlinkSync(logFile);
   }
   if (endpoint) {
     try {
       const target = parseBrokerEndpoint(endpoint);
-      if (target.kind === "unix" && fs2.existsSync(target.path)) {
-        fs2.unlinkSync(target.path);
+      if (target.kind === "unix" && fs3.existsSync(target.path)) {
+        fs3.unlinkSync(target.path);
       }
     } catch {
     }
   }
   const resolvedSessionDir = sessionDir ?? (pidFile ? path3.dirname(pidFile) : logFile ? path3.dirname(logFile) : null);
-  if (resolvedSessionDir && fs2.existsSync(resolvedSessionDir)) {
+  if (resolvedSessionDir && fs3.existsSync(resolvedSessionDir)) {
     try {
-      fs2.rmdirSync(resolvedSessionDir);
+      fs3.rmdirSync(resolvedSessionDir);
     } catch {
     }
   }
@@ -1187,8 +1191,8 @@ function writePidFile(pidFile) {
   if (!pidFile) {
     return;
   }
-  fs3.mkdirSync(path4.dirname(pidFile), { recursive: true });
-  fs3.writeFileSync(pidFile, `${process6.pid}
+  fs4.mkdirSync(path4.dirname(pidFile), { recursive: true });
+  fs4.writeFileSync(pidFile, `${process6.pid}
 `, "utf8");
 }
 function requestKey(id) {
@@ -1248,15 +1252,15 @@ async function main() {
     }
   }
   function cleanupBrokerFiles() {
-    if (listenTarget.kind === "unix" && fs3.existsSync(listenTarget.path)) {
+    if (listenTarget.kind === "unix" && fs4.existsSync(listenTarget.path)) {
       try {
-        fs3.unlinkSync(listenTarget.path);
+        fs4.unlinkSync(listenTarget.path);
       } catch {
       }
     }
-    if (pidFile && fs3.existsSync(pidFile)) {
+    if (pidFile && fs4.existsSync(pidFile)) {
       try {
-        fs3.unlinkSync(pidFile);
+        fs4.unlinkSync(pidFile);
       } catch {
       }
     }

@@ -1064,6 +1064,7 @@ function sanitizePromptValue(value) {
 var MAX_UNTRACKED_BYTES = 24 * 1024;
 var DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+var REGULAR_FILE_READ_FLAGS = fs3.constants.O_RDONLY | (fs3.constants.O_NOFOLLOW ?? 0) | (fs3.constants.O_NONBLOCK ?? 0);
 function git(cwd, args, options = {}) {
   return runCommand("git", args, { cwd, ...options });
 }
@@ -1251,29 +1252,92 @@ function resolveReviewTarget(cwd, options = {}) {
 function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
+function realpathSync(filePath) {
+  return fs3.realpathSync.native ? fs3.realpathSync.native(filePath) : fs3.realpathSync(filePath);
+}
+function isPathInside(parentPath, candidatePath) {
+  const relative = path3.relative(parentPath, candidatePath);
+  return relative === "" || !relative.startsWith("..") && !path3.isAbsolute(relative);
+}
+function readFileDescriptor(fd, size) {
+  const buffer = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const bytesRead = fs3.readSync(fd, buffer, offset, buffer.length - offset, offset);
+    if (bytesRead === 0) {
+      break;
+    }
+    offset += bytesRead;
+  }
+  return buffer.subarray(0, offset);
+}
 function formatUntrackedFile(cwd, relativePath) {
-  const absolutePath = path3.join(cwd, relativePath);
+  let repoRoot;
+  try {
+    repoRoot = realpathSync(cwd);
+  } catch {
+    return `### ${relativePath}
+(skipped: repository root is unreadable)`;
+  }
+  const absolutePath = path3.resolve(repoRoot, relativePath);
+  if (!isPathInside(repoRoot, absolutePath)) {
+    return `### ${relativePath}
+(skipped: path resolves outside repository)`;
+  }
   let stat;
   try {
-    stat = fs3.statSync(absolutePath);
+    stat = fs3.lstatSync(absolutePath);
   } catch {
     return `### ${relativePath}
 (skipped: broken symlink or unreadable file)`;
+  }
+  if (stat.isSymbolicLink()) {
+    return `### ${relativePath}
+(skipped: symlink)`;
   }
   if (stat.isDirectory()) {
     return `### ${relativePath}
 (skipped: directory)`;
   }
-  if (stat.size > MAX_UNTRACKED_BYTES) {
+  if (!stat.isFile()) {
     return `### ${relativePath}
-(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+(skipped: non-regular file)`;
   }
-  let buffer;
+  let resolvedPath;
   try {
-    buffer = fs3.readFileSync(absolutePath);
+    resolvedPath = realpathSync(absolutePath);
   } catch {
     return `### ${relativePath}
 (skipped: broken symlink or unreadable file)`;
+  }
+  if (!isPathInside(repoRoot, resolvedPath)) {
+    return `### ${relativePath}
+(skipped: path resolves outside repository)`;
+  }
+  let fd;
+  let buffer;
+  try {
+    fd = fs3.openSync(resolvedPath, REGULAR_FILE_READ_FLAGS);
+    const readStat = fs3.fstatSync(fd);
+    if (!readStat.isFile()) {
+      return `### ${relativePath}
+(skipped: non-regular file)`;
+    }
+    if (readStat.size > MAX_UNTRACKED_BYTES) {
+      return `### ${relativePath}
+(skipped: ${readStat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    }
+    buffer = readFileDescriptor(fd, readStat.size);
+  } catch {
+    return `### ${relativePath}
+(skipped: broken symlink or unreadable file)`;
+  } finally {
+    if (fd !== void 0) {
+      try {
+        fs3.closeSync(fd);
+      } catch {
+      }
+    }
   }
   if (!isProbablyText(buffer)) {
     return `### ${relativePath}
@@ -7934,6 +7998,7 @@ async function runAutoPipeline(options) {
     let reviewVerdict = "approve";
     let reviewFindings = [];
     let reviewFindingCount = 0;
+    let unstructuredReviewAttention = false;
     if (config.auto_review) {
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "review" });
@@ -7972,6 +8037,7 @@ async function runAutoPipeline(options) {
           reviewVerdict = parsed.verdict;
           reviewFindings = parsed.findings;
           reviewFindingCount = reviewFindings.length;
+          unstructuredReviewAttention = reviewVerdict !== "approve" && reviewFindingCount === 0;
         }
         logEvent(session, formatPipelineEvent(session, {
           stage: "review",
@@ -8081,17 +8147,37 @@ async function runAutoPipeline(options) {
         if (error instanceof TimeoutError) {
           throw error;
         }
-        logNdjson(session, "PIPELINE_ERROR", null, { stage: "check", error: error.message });
+        const message = error instanceof Error ? error.message : String(error);
+        const detail = message || "check failed";
+        completionResult = {
+          complete: false,
+          missing_items: [
+            `Completion check failed before producing a result: ${detail}`
+          ],
+          summary: "completion-check failed"
+        };
+        logNdjson(session, "PIPELINE_ERROR", null, { stage: "check", error: detail });
         logEvent(session, formatPipelineEvent(session, {
           stage: "check",
           suffix: "failed",
-          detail: error.message ?? "check failed"
+          detail
         }));
         completedStages.push("check-failed");
       }
     }
+    if (unstructuredReviewAttention) {
+      const missingItem = "Native review reported needs-attention but did not include parseable file/line findings, so auto-fix could not run.";
+      const existingMissingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
+      completionResult = {
+        complete: false,
+        missing_items: existingMissingItems.includes(missingItem) ? existingMissingItems : [...existingMissingItems, missingItem],
+        summary: completionResult.complete ? "native review needs attention" : typeof completionResult.summary === "string" ? completionResult.summary : "native review needs attention"
+      };
+    }
     const finalDiff = captureGitDiff(cwd, session);
     const duration = Math.round((Date.now() - startTime) / 1e3);
+    const missingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
+    const completionSummary = typeof completionResult.summary === "string" ? completionResult.summary : null;
     if (completionResult.complete) {
       logEvent(session, formatDoneEvent(session, {
         duration,
@@ -8109,7 +8195,7 @@ async function runAutoPipeline(options) {
         diffPath: finalDiff.diffPath,
         verdict: reviewVerdict,
         findingCount: reviewFindingCount,
-        missingItems: completionResult.missing_items || [],
+        missingItems,
         scriptPath,
         jobId,
         cwd
@@ -8119,6 +8205,8 @@ async function runAutoPipeline(options) {
       completedStages,
       duration,
       complete: completionResult.complete,
+      missingItems,
+      completionSummary,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
@@ -8130,6 +8218,8 @@ async function runAutoPipeline(options) {
       completedStages,
       duration,
       diff: finalDiff,
+      missingItems,
+      completionSummary,
       touchedFiles: fixFilesTouched
     };
   } catch (error) {
@@ -8189,11 +8279,63 @@ function buildFixPrompt(findings) {
   return lines.join("\n");
 }
 function parseReviewText(reviewText) {
+  const findings = parseNativeReviewFindings(reviewText);
+  if (findings.length > 0) {
+    return { verdict: "needs-attention", findings };
+  }
   const lower = reviewText.toLowerCase();
-  const hasIssues = lower.includes("needs-attention") || lower.includes("finding") || lower.includes("issue");
+  const cleanReview = /\b(?:review\s+)?approved\b/.test(lower) || /\blooks good\b/.test(lower) || /\blgtm\b/.test(lower) || /\bno\s+(?:actionable\s+)?(?:issues?|findings?|problems?|concerns?)\b/.test(lower) || /\b(?:issues?|findings?|problems?|concerns?):\s*(?:none|n\/a)\b/.test(lower) || /\bno changes requested\b/.test(lower);
+  const explicitAttention = lower.includes("needs-attention") || /\bneeds attention\b/.test(lower) || /\brequires attention\b/.test(lower);
+  const hasIssues = explicitAttention || !cleanReview && /\b(?:findings?|issues?|problems?|concerns?|regressions?)\b/.test(lower);
   return {
     verdict: hasIssues ? "needs-attention" : "approve",
     findings: []
+  };
+}
+function parseNativeReviewFindings(reviewText) {
+  const lines = reviewText.split(/\r?\n/);
+  const findings = [];
+  let current = null;
+  const flush = () => {
+    if (!current) return;
+    const recommendation = current.body.map((line) => line.trim()).filter(Boolean).join("\n");
+    findings.push({
+      severity: current.severity,
+      title: current.title,
+      file: current.file,
+      line_start: current.lineStart,
+      line_end: current.lineEnd,
+      recommendation
+    });
+    current = null;
+  };
+  for (const line of lines) {
+    const header = parseNativeFindingHeader(line);
+    if (header) {
+      flush();
+      current = { ...header, body: [] };
+      continue;
+    }
+    if (current && (/^(?:\s{2,}|\t+)\S/.test(line) || line.trim() === "")) {
+      current.body.push(line);
+    }
+  }
+  flush();
+  return findings;
+}
+function parseNativeFindingHeader(line) {
+  const match = line.match(/^\s*[-*]\s+\[(P\d+)\]\s+(.+?)\s+(?:\u2014|\u2013|--|-)\s+(.+?):(\d+)(?:-(\d+))?\s*$/i);
+  if (!match) return null;
+  const lineStart = Number.parseInt(match[4], 10);
+  if (!Number.isInteger(lineStart) || lineStart < 1) return null;
+  const parsedLineEnd = match[5] ? Number.parseInt(match[5], 10) : lineStart;
+  const lineEnd = Number.isInteger(parsedLineEnd) && parsedLineEnd >= lineStart ? parsedLineEnd : lineStart;
+  return {
+    severity: match[1].toUpperCase(),
+    title: match[2].trim(),
+    file: match[3].trim(),
+    lineStart,
+    lineEnd
   };
 }
 function mapStageLabel(label) {
@@ -8420,30 +8562,33 @@ function spawnDetachedAutoApply(targetVersion) {
     } catch {
     }
     const fd = fs13.openSync(logFile, "a");
-    const banner = `
+    try {
+      const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-    fs13.writeSync(fd, banner);
-    const child = spawn3(
-      "npx",
-      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
-      {
-        detached: true,
-        stdio: ["ignore", fd, fd],
-        env: process8.env
-      }
-    );
-    child.on("error", () => {
+      fs13.writeSync(fd, banner);
+      const child = spawn3(
+        "npx",
+        ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+        {
+          detached: true,
+          stdio: ["ignore", fd, fd],
+          env: process8.env
+        }
+      );
+      child.on("error", () => {
+        try {
+          fs13.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+`, "utf8");
+        } catch {
+        }
+      });
+      child.unref();
+    } finally {
       try {
-        fs13.writeSync(fd, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
-`);
+        fs13.closeSync(fd);
       } catch {
       }
-    });
-    child.unref();
-    try {
-      fs13.closeSync(fd);
-    } catch {
     }
   } catch {
   }
@@ -9213,7 +9358,7 @@ async function handleUpdate(argv) {
   });
   const update = await checkForUpdate({
     currentVersion: BRIDGE_VERSION,
-    force: options.force !== false
+    force: Boolean(options.force)
   });
   const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
   const wantApply = Boolean(options.apply || options.yes);
@@ -10656,6 +10801,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         scriptPath: SCRIPT_PATH,
         cwd: request.cwd
       }));
+      markTerminalEmitted();
       setPhase("plan-pending", {
         command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
         description: "Approve the plan and switch to execution mode. To revise instead, drop --mode and send revision text."
