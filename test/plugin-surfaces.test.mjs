@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -232,6 +233,48 @@ test("stop review hook re-reads activation after legacy setup migration", () => 
   assert.ok(configReturn < observedLockReturn);
   assert.notEqual(migrationCall, -1);
   assert.ok(migrationCall < inactiveReturn);
+});
+
+test("plugin SessionEnd hook logs prune failures while allowing shutdown", () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-session-end-"));
+  try {
+    const pluginRoot = path.join(tempHome, "plugin");
+    const scriptsDir = path.join(pluginRoot, "scripts");
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(scriptsDir, "codex-bridge.mjs"),
+      'process.stderr.write("prune failed\\n"); process.exit(42);\n',
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("plugin/hooks/session-end.mjs", root))],
+      {
+        cwd: fileURLToPath(root),
+        env: {
+          ...process.env,
+          CLAUDE_PLUGIN_ROOT: pluginRoot,
+          HOME: tempHome,
+        },
+        input: JSON.stringify({ cwd: fileURLToPath(root) }),
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, '{"continue":true}');
+
+    const logDir = path.join(tempHome, ".codex-bridge", "hook-errors");
+    const logs = fs.readdirSync(logDir);
+    assert.equal(logs.length, 1);
+    const log = fs.readFileSync(path.join(logDir, logs[0]), "utf8");
+    assert.match(log, /SessionEnd prune failed/);
+    assert.match(log, /status=42/);
+    assert.match(log, /prune failed/);
+  } finally {
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
 });
 
 test("setup owns project-scoped review gate lock creation", () => {

@@ -34,6 +34,24 @@ function logHookError(err) {
   }
 }
 
+function formatPruneFailure(result) {
+  const parts = [];
+  if (result?.error) {
+    parts.push(`error=${result.error.stack ?? result.error.message ?? result.error}`);
+  }
+  if (result?.status !== 0) {
+    parts.push(`status=${result?.status ?? "null"}`);
+  }
+  if (result?.signal) {
+    parts.push(`signal=${result.signal}`);
+  }
+  const stderr = String(result?.stderr ?? "").trim();
+  if (stderr) {
+    parts.push(`stderr:\n${stderr}`);
+  }
+  return new Error(`SessionEnd prune failed: ${parts.join("\n")}`);
+}
+
 function isDisabled() {
   const list = (process.env.CODEX_BRIDGE_HOOK_DISABLE ?? "")
     .split(",")
@@ -80,16 +98,20 @@ function main() {
     const bundle = resolveBundlePath();
     if (bundle) {
       const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-      spawnSync(
+      const result = spawnSync(
         process.execPath,
         [bundle, "status", "--prune-orphans", "--json"],
         {
           cwd,
           env: process.env,
+          encoding: "utf8",
           timeout: PRUNE_TIMEOUT_MS,
-          stdio: ["ignore", "ignore", "ignore"],
+          stdio: ["ignore", "ignore", "pipe"],
         },
       );
+      if (result.error || result.status !== 0 || result.signal) {
+        logHookError(formatPruneFailure(result));
+      }
     }
   } catch (err) {
     logHookError(err);
