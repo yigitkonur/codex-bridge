@@ -14,20 +14,35 @@ This folder contains authored prompt source copied into `skill/prompts/` by
 
 The code currently passes these interpolation keys:
 
-- `REVIEW_KIND`
 - `TARGET_LABEL`
 - `USER_FOCUS`
 - `REVIEW_COLLECTION_GUIDANCE`
+- `OPUS_CONCERNS`
 - `REVIEW_INPUT`
 
-The prompt currently uses `TARGET_LABEL`, `USER_FOCUS`,
-`REVIEW_COLLECTION_GUIDANCE`, and `REVIEW_INPUT`. Extra keys are harmless, but
-missing placeholders render as empty strings because `interpolateTemplate`
-replaces unknown `{{NAME}}` patterns with `""`.
+The prompt uses all five. Missing placeholders would render as empty strings
+because `interpolateTemplate` replaces unknown `{{NAME}}` patterns with `""`,
+but `requiredKeys` in `buildAdversarialReviewPrompt` enforces presence so a
+silent drift is caught at build time rather than at runtime.
 
 If you add a placeholder, update `buildAdversarialReviewPrompt` at the same
 time. If you remove a placeholder from code, check the prompt for stale
 references.
+
+`{{OPUS_CONCERNS}}` is the orchestrator's privileged channel into the review.
+It is rendered as either:
+
+- a bullet list of trimmed, sanitized concern strings (when --brief
+  contains a `specific_concerns` array, or one or more --concern flags
+  are present), or
+- a sentinel "(No orchestrator-supplied concerns…)" line when no concerns
+  are provided.
+
+Concerns from `brief.specific_concerns` precede `--concern` flag values; the
+union is de-duped while preserving insertion order. User-controlled text is
+sanitized through `sanitizePromptValue` for the same reason `USER_FOCUS` is —
+to prevent injection of fake `</orchestrator_concerns>` or other
+instruction-like wrappers from inside concern strings.
 
 ## Output Coupling
 

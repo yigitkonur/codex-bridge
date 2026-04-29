@@ -1428,7 +1428,27 @@ function buildMachineReadableHelp() {
   };
 }
 
-function buildAdversarialReviewPrompt(context, focusText) {
+// {{OPUS_CONCERNS}} is the orchestrator's privileged channel into the review.
+// It is populated from the brief's `specific_concerns` array (T16 / T26)
+// and/or repeatable `--concern` flags. The block is rendered as a bullet
+// list when concerns exist, or a sentinel string when not, so the prompt
+// always says something honest about whether the orchestrator was watching.
+// User-controlled text (concerns, focusText) is sanitized through
+// sanitizePromptValue to keep `</orchestrator_concerns>` and similar
+// instruction-like wrappers from being injected by user input.
+function formatOpusConcerns(concerns) {
+  const list = Array.isArray(concerns)
+    ? concerns
+        .map((c) => (typeof c === "string" ? c.trim() : ""))
+        .filter((c) => c.length > 0)
+    : [];
+  if (list.length === 0) {
+    return "(No orchestrator-supplied concerns. Run the review with --brief @<path>.json or --concern \"...\" to surface focus areas.)";
+  }
+  return list.map((c) => `- ${sanitizePromptValue(c)}`).join("\n");
+}
+
+function buildAdversarialReviewPrompt(context, focusText, opusConcerns = []) {
   const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
   return interpolateTemplate(
     template,
@@ -1436,10 +1456,17 @@ function buildAdversarialReviewPrompt(context, focusText) {
       TARGET_LABEL: sanitizePromptValue(context.target.label),
       USER_FOCUS: focusText || "No extra focus provided.",
       REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
+      OPUS_CONCERNS: formatOpusConcerns(opusConcerns),
       REVIEW_INPUT: context.content
     },
     {
-      requiredKeys: new Set(["TARGET_LABEL", "USER_FOCUS", "REVIEW_COLLECTION_GUIDANCE", "REVIEW_INPUT"])
+      requiredKeys: new Set([
+        "TARGET_LABEL",
+        "USER_FOCUS",
+        "REVIEW_COLLECTION_GUIDANCE",
+        "OPUS_CONCERNS",
+        "REVIEW_INPUT"
+      ])
     }
   );
 }
@@ -1471,12 +1498,31 @@ function buildNativeReviewTarget(target) {
   return null;
 }
 
-function validateNativeReviewRequest(target, focusText) {
+function validateNativeReviewRequest(target, focusText, extras = {}) {
   if (focusText.trim()) {
     throw validationError(
       "`review` maps to the built-in reviewer and does not support custom focus text.",
       "REVIEW_FOCUS_UNSUPPORTED",
       `Retry with \`adversarial-review ${focusText.trim()}\` for focused review instructions.`
+    );
+  }
+
+  // Native review uses Codex's app-server review prompt, which does not
+  // accept the {{OPUS_CONCERNS}} placeholder. Reject --brief/--concern
+  // explicitly so the orchestrator gets a clear redirect to
+  // adversarial-review where those channels are honored.
+  if (extras.brief) {
+    throw validationError(
+      "`review` does not accept --brief. The orchestrator-concerns channel is only honored by adversarial-review.",
+      "REVIEW_BRIEF_UNSUPPORTED",
+      "Retry with `adversarial-review --brief @<path>.json` to surface the brief's specific_concerns to the reviewer."
+    );
+  }
+  if (Array.isArray(extras.opusConcerns) && extras.opusConcerns.length > 0) {
+    throw validationError(
+      "`review` does not accept --concern. The orchestrator-concerns channel is only honored by adversarial-review.",
+      "REVIEW_CONCERN_UNSUPPORTED",
+      "Retry with `adversarial-review --concern \"...\"` (repeatable) to surface focus areas to the reviewer."
     );
   }
 
@@ -1710,7 +1756,30 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
-  const prompt = buildAdversarialReviewPrompt(context, focusText);
+  // Orchestrator concerns flow in via either:
+  //  - request.opusConcerns: parsed from --concern <text> (repeatable) flags
+  //    in handleReviewCommand, or
+  //  - request.brief.specific_concerns: from --brief @path.json (T16/T26),
+  //    which is the canonical channel when an outer orchestrator (Opus) is
+  //    driving the loop and already has a structured brief on hand.
+  const briefConcerns = Array.isArray(request.brief?.specific_concerns)
+    ? request.brief.specific_concerns
+    : [];
+  const flagConcerns = Array.isArray(request.opusConcerns)
+    ? request.opusConcerns
+    : [];
+  // De-dupe while preserving order. Brief concerns first (canonical), then
+  // any extra ad-hoc concerns appended via --concern flags.
+  const seen = new Set();
+  const opusConcerns = [...briefConcerns, ...flagConcerns]
+    .filter((c) => typeof c === "string" && c.trim().length > 0)
+    .filter((c) => {
+      const key = c.trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const prompt = buildAdversarialReviewPrompt(context, focusText, opusConcerns);
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
@@ -2291,7 +2360,8 @@ function enqueueBackgroundTask(cwd, job, request) {
 async function handleReviewCommand(argv, config) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "backend"],
+    valueOptions: ["base", "scope", "model", "cwd", "backend", "brief"],
+    repeatableValueOptions: ["concern"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -2312,7 +2382,28 @@ async function handleReviewCommand(argv, config) {
     scope: options.scope
   });
 
-  config.validateRequest?.(target, focusText);
+  // --brief and --concern populate the {{OPUS_CONCERNS}} channel in the
+  // adversarial-review prompt (T26). Native `review` ignores them — its
+  // prompt is built by the Codex app-server. validateRequest will reject
+  // the flags for native review below if the orchestrator passes them.
+  let brief = null;
+  if (options.brief) {
+    const result = loadBrief(options.brief);
+    if (!result.ok) {
+      throw new CliError(result.message, {
+        code: result.code,
+        exitClass: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+      });
+    }
+    brief = result.brief;
+  }
+  const opusConcerns = Array.isArray(options.concern)
+    ? options.concern
+    : options.concern
+      ? [options.concern]
+      : [];
+
+  config.validateRequest?.(target, focusText, { brief, opusConcerns });
   const metadata = buildReviewJobMetadata(config.reviewName, target);
   const job = createCompanionJob({
     prefix: "review",
@@ -2332,6 +2423,8 @@ async function handleReviewCommand(argv, config) {
         model: options.model,
         backend: options.backend ?? null,
         focusText,
+        brief,
+        opusConcerns,
         reviewName: config.reviewName,
         onProgress: progress
       }),

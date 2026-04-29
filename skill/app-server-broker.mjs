@@ -151,12 +151,28 @@ var ALWAYS_BOOLEAN = /* @__PURE__ */ new Set(["help", "h"]);
 var ALWAYS_ALIASES = Object.freeze({ h: "help", j: "json" });
 function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
+  const repeatableValueOptions = new Set(config.repeatableValueOptions ?? []);
+  for (const k of repeatableValueOptions) valueOptions.add(k);
   const booleanOptions = /* @__PURE__ */ new Set([...config.booleanOptions ?? [], ...ALWAYS_BOOLEAN]);
   const aliasMap = { ...ALWAYS_ALIASES, ...config.aliasMap ?? {} };
   const strict = config.strict !== false;
   const options = {};
   const positionals = [];
   let passthrough = false;
+  const setValue = (key, value) => {
+    if (repeatableValueOptions.has(key)) {
+      const existing = options[key];
+      if (Array.isArray(existing)) {
+        existing.push(value);
+      } else if (existing === void 0) {
+        options[key] = [value];
+      } else {
+        options[key] = [existing, value];
+      }
+      return;
+    }
+    options[key] = value;
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (passthrough) {
@@ -186,7 +202,7 @@ function parseArgs(argv, config = {}) {
         if (nextValue === void 0) {
           throw usageError(`Missing value for --${rawKey}`);
         }
-        options[key2] = nextValue;
+        setValue(key2, nextValue);
         if (inlineValue === void 0) {
           index += 1;
         }
@@ -212,7 +228,7 @@ function parseArgs(argv, config = {}) {
       if (nextValue === void 0) {
         throw usageError(`Missing value for -${shortKey}`);
       }
-      options[key] = nextValue;
+      setValue(key, nextValue);
       index += 1;
       continue;
     }

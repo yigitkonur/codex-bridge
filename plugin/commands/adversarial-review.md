@@ -1,6 +1,10 @@
 ---
 description: Run a Codex Bridge review that challenges implementation approach and design assumptions
+<<<<<<< HEAD
 argument-hint: "[--wait|--background] [--backend <name>] [--base <ref>] [--scope auto|working-tree|branch] [focus ...]"
+=======
+argument-hint: "[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--brief @<path>.json] [--concern <text>]... [focus ...]"
+>>>>>>> 40deb5c (feat(prompts): adversarial-review gains {{OPUS_CONCERNS}} channel (Phase 2b / T26))
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -16,6 +20,12 @@ Core constraint:
 - Do not fix issues, apply patches, or suggest that you are about to make changes.
 - Keep the framing focused on assumptions, tradeoffs, architecture, and real-world failure modes.
 - Return Codex's output verbatim to the user.
+
+Orchestrator concerns:
+
+- The reviewer prompt has an `{{OPUS_CONCERNS}}` channel reserved for the orchestrator's privileged focus areas — what an Opus driver has been watching from the worker's events that warrants extra adversarial attention.
+- Surface concerns via `--brief @<path>.json` (uses the brief's `specific_concerns` array) and/or repeatable `--concern "<text>"` flags. Both stack; brief items come first, then `--concern` items, de-duped while preserving order.
+- Plain `review` does not honor these flags — it uses Codex's built-in reviewer. Use `adversarial-review` whenever the orchestrator wants to weight the review on specific concerns.
 
 Execution mode rules:
 

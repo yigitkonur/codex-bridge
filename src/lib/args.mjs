@@ -7,12 +7,34 @@ const ALWAYS_ALIASES = Object.freeze({ h: "help", j: "json" });
 
 export function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
+  const repeatableValueOptions = new Set(config.repeatableValueOptions ?? []);
+  // Repeatable values are ordinary value-bearing options that accumulate
+  // into an array instead of overwriting on second use. Convenient for
+  // flags like `--concern <text>` where the orchestrator may surface
+  // multiple focus areas in one invocation. The first occurrence creates
+  // a one-element array; subsequent occurrences append.
+  for (const k of repeatableValueOptions) valueOptions.add(k);
   const booleanOptions = new Set([...(config.booleanOptions ?? []), ...ALWAYS_BOOLEAN]);
   const aliasMap = { ...ALWAYS_ALIASES, ...(config.aliasMap ?? {}) };
   const strict = config.strict !== false;
   const options = {};
   const positionals = [];
   let passthrough = false;
+  const setValue = (key, value) => {
+    if (repeatableValueOptions.has(key)) {
+      const existing = options[key];
+      if (Array.isArray(existing)) {
+        existing.push(value);
+      } else if (existing === undefined) {
+        options[key] = [value];
+      } else {
+        // Defensive: a previous code path put a non-array on this key; promote.
+        options[key] = [existing, value];
+      }
+      return;
+    }
+    options[key] = value;
+  };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -49,7 +71,7 @@ export function parseArgs(argv, config = {}) {
         if (nextValue === undefined) {
           throw usageError(`Missing value for --${rawKey}`);
         }
-        options[key] = nextValue;
+        setValue(key, nextValue);
         if (inlineValue === undefined) {
           index += 1;
         }
@@ -79,7 +101,7 @@ export function parseArgs(argv, config = {}) {
       if (nextValue === undefined) {
         throw usageError(`Missing value for -${shortKey}`);
       }
-      options[key] = nextValue;
+      setValue(key, nextValue);
       index += 1;
       continue;
     }

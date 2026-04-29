@@ -560,12 +560,28 @@ var ALWAYS_BOOLEAN = /* @__PURE__ */ new Set(["help", "h"]);
 var ALWAYS_ALIASES = Object.freeze({ h: "help", j: "json" });
 function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
+  const repeatableValueOptions = new Set(config.repeatableValueOptions ?? []);
+  for (const k of repeatableValueOptions) valueOptions.add(k);
   const booleanOptions = /* @__PURE__ */ new Set([...config.booleanOptions ?? [], ...ALWAYS_BOOLEAN]);
   const aliasMap = { ...ALWAYS_ALIASES, ...config.aliasMap ?? {} };
   const strict = config.strict !== false;
   const options = {};
   const positionals = [];
   let passthrough = false;
+  const setValue = (key, value) => {
+    if (repeatableValueOptions.has(key)) {
+      const existing = options[key];
+      if (Array.isArray(existing)) {
+        existing.push(value);
+      } else if (existing === void 0) {
+        options[key] = [value];
+      } else {
+        options[key] = [existing, value];
+      }
+      return;
+    }
+    options[key] = value;
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (passthrough) {
@@ -592,7 +608,7 @@ function parseArgs(argv, config = {}) {
         if (nextValue === void 0) {
           throw usageError(`Missing value for --${rawKey}`);
         }
-        options[key2] = nextValue;
+        setValue(key2, nextValue);
         if (inlineValue === void 0) {
           index += 1;
         }
@@ -618,7 +634,7 @@ function parseArgs(argv, config = {}) {
       if (nextValue === void 0) {
         throw usageError(`Missing value for -${shortKey}`);
       }
-      options[key] = nextValue;
+      setValue(key, nextValue);
       index += 1;
       continue;
     }
@@ -9866,7 +9882,14 @@ function buildMachineReadableHelp() {
     }
   };
 }
-function buildAdversarialReviewPrompt(context, focusText) {
+function formatOpusConcerns(concerns) {
+  const list = Array.isArray(concerns) ? concerns.map((c) => typeof c === "string" ? c.trim() : "").filter((c) => c.length > 0) : [];
+  if (list.length === 0) {
+    return '(No orchestrator-supplied concerns. Run the review with --brief @<path>.json or --concern "..." to surface focus areas.)';
+  }
+  return list.map((c) => `- ${sanitizePromptValue(c)}`).join("\n");
+}
+function buildAdversarialReviewPrompt(context, focusText, opusConcerns = []) {
   const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
   return interpolateTemplate(
     template,
@@ -9874,10 +9897,17 @@ function buildAdversarialReviewPrompt(context, focusText) {
       TARGET_LABEL: sanitizePromptValue(context.target.label),
       USER_FOCUS: focusText || "No extra focus provided.",
       REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
+      OPUS_CONCERNS: formatOpusConcerns(opusConcerns),
       REVIEW_INPUT: context.content
     },
     {
-      requiredKeys: /* @__PURE__ */ new Set(["TARGET_LABEL", "USER_FOCUS", "REVIEW_COLLECTION_GUIDANCE", "REVIEW_INPUT"])
+      requiredKeys: /* @__PURE__ */ new Set([
+        "TARGET_LABEL",
+        "USER_FOCUS",
+        "REVIEW_COLLECTION_GUIDANCE",
+        "OPUS_CONCERNS",
+        "REVIEW_INPUT"
+      ])
     }
   );
 }
@@ -9904,12 +9934,26 @@ function buildNativeReviewTarget(target) {
   }
   return null;
 }
-function validateNativeReviewRequest(target, focusText) {
+function validateNativeReviewRequest(target, focusText, extras = {}) {
   if (focusText.trim()) {
     throw validationError(
       "`review` maps to the built-in reviewer and does not support custom focus text.",
       "REVIEW_FOCUS_UNSUPPORTED",
       `Retry with \`adversarial-review ${focusText.trim()}\` for focused review instructions.`
+    );
+  }
+  if (extras.brief) {
+    throw validationError(
+      "`review` does not accept --brief. The orchestrator-concerns channel is only honored by adversarial-review.",
+      "REVIEW_BRIEF_UNSUPPORTED",
+      "Retry with `adversarial-review --brief @<path>.json` to surface the brief's specific_concerns to the reviewer."
+    );
+  }
+  if (Array.isArray(extras.opusConcerns) && extras.opusConcerns.length > 0) {
+    throw validationError(
+      "`review` does not accept --concern. The orchestrator-concerns channel is only honored by adversarial-review.",
+      "REVIEW_CONCERN_UNSUPPORTED",
+      'Retry with `adversarial-review --concern "..."` (repeatable) to surface focus areas to the reviewer.'
     );
   }
   const nativeTarget = buildNativeReviewTarget(target);
@@ -10086,7 +10130,16 @@ async function executeReviewRun(request) {
     };
   }
   const context = collectReviewContext(request.cwd, target);
-  const prompt = buildAdversarialReviewPrompt(context, focusText);
+  const briefConcerns = Array.isArray(request.brief?.specific_concerns) ? request.brief.specific_concerns : [];
+  const flagConcerns = Array.isArray(request.opusConcerns) ? request.opusConcerns : [];
+  const seen = /* @__PURE__ */ new Set();
+  const opusConcerns = [...briefConcerns, ...flagConcerns].filter((c) => typeof c === "string" && c.trim().length > 0).filter((c) => {
+    const key = c.trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const prompt = buildAdversarialReviewPrompt(context, focusText, opusConcerns);
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
@@ -10499,7 +10552,8 @@ function enqueueBackgroundTask(cwd, job, request) {
 async function handleReviewCommand(argv, config) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
+    valueOptions: ["base", "scope", "model", "cwd", "brief"],
+    repeatableValueOptions: ["concern"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -10512,7 +10566,19 @@ async function handleReviewCommand(argv, config) {
     base: options.base,
     scope: options.scope
   });
-  config.validateRequest?.(target, focusText);
+  let brief = null;
+  if (options.brief) {
+    const result = loadBrief(options.brief);
+    if (!result.ok) {
+      throw new CliError(result.message, {
+        code: result.code,
+        exitClass: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
+      });
+    }
+    brief = result.brief;
+  }
+  const opusConcerns = Array.isArray(options.concern) ? options.concern : options.concern ? [options.concern] : [];
+  config.validateRequest?.(target, focusText, { brief, opusConcerns });
   const metadata = buildReviewJobMetadata(config.reviewName, target);
   const job = createCompanionJob({
     prefix: "review",
@@ -10530,6 +10596,8 @@ async function handleReviewCommand(argv, config) {
       scope: options.scope,
       model: options.model,
       focusText,
+      brief,
+      opusConcerns,
       reviewName: config.reviewName,
       onProgress: progress
     }),

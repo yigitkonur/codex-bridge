@@ -9,6 +9,11 @@ Target: {{TARGET_LABEL}}
 User focus: {{USER_FOCUS}}
 </task>
 
+<orchestrator_concerns>
+The orchestrator (Opus) has been watching the worker's run and is calling this review with a privileged channel of focused concerns. Treat each item below as a high-priority focus area: weight findings against these specific risks at least as heavily as open-ended exploration. If you cannot defend a listed concern from the repository context, say so explicitly in the summary so the orchestrator knows the concern was considered and dismissed rather than missed.
+{{OPUS_CONCERNS}}
+</orchestrator_concerns>
+
 <operating_stance>
 Default to skepticism.
 Assume the change can fail in subtle, high-cost, or user-visible ways until the evidence says otherwise.
