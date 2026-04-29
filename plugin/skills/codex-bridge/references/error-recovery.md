@@ -39,7 +39,7 @@ The `[ERROR]` block on the events file carries an `origin:` line. Same field sho
 |---|---|
 | `idle` | Increase `--idle-timeout-ms`; relaunch. |
 | `turn` | Increase `--turn-default-ms` / `--turn-plan-ms`. |
-| `pipeline:<stage>` | Read `failing_stage:`; rerun review only with `review --task <id>`. |
+| `pipeline:<stage>` | Read `failing_stage:`; rerun review from the task worktree with `--cwd <worktree.path> --base <worktree.base_ref>`. |
 | `upstream:transport` | Bridge auto-retries 3×; on exhaust, send the same prompt fresh. |
 | `upstream:compact-proxy` | Tighten the brief; required-reads is too wide. |
 | `upstream:response-chain-lost` | New task. The resp_id is dead. Pair with `[HANDOFF]` block in events. |

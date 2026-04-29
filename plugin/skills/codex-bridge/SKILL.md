@@ -30,7 +30,7 @@ Codex is the executor; you are the orchestrator. Most of the wiring is in the ru
 - Adversarial review where you want to weight findings against specific risks.
 - Background coding job you want to tail without burning Opus turns on the implementation.
 - A `[QUESTION]` or `[PLAN]` to respond to.
-- Closed-loop iteration until verdict=approved (use `/codex-bridge:iterate`).
+- Manual task→review→verdict→merge loops; `/codex-bridge:iterate` currently returns the next manual action.
 
 **Don't trigger** when:
 
@@ -46,7 +46,7 @@ You almost never have to remember the wiring — the hooks do it:
 - **PreToolUse(Bash)** auto-rejects `task --write` invocations missing `--worktree-auto`. Worktree isolation is the canonical write-mode contract.
 - **PostToolUse(Bash)** parses the `--json` envelope and emits an `additionalContext` block with the literal Monitor invocation. You arm it on the next turn — no manual derivation.
 - **SessionStart** injects running-job status into context, so you start every session oriented.
-- **Stop** blocks if any approved-but-unmerged verdict is pending. Resolve before exiting.
+- **Stop** can run the opt-in stop-time review gate. Pending verdicts are surfaced through `verdicts --pending`; check and resolve them before exiting.
 
 When a hook misbehaves, set `CODEX_BRIDGE_HOOK_DISABLE=<name>` (or `=all`) and re-run.
 
@@ -85,7 +85,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" version --json | jq '.resu
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" status <task_id> --json | jq '.result.capabilities'
 ```
 
-The active backend's `capabilities` object names the booleans you should branch on (`supports_questions`, `supports_resume`, `supports_worktree`, `supports_artifact_registry`, `supports_iteration_chain`, …). v2.0 ships only the codex backend; future adapters declare their own. Don't hard-code "codex behavior" in slash commands — branch on the capability you actually need.
+The active backend's `capabilities` object names the booleans you should branch on (`supports_questions`, `supports_resume`, `supports_worktree`, `supports_artifact_registry`, …). v2.0 ships only the codex backend; future adapters declare their own. Don't hard-code "codex behavior" in slash commands — branch on the capability you actually need.
 
 ## Identifiers
 
@@ -100,23 +100,23 @@ Two IDs flow through every task. Use the right one or commands fail:
 
 Write-mode tasks land in `<repo>/../.codex-bridge-worktrees/<task_id>` on a `subagent/codex/<task_id>` branch. The worktree is **not** auto-removed on completion — you must:
 
-1. Run `/codex-bridge:review <task_id>` (or rely on `/codex-bridge:iterate` to do it for you).
+1. Read `<jobs>/<task_id>/meta.json`, then run `adversarial-review --cwd <worktree.path> --base <worktree.base_ref>` with the same brief.
 2. Inspect the verdict: `/codex-bridge:verdict <task_id>` or read `<jobs>/<task_id>/verdict.json`.
-3. If `verdict=approved`: `/codex-bridge:merge <task_id>` (gated; refuses if verdict isn't approved). The Stop gate blocks session exit while approved-but-unmerged verdicts exist.
-4. If `verdict=needs-attention` or `must-fix`: `/codex-bridge:iterate <task_id>` to re-brief and re-dispatch, or `/codex-bridge:verdict <task_id> --discard` to abandon.
+3. If `verdict=approved`: `/codex-bridge:merge <task_id>` (gated; refuses if verdict isn't approved). `verdicts --pending` shows approved-but-unmerged work.
+4. If `verdict=needs-attention` or `must-fix`: re-brief and re-dispatch manually, use `/codex-bridge:iterate <task_id>` for the next-action stub, or `/codex-bridge:verdict <task_id> --discard` to abandon.
 
 ## Pointers
 
 Everything below is owned by another canonical surface. Read those when you need the detail; don't expect SKILL.md to mirror them.
 
 - **Per-subcommand reference** — `node …/codex-bridge.mjs <sub> --help`. The `--json` envelope's `error.code`, `error.suggestion`, and `result.next_action.command` are also self-documenting.
-- **Tag glossary** — `events --schema --json` emits the canonical list. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary.
-- **Config keys** — `config show --json --schema` prints the merged config + JSON schema. Edit `~/.codex-bridge/config.yaml` or `<workspace>/.codex-bridge.yaml`; the resolution order is documented there.
+- **Event stream** — `events --help` shows the supported filters. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary.
+- **Config keys** — `config show --json` prints the merged config. Edit `~/.codex-bridge/config.yaml` or `<workspace>/.codex-bridge.yaml`; the resolution order is documented there.
 - **Error decision tree** — `references/error-recovery.md` (decision tree by `error.code` + `origin`).
 - **Brief composition** — `references/brief-composition.md` (full schema + when to use which field).
 - **One canonical orchestration flow** — `references/orchestration-flows.md`.
-- **Notification format** — `references/notification-format.md` (judgment-only; the schema is owned by `events --schema`).
+- **Notification format** — `references/notification-format.md` (judgment-only; current CLI details are owned by `events --help`).
 - **Monitor patterns** — `references/monitor-patterns.md` (Preset A only; everything else has been removed).
 - **Re-bloat prevention** — `references/AGENTS.md` (read before adding a new reference file).
 
-When in doubt: ask the runtime first (`--json --schema`, `config show`, `events --schema`), then read prose. Prose ages; the runtime is canonical.
+When in doubt: ask the runtime first (`<subcommand> --help`, `config show --json`, `version --json`), then read prose. Prose ages; the runtime is canonical.

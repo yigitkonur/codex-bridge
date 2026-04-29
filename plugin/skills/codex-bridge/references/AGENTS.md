@@ -9,8 +9,8 @@ The v1.x skill grew to 22,061 words across 9 files. v2.0 ships at ~3,200. Anythi
 
 ## Three gates a new `references/*.md` must clear
 
-1. **CLI-derivability gate.** If the content can be emitted by an existing or near-future `--help`/`--schema`/`--json` flag, it lives in the CLI, not in markdown. Don't duplicate the envelope shape, exit codes, terminal tag list, config keys, or per-subcommand flag tables — they're owned by `--help --json` and `events --schema`.
-2. **Hook-enforceability gate.** If the content is "always do X before Y" or "warn if Z," it belongs in a hook, not in prose. The PreToolUse, PostToolUse, Stop, and SessionStart hooks already enforce the canonical wiring; prose should explain *judgment*, not procedure.
+1. **CLI-derivability gate.** If the content can be emitted by an existing `--help`, `--json`, or schema flag, it lives in the CLI, not in markdown. Don't duplicate the envelope shape, exit codes, or per-subcommand flag tables — they're owned by the runtime.
+2. **Hook-enforceability gate.** If the content is "always do X before Y" or "warn if Z," it belongs in a hook, not in prose. PreToolUse, PostToolUse, Stop, and SessionStart should enforce or surface canonical wiring where they actually do so; prose should explain *judgment*, not promise future procedure.
 3. **Context-injectability gate.** If the content is conditional on capability X or differs per backend, surface it via `result.adapter_capabilities` at runtime. Don't fan it out across files — they will drift.
 
 ## Word budgets
@@ -27,7 +27,7 @@ Only the things the runtime cannot tell you:
 - **Recovery decision trees** keyed on `error.code` (the codes themselves come from envelopes).
 - **One canonical flow** — not three.
 
-Everything else is owned by `--help`, `--schema`, `events --schema`, `config show --json --schema`, or `version --json::result.adapter_capabilities`.
+Everything else is owned by `<subcommand> --help`, `config show --json`, `version --json::result.adapter_capabilities`, or a runtime schema command once that command exists.
 
 ## When you find drift
 

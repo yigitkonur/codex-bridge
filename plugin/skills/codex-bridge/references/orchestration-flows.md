@@ -1,6 +1,6 @@
 # Orchestration flow — one canonical loop
 
-The full plan→execute→review→merge loop, written for an Opus-driver. Everything else is a degenerate case of this.
+The full plan→execute→review→merge loop, written for an Opus-driver. In v2.0.0, the dispatch, review, verdict, and merge commands are wired; the multi-round `iterate` automation is staged, so run the loop manually until it lands.
 
 ## The loop
 
@@ -14,7 +14,7 @@ Brief ──▶ task --background --worktree-auto --brief ──▶ Monitor (aut
                                                        [DONE] / [INCOMPLETE]
                                                           │
                                                           ▼
-                                              adversarial-review --task <id> --brief
+                         adversarial-review --cwd <worktree.path> --base <base_ref>
                                                           │
                                                           ▼
                                                   verdict.json written
@@ -23,7 +23,7 @@ Brief ──▶ task --background --worktree-auto --brief ──▶ Monitor (aut
                                           approved   needs-attention  must-fix
                                               │           │           │
                                               ▼           ▼           ▼
-                                            merge      iterate     iterate or discard
+                                            merge   re-brief + rerun   discard
 ```
 
 ## Setup (once per task)
@@ -70,13 +70,14 @@ Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`. While it streams:
 
 ## Review
 
-When Monitor terminates, run an adversarial review against the worktree. Use the same brief — its `specific_concerns` flow into the reviewer's `{{OPUS_CONCERNS}}` slot:
+When Monitor terminates, read `<jobs>/<task_id>/meta.json` and run an adversarial review from the recorded worktree path against its recorded base ref. Use the same brief — its `specific_concerns` flow into the reviewer's `{{OPUS_CONCERNS}}` slot:
 
 ```
-/codex-bridge:adversarial-review --task <task_id> --brief @brief.json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review \
+  --cwd "<worktree.path>" --base "<worktree.base_ref>" --brief @brief.json
 ```
 
-Or use the closed-loop iterate command, which handles review + verdict + re-dispatch automatically up to N rounds:
+`iterate` is present but not yet automated; today it returns a structured next-action stub for the manual loop:
 
 ```
 /codex-bridge:iterate <task_id> --max 3 --brief @brief.json
@@ -84,7 +85,7 @@ Or use the closed-loop iterate command, which handles review + verdict + re-disp
 
 ## Verdict and merge
 
-`adversarial-review` writes `<jobs>/<task_id>/review.json`. Convert it (or the iterate loop's auto-decision) into a verdict:
+`adversarial-review` writes review output. Convert it into a verdict:
 
 ```
 /codex-bridge:verdict <task_id> --set approved --summary "Tests green; concerns dismissed."
@@ -93,9 +94,9 @@ Or use the closed-loop iterate command, which handles review + verdict + re-disp
 /codex-bridge:verdict <task_id> --discard
 ```
 
-If approved: `/codex-bridge:merge <task_id>` runs acceptance tests (if declared), rebases onto a fresh base, and either fast-forwards or opens a PR (`--pr`). The merge is gated — refuses when verdict ≠ approved.
+If approved: `/codex-bridge:merge <task_id>` fetches the recorded base ref, checks it out, and fast-forwards it to the task branch. The merge is gated — refuses when verdict ≠ approved. Run acceptance tests yourself before setting `approved`.
 
-The Stop hook blocks session exit while any approved-but-unmerged verdict exists. Resolve before stopping.
+Before stopping, run `/codex-bridge:verdicts --pending` and resolve approved-but-unmerged or needs-attention work.
 
 ## Parallel jobs
 

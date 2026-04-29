@@ -1,6 +1,6 @@
 # Notification format — judgment
 
-The canonical tag glossary lives at `events --schema` (run it; the JSON output enumerates every tag the bridge emits and what each carries). This file covers only the *judgment* — when each tag matters for orchestration.
+The event command contract lives at `events --help`; this file covers the *judgment* — when each tag matters for orchestration.
 
 ## Two semantic buckets
 
