@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yigitkonur/codex-bridge/schemas/brief.schema.json",
+  "title": "Codex-Bridge Brief",
+  "description": "Structured handoff document for `task --brief @path.json`. Captures the orchestrator's privileged context (goal, worker assignment, behavior digest, specific concerns, acceptance criteria) so the worker subagent has everything it needs without re-deriving from scratch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["goal", "worker_assignment"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Pinned to 1.0 in v2.0; bumps on breaking field changes."
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph distillation of the user-facing outcome."
+    },
+    "worker_assignment": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "description": "What the adapter must actually do, written for the adapter (not the user)."
+    },
+    "behavior_digest_seed": {
+      "type": "string",
+      "maxLength": 8000,
+      "description": "What the orchestrator already knows about prior worker behavior (from Monitor events)."
+    },
+    "specific_concerns": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 },
+      "description": "Concrete issues the orchestrator wants the worker to address. Surfaces in `prompts/adversarial-review.md` as `{{OPUS_CONCERNS}}`."
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 },
+      "description": "Testable conditions for `done`."
+    },
+    "parent_task_id": {
+      "type": "string",
+      "pattern": "^(task|review)-[A-Za-z0-9._-]+$",
+      "description": "For iteration loops; links a child task to its parent in the artifact registry."
+    },
+    "backend_hint": {
+      "type": "string",
+      "enum": ["codex"],
+      "description": "Preferred adapter. Only `codex` valid in v2.0; expanded as adapters land."
+    },
+    "iteration_max": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "description": "Closed-loop cap for `--iterate`. Defaults to 3 when omitted."
+    },
+    "trust_budget_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auto_merge_max_diff_lines": { "type": "integer", "minimum": 0 },
+        "auto_merge_max_files":      { "type": "integer", "minimum": 0 },
+        "auto_merge_max_iterations": { "type": "integer", "minimum": 1 }
+      },
+      "description": "Task-specific budget for the auto-merge gate."
+    }
+  }
+}
