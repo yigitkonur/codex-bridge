@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// PostToolUse hook on the `Bash` tool — when a codex-bridge task that
-// returned with a Monitor.tool_hint just completed, surface the literal
-// Monitor invocation as additionalContext so Claude arms it on the
-// next turn. Removes the "always remember to arm the Monitor" rule
-// from SKILL.md and turns it into a deterministic auto-arm.
+// PostToolUse hook on `Bash` and parent `Agent` calls — when a
+// codex-bridge task that returned with a Monitor.tool_hint just
+// completed, surface the literal Monitor invocation as additionalContext
+// so Claude arms it on the next turn. Removes the "always remember to
+// arm the Monitor" rule from SKILL.md and turns it into a deterministic
+// auto-arm.
 //
-// Idempotence: each jobId gets armed at most once per session — track
-// in ~/.codex-bridge/hook-state/<workspace>/seen-jobs.txt.
+// Idempotence: each jobId gets armed at most once per hook surface per
+// session — track in ~/.codex-bridge/hook-state/<workspace>/seen-*.txt.
 //
 // Failure mode: any error logs to ~/.codex-bridge/hook-errors and the
 // hook exits 0 with no additionalContext. PostToolUse hooks can't
@@ -21,9 +22,11 @@ import process from "node:process";
 import { createHash } from "node:crypto";
 
 const HOOK_NAME = "post-tool-bash";
-
-const BRIDGE_TASK_PATTERN =
-  /(?:^|[\s;&|])(?:node\s+)?["']?(?:[^\s"'`]*\bcodex-bridge(?:\.mjs)?)["']?\s+task\b/;
+const RUNNER_AGENT_TYPES = new Set([
+  "codex-bridge:codex-bridge-runner",
+  "codex-bridge-runner",
+]);
+const JOB_ID_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
 
 function logHookError(err) {
   try {
@@ -54,15 +57,15 @@ function workspaceKey(cwd) {
   return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
 }
 
-function seenJobsFile(cwd) {
+function seenJobsFile(cwd, surface) {
   const dir = path.join(os.homedir(), ".codex-bridge", "hook-state", workspaceKey(cwd));
   fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, "seen-jobs.txt");
+  return path.join(dir, `seen-${surface}-jobs.txt`);
 }
 
-function isJobAlreadyArmed(cwd, jobId) {
+function isJobAlreadyArmed(cwd, surface, jobId) {
   try {
-    const f = seenJobsFile(cwd);
+    const f = seenJobsFile(cwd, surface);
     if (!fs.existsSync(f)) return false;
     const text = fs.readFileSync(f, "utf8");
     return text.split("\n").includes(jobId);
@@ -71,28 +74,151 @@ function isJobAlreadyArmed(cwd, jobId) {
   }
 }
 
-function markJobArmed(cwd, jobId) {
+function markJobArmed(cwd, surface, jobId) {
   try {
-    const f = seenJobsFile(cwd);
+    const f = seenJobsFile(cwd, surface);
     fs.appendFileSync(f, `${jobId}\n`);
   } catch (err) {
     logHookError(err);
   }
 }
 
+function splitCommandWords(raw) {
+  const tokens = [];
+  let current = "";
+  let quote = null;
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i];
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else current += ch;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+        continue;
+      }
+      if (ch === "\\" && i + 1 < raw.length) {
+        current += raw[i + 1];
+        i += 1;
+        continue;
+      }
+      current += ch;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+
+    if (ch === "\\" && i + 1 < raw.length) {
+      current += raw[i + 1];
+      i += 1;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function isEnvAssignment(token) {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+
+function isNodeToken(token) {
+  if (!token) return false;
+  const base = path.basename(token).toLowerCase();
+  return base === "node" || base === "node.exe";
+}
+
+function isBridgeScriptToken(token) {
+  if (!token) return false;
+  const base = path.basename(token);
+  return base === "codex-bridge.mjs" || base === "codex-bridge";
+}
+
+function bridgeTaskIndex(tokens) {
+  let index = 0;
+  while (index < tokens.length && isEnvAssignment(tokens[index])) index += 1;
+  if (tokens[index] === "command") index += 1;
+
+  if (isNodeToken(tokens[index]) && isBridgeScriptToken(tokens[index + 1]) && tokens[index + 2] === "task") {
+    return index + 2;
+  }
+  if (isBridgeScriptToken(tokens[index]) && tokens[index + 1] === "task") {
+    return index + 1;
+  }
+  return -1;
+}
+
+function flagEnabled(tokens, startIndex, flag) {
+  for (const token of tokens.slice(startIndex + 1)) {
+    if (token === flag) return true;
+    if (token.startsWith(`${flag}=`)) {
+      const value = token.slice(flag.length + 1).toLowerCase();
+      return value !== "false" && value !== "0";
+    }
+  }
+  return false;
+}
+
+function agentType(input) {
+  return input.agent_type ?? input.subagent_type ?? input.tool_input?.agent_type ?? input.tool_input?.subagent_type ?? "";
+}
+
 function isCodexBridgeTaskInvocation(input) {
+  if (RUNNER_AGENT_TYPES.has(agentType(input))) return false;
+
   const command = input.tool_input?.command;
   if (!command || typeof command !== "string") return false;
-  if (!BRIDGE_TASK_PATTERN.test(command)) return false;
+  const tokens = splitCommandWords(command);
+  const taskIndex = bridgeTaskIndex(tokens);
+  if (taskIndex === -1) return false;
   // Only auto-arm for --background; foreground tasks return text inline
   // and don't need a Monitor.
   const isBackground =
-    /(?:^|\s)--background(?:\s|$)/.test(command) ||
+    flagEnabled(tokens, taskIndex, "--background") ||
     input.tool_input?.run_in_background === true;
   if (!isBackground) return false;
   // The task must have requested --json so the envelope is parseable.
-  if (!/(?:^|\s)--json(?:\s|$)/.test(command)) return false;
+  if (!flagEnabled(tokens, taskIndex, "--json")) return false;
   return true;
+}
+
+function isCodexBridgeAgentInvocation(input) {
+  return input.tool_name === "Agent" && RUNNER_AGENT_TYPES.has(input.tool_input?.subagent_type);
+}
+
+function extractResponseText(input) {
+  const response = input.tool_response;
+  if (typeof response === "string") return response;
+  if (!response || typeof response !== "object") return null;
+  for (const key of ["stdout", "content", "text", "result", "output"]) {
+    if (typeof response[key] === "string") return response[key];
+  }
+  if (Array.isArray(response.content)) {
+    return response.content
+      .map((block) => (typeof block === "string" ? block : block?.text))
+      .filter((text) => typeof text === "string")
+      .join("\n");
+  }
+  return null;
 }
 
 function parseEnvelope(stdout) {
@@ -104,16 +230,54 @@ function parseEnvelope(stdout) {
   }
 }
 
+function hasShellControl(command) {
+  return /[;&|`<>]/.test(command);
+}
+
+function isSafeMonitorCommand(command, jobId) {
+  if (!command || typeof command !== "string") return false;
+  if (command.length > 1000 || hasShellControl(command)) return false;
+  const tokens = splitCommandWords(command);
+  let eventsIndex = -1;
+  if (isNodeToken(tokens[0]) && isBridgeScriptToken(tokens[1]) && tokens[2] === "events") {
+    eventsIndex = 2;
+  } else if (isBridgeScriptToken(tokens[0]) && tokens[1] === "events") {
+    eventsIndex = 1;
+  }
+  if (eventsIndex === -1) return false;
+  if (tokens[eventsIndex + 1] !== jobId) return false;
+  return tokens.slice(eventsIndex + 2).includes("--follow");
+}
+
+function sanitizeMonitorHint(hint, jobId) {
+  if (!hint || typeof hint !== "object" || Array.isArray(hint)) return null;
+  if (!isSafeMonitorCommand(hint.command, jobId)) return null;
+  const timeout = Number.isSafeInteger(hint.timeout_ms) && hint.timeout_ms > 0
+    ? Math.min(hint.timeout_ms, 3_600_000)
+    : 3_600_000;
+  return {
+    description: typeof hint.description === "string" && hint.description
+      ? hint.description.slice(0, 300)
+      : "codex-bridge task events",
+    command: hint.command,
+    timeout_ms: timeout,
+    persistent: hint.persistent === true,
+  };
+}
+
 function extractMonitorHint(envelope) {
+  if (envelope?.ok !== true || envelope?.command !== "task") return null;
   const r = envelope?.result;
   if (!r) return null;
   const phase = r.phase;
   if (phase && !["queued", "running"].includes(phase)) return null;
   const jobId = r.jobId ?? r.job_id;
-  if (!jobId) return null;
+  if (!jobId || typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) return null;
   const monitor = r.monitor ?? r.monitor_hint;
   if (!monitor) return null;
-  return { jobId, hint: monitor.tool_hint ?? monitor };
+  const hint = sanitizeMonitorHint(monitor.tool_hint ?? monitor, jobId);
+  if (!hint) return null;
+  return { jobId, hint };
 }
 
 function main() {
@@ -131,18 +295,23 @@ function main() {
     return;
   }
 
-  if (input.tool_name !== "Bash") {
+  if (input.tool_name !== "Bash" && input.tool_name !== "Agent") {
     process.stdout.write('{"continue":true}');
     return;
   }
 
-  if (!isCodexBridgeTaskInvocation(input)) {
+  const surface = input.tool_name === "Agent" ? "agent" : "bash";
+  const shouldInspect =
+    input.tool_name === "Agent"
+      ? isCodexBridgeAgentInvocation(input)
+      : isCodexBridgeTaskInvocation(input);
+  if (!shouldInspect) {
     process.stdout.write('{"continue":true}');
     return;
   }
 
-  const envelope = parseEnvelope(input.tool_response?.stdout);
-  if (!envelope || envelope.ok === false) {
+  const envelope = parseEnvelope(extractResponseText(input));
+  if (!envelope) {
     process.stdout.write('{"continue":true}');
     return;
   }
@@ -154,12 +323,12 @@ function main() {
   }
 
   const cwd = input.cwd ?? process.cwd();
-  if (isJobAlreadyArmed(cwd, monitor.jobId)) {
+  if (isJobAlreadyArmed(cwd, surface, monitor.jobId)) {
     process.stdout.write('{"continue":true}');
     return;
   }
 
-  markJobArmed(cwd, monitor.jobId);
+  markJobArmed(cwd, surface, monitor.jobId);
 
   const block = [
     "## Codex-Bridge: arm the Monitor for this background job",
