@@ -51,7 +51,8 @@ import {
     withAppServer
   } from "./adapters/codex/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, createSubagentWorktree, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import { writeMeta } from "./lib/registry.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
 import {
@@ -3461,7 +3462,7 @@ async function handleTask(argv) {
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
       "question-timeout-ms"
     ],
-    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto"],
     aliasMap: {
       m: "model"
     }
@@ -3491,8 +3492,54 @@ async function handleTask(argv) {
   // actually wants it.
   const quietMode = Boolean(options.quiet) || (Boolean(options.json) && options.quiet !== false);
 
-  const cwd = resolveCommandCwd(options);
+  let cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+
+  // --worktree-auto isolates write-mode tasks inside a per-task worktree
+  // at <repoRoot>/../.codex-bridge-worktrees/<task_id> on a branch named
+  // subagent/codex/<task_id>. The branch + worktree are created here
+  // BEFORE adapter dispatch; the dispatch then runs with cwd pointing
+  // at the worktree path. The PreToolUse(Bash) hook in T24 enforces
+  // this flag for write-mode invocations to prevent half-baked diffs
+  // landing in the user's main checkout.
+  let worktreeInfo = null;
+  if (options["worktree-auto"]) {
+    if (Boolean(options["read-only"])) {
+      throw conflictError(
+        "--worktree-auto is only meaningful for write-mode tasks; --read-only conflicts.",
+        "WORKTREE_READ_ONLY_CONFLICT",
+      );
+    }
+    const wtTaskId = generateJobId();
+    try {
+      worktreeInfo = createSubagentWorktree({
+        cwd,
+        taskId: wtTaskId,
+        backend: "codex",
+      });
+      try {
+        writeMeta(wtTaskId, {
+          backend: "codex",
+          worktree: worktreeInfo,
+          isolation_mode: worktreeInfo.isolation_mode,
+          base_ref: worktreeInfo.base_ref,
+          base_sha: worktreeInfo.base_sha,
+          phase: "queued",
+        });
+      } catch {
+        // Registry writes are best-effort — never block dispatch.
+      }
+      if (worktreeInfo.isolation_mode === "worktree") {
+        cwd = worktreeInfo.path;
+      }
+    } catch (err) {
+      throw new CliError(
+        `failed to create subagent worktree for ${wtTaskId}: ${err.message ?? err}`,
+        { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" },
+      );
+    }
+  }
+
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
