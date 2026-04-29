@@ -9163,7 +9163,7 @@ function extractItemText(item) {
 }
 var COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--read-only] [--worktree-auto] [--backend <name>] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--no-hooks] [--json] [prompt or file.md]",
+    synopsis: "task [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree (T17/T18). --brief @path.json projects a structured brief (T16) and persists it under the artifact registry.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -9296,10 +9296,9 @@ var COMMANDS = Object.freeze({
   },
   merge: {
     synopsis: "merge <task-id> [--pr] [--no-tests] [--json]",
-    summary: "Merge an approved codex-bridge task back into the base branch. Gated: refuses if verdict.json \u2260 approved (exit 5 VERDICT_NOT_APPROVED). Runs acceptance_criteria.tests_command if declared, rebases onto fresh base, then either fast-forwards or opens a PR with brief + verdict in the body.",
+    summary: "Fast-forward an approved codex-bridge task branch into its recorded base branch. Gated: refuses if verdict.json \u2260 approved (exit 5 VERDICT_NOT_APPROVED). Fetches origin/base best-effort and uses --ff-only; acceptance-test execution and --pr creation are deferred in v2.0.",
     examples: [
       "codex-bridge merge task-mo5xxx",
-      "codex-bridge merge task-mo5xxx --pr",
       "codex-bridge merge task-mo5xxx --no-tests --json"
     ]
   },
@@ -9319,8 +9318,8 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge verdicts --pending --json"]
   },
   iterate: {
-    synopsis: "iterate <task-id-or-prompt> [--max <n>] [--brief @<path>.json] [--backend <name>] [--write] [--json]",
-    summary: "Closed-loop dispatch \u2192 review \u2192 verdict \u2192 re-dispatch up to N rounds (default 3). Each round produces a sibling task directory with parent_task_id linking back. Re-briefs with the previous round's review findings. Stops on verdict=approved or iteration limit. Result envelope's result.iterations[] carries the loop history.",
+    synopsis: "iterate <task-id-or-prompt> [--max <n>] [--brief @<path>.json] [--write] [--json]",
+    summary: "Stage the closed-loop workflow for v2.0. Returns a manual next_action for task \u2192 review \u2192 verdict \u2192 merge; it does not run multi-round iteration yet.",
     examples: [
       "codex-bridge iterate task-mo5xxx --max 3",
       "codex-bridge iterate --brief @brief.json --write --json"
