@@ -9,8 +9,8 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "1.5.0",
-  description: "Claude Code skill that orchestrates Codex via Monitor tool notifications",
+  version: "2.0.0",
+  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
   type: "module",
   scripts: {
     build: "node esbuild.config.mjs",
@@ -10217,14 +10217,20 @@ function extractItemText(item) {
 }
 var COMMANDS = Object.freeze({
   task: {
+<<<<<<< HEAD
     synopsis: "task [--backend <name>] [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly.",
+=======
+    synopsis: "task [--write] [--read-only] [--worktree-auto] [--backend <name>] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--no-hooks] [--json] [prompt or file.md]",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree (T17/T18). --brief @path.json projects a structured brief (T16) and persists it under the artifact registry.",
+>>>>>>> 1f43ba6 (ship: bump to v2.0.0 + add merge/verdict/verdicts/iterate to --help (T30))
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
       "codex-bridge task --prompt-file prompt.md --effort high --write",
       "codex-bridge task --resume-last --write",
-      'codex-bridge task --background --write "Rewrite tests" --json'
+      'codex-bridge task --background --write "Rewrite tests" --json',
+      "codex-bridge task --background --write --worktree-auto --brief @brief.json --json"
     ]
   },
   send: {
@@ -10257,12 +10263,22 @@ var COMMANDS = Object.freeze({
     ]
   },
   "adversarial-review": {
+<<<<<<< HEAD
     synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [--brief @<path>.json] [--concern <text>]... [-m <model>] [--json] [focus text...]",
     summary: "Run an adversarial review with a structured JSON result.",
     examples: [
       'codex-bridge adversarial-review "focus on SQL injection risks"',
       'codex-bridge adversarial-review --brief @review-brief.json --concern "check auth fallback"',
       "codex-bridge adversarial-review --scope branch --base main"
+=======
+    synopsis: "adversarial-review [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--brief @<path>.json] [--concern <text>]... [--json] [focus text...]",
+    summary: "Run an adversarial review with a structured JSON result. --brief and --concern populate the {{OPUS_CONCERNS}} channel in the prompt \u2014 the orchestrator's privileged focus signal. Brief items precede flag items and are de-duped while preserving order.",
+    examples: [
+      'codex-bridge adversarial-review "focus on SQL injection risks"',
+      "codex-bridge adversarial-review --scope branch --base main",
+      "codex-bridge adversarial-review --brief @brief.json",
+      `codex-bridge adversarial-review --concern "Don't swallow non-retryable 4xx" --concern "Make timeout configurable"`
+>>>>>>> 1f43ba6 (ship: bump to v2.0.0 + add merge/verdict/verdicts/iterate to --help (T30))
     ]
   },
   iterate: {
@@ -10362,6 +10378,7 @@ var COMMANDS = Object.freeze({
     summary: "Report the latest resumable task for this Claude session (useful before `task --resume`).",
     examples: ["codex-bridge task-resume-candidate --json"]
   },
+<<<<<<< HEAD
   verdict: {
     synopsis: "verdict <task_id> [--set approved|needs-attention|must-fix] [--summary <text>] [--finding <text>] [--reviewer <name>] [--discard] [--json]",
     summary: "Read, write, or discard a task's post-review verdict artifact.",
@@ -10369,12 +10386,44 @@ var COMMANDS = Object.freeze({
       "codex-bridge verdict task-abc",
       'codex-bridge verdict task-abc --set approved --summary "review passed" --json',
       "codex-bridge verdict task-abc --discard"
+=======
+  merge: {
+    synopsis: "merge <task-id> [--pr] [--no-tests] [--json]",
+    summary: "Merge an approved codex-bridge task back into the base branch. Gated: refuses if verdict.json \u2260 approved (exit 5 VERDICT_NOT_APPROVED). Runs acceptance_criteria.tests_command if declared, rebases onto fresh base, then either fast-forwards or opens a PR with brief + verdict in the body.",
+    examples: [
+      "codex-bridge merge task-mo5xxx",
+      "codex-bridge merge task-mo5xxx --pr",
+      "codex-bridge merge task-mo5xxx --no-tests --json"
+    ]
+  },
+  verdict: {
+    synopsis: "verdict <task-id> [--set approved|needs-attention|must-fix --summary <text> [--finding <text>]... | --discard] [--json]",
+    summary: "Read or write a task's verdict.json. Read mode (no flags) prints the current verdict. Write mode (--set) persists; idempotent on retries. --discard removes the artifact directory and clears the Stop gate's pending list. The Stop hook blocks while approved verdicts are unmerged.",
+    examples: [
+      "codex-bridge verdict task-mo5xxx",
+      'codex-bridge verdict task-mo5xxx --set approved --summary "Tests green; concerns dismissed."',
+      'codex-bridge verdict task-mo5xxx --set must-fix --finding "Drops 4xx errors silently" --json',
+      "codex-bridge verdict task-mo5xxx --discard"
+>>>>>>> 1f43ba6 (ship: bump to v2.0.0 + add merge/verdict/verdicts/iterate to --help (T30))
     ]
   },
   verdicts: {
     synopsis: "verdicts --pending [--json]",
+<<<<<<< HEAD
     summary: "List unresolved task verdicts that still need merge, iteration, or discard.",
     examples: ["codex-bridge verdicts --pending --json"]
+=======
+    summary: "Flat list of approved-but-unmerged or needs-attention verdicts. Used by the Stop gate hook to decide whether to block session exit. Idempotent.",
+    examples: ["codex-bridge verdicts --pending --json"]
+  },
+  iterate: {
+    synopsis: "iterate <task-id-or-prompt> [--max <n>] [--brief @<path>.json] [--backend <name>] [--write] [--json]",
+    summary: "Closed-loop dispatch \u2192 review \u2192 verdict \u2192 re-dispatch up to N rounds (default 3). Each round produces a sibling task directory with parent_task_id linking back. Re-briefs with the previous round's review findings. Stops on verdict=approved or iteration limit. Result envelope's result.iterations[] carries the loop history.",
+    examples: [
+      "codex-bridge iterate task-mo5xxx --max 3",
+      "codex-bridge iterate --brief @brief.json --write --json"
+    ]
+>>>>>>> 1f43ba6 (ship: bump to v2.0.0 + add merge/verdict/verdicts/iterate to --help (T30))
   }
 });
 var EXIT_CODE_DOC = [

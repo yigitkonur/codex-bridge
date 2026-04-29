@@ -546,14 +546,15 @@ function extractItemText(item) {
 // table as the CLI contract and update it in the same commit as any flag move.
 const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--backend <name>] [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly.",
+    synopsis: "task [--write] [--read-only] [--worktree-auto] [--backend <name>] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--no-hooks] [--json] [prompt or file.md]",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree (T17/T18). --brief @path.json projects a structured brief (T16) and persists it under the artifact registry.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
       "codex-bridge task --prompt-file prompt.md --effort high --write",
       "codex-bridge task --resume-last --write",
-      'codex-bridge task --background --write "Rewrite tests" --json'
+      'codex-bridge task --background --write "Rewrite tests" --json',
+      "codex-bridge task --background --write --worktree-auto --brief @brief.json --json"
     ]
   },
   send: {
@@ -586,12 +587,13 @@ const COMMANDS = Object.freeze({
     ]
   },
   "adversarial-review": {
-    synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [--brief @<path>.json] [--concern <text>]... [-m <model>] [--json] [focus text...]",
-    summary: "Run an adversarial review with a structured JSON result.",
+    synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--brief @<path>.json] [--concern <text>]... [--json] [focus text...]",
+    summary: "Run an adversarial review with a structured JSON result. --brief and --concern populate the {{OPUS_CONCERNS}} channel in the prompt — the orchestrator's privileged focus signal. Brief items precede flag items and are de-duped while preserving order.",
     examples: [
       'codex-bridge adversarial-review "focus on SQL injection risks"',
-      'codex-bridge adversarial-review --brief @review-brief.json --concern "check auth fallback"',
-      "codex-bridge adversarial-review --scope branch --base main"
+      "codex-bridge adversarial-review --scope branch --base main",
+      "codex-bridge adversarial-review --brief @brief.json",
+      'codex-bridge adversarial-review --concern "Don\'t swallow non-retryable 4xx" --concern "Make timeout configurable"'
     ]
   },
   iterate: {
@@ -692,17 +694,18 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge task-resume-candidate --json"]
   },
   verdict: {
-    synopsis: "verdict <task_id> [--set approved|needs-attention|must-fix] [--summary <text>] [--finding <text>] [--reviewer <name>] [--discard] [--json]",
-    summary: "Read, write, or discard a task's post-review verdict artifact.",
+    synopsis: "verdict <task-id> [--set approved|needs-attention|must-fix --summary <text> [--finding <text>]... | --discard] [--json]",
+    summary: "Read or write a task's verdict.json. Read mode (no flags) prints the current verdict. Write mode (--set) persists; idempotent on retries. --discard removes the artifact directory and clears the Stop gate's pending list. The Stop hook blocks while approved verdicts are unmerged.",
     examples: [
-      "codex-bridge verdict task-abc",
-      "codex-bridge verdict task-abc --set approved --summary \"review passed\" --json",
-      "codex-bridge verdict task-abc --discard"
+      "codex-bridge verdict task-mo5xxx",
+      'codex-bridge verdict task-mo5xxx --set approved --summary "Tests green; concerns dismissed."',
+      'codex-bridge verdict task-mo5xxx --set must-fix --finding "Drops 4xx errors silently" --json',
+      "codex-bridge verdict task-mo5xxx --discard"
     ]
   },
   verdicts: {
     synopsis: "verdicts --pending [--json]",
-    summary: "List unresolved task verdicts that still need merge, iteration, or discard.",
+    summary: "Flat list of approved-but-unmerged or needs-attention verdicts. Used by the Stop gate hook to decide whether to block session exit. Idempotent.",
     examples: ["codex-bridge verdicts --pending --json"]
   }
 });
