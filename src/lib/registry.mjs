@@ -30,6 +30,15 @@ import path from "node:path";
 
 export const REGISTRY_SCHEMA_VERSION = "1.0";
 
+export class RegistryReadError extends Error {
+  constructor(message, { filePath, cause } = {}) {
+    super(message, { cause });
+    this.name = "RegistryReadError";
+    this.code = "REGISTRY_READ_FAILED";
+    this.filePath = filePath ?? null;
+  }
+}
+
 export function registryRoot() {
   // Honor CODEX_BRIDGE_REGISTRY for tests.
   const override = process.env.CODEX_BRIDGE_REGISTRY;
@@ -69,10 +78,10 @@ export function writeMeta(taskId, meta) {
   }
   const dir = ensureJobDir(taskId);
   const payload = {
+    ...meta,
     schema_version: REGISTRY_SCHEMA_VERSION,
     task_id: taskId,
     written_at: new Date().toISOString(),
-    ...meta,
   };
   const target = path.join(dir, "meta.json");
   // Atomic write — temp file then rename. Avoids partial reads if a
@@ -85,11 +94,29 @@ export function writeMeta(taskId, meta) {
 
 export function readMeta(taskId) {
   const target = path.join(jobDir(taskId), "meta.json");
-  if (!fs.existsSync(target)) return null;
+  return readRegistryJson(target);
+}
+
+function readRegistryJson(target) {
+  let text;
   try {
-    return JSON.parse(fs.readFileSync(target, "utf8"));
-  } catch {
-    return null;
+    text = fs.readFileSync(target, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    throw new RegistryReadError(`Could not read registry file: ${target}`, {
+      filePath: target,
+      cause: error,
+    });
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new RegistryReadError(`Registry file is not valid JSON: ${target}`, {
+      filePath: target,
+      cause: error,
+    });
   }
 }
 
@@ -109,12 +136,7 @@ export function listTasks() {
 
 export function readVerdict(taskId) {
   const target = path.join(jobDir(taskId), "verdict.json");
-  if (!fs.existsSync(target)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(target, "utf8"));
-  } catch {
-    return null;
-  }
+  return readRegistryJson(target);
 }
 
 export function writeVerdict(taskId, verdict) {
@@ -128,10 +150,10 @@ export function writeVerdict(taskId, verdict) {
   }
   const dir = ensureJobDir(taskId);
   const payload = {
+    ...verdict,
     schema_version: REGISTRY_SCHEMA_VERSION,
     task_id: taskId,
     decided_at: new Date().toISOString(),
-    ...verdict,
   };
   const target = path.join(dir, "verdict.json");
   const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;

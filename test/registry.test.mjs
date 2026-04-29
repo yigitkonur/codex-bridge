@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   REGISTRY_SCHEMA_VERSION,
+  RegistryReadError,
   registryRoot,
   jobDir,
   existsTask,
@@ -22,12 +23,21 @@ function withTempRegistry(fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-registry-"));
   const prev = process.env.CODEX_BRIDGE_REGISTRY;
   process.env.CODEX_BRIDGE_REGISTRY = root;
-  try {
-    return fn(root);
-  } finally {
+  const cleanup = () => {
     if (prev === undefined) delete process.env.CODEX_BRIDGE_REGISTRY;
     else process.env.CODEX_BRIDGE_REGISTRY = prev;
     fs.rmSync(root, { recursive: true, force: true });
+  };
+  try {
+    const result = fn(root);
+    if (result && typeof result.then === "function") {
+      return result.finally(cleanup);
+    }
+    cleanup();
+    return result;
+  } catch (error) {
+    cleanup();
+    throw error;
   }
 }
 
@@ -55,6 +65,9 @@ test("writeMeta + readMeta round-trip with timestamp + schema_version", () => {
       model: "gpt-5.4",
       base_sha: "abc1234",
       phase: "running",
+      schema_version: "bad",
+      task_id: "spoofed-task",
+      written_at: "1999-01-01T00:00:00.000Z",
     };
     const target = writeMeta("task-xyz", meta);
     assert.ok(fs.existsSync(target));
@@ -62,6 +75,7 @@ test("writeMeta + readMeta round-trip with timestamp + schema_version", () => {
     const round = readMeta("task-xyz");
     assert.equal(round.task_id, "task-xyz");
     assert.equal(round.schema_version, REGISTRY_SCHEMA_VERSION);
+    assert.notEqual(round.written_at, "1999-01-01T00:00:00.000Z");
     assert.equal(round.backend, "codex");
     assert.equal(round.model, "gpt-5.4");
     assert.equal(round.phase, "running");
@@ -72,6 +86,30 @@ test("writeMeta + readMeta round-trip with timestamp + schema_version", () => {
 test("readMeta returns null for missing tasks", () => {
   withTempRegistry(() => {
     assert.equal(readMeta("does-not-exist"), null);
+  });
+});
+
+test("readMeta and readVerdict throw on corrupt JSON", () => {
+  withTempRegistry(() => {
+    const dir = ensureJobDir("task-corrupt");
+    const metaPath = path.join(dir, "meta.json");
+    const verdictPath = path.join(dir, "verdict.json");
+    fs.writeFileSync(metaPath, "{ nope\n", "utf8");
+    fs.writeFileSync(verdictPath, "{ nope\n", "utf8");
+
+    assert.throws(() => readMeta("task-corrupt"), (error) => {
+      assert.ok(error instanceof RegistryReadError);
+      assert.equal(error.code, "REGISTRY_READ_FAILED");
+      assert.equal(error.filePath, metaPath);
+      return true;
+    });
+
+    assert.throws(() => readVerdict("task-corrupt"), (error) => {
+      assert.ok(error instanceof RegistryReadError);
+      assert.equal(error.code, "REGISTRY_READ_FAILED");
+      assert.equal(error.filePath, verdictPath);
+      return true;
+    });
   });
 });
 
@@ -125,9 +163,15 @@ test("writeVerdict + readVerdict round-trip", () => {
       verdict: "needs-attention",
       summary: "two findings",
       findings: ["a", "b"],
+      schema_version: "bad",
+      task_id: "spoofed-task",
+      decided_at: "1999-01-01T00:00:00.000Z",
     });
     const round = readVerdict("task-v");
     assert.equal(round.verdict, "needs-attention");
+    assert.equal(round.task_id, "task-v");
+    assert.equal(round.schema_version, REGISTRY_SCHEMA_VERSION);
+    assert.notEqual(round.decided_at, "1999-01-01T00:00:00.000Z");
     assert.equal(round.summary, "two findings");
     assert.deepEqual(round.findings, ["a", "b"]);
     assert.match(round.decided_at, /^\d{4}-\d{2}-\d{2}T/);
@@ -149,13 +193,17 @@ test("appendEvent line-buffers to events.jsonl with timestamp", () => {
 });
 
 test("writeMeta is atomic — concurrent writers never see partial JSON", async () => {
-  await withTempRegistry(async () => {
+  await withTempRegistry(async (root) => {
     const writers = [];
     for (let i = 0; i < 10; i++) {
       writers.push(
-        Promise.resolve().then(() =>
-          writeMeta("task-race", { iteration: i }),
-        ),
+        Promise.resolve().then(() => {
+          const target = writeMeta("task-race", { iteration: i });
+          const relative = path.relative(root, target);
+          assert.ok(
+            relative && !relative.startsWith("..") && !path.isAbsolute(relative),
+          );
+        }),
       );
     }
     await Promise.all(writers);
