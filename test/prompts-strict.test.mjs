@@ -46,6 +46,17 @@ test("sanitizePromptValue caps length at 200 characters", () => {
   assert.equal(out.length, 200);
 });
 
+test("sanitizePromptValue accepts a custom maxLength for longer prompt fields", () => {
+  const withinLimit = sanitizePromptValue("a".repeat(1000), { maxLength: 1000 });
+  const overLimit = sanitizePromptValue("a".repeat(1001), { maxLength: 1000 });
+  assert.equal(withinLimit.length, 1000);
+  assert.equal(overLimit.length, 1000);
+});
+
+test("sanitizePromptValue treats null options as defaults", () => {
+  assert.equal(sanitizePromptValue("a".repeat(300), null).length, 200);
+});
+
 test("sanitizePromptValue maps null to empty string", () => {
   assert.equal(sanitizePromptValue(null), "");
 });
@@ -66,13 +77,17 @@ test("sanitizePromptValue collapses runs of whitespace to a single space", () =>
 // --- A5: REVIEW_KIND removal + placeholder coverage at the call site ---
 
 test("buildAdversarialReviewPrompt does not pass REVIEW_KIND and covers every prompt placeholder", () => {
-  const bridge = fs.readFileSync(new URL("../src/codex-bridge.mjs", import.meta.url), "utf8");
+  const helper = fs.readFileSync(
+    new URL("../src/lib/adversarial-review-prompt.mjs", import.meta.url),
+    "utf8"
+  );
   const prompt = fs.readFileSync(
     new URL("../src/prompts/adversarial-review.md", import.meta.url),
     "utf8"
   );
 
-  const callBlock = bridge.match(/function buildAdversarialReviewPrompt[\s\S]*?\n\}\n/)?.[0] ?? "";
+  const callBlock =
+    helper.match(/export function buildAdversarialReviewPrompt[\s\S]*?\n\}\n/)?.[0] ?? "";
   assert.ok(callBlock.length > 0, "buildAdversarialReviewPrompt definition should be findable");
   assert.doesNotMatch(callBlock, /REVIEW_KIND/);
 

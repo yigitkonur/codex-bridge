@@ -55,7 +55,7 @@ import { collectReviewContext, createSubagentWorktree, ensureGitRepository, merg
 import { jobDir, listTasks, readMeta, readVerdict, writeMeta, writeVerdict } from "./lib/registry.mjs";
 import { loadBrief, renderBriefAsMarkdown } from "./lib/brief.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
-import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
+import { buildAdversarialReviewPrompt } from "./lib/adversarial-review-prompt.mjs";
 import {
   detectOfficialOpenAICodexPlugin,
   OFFICIAL_PLUGIN_STATUS
@@ -586,10 +586,11 @@ const COMMANDS = Object.freeze({
     ]
   },
   "adversarial-review": {
-    synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json] [focus text...]",
+    synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [--brief @<path>.json] [--concern <text>]... [-m <model>] [--json] [focus text...]",
     summary: "Run an adversarial review with a structured JSON result.",
     examples: [
       'codex-bridge adversarial-review "focus on SQL injection risks"',
+      'codex-bridge adversarial-review --brief @review-brief.json --concern "check auth fallback"',
       "codex-bridge adversarial-review --scope branch --base main"
     ]
   },
@@ -1428,22 +1429,6 @@ function buildMachineReadableHelp() {
   };
 }
 
-function buildAdversarialReviewPrompt(context, focusText) {
-  const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
-  return interpolateTemplate(
-    template,
-    {
-      TARGET_LABEL: sanitizePromptValue(context.target.label),
-      USER_FOCUS: focusText || "No extra focus provided.",
-      REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
-      REVIEW_INPUT: context.content
-    },
-    {
-      requiredKeys: new Set(["TARGET_LABEL", "USER_FOCUS", "REVIEW_COLLECTION_GUIDANCE", "REVIEW_INPUT"])
-    }
-  );
-}
-
 function ensureCodexAvailable(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
@@ -1471,12 +1456,31 @@ function buildNativeReviewTarget(target) {
   return null;
 }
 
-function validateNativeReviewRequest(target, focusText) {
+function validateNativeReviewRequest(target, focusText, extras = {}) {
   if (focusText.trim()) {
     throw validationError(
       "`review` maps to the built-in reviewer and does not support custom focus text.",
       "REVIEW_FOCUS_UNSUPPORTED",
       `Retry with \`adversarial-review ${focusText.trim()}\` for focused review instructions.`
+    );
+  }
+
+  // Native review uses Codex's app-server review prompt, which does not
+  // accept the {{OPUS_CONCERNS}} placeholder. Reject --brief/--concern
+  // explicitly so the orchestrator gets a clear redirect to
+  // adversarial-review where those channels are honored.
+  if (extras.brief) {
+    throw validationError(
+      "`review` does not accept --brief. The orchestrator-concerns channel is only honored by adversarial-review.",
+      "REVIEW_BRIEF_UNSUPPORTED",
+      "Retry with `adversarial-review --brief @<path>.json` to surface the brief's specific_concerns to the reviewer."
+    );
+  }
+  if (Array.isArray(extras.opusConcerns) && extras.opusConcerns.length > 0) {
+    throw validationError(
+      "`review` does not accept --concern. The orchestrator-concerns channel is only honored by adversarial-review.",
+      "REVIEW_CONCERN_UNSUPPORTED",
+      "Retry with `adversarial-review --concern \"...\"` (repeatable) to surface focus areas to the reviewer."
     );
   }
 
@@ -1649,7 +1653,10 @@ async function executeReviewRun(request) {
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
-    const reviewTarget = validateNativeReviewRequest(target, focusText);
+    const reviewTarget = validateNativeReviewRequest(target, focusText, {
+      brief: request.brief,
+      opusConcerns: request.opusConcerns,
+    });
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
@@ -1710,7 +1717,30 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
-  const prompt = buildAdversarialReviewPrompt(context, focusText);
+  // Orchestrator concerns flow in via either:
+  //  - request.opusConcerns: parsed from --concern <text> (repeatable) flags
+  //    in handleReviewCommand, or
+  //  - request.brief.specific_concerns: from --brief @path.json (T16/T26),
+  //    which is the canonical channel when an outer orchestrator (Opus) is
+  //    driving the loop and already has a structured brief on hand.
+  const briefConcerns = Array.isArray(request.brief?.specific_concerns)
+    ? request.brief.specific_concerns
+    : [];
+  const flagConcerns = Array.isArray(request.opusConcerns)
+    ? request.opusConcerns
+    : [];
+  // De-dupe while preserving order. Brief concerns first (canonical), then
+  // any extra ad-hoc concerns appended via --concern flags.
+  const seen = new Set();
+  const opusConcerns = [...briefConcerns, ...flagConcerns]
+    .filter((c) => typeof c === "string" && c.trim().length > 0)
+    .filter((c) => {
+      const key = c.trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const prompt = buildAdversarialReviewPrompt(ROOT_DIR, context, focusText, opusConcerns);
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
@@ -1939,16 +1969,28 @@ function getJobKindLabel(kind, jobClass) {
   return "job";
 }
 
-function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, kindLabel, summary, write = false }) {
+function createCompanionJob({
+  id = null,
+  prefix,
+  kind,
+  title,
+  workspaceRoot,
+  jobClass,
+  kindLabel,
+  summary,
+  write = false,
+  ...extra
+}) {
   return createJobRecord({
-    id: generateJobId(prefix),
+    id: id ?? generateJobId(prefix),
     kind,
     kindLabel: kindLabel ?? getJobKindLabel(kind, jobClass),
     title,
     workspaceRoot,
     jobClass,
     summary,
-    write
+    write,
+    ...extra
   });
 }
 
@@ -1967,8 +2009,9 @@ function createTrackedProgress(job, options = {}) {
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write) {
+function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
   return createCompanionJob({
+    id: options.id ?? null,
     prefix: "task",
     kind: "task",
     title: taskMetadata.title,
@@ -1976,7 +2019,12 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
     jobClass: "task",
     kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
-    write
+    write,
+    ...(options.worktree ? {
+      registryTaskId: options.id ?? null,
+      worktree: options.worktree,
+      isolation_mode: options.worktree.isolation_mode,
+    } : {})
   });
 }
 
@@ -2281,6 +2329,8 @@ function enqueueBackgroundTask(cwd, job, request) {
       status: "queued",
       title: job.title,
       summary: job.summary,
+      registryTaskId: job.registryTaskId ?? null,
+      worktree: job.worktree ?? null,
       logFile,
       monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null, cwd: request.stateCwd ?? job.workspaceRoot })
     },
@@ -2291,7 +2341,8 @@ function enqueueBackgroundTask(cwd, job, request) {
 async function handleReviewCommand(argv, config) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "backend"],
+    valueOptions: ["base", "scope", "model", "cwd", "backend", "brief"],
+    repeatableValueOptions: ["concern"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -2312,7 +2363,28 @@ async function handleReviewCommand(argv, config) {
     scope: options.scope
   });
 
-  config.validateRequest?.(target, focusText);
+  // --brief and --concern populate the {{OPUS_CONCERNS}} channel in the
+  // adversarial-review prompt (T26). Native `review` ignores them — its
+  // prompt is built by the Codex app-server. validateRequest will reject
+  // the flags for native review below if the orchestrator passes them.
+  let brief = null;
+  if (options.brief) {
+    const result = loadBrief(options.brief, { baseDir: cwd });
+    if (!result.ok) {
+      throw new CliError(result.message, {
+        code: result.code,
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+      });
+    }
+    brief = result.brief;
+  }
+  const opusConcerns = Array.isArray(options.concern)
+    ? options.concern
+    : options.concern
+      ? [options.concern]
+      : [];
+
+  config.validateRequest?.(target, focusText, { brief, opusConcerns });
   const metadata = buildReviewJobMetadata(config.reviewName, target);
   const job = createCompanionJob({
     prefix: "review",
@@ -2332,6 +2404,8 @@ async function handleReviewCommand(argv, config) {
         model: options.model,
         backend: options.backend ?? null,
         focusText,
+        brief,
+        opusConcerns,
         reviewName: config.reviewName,
         onProgress: progress
       }),
@@ -3569,7 +3643,7 @@ async function handleTask(argv) {
     }
   }
   if (options.brief) {
-    const result = loadBrief(options.brief);
+    const result = loadBrief(options.brief, { baseDir: cwd });
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,

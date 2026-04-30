@@ -454,10 +454,10 @@ export function collectReviewContext(cwd, target, options = {}) {
 // and persisted in the registry's meta.json (T15 wiring) so the diff is
 // reproducible even if the parent branch advances during the worker's run.
 //
-// Failure mode (no disk, not-a-git-repo, etc.) falls back to an in-place
-// branch checkout marked with `isolation_mode: "branch-only"` so the
-// caller can downgrade gracefully — the worktree is a safety isolation,
-// not a hard prerequisite for the workflow.
+// Failure mode (no disk, not-a-git-repo, etc.) is fatal. `--worktree-auto`
+// exists specifically to keep agent writes out of the user's checkout, so
+// silently falling back to an in-place branch would break the isolation
+// contract.
 
 function runGit(cwd, args, opts = {}) {
   if (!Array.isArray(args)) {
@@ -523,7 +523,6 @@ function currentCheckoutRef(cwd) {
 // createSubagentWorktree({ cwd, taskId, backend, baseRef, branchPrefix, worktreeRoot })
 // Returns one of:
 //   { isolation_mode: "worktree", path, branch, base_ref, base_sha, created_at }
-//   { isolation_mode: "branch-only", path: cwd, branch, base_ref, base_sha, created_at }
 //   throws on hard failure (not-a-git-repo, branch already exists outside our control, ...)
 export function createSubagentWorktree({
   cwd,
@@ -726,6 +725,11 @@ export function mergeSubagentBranch({
 
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
+  // baseRef and branch must be safe git tokens (no shell injection).
+  if (typeof baseRef !== "string" || /[\s;|&`$()<>"'\\]/.test(baseRef)) {
+    throw new Error(`mergeSubagentBranch: unsafe baseRef: ${JSON.stringify(baseRef)}`);
+  }
+  assertSafeBranchName(repoRoot, branch, "mergeSubagentBranch");
 
   // Refresh base ref from remote so we merge against the latest tip.
   // Best-effort with a hard timeout: a hung remote must not stall the
