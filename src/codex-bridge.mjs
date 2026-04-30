@@ -1700,7 +1700,10 @@ async function executeReviewRun(request) {
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
-    const reviewTarget = validateNativeReviewRequest(target, focusText);
+    const reviewTarget = validateNativeReviewRequest(target, focusText, {
+      brief: request.brief,
+      opusConcerns: request.opusConcerns,
+    });
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
@@ -2417,7 +2420,7 @@ async function handleReviewCommand(argv, config) {
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
-        exitClass: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
       });
     }
     brief = result.brief;

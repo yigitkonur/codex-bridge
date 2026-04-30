@@ -10087,7 +10087,10 @@ async function executeReviewRun(request) {
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
-    const reviewTarget = validateNativeReviewRequest(target, focusText);
+    const reviewTarget = validateNativeReviewRequest(target, focusText, {
+      brief: request.brief,
+      opusConcerns: request.opusConcerns
+    });
     const result2 = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
@@ -10610,7 +10613,7 @@ async function handleReviewCommand(argv, config) {
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
-        exitClass: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
       });
     }
     brief = result.brief;
@@ -11413,7 +11416,7 @@ async function handleTask(argv) {
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
-        exitClass: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
       });
     }
     brief = result.brief;
@@ -11463,7 +11466,7 @@ async function handleTask(argv) {
     } catch (err) {
       throw new CliError(
         `failed to create subagent worktree for ${worktreeTaskId}: ${err.message ?? err}`,
-        { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" }
+        { code: "WORKTREE_CREATE_FAILED", class: "internal" }
       );
     }
   }
@@ -12489,7 +12492,7 @@ async function handleMerge(argv) {
   if (verdict.verdict !== "approved") {
     throw new CliError(
       `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run /codex-bridge:iterate or /codex-bridge:verdict --set approved.`,
-      { code: "VERDICT_NOT_APPROVED", exitClass: "conflict" }
+      { code: "VERDICT_NOT_APPROVED", class: "conflict" }
     );
   }
   const meta = readMeta(taskId);
@@ -12503,13 +12506,13 @@ async function handleMerge(argv) {
   if (!branch) {
     throw new CliError(
       `meta.json for ${taskId} missing worktree.branch \u2014 task may not have been dispatched via --worktree-auto`,
-      { code: "MERGE_META_INVALID", exitClass: "internal" }
+      { code: "MERGE_META_INVALID", class: "internal" }
     );
   }
   if (options.pr) {
     throw new CliError(
       "--pr mode not yet implemented; ff-merge into the base ref is the only supported strategy in v2.0. Drop --pr or wait for the follow-up.",
-      { code: "MERGE_PR_NOT_IMPLEMENTED", exitClass: "internal" }
+      { code: "MERGE_PR_NOT_IMPLEMENTED", class: "internal" }
     );
   }
   let mergeResult;
@@ -12524,7 +12527,7 @@ async function handleMerge(argv) {
   } catch (err) {
     throw new CliError(
       `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
-      { code: "MERGE_CONFLICT", exitClass: "conflict" }
+      { code: "MERGE_CONFLICT", class: "conflict" }
     );
   }
   const payload = {
