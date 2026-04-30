@@ -52,7 +52,7 @@ import {
   } from "./adapters/codex/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
-import { readMeta, readVerdict, writeMeta } from "./lib/registry.mjs";
+import { jobDir, listTasks, readMeta, readVerdict, writeMeta, writeVerdict } from "./lib/registry.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
 import {
@@ -680,6 +680,20 @@ const COMMANDS = Object.freeze({
     synopsis: "task-resume-candidate [--json]",
     summary: "Report the latest resumable task for this Claude session (useful before `task --resume`).",
     examples: ["codex-bridge task-resume-candidate --json"]
+  },
+  verdict: {
+    synopsis: "verdict <task_id> [--set approved|needs-attention|must-fix] [--summary <text>] [--finding <text>] [--reviewer <name>] [--discard] [--json]",
+    summary: "Read, write, or discard a task's post-review verdict artifact.",
+    examples: [
+      "codex-bridge verdict task-abc",
+      "codex-bridge verdict task-abc --set approved --summary \"review passed\" --json",
+      "codex-bridge verdict task-abc --discard"
+    ]
+  },
+  verdicts: {
+    synopsis: "verdicts --pending [--json]",
+    summary: "List unresolved task verdicts that still need merge, iteration, or discard.",
+    examples: ["codex-bridge verdicts --pending --json"]
   }
 });
 
@@ -4655,6 +4669,138 @@ function readReviewedBranchHeadSha(verdict) {
   return null;
 }
 
+// verdict <task_id> — read or write the post-review verdict.
+//   read mode  (no flags):           prints current verdict.json
+//   write mode (--set <verdict>):    persists { verdict, summary?, finding?, reviewer? }
+//   --discard:                       removes the registry directory
+async function handleVerdict(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["set", "summary", "finding", "reviewer", "cwd"],
+    booleanOptions: ["json", "discard"],
+  });
+  const taskId = positionals[0];
+  if (!taskId) {
+    throw usageError("verdict requires a task_id positional argument");
+  }
+
+  // discard mode: remove only verdict.json so the rest of the registry
+  // entry (meta.json, session-log.jsonl, etc.) is preserved for audit.
+  if (options.discard) {
+    const target = path.join(jobDir(taskId), "verdict.json");
+    let removed = false;
+    if (fs.existsSync(target)) {
+      fs.rmSync(target, { force: true });
+      removed = true;
+    }
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "discarded", removed },
+      `Discarded verdict for ${taskId}\n`,
+      { json: options.json, startedAt },
+    );
+    return;
+  }
+
+  // write mode: persist a new verdict
+  if (options.set) {
+    const verdict = options.set;
+    if (!["approved", "needs-attention", "must-fix"].includes(verdict)) {
+      throw usageError(
+        `--set must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`,
+      );
+    }
+    const payload = {
+      verdict,
+      summary: options.summary ?? null,
+      findings: options.finding ? [options.finding] : [],
+      reviewer: options.reviewer ?? null,
+    };
+    writeVerdict(taskId, payload);
+    const stored = readVerdict(taskId);
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "set", verdict: stored },
+      `Verdict for ${taskId}: ${verdict}\n`,
+      { json: options.json, startedAt },
+    );
+    return;
+  }
+
+  // read mode
+  const stored = readVerdict(taskId);
+  if (!stored) {
+    throw notFoundError(
+      `no verdict found for ${taskId}; use --set to create one`,
+    );
+  }
+  emitSuccess(
+    "verdict",
+    { task_id: taskId, verdict: stored },
+    JSON.stringify(stored, null, 2) + "\n",
+    { json: options.json, startedAt },
+  );
+}
+
+// verdicts --pending — flat list of tasks with verdict=approved (not yet
+// merged), verdict=needs-attention, or verdict=must-fix. All three states
+// are unresolved work and block the Stop gate (T14) until merged or
+// explicitly discarded with `verdict --discard`.
+async function handleVerdictsPending(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "pending"],
+  });
+
+  // --pending is the only mode currently supported. Require it explicitly
+  // so the CLI contract leaves room for future modes (e.g. --resolved)
+  // without silently changing default behavior.
+  if (!options.pending) {
+    throw usageError(
+      "verdicts requires --pending (only mode currently supported)",
+    );
+  }
+
+  const pendingVerdicts = new Set(["approved", "needs-attention", "must-fix"]);
+  const tasks = listTasks();
+  const pending = [];
+  for (const taskId of tasks) {
+    const verdict = readVerdict(taskId);
+    if (!verdict) continue;
+    const meta = readMeta(taskId);
+    if (verdict.merged_at || meta?.merged_at || meta?.phase === "merged") {
+      continue;
+    }
+    if (pendingVerdicts.has(verdict.verdict)) {
+      pending.push({
+        task_id: taskId,
+        verdict: verdict.verdict,
+        summary: verdict.summary ?? null,
+        decided_at: verdict.decided_at,
+        branch: meta?.worktree?.branch ?? null,
+      });
+    }
+  }
+
+  const rendered =
+    pending.length === 0
+      ? "No pending verdicts.\n"
+      : pending
+          .map(
+            (p) =>
+              `${p.task_id}  ${p.verdict}  ${p.branch ?? "(no branch)"}  ${p.summary ?? ""}`,
+          )
+          .join("\n") + "\n";
+
+  emitSuccess(
+    "verdicts",
+    { count: pending.length, pending },
+    rendered,
+    { json: options.json, startedAt },
+  );
+}
+
 // merge <task_id> — gated merge of a worktree branch back into its base.
 // Refuses to proceed unless verdict.json is approved for this exact branch SHA.
 // Performs a fast-forward merge (no merge commit, no rebase). On conflict
@@ -4752,6 +4898,31 @@ async function handleMerge(argv) {
       { code: "MERGE_INTERNAL", class: "internal" },
     );
   }
+
+  const mergedAt = nowIso();
+  const {
+    schema_version: _verdictSchemaVersion,
+    task_id: _verdictTaskId,
+    decided_at: _verdictDecidedAt,
+    ...verdictBody
+  } = verdict;
+  writeVerdict(taskId, {
+    ...verdictBody,
+    merged_at: mergedAt,
+    merge: mergeResult,
+  });
+  const {
+    schema_version: _schemaVersion,
+    task_id: _taskId,
+    written_at: _writtenAt,
+    ...metaBody
+  } = meta;
+  writeMeta(taskId, {
+    ...metaBody,
+    phase: "merged",
+    merged_at: mergedAt,
+    merge: mergeResult,
+  });
 
   const payload = {
     task_id: taskId,
@@ -5210,7 +5381,9 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel,
   "await-artifact": handleAwaitArtifact,
-  merge: handleMerge
+  merge: handleMerge,
+  verdict: handleVerdict,
+  verdicts: handleVerdictsPending
 });
 
 // Node's default SIGPIPE handling terminates the process when a downstream

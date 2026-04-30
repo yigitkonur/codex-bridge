@@ -3,7 +3,11 @@ import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
 import fs14 from "node:fs";
 import os7 from "node:os";
 import path12 from "node:path";
+<<<<<<< HEAD
 import process9 from "node:process";
+=======
+import process8 from "node:process";
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // package.json
@@ -769,10 +773,4004 @@ var adapter = {
 };
 var codex_default = adapter;
 
+<<<<<<< HEAD
 // src/lib/config.mjs
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+=======
+// src/lib/thread-id.mjs
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isThreadId(value) {
+  return typeof value === "string" && UUID_RE.test(value.trim());
+}
+
+// src/lib/fs.mjs
+import fs from "node:fs";
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+function isProbablyText(buffer) {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  for (const value of sample) {
+    if (value === 0) {
+      return false;
+    }
+  }
+  return true;
+}
+function readStdinIfPiped() {
+  if (process.stdin.isTTY) {
+    return "";
+  }
+  return fs.readFileSync(0, "utf8");
+}
+
+// src/adapters/codex/protocol.mjs
+import net2 from "node:net";
+import process6 from "node:process";
+import { spawn as spawn2 } from "node:child_process";
+import readline from "node:readline";
+
+// src/lib/broker-endpoint.mjs
+import path from "node:path";
+import process3 from "node:process";
+function sanitizePipeName(value) {
+  return String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "");
+}
+function createBrokerEndpoint(sessionDir, platform = process3.platform) {
+  if (platform === "win32") {
+    const pipeName = sanitizePipeName(`${path.win32.basename(sessionDir)}-codex-app-server`);
+    return `pipe:\\\\.\\pipe\\${pipeName}`;
+  }
+  return `unix:${path.join(sessionDir, "broker.sock")}`;
+}
+function parseBrokerEndpoint(endpoint) {
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    throw new Error("Missing broker endpoint.");
+  }
+  if (endpoint.startsWith("pipe:")) {
+    const pipePath = endpoint.slice("pipe:".length);
+    if (!pipePath) {
+      throw new Error("Broker pipe endpoint is missing its path.");
+    }
+    return { kind: "pipe", path: pipePath };
+  }
+  if (endpoint.startsWith("unix:")) {
+    const socketPath = endpoint.slice("unix:".length);
+    if (!socketPath) {
+      throw new Error("Broker Unix socket endpoint is missing its path.");
+    }
+    return { kind: "unix", path: socketPath };
+  }
+  throw new Error(`Unsupported broker endpoint: ${endpoint}`);
+}
+
+// src/lib/broker-lifecycle.mjs
+import fs5 from "node:fs";
+import net from "node:net";
+import os2 from "node:os";
+import path5 from "node:path";
+import process5 from "node:process";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// src/lib/state.mjs
+import { createHash } from "node:crypto";
+import fs4 from "node:fs";
+import os from "node:os";
+import path4 from "node:path";
+
+// src/lib/official-plugin.mjs
+import { spawnSync } from "node:child_process";
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
+function stringValue(value) {
+  return typeof value === "string" ? value : "";
+}
+function normalizePathLike(value) {
+  return stringValue(value).replace(/\\/g, "/").toLowerCase();
+}
+function pluginEntryEnabled(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if ("enabled" in entry) return Boolean(entry.enabled);
+  if ("disabled" in entry) return !entry.disabled;
+  return true;
+}
+function summarizePluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: entry.id ?? null,
+    name: entry.name ?? null,
+    version: entry.version ?? null,
+    scope: entry.scope ?? null,
+    installPath: entry.installPath ?? entry.path ?? null,
+    enabled: pluginEntryEnabled(entry)
+  };
+}
+function isOfficialOpenAICodexPluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const id = stringValue(entry.id).toLowerCase();
+  const name = stringValue(entry.name).toLowerCase();
+  const source = stringValue(entry.source).toLowerCase();
+  const installPath = normalizePathLike(entry.installPath ?? entry.path);
+  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
+  if (id === "codex@openai-codex") return true;
+  if (id === "codex" && authorName === "openai") return true;
+  if (name === "codex" && authorName === "openai") return true;
+  if (source.includes("openai/codex-plugin-cc")) return true;
+  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
+  if (installPath.includes("/openai-codex/codex/")) return true;
+  if (installPath.endsWith("/openai-codex/codex")) return true;
+  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
+  return false;
+}
+function detectOfficialOpenAICodexPluginFromEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: "Claude plugin list output was not an array.",
+      plugin: null
+    };
+  }
+  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
+  if (plugin) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
+      detail: "Official OpenAI Codex plugin is enabled.",
+      plugin: summarizePluginEntry(plugin)
+    };
+  }
+  return {
+    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
+    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
+    plugin: null
+  };
+}
+function extractPluginEntries(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
+  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
+  return null;
+}
+function detectOfficialOpenAICodexPluginUncached(options = {}) {
+  const spawn4 = options.spawnSync ?? spawnSync;
+  const result = spawn4("claude", ["plugin", "list", "--json"], {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
+  });
+  if (result.error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
+      plugin: null
+    };
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
+      plugin: null
+    };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
+  } catch (error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
+      plugin: null
+    };
+  }
+}
+var DEFAULT_DETECT_CACHE_MS = 3e4;
+var cached = null;
+var cachedAt = 0;
+function detectOfficialOpenAICodexPlugin(options = {}) {
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
+  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
+    return cached;
+  }
+  const result = detectOfficialOpenAICodexPluginUncached(options);
+  cached = result;
+  cachedAt = Date.now();
+  return result;
+}
+
+// src/lib/git.mjs
+import fs3 from "node:fs";
+import path3 from "node:path";
+import { execSync as childExecSync } from "node:child_process";
+
+// src/lib/process.mjs
+import { spawnSync as spawnSync2 } from "node:child_process";
+import process4 from "node:process";
+function runCommand(command, args = [], options = {}) {
+  const result = spawnSync2(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: "utf8",
+    input: options.input,
+    maxBuffer: options.maxBuffer,
+    stdio: options.stdio ?? "pipe",
+    shell: process4.platform === "win32" ? process4.env.SHELL || true : false,
+    windowsHide: true
+  });
+  const normalizedStatus = result.status != null ? result.status : result.signal ? 128 : 1;
+  return {
+    command,
+    args,
+    status: normalizedStatus,
+    signal: result.signal ?? null,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    error: result.error ?? null
+  };
+}
+function runCommandChecked(command, args = [], options = {}) {
+  const result = runCommand(command, args, options);
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(formatCommandFailure(result));
+  }
+  return result;
+}
+function binaryAvailable(command, versionArgs = ["--version"], options = {}) {
+  const result = runCommand(command, versionArgs, options);
+  if (result.error && /** @type {NodeJS.ErrnoException} */
+  result.error.code === "ENOENT") {
+    return { available: false, detail: "not found" };
+  }
+  if (result.error) {
+    return { available: false, detail: result.error.message };
+  }
+  if (result.status !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`;
+    return { available: false, detail };
+  }
+  return { available: true, detail: result.stdout.trim() || result.stderr.trim() || "ok" };
+}
+function looksLikeMissingProcessMessage(text) {
+  return /not found|no running instance|cannot find|does not exist|no such process/i.test(text);
+}
+function terminateProcessTree(pid, options = {}) {
+  if (!Number.isFinite(pid)) {
+    return { attempted: false, delivered: false, method: null };
+  }
+  const platform = options.platform ?? process4.platform;
+  const runCommandImpl = options.runCommandImpl ?? runCommand;
+  const killImpl = options.killImpl ?? process4.kill.bind(process4);
+  if (platform === "win32") {
+    const result = runCommandImpl("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      cwd: options.cwd,
+      env: options.env
+    });
+    if (!result.error && result.status === 0) {
+      return { attempted: true, delivered: true, method: "taskkill", result };
+    }
+    const combinedOutput = `${result.stderr}
+${result.stdout}`.trim();
+    if (!result.error && looksLikeMissingProcessMessage(combinedOutput)) {
+      return { attempted: true, delivered: false, method: "taskkill", result };
+    }
+    if (result.error?.code === "ENOENT") {
+      try {
+        killImpl(pid);
+        return { attempted: true, delivered: true, method: "kill" };
+      } catch (error) {
+        if (error?.code === "ESRCH") {
+          return { attempted: true, delivered: false, method: "kill" };
+        }
+        throw error;
+      }
+    }
+    if (result.error) {
+      throw result.error;
+    }
+    throw new Error(formatCommandFailure(result));
+  }
+  try {
+    killImpl(-pid, "SIGTERM");
+    return { attempted: true, delivered: true, method: "process-group" };
+  } catch (error) {
+    if (error?.code !== "ESRCH") {
+      try {
+        killImpl(pid, "SIGTERM");
+        return { attempted: true, delivered: true, method: "process" };
+      } catch (innerError) {
+        if (innerError?.code === "ESRCH") {
+          return { attempted: true, delivered: false, method: "process" };
+        }
+        throw innerError;
+      }
+    }
+    return { attempted: true, delivered: false, method: "process-group" };
+  }
+}
+function formatCommandFailure(result) {
+  const parts = [`${result.command} ${result.args.join(" ")}`.trim()];
+  if (result.signal) {
+    parts.push(`signal=${result.signal}`);
+  } else {
+    parts.push(`exit=${result.status}`);
+  }
+  const stderr = (result.stderr || "").trim();
+  const stdout = (result.stdout || "").trim();
+  if (stderr) {
+    parts.push(stderr);
+  } else if (stdout) {
+    parts.push(stdout);
+  }
+  return parts.join(": ");
+}
+
+// src/lib/prompts.mjs
+import fs2 from "node:fs";
+import path2 from "node:path";
+function loadPromptTemplate(rootDir, name) {
+  const promptPath = path2.join(rootDir, "prompts", `${name}.md`);
+  return fs2.readFileSync(promptPath, "utf8");
+}
+function interpolateTemplate(template, variables, options = {}) {
+  const requiredKeys = options?.requiredKeys ?? null;
+  if (requiredKeys) {
+    const iterable = requiredKeys instanceof Set ? requiredKeys : new Set(requiredKeys);
+    for (const key of iterable) {
+      if (!Object.prototype.hasOwnProperty.call(variables, key)) {
+        throw new Error(`interpolateTemplate: missing required key '${key}'`);
+      }
+    }
+  }
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => {
+    return Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : "";
+  });
+}
+var PROMPT_VALUE_MAX_LEN = 200;
+function sanitizePromptValue(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const stripped = value.replace(/[\n\r<>]/g, " ");
+  const collapsed = stripped.replace(/\s+/g, " ");
+  if (collapsed.length <= PROMPT_VALUE_MAX_LEN) {
+    return collapsed;
+  }
+  return collapsed.slice(0, PROMPT_VALUE_MAX_LEN);
+}
+
+// src/lib/git.mjs
+var MAX_UNTRACKED_BYTES = 24 * 1024;
+var DEFAULT_INLINE_DIFF_MAX_FILES = 2;
+var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+function git(cwd, args, options = {}) {
+  return runCommand("git", args, { cwd, ...options });
+}
+function gitChecked(cwd, args, options = {}) {
+  return runCommandChecked("git", args, { cwd, ...options });
+}
+function listUniqueFiles(...groups) {
+  return [...new Set(groups.flat().filter(Boolean))].sort();
+}
+function normalizeMaxInlineFiles(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_INLINE_DIFF_MAX_FILES;
+  }
+  return Math.floor(parsed);
+}
+function normalizeMaxInlineDiffBytes(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_INLINE_DIFF_MAX_BYTES;
+  }
+  return Math.floor(parsed);
+}
+function measureGitOutputBytes(cwd, args, maxBytes) {
+  const result = git(cwd, args, { maxBuffer: maxBytes + 1 });
+  if (result.error && /** @type {NodeJS.ErrnoException} */
+  result.error.code === "ENOBUFS") {
+    return maxBytes + 1;
+  }
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(formatCommandFailure(result));
+  }
+  return Buffer.byteLength(result.stdout, "utf8");
+}
+function measureCombinedGitOutputBytes(cwd, argSets, maxBytes) {
+  let totalBytes = 0;
+  for (const args of argSets) {
+    const remainingBytes = maxBytes - totalBytes;
+    if (remainingBytes < 0) {
+      return maxBytes + 1;
+    }
+    totalBytes += measureGitOutputBytes(cwd, args, remainingBytes);
+    if (totalBytes > maxBytes) {
+      return totalBytes;
+    }
+  }
+  return totalBytes;
+}
+function buildBranchComparison(cwd, baseRef) {
+  const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", baseRef]).stdout.trim();
+  return {
+    mergeBase,
+    commitRange: `${mergeBase}..HEAD`,
+    reviewRange: `${baseRef}...HEAD`
+  };
+}
+function ensureGitRepository(cwd) {
+  const result = git(cwd, ["rev-parse", "--show-toplevel"]);
+  const errorCode = result.error && "code" in result.error ? result.error.code : null;
+  if (errorCode === "ENOENT") {
+    throw new CliError("git is not installed. Install Git and retry.", {
+      class: "dependency_failed",
+      code: "GIT_NOT_INSTALLED",
+      retryable: false,
+      suggestion: "Install Git (e.g. `brew install git` or your distro's package) and retry."
+    });
+  }
+  if (result.status !== 0) {
+    throw new CliError("This command must run inside a Git repository.", {
+      class: "validation",
+      code: "NOT_A_GIT_REPO",
+      retryable: false,
+      suggestion: "Run from within a Git working tree, or pass --cwd to point at one."
+    });
+  }
+  return result.stdout.trim();
+}
+function getRepoRoot(cwd) {
+  return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
+}
+function detectDefaultBranch(cwd) {
+  const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
+  if (symbolic.status === 0) {
+    const remoteHead = symbolic.stdout.trim();
+    if (remoteHead.startsWith("refs/remotes/origin/")) {
+      const candidate = remoteHead.replace("refs/remotes/origin/", "");
+      const localCheck = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+      if (localCheck.status === 0) {
+        return candidate;
+      }
+      return `origin/${candidate}`;
+    }
+  }
+  const candidates = ["main", "master", "trunk"];
+  for (const candidate of candidates) {
+    const local = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+    if (local.status === 0) {
+      return candidate;
+    }
+    const remote = git(cwd, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]);
+    if (remote.status === 0) {
+      return `origin/${candidate}`;
+    }
+  }
+  throw new CliError("Unable to detect the repository default branch.", {
+    class: "not_found",
+    code: "DEFAULT_BRANCH_NOT_FOUND",
+    retryable: false,
+    suggestion: "Pass `--base <ref>` explicitly, or use `--scope working-tree`."
+  });
+}
+function getCurrentBranch(cwd) {
+  return gitChecked(cwd, ["branch", "--show-current"]).stdout.trim() || "HEAD";
+}
+function getWorkingTreeState(cwd) {
+  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
+  const unstaged = gitChecked(cwd, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
+  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard"]).stdout.trim().split("\n").filter(Boolean);
+  return {
+    staged,
+    unstaged,
+    untracked,
+    isDirty: staged.length > 0 || unstaged.length > 0 || untracked.length > 0
+  };
+}
+function resolveReviewTarget(cwd, options = {}) {
+  ensureGitRepository(cwd);
+  const requestedScope = options.scope ?? "auto";
+  const baseRef = options.base ?? null;
+  const state = getWorkingTreeState(cwd);
+  const supportedScopes = /* @__PURE__ */ new Set(["auto", "working-tree", "branch"]);
+  if (baseRef) {
+    return {
+      mode: "branch",
+      label: `branch diff against ${sanitizePromptValue(baseRef)}`,
+      baseRef,
+      explicit: true
+    };
+  }
+  if (requestedScope === "working-tree") {
+    return {
+      mode: "working-tree",
+      label: "working tree diff",
+      explicit: true
+    };
+  }
+  if (!supportedScopes.has(requestedScope)) {
+    throw new CliError(
+      `Unsupported review scope "${requestedScope}".`,
+      {
+        class: "validation",
+        code: "INVALID_SCOPE",
+        retryable: false,
+        suggestion: "Use one of: auto, working-tree, branch, or pass --base <ref>."
+      }
+    );
+  }
+  if (requestedScope === "branch") {
+    const detectedBase2 = detectDefaultBranch(cwd);
+    return {
+      mode: "branch",
+      label: `branch diff against ${sanitizePromptValue(detectedBase2)}`,
+      baseRef: detectedBase2,
+      explicit: true
+    };
+  }
+  if (state.isDirty) {
+    return {
+      mode: "working-tree",
+      label: "working tree diff",
+      explicit: false
+    };
+  }
+  const detectedBase = detectDefaultBranch(cwd);
+  return {
+    mode: "branch",
+    label: `branch diff against ${sanitizePromptValue(detectedBase)}`,
+    baseRef: detectedBase,
+    explicit: false
+  };
+}
+function formatSection(title, body) {
+  return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
+}
+function formatUntrackedFile(cwd, relativePath) {
+  const absolutePath = path3.join(cwd, relativePath);
+  let stat;
+  try {
+    stat = fs3.statSync(absolutePath);
+  } catch {
+    return `### ${relativePath}
+(skipped: broken symlink or unreadable file)`;
+  }
+  if (stat.isDirectory()) {
+    return `### ${relativePath}
+(skipped: directory)`;
+  }
+  if (stat.size > MAX_UNTRACKED_BYTES) {
+    return `### ${relativePath}
+(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+  }
+  let buffer;
+  try {
+    buffer = fs3.readFileSync(absolutePath);
+  } catch {
+    return `### ${relativePath}
+(skipped: broken symlink or unreadable file)`;
+  }
+  if (!isProbablyText(buffer)) {
+    return `### ${relativePath}
+(skipped: binary file)`;
+  }
+  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+}
+function collectWorkingTreeContext(cwd, state, options = {}) {
+  const includeDiff = options.includeDiff !== false;
+  const status = gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim();
+  const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
+  let parts;
+  if (includeDiff) {
+    const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    parts = [
+      formatSection("Git Status", status),
+      formatSection("Staged Diff", stagedDiff),
+      formatSection("Unstaged Diff", unstagedDiff),
+      formatSection("Untracked Files", untrackedBody)
+    ];
+  } else {
+    const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
+    const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
+    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    parts = [
+      formatSection("Git Status", status),
+      formatSection("Staged Diff Stat", stagedStat),
+      formatSection("Unstaged Diff Stat", unstagedStat),
+      formatSection("Changed Files", changedFiles.join("\n")),
+      formatSection("Untracked Files", untrackedBody)
+    ];
+  }
+  return {
+    mode: "working-tree",
+    summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
+    content: parts.join("\n"),
+    changedFiles
+  };
+}
+function collectBranchContext(cwd, baseRef, options = {}) {
+  const includeDiff = options.includeDiff !== false;
+  const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
+  const currentBranch = getCurrentBranch(cwd);
+  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
+  const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
+  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
+  return {
+    mode: "branch",
+    summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,
+    content: includeDiff ? [
+      formatSection("Commit Log", logOutput),
+      formatSection("Diff Stat", diffStat),
+      formatSection(
+        "Branch Diff",
+        gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
+      )
+    ].join("\n") : [
+      formatSection("Commit Log", logOutput),
+      formatSection("Diff Stat", diffStat),
+      formatSection("Changed Files", changedFiles.join("\n"))
+    ].join("\n"),
+    changedFiles,
+    comparison
+  };
+}
+function buildAdversarialCollectionGuidance(options = {}) {
+  if (options.includeDiff !== false) {
+    return "Use the repository context below as primary evidence.";
+  }
+  return "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.";
+}
+function collectReviewContext(cwd, target, options = {}) {
+  const repoRoot = getRepoRoot(cwd);
+  const currentBranch = getCurrentBranch(repoRoot);
+  const maxInlineFiles = normalizeMaxInlineFiles(options.maxInlineFiles);
+  const maxInlineDiffBytes = normalizeMaxInlineDiffBytes(options.maxInlineDiffBytes);
+  let details;
+  let includeDiff;
+  let diffBytes;
+  if (target.mode === "working-tree") {
+    const state = getWorkingTreeState(repoRoot);
+    diffBytes = measureCombinedGitOutputBytes(
+      repoRoot,
+      [
+        ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"],
+        ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]
+      ],
+      maxInlineDiffBytes
+    );
+    includeDiff = options.includeDiff ?? (listUniqueFiles(state.staged, state.unstaged, state.untracked).length <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
+    details = collectWorkingTreeContext(repoRoot, state, { includeDiff });
+  } else {
+    const comparison = buildBranchComparison(repoRoot, target.baseRef);
+    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean).length;
+    diffBytes = measureGitOutputBytes(
+      repoRoot,
+      ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange],
+      maxInlineDiffBytes
+    );
+    includeDiff = options.includeDiff ?? (fileCount <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
+    details = collectBranchContext(repoRoot, target.baseRef, { includeDiff, comparison });
+  }
+  return {
+    cwd: repoRoot,
+    repoRoot,
+    branch: currentBranch,
+    target,
+    fileCount: details.changedFiles.length,
+    diffBytes,
+    inputMode: includeDiff ? "inline-diff" : "self-collect",
+    collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff }),
+    ...details
+  };
+}
+function runGit(cwd, args, opts = {}) {
+  return childExecSync(`git ${args}`, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", opts.swallowStderr ? "pipe" : "inherit"],
+    ...opts
+  });
+}
+function tryRunGit(cwd, args) {
+  try {
+    return runGit(cwd, args, { swallowStderr: true });
+  } catch {
+    return null;
+  }
+}
+function defaultWorktreeRoot(repoRoot) {
+  return path3.resolve(repoRoot, "..", ".codex-bridge-worktrees");
+}
+function buildBranchName({ taskId, backend, branchPrefix }) {
+  const prefix = branchPrefix ?? "subagent";
+  const back = backend ?? "codex";
+  return `${prefix}/${back}/${taskId}`;
+}
+function createSubagentWorktree({
+  cwd,
+  taskId,
+  backend = "codex",
+  baseRef,
+  branchPrefix = "subagent",
+  worktreeRoot
+}) {
+  if (!taskId) throw new Error("createSubagentWorktree: taskId is required");
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  const resolvedBaseRef = baseRef ?? getCurrentBranch(cwd) ?? detectDefaultBranch(cwd) ?? "HEAD";
+  const baseSha = runGit(repoRoot, `rev-parse ${resolvedBaseRef}`, {
+    swallowStderr: true
+  }).toString().trim();
+  const branch = buildBranchName({ taskId, backend, branchPrefix });
+  const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
+  const wtPath = path3.join(root, taskId);
+  const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+  const branchExists = tryRunGit(repoRoot, `rev-parse --verify ${branch}`);
+  if (branchExists !== null) {
+    throw new Error(
+      `createSubagentWorktree: branch ${branch} already exists; remove or rename before retrying`
+    );
+  }
+  try {
+    fs3.mkdirSync(root, { recursive: true });
+    runGit(repoRoot, `worktree add -b ${branch} "${wtPath}" ${baseSha}`, {
+      swallowStderr: true
+    });
+    return {
+      isolation_mode: "worktree",
+      path: wtPath,
+      branch,
+      base_ref: resolvedBaseRef,
+      base_sha: baseSha,
+      created_at: createdAt
+    };
+  } catch (err) {
+    tryRunGit(repoRoot, `worktree remove --force "${wtPath}"`);
+    try {
+      runGit(repoRoot, `checkout -b ${branch} ${baseSha}`, { swallowStderr: true });
+    } catch (innerErr) {
+      throw new Error(
+        `createSubagentWorktree: worktree fallback also failed: ${innerErr.message ?? innerErr}`
+      );
+    }
+    return {
+      isolation_mode: "branch-only",
+      path: cwd,
+      branch,
+      base_ref: resolvedBaseRef,
+      base_sha: baseSha,
+      created_at: createdAt,
+      fallback_reason: err.message ?? String(err)
+    };
+  }
+}
+function pruneWorktreeOnCancel({ cwd, taskId, branch }) {
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  const root = defaultWorktreeRoot(repoRoot);
+  const wtPath = path3.join(root, taskId);
+  if (fs3.existsSync(wtPath)) {
+    tryRunGit(repoRoot, `worktree remove --force "${wtPath}"`);
+  }
+  if (branch) {
+    tryRunGit(repoRoot, `branch -D ${branch}`);
+  }
+  return { pruned: !fs3.existsSync(wtPath), branchDeleted: !!branch };
+}
+function mergeSubagentBranch({ cwd, taskId, branch, baseRef = "main", runTests = true }) {
+  if (!taskId) throw new Error("mergeSubagentBranch: taskId is required");
+  if (!branch) throw new Error("mergeSubagentBranch: branch is required");
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  tryRunGit(repoRoot, `fetch origin ${baseRef}`);
+  const dirty = tryRunGit(repoRoot, "status --porcelain");
+  if (dirty && dirty.trim().length > 0) {
+    throw new Error(
+      `repo is dirty; commit or stash before merging. Status: ${dirty.trim()}`
+    );
+  }
+  runGit(repoRoot, `checkout ${baseRef}`, { swallowStderr: true });
+  const branchSha = tryRunGit(repoRoot, `rev-parse --verify ${branch}`);
+  if (!branchSha) {
+    throw new Error(`branch ${branch} does not exist`);
+  }
+  try {
+    runGit(repoRoot, `merge --ff-only ${branch}`, { swallowStderr: true });
+  } catch (err) {
+    throw new Error(
+      `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`
+    );
+  }
+  const commitSha = runGit(repoRoot, "rev-parse HEAD", { swallowStderr: true }).toString().trim();
+  pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
+  return {
+    strategy: "ff",
+    commit_sha: commitSha,
+    base_ref: baseRef,
+    branch,
+    tests_passed: runTests ? null : false
+    // null = not yet measured; false = skipped
+  };
+}
+
+// src/lib/workspace.mjs
+function resolveWorkspaceRoot(cwd) {
+  try {
+    return ensureGitRepository(cwd);
+  } catch {
+    return cwd;
+  }
+}
+
+// src/lib/state.mjs
+var STATE_VERSION = 1;
+var BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
+var LEGACY_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+var FALLBACK_STATE_ROOT_DIR = path4.join(os.tmpdir(), "codex-companion");
+var STATE_FILE_NAME = "state.json";
+var STATE_LOCK_FILE_NAME = "state.lock";
+var JOBS_DIR_NAME = "jobs";
+var MAX_JOBS = 50;
+var LOCK_TIMEOUT_MS = 5e3;
+var STALE_LOCK_MS = 3e4;
+function nowIso() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function defaultState() {
+  return {
+    version: STATE_VERSION,
+    config: {
+      stopReviewGate: false
+    },
+    jobs: []
+  };
+}
+function resolveStateDir(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  let canonicalWorkspaceRoot = workspaceRoot;
+  try {
+    canonicalWorkspaceRoot = fs4.realpathSync.native(workspaceRoot);
+  } catch {
+    canonicalWorkspaceRoot = workspaceRoot;
+  }
+  const slugSource = path4.basename(workspaceRoot) || "workspace";
+  const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[LEGACY_PLUGIN_DATA_ENV];
+  const stateRoot = pluginDataDir ? path4.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+  return path4.join(stateRoot, `${slug}-${hash}`);
+}
+function resolveStateFile(cwd) {
+  return path4.join(resolveStateDir(cwd), STATE_FILE_NAME);
+}
+function resolveStateLockFile(cwd) {
+  return path4.join(resolveStateDir(cwd), STATE_LOCK_FILE_NAME);
+}
+function resolveJobsDir(cwd) {
+  return path4.join(resolveStateDir(cwd), JOBS_DIR_NAME);
+}
+function ensureStateDir(cwd) {
+  fs4.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+}
+function sleepSync(ms) {
+  const buffer = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
+}
+function acquireStateLock(cwd) {
+  ensureStateDir(cwd);
+  const lockFile = resolveStateLockFile(cwd);
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      const fd = fs4.openSync(lockFile, "wx");
+      fs4.writeFileSync(fd, `${process.pid}
+${(/* @__PURE__ */ new Date()).toISOString()}
+`, "utf8");
+      let ownedIno = null;
+      try {
+        ownedIno = fs4.fstatSync(fd).ino;
+      } catch {
+      }
+      return () => {
+        try {
+          fs4.closeSync(fd);
+        } catch {
+        }
+        try {
+          if (ownedIno !== null) {
+            const stat = fs4.statSync(lockFile);
+            if (stat.ino !== ownedIno) {
+              return;
+            }
+          }
+          fs4.unlinkSync(lockFile);
+        } catch (releaseError) {
+          if (releaseError?.code !== "ENOENT") {
+          }
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const stat = fs4.statSync(lockFile);
+        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+          fs4.unlinkSync(lockFile);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - startedAt > LOCK_TIMEOUT_MS) {
+        throw new Error(`Timed out waiting for state lock: ${lockFile}`);
+      }
+      sleepSync(50);
+    }
+  }
+}
+function pidIsAlive(pid) {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err && err.code === "ESRCH") return false;
+    return true;
+  }
+}
+function reapOrphans(jobs) {
+  if (!Array.isArray(jobs) || jobs.length === 0) return { jobs, reaped: 0 };
+  let changed = 0;
+  const reaped = jobs.map((job) => {
+    if (!job || job.status !== "running" && job.status !== "queued") return job;
+    if (pidIsAlive(job.pid)) return job;
+    changed++;
+    return {
+      ...job,
+      status: "orphaned",
+      phase: "orphaned",
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      errorMessage: job.errorMessage ?? `Backing process (pid ${job.pid ?? "?"}) no longer alive \u2014 reaped on load.`
+    };
+  });
+  return { jobs: reaped, reaped: changed };
+}
+function loadState(cwd) {
+  const stateFile = resolveStateFile(cwd);
+  if (!fs4.existsSync(stateFile)) {
+    return defaultState();
+  }
+  try {
+    const parsed = JSON.parse(fs4.readFileSync(stateFile, "utf8"));
+    const rawJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+    return {
+      ...defaultState(),
+      ...parsed,
+      config: {
+        ...defaultState().config,
+        ...parsed.config ?? {}
+      },
+      jobs: rawJobs
+    };
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return defaultState();
+    }
+    let renamedPath = null;
+    try {
+      const candidate = `${stateFile}.corrupt-${Date.now()}`;
+      fs4.renameSync(stateFile, candidate);
+      renamedPath = candidate;
+    } catch (renameError) {
+      if (renameError && renameError.code !== "ENOENT" && renameError.code !== "EXDEV") {
+      }
+    }
+    process.emitWarning(
+      `State file at ${stateFile} was corrupt (${error?.message ?? error}); preserved at ${renamedPath ?? "<unable to rename>"}`,
+      "CodexBridgeStateWarning"
+    );
+    return defaultState();
+  }
+}
+function pruneJobs(jobs) {
+  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))).slice(0, MAX_JOBS);
+}
+function removeFileIfExists(filePath) {
+  if (filePath && fs4.existsSync(filePath)) {
+    fs4.unlinkSync(filePath);
+  }
+}
+function writeJsonFileAtomic(filePath, payload) {
+  fs4.mkdirSync(path4.dirname(filePath), { recursive: true });
+  const tempPath = path4.join(
+    path4.dirname(filePath),
+    `.${path4.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  const fd = fs4.openSync(tempPath, "w");
+  try {
+    fs4.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+    fs4.fsyncSync(fd);
+  } finally {
+    fs4.closeSync(fd);
+  }
+  try {
+    fs4.renameSync(tempPath, filePath);
+  } catch (renameError) {
+    try {
+      fs4.unlinkSync(tempPath);
+    } catch (cleanupError) {
+      if (cleanupError?.code !== "ENOENT") {
+      }
+    }
+    throw renameError;
+  }
+}
+function saveStateUnlocked(cwd, state) {
+  const previousJobs = loadState(cwd).jobs;
+  ensureStateDir(cwd);
+  const { jobs: reapedJobs } = reapOrphans(state.jobs ?? []);
+  const nextJobs = pruneJobs(reapedJobs);
+  const nextState = {
+    version: STATE_VERSION,
+    config: {
+      ...defaultState().config,
+      ...state.config ?? {}
+    },
+    jobs: nextJobs
+  };
+  const retainedIds = new Set(nextJobs.map((job) => job.id));
+  for (const job of previousJobs) {
+    if (retainedIds.has(job.id)) {
+      continue;
+    }
+    removeJobFile(resolveJobFile(cwd, job.id));
+    removeFileIfExists(job.logFile);
+  }
+  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
+  return nextState;
+}
+function updateState(cwd, mutate) {
+  const release = acquireStateLock(cwd);
+  try {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveStateUnlocked(cwd, state);
+  } finally {
+    release();
+  }
+}
+function generateJobId(prefix = "job") {
+  const random = Math.random().toString(36).slice(2, 8);
+  return `${prefix}-${Date.now().toString(36)}-${random}`;
+}
+function upsertJob(cwd, jobPatch) {
+  return updateState(cwd, (state) => {
+    const timestamp2 = nowIso();
+    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
+    if (existingIndex === -1) {
+      state.jobs.unshift({
+        createdAt: timestamp2,
+        updatedAt: timestamp2,
+        ...jobPatch
+      });
+      return;
+    }
+    state.jobs[existingIndex] = {
+      ...state.jobs[existingIndex],
+      ...jobPatch,
+      updatedAt: timestamp2
+    };
+  });
+}
+function listJobs(cwd, options = {}) {
+  const jobs = loadState(cwd).jobs;
+  if (options && options.raw) {
+    return jobs;
+  }
+  const { jobs: reapedJobs } = reapOrphans(jobs);
+  return reapedJobs;
+}
+function setConfig(cwd, key, value) {
+  return updateState(cwd, (state) => {
+    state.config = {
+      ...state.config,
+      [key]: value
+    };
+  });
+}
+function getConfig(cwd) {
+  return loadState(cwd).config;
+}
+function writeJobFile(cwd, jobId, payload) {
+  ensureStateDir(cwd);
+  const jobFile = resolveJobFile(cwd, jobId);
+  fs4.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+  return jobFile;
+}
+function readJobFile(jobFile) {
+  return JSON.parse(fs4.readFileSync(jobFile, "utf8"));
+}
+function removeJobFile(jobFile) {
+  if (fs4.existsSync(jobFile)) {
+    fs4.unlinkSync(jobFile);
+  }
+}
+function resolveJobLogFile(cwd, jobId) {
+  ensureStateDir(cwd);
+  return path4.join(resolveJobsDir(cwd), `${jobId}.log`);
+}
+function resolveJobFile(cwd, jobId) {
+  ensureStateDir(cwd);
+  return path4.join(resolveJobsDir(cwd), `${jobId}.json`);
+}
+
+// src/lib/broker-lifecycle.mjs
+var BROKER_STATE_FILE = "broker.json";
+function createBrokerSessionDir(prefix = "cxc-") {
+  return fs5.mkdtempSync(path5.join(os2.tmpdir(), prefix));
+}
+function connectToEndpoint(endpoint) {
+  const target = parseBrokerEndpoint(endpoint);
+  return net.createConnection({ path: target.path });
+}
+async function waitForBrokerEndpoint(endpoint, timeoutMs = 2e3) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ready = await new Promise((resolve) => {
+      const socket = connectToEndpoint(endpoint);
+      socket.on("connect", () => {
+        socket.end();
+        resolve(true);
+      });
+      socket.on("error", () => resolve(false));
+    });
+    if (ready) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
+}
+function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process5.env }) {
+  const logFd = fs5.openSync(logFile, "a");
+  const child = spawn(process5.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
+    cwd,
+    env,
+    detached: true,
+    stdio: ["ignore", logFd, logFd]
+  });
+  child.unref();
+  fs5.closeSync(logFd);
+  return child;
+}
+function resolveBrokerStateFile(cwd) {
+  return path5.join(resolveStateDir(cwd), BROKER_STATE_FILE);
+}
+function loadBrokerSession(cwd) {
+  const stateFile = resolveBrokerStateFile(cwd);
+  if (!fs5.existsSync(stateFile)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs5.readFileSync(stateFile, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function saveBrokerSession(cwd, session) {
+  const stateDir = resolveStateDir(cwd);
+  fs5.mkdirSync(stateDir, { recursive: true });
+  fs5.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}
+`, "utf8");
+}
+function clearBrokerSession(cwd) {
+  const stateFile = resolveBrokerStateFile(cwd);
+  if (fs5.existsSync(stateFile)) {
+    fs5.unlinkSync(stateFile);
+  }
+}
+async function isBrokerEndpointReady(endpoint) {
+  if (!endpoint) {
+    return false;
+  }
+  try {
+    return await waitForBrokerEndpoint(endpoint, 150);
+  } catch {
+    return false;
+  }
+}
+function resolveBrokerScriptPath() {
+  const candidates = [
+    new URL("./app-server-broker.mjs", import.meta.url),
+    new URL("../app-server-broker.mjs", import.meta.url),
+    new URL("../adapters/codex/broker.mjs", import.meta.url)
+  ];
+  for (const url of candidates) {
+    const p = fileURLToPath(url);
+    if (fs5.existsSync(p)) return p;
+  }
+  return fileURLToPath(candidates[0]);
+}
+async function ensureBrokerSession(cwd, options = {}) {
+  const existing = loadBrokerSession(cwd);
+  if (existing && await isBrokerEndpointReady(existing.endpoint)) {
+    return existing;
+  }
+  if (existing) {
+    teardownBrokerSession({
+      endpoint: existing.endpoint ?? null,
+      pidFile: existing.pidFile ?? null,
+      logFile: existing.logFile ?? null,
+      sessionDir: existing.sessionDir ?? null,
+      pid: existing.pid ?? null,
+      killProcess: options.killProcess ?? null
+    });
+    clearBrokerSession(cwd);
+  }
+  const sessionDir = createBrokerSessionDir();
+  const endpointFactory = options.createBrokerEndpoint ?? createBrokerEndpoint;
+  const endpoint = endpointFactory(sessionDir, options.platform);
+  const pidFile = path5.join(sessionDir, "broker.pid");
+  const logFile = path5.join(sessionDir, "broker.log");
+  const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
+  const child = spawnBrokerProcess({
+    scriptPath,
+    cwd,
+    endpoint,
+    pidFile,
+    logFile,
+    env: options.env ?? process5.env
+  });
+  const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2e3);
+  if (!ready) {
+    teardownBrokerSession({
+      endpoint,
+      pidFile,
+      logFile,
+      sessionDir,
+      pid: child.pid ?? null,
+      killProcess: options.killProcess ?? null
+    });
+    return null;
+  }
+  const session = {
+    endpoint,
+    pidFile,
+    logFile,
+    sessionDir,
+    pid: child.pid ?? null
+  };
+  saveBrokerSession(cwd, session);
+  return session;
+}
+function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
+  if (Number.isFinite(pid) && killProcess) {
+    try {
+      killProcess(pid);
+    } catch {
+    }
+  }
+  if (pidFile && fs5.existsSync(pidFile)) {
+    fs5.unlinkSync(pidFile);
+  }
+  if (logFile && fs5.existsSync(logFile)) {
+    fs5.unlinkSync(logFile);
+  }
+  if (endpoint) {
+    try {
+      const target = parseBrokerEndpoint(endpoint);
+      if (target.kind === "unix" && fs5.existsSync(target.path)) {
+        fs5.unlinkSync(target.path);
+      }
+    } catch {
+    }
+  }
+  const resolvedSessionDir = sessionDir ?? (pidFile ? path5.dirname(pidFile) : logFile ? path5.dirname(logFile) : null);
+  if (resolvedSessionDir && fs5.existsSync(resolvedSessionDir)) {
+    try {
+      fs5.rmdirSync(resolvedSessionDir);
+    } catch {
+    }
+  }
+}
+
+// src/adapters/codex/protocol.mjs
+var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
+var BROKER_BUSY_RPC_CODE = -32001;
+var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
+var APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5e3;
+var DEFAULT_CLIENT_INFO = {
+  title: "Codex Bridge",
+  name: "codex_bridge",
+  version: "1.0.0"
+};
+var DEFAULT_CAPABILITIES = {
+  experimentalApi: true,
+  optOutNotificationMethods: [
+    "item/agentMessage/delta",
+    "item/reasoning/summaryTextDelta",
+    "item/reasoning/summaryPartAdded",
+    "item/reasoning/textDelta"
+  ]
+};
+function buildJsonRpcError(code, message, data) {
+  return data === void 0 ? { code, message } : { code, message, data };
+}
+function createProtocolError(message, data) {
+  const error = (
+    /** @type {ProtocolError} */
+    new Error(message)
+  );
+  error.data = data;
+  if (data?.code !== void 0) {
+    error.rpcCode = data.code;
+  }
+  return error;
+}
+function timeoutError(message) {
+  const error = new Error(message);
+  error.code = "ETIMEDOUT";
+  return error;
+}
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(timeoutError(message)), ms);
+      timer.unref?.();
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+function serverRequestError(method) {
+  return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
+}
+var AppServerClientBase = class {
+  constructor(cwd, options = {}) {
+    this.cwd = cwd;
+    this.options = options;
+    this.pending = /* @__PURE__ */ new Map();
+    this.nextId = 1;
+    this.stderr = "";
+    this.closed = false;
+    this.transportClosed = false;
+    this.exitError = null;
+    this.notificationHandler = null;
+    this.lineBuffer = "";
+    this.transport = "unknown";
+    this.serverRequestHandler = null;
+    this.listeners = /* @__PURE__ */ new Map();
+    this.exitPromise = new Promise((resolve) => {
+      this.resolveExit = resolve;
+    });
+    this.transportExitPromise = new Promise((resolve) => {
+      this.resolveTransportExit = resolve;
+    });
+  }
+  setNotificationHandler(handler) {
+    this.notificationHandler = handler;
+  }
+  on(eventName, handler) {
+    if (!this.listeners.has(eventName)) {
+      this.listeners.set(eventName, /* @__PURE__ */ new Set());
+    }
+    this.listeners.get(eventName).add(handler);
+    return this;
+  }
+  off(eventName, handler) {
+    this.listeners.get(eventName)?.delete(handler);
+    return this;
+  }
+  emit(eventName, payload) {
+    for (const handler of this.listeners.get(eventName) ?? []) {
+      try {
+        handler(payload);
+      } catch {
+      }
+    }
+  }
+  /**
+   * @template {AppServerMethod} M
+   * @param {M} method
+   * @param {import("./protocol").AppServerRequestParams<M>} params
+   * @param {{ signal?: AbortSignal }} [options]
+   * @returns {Promise<import("./protocol").AppServerResponse<M>>}
+   */
+  request(method, params, options = {}) {
+    if (this.closed) {
+      throw new Error("codex app-server client is closed.");
+    }
+    const signal = options.signal ?? null;
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error("request aborted"));
+    }
+    const id = this.nextId;
+    this.nextId += 1;
+    return new Promise((resolve, reject) => {
+      let abortHandler = null;
+      const cleanupAbort = () => {
+        if (signal && abortHandler) {
+          signal.removeEventListener("abort", abortHandler);
+          abortHandler = null;
+        }
+      };
+      const wrappedResolve = (value) => {
+        cleanupAbort();
+        resolve(value);
+      };
+      const wrappedReject = (error) => {
+        cleanupAbort();
+        reject(error);
+      };
+      this.pending.set(id, { resolve: wrappedResolve, reject: wrappedReject, method });
+      if (signal) {
+        abortHandler = () => {
+          if (this.pending.get(id)) {
+            this.pending.delete(id);
+          }
+          cleanupAbort();
+          reject(signal.reason ?? new Error("request aborted"));
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+      try {
+        this.sendMessage({ id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        cleanupAbort();
+        reject(error);
+      }
+    });
+  }
+  notify(method, params = {}) {
+    if (this.closed) {
+      return;
+    }
+    this.sendMessage({ method, params });
+  }
+  handleChunk(chunk) {
+    this.lineBuffer += chunk;
+    let newlineIndex = this.lineBuffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = this.lineBuffer.slice(0, newlineIndex);
+      this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
+      this.handleLine(line);
+      newlineIndex = this.lineBuffer.indexOf("\n");
+    }
+  }
+  handleLine(line) {
+    if (!line.trim()) {
+      return;
+    }
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch (error) {
+      this.handleExit(
+        createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }),
+        { transportExited: false }
+      );
+      return;
+    }
+    if (message.id !== void 0 && message.method) {
+      this.handleServerRequest(message);
+      return;
+    }
+    if (message.id !== void 0) {
+      const pending = this.pending.get(message.id);
+      if (!pending) {
+        return;
+      }
+      this.pending.delete(message.id);
+      if (message.error) {
+        pending.reject(createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error));
+      } else {
+        pending.resolve(message.result ?? {});
+      }
+      return;
+    }
+    if (message.method && this.notificationHandler) {
+      this.notificationHandler(
+        /** @type {AppServerNotification} */
+        message
+      );
+    }
+  }
+  handleServerRequest(message) {
+    const method = message.method;
+    if (this.serverRequestHandler) {
+      message._client = this;
+      Promise.resolve(this.serverRequestHandler(message)).catch((error) => {
+        this.rejectServerRequest(
+          message.id,
+          buildJsonRpcError(-32e3, error?.message ?? `Server request handler failed for ${method}.`)
+        );
+      });
+      return;
+    }
+    this.rejectServerRequest(message.id, serverRequestError(method));
+  }
+  setServerRequestHandler(handler) {
+    this.serverRequestHandler = handler;
+  }
+  resolveServerRequest(id, result) {
+    this.sendMessage({ id, result: result ?? {} });
+  }
+  rejectServerRequest(id, error) {
+    this.sendMessage({ id, error });
+  }
+  handleExit(error, { transportExited = true } = {}) {
+    if (transportExited && !this.transportClosed) {
+      this.transportClosed = true;
+      this.resolveTransportExit(void 0);
+    }
+    if (this.exitResolved) {
+      return;
+    }
+    this.exitResolved = true;
+    this.exitError = error ?? null;
+    this.closed = true;
+    for (const pending of this.pending.values()) {
+      pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
+    }
+    this.pending.clear();
+    this.emit("exit", this.exitError);
+    this.resolveExit(void 0);
+  }
+  sendMessage(_message) {
+    throw new Error("sendMessage must be implemented by subclasses.");
+  }
+};
+var SpawnedCodexAppServerClient = class extends AppServerClientBase {
+  constructor(cwd, options = {}) {
+    super(cwd, options);
+    this.transport = "direct";
+  }
+  async initialize() {
+    this.proc = spawn2("codex", ["app-server"], {
+      cwd: this.cwd,
+      env: this.options.env ?? process6.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: process6.platform === "win32" ? process6.env.SHELL || true : false,
+      windowsHide: true
+    });
+    this.proc.stdout.setEncoding("utf8");
+    this.proc.stderr.setEncoding("utf8");
+    this.proc.stderr.on("data", (chunk) => {
+      this.stderr += chunk;
+    });
+    this.proc.on("error", (error) => {
+      this.handleExit(error);
+    });
+    this.proc.on("exit", (code, signal) => {
+      const detail = code === 0 ? null : createProtocolError(`codex app-server exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`);
+      this.handleExit(detail);
+    });
+    this.readline = readline.createInterface({ input: this.proc.stdout });
+    this.readline.on("line", (line) => {
+      this.handleLine(line);
+    });
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server."
+    );
+    this.notify("initialized", {});
+  }
+  async close() {
+    if (this.transportClosed) {
+      await this.transportExitPromise;
+      return;
+    }
+    this.closed = true;
+    if (this.readline) {
+      this.readline.close();
+    }
+    if (this.proc && !this.proc.killed) {
+      this.proc.stdin.end();
+      setTimeout(() => {
+        if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
+          if (process6.platform === "win32") {
+            try {
+              terminateProcessTree(this.proc.pid);
+            } catch {
+            }
+          } else {
+            this.proc.kill("SIGTERM");
+          }
+        }
+      }, 50).unref?.();
+    }
+    try {
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
+    } catch (error) {
+      if (this.proc && this.proc.exitCode === null) {
+        if (process6.platform === "win32") {
+          try {
+            terminateProcessTree(this.proc.pid);
+          } catch {
+          }
+        } else {
+          this.proc.kill("SIGKILL");
+        }
+      }
+      this.handleExit(error);
+    }
+  }
+  sendMessage(message) {
+    const line = `${JSON.stringify(message)}
+`;
+    const stdin = this.proc?.stdin;
+    if (!stdin) {
+      throw new Error("codex app-server stdin is not available.");
+    }
+    if (stdin.destroyed || !stdin.writable) {
+      throw new Error("codex app-server stdin is closed.");
+    }
+    stdin.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
+  }
+};
+var BrokerCodexAppServerClient = class extends AppServerClientBase {
+  constructor(cwd, options = {}) {
+    super(cwd, options);
+    this.transport = "broker";
+    this.endpoint = options.brokerEndpoint;
+  }
+  async initialize() {
+    await withTimeout(new Promise((resolve, reject) => {
+      const target = parseBrokerEndpoint(this.endpoint);
+      this.socket = net2.createConnection({ path: target.path });
+      this.socket.setEncoding("utf8");
+      this.socket.on("connect", resolve);
+      this.socket.on("data", (chunk) => {
+        this.handleChunk(chunk);
+      });
+      this.socket.on("error", (error) => {
+        if (!this.exitResolved) {
+          reject(error);
+        }
+        this.handleExit(error);
+      });
+      this.socket.on("close", () => {
+        this.handleExit(this.exitError);
+      });
+    }), APP_SERVER_INITIALIZE_TIMEOUT_MS, "Timed out connecting to codex app-server broker.");
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server broker connection."
+    );
+    this.notify("initialized", {});
+  }
+  async close() {
+    if (this.transportClosed) {
+      await this.transportExitPromise;
+      return;
+    }
+    this.closed = true;
+    if (this.socket) {
+      this.socket.end();
+    }
+    try {
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
+    } catch (error) {
+      this.socket?.destroy();
+      this.handleExit(error);
+    }
+  }
+  sendMessage(message) {
+    const line = `${JSON.stringify(message)}
+`;
+    const socket = this.socket;
+    if (!socket) {
+      throw new Error("codex app-server broker connection is not connected.");
+    }
+    if (socket.destroyed || !socket.writable) {
+      throw new Error("codex app-server broker connection is closed.");
+    }
+    socket.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
+  }
+};
+var CodexAppServerClient = class {
+  static async connect(cwd, options = {}) {
+    let brokerEndpoint = null;
+    if (!options.disableBroker) {
+      brokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process6.env[BROKER_ENDPOINT_ENV] ?? null;
+      if (!brokerEndpoint && options.reuseExistingBroker) {
+        brokerEndpoint = loadBrokerSession(cwd)?.endpoint ?? null;
+      }
+      if (!brokerEndpoint && !options.reuseExistingBroker) {
+        const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
+        brokerEndpoint = brokerSession?.endpoint ?? null;
+      }
+    }
+    const client = brokerEndpoint ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint }) : new SpawnedCodexAppServerClient(cwd, options);
+    try {
+      await client.initialize();
+    } catch (error) {
+      await client.close().catch(() => {
+      });
+      throw error;
+    }
+    return client;
+  }
+};
+
+// src/adapters/codex/codex.mjs
+var SERVICE_NAME = "claude_code_codex_plugin";
+var TASK_THREAD_PREFIX = "Codex Companion Task";
+var TURN_INTERRUPT_GRACE_MS = 3e4;
+var DEFAULT_CONTINUE_PROMPT = "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
+function cleanCodexStderr(stderr) {
+  return stderr.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line && !line.startsWith("WARNING: proceeding, even though we could not update PATH:")).join("\n");
+}
+function buildThreadParams(cwd, options = {}) {
+  return {
+    cwd,
+    model: options.model ?? null,
+    approvalPolicy: "never",
+    sandbox: options.sandbox ?? "read-only",
+    serviceName: SERVICE_NAME,
+    ephemeral: options.ephemeral ?? false,
+    experimentalRawEvents: false
+  };
+}
+function buildResumeParams(threadId, cwd, options = {}) {
+  return {
+    threadId,
+    cwd,
+    model: options.model ?? null,
+    approvalPolicy: "never",
+    sandbox: options.sandbox ?? "read-only"
+  };
+}
+function buildTurnInput(prompt) {
+  return [{ type: "text", text: prompt, text_elements: [] }];
+}
+function shorten(text, limit = 72) {
+  const normalized = String(text ?? "").trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 3)}...`;
+}
+function looksLikeVerificationCommand(command) {
+  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
+    command
+  );
+}
+function buildTaskThreadName(prompt) {
+  const excerpt = shorten(prompt, 56);
+  return excerpt ? `${TASK_THREAD_PREFIX}: ${excerpt}` : TASK_THREAD_PREFIX;
+}
+function extractThreadId(message) {
+  return message?.params?.threadId ?? null;
+}
+function extractTurnId(message) {
+  if (message?.params?.turnId) {
+    return message.params.turnId;
+  }
+  if (message?.params?.turn?.id) {
+    return message.params.turn.id;
+  }
+  return null;
+}
+function collectTouchedFiles(fileChanges) {
+  const paths = /* @__PURE__ */ new Set();
+  for (const fileChange of fileChanges) {
+    for (const change of fileChange.changes ?? []) {
+      if (change.path) {
+        paths.add(change.path);
+      }
+    }
+  }
+  return [...paths];
+}
+function normalizeReasoningText(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim();
+}
+function extractReasoningSections(value) {
+  if (!value) {
+    return [];
+  }
+  if (typeof value === "string") {
+    const normalized = normalizeReasoningText(value);
+    return normalized ? [normalized] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => extractReasoningSections(entry));
+  }
+  if (typeof value === "object") {
+    if (typeof value.text === "string") {
+      return extractReasoningSections(value.text);
+    }
+    if ("summary" in value) {
+      return extractReasoningSections(value.summary);
+    }
+    if ("content" in value) {
+      return extractReasoningSections(value.content);
+    }
+    if ("parts" in value) {
+      return extractReasoningSections(value.parts);
+    }
+  }
+  return [];
+}
+function mergeReasoningSections(existingSections, nextSections) {
+  const merged = [];
+  for (const section of [...existingSections, ...nextSections]) {
+    const normalized = normalizeReasoningText(section);
+    if (!normalized || merged.includes(normalized)) {
+      continue;
+    }
+    merged.push(normalized);
+  }
+  return merged;
+}
+function emitProgress(onProgress, message, phase = null, extra = {}) {
+  if (!onProgress || !message) {
+    return;
+  }
+  if (!phase && Object.keys(extra).length === 0) {
+    onProgress(message);
+    return;
+  }
+  onProgress({ message, phase, ...extra });
+}
+function emitLogEvent(onProgress, options = {}) {
+  if (!onProgress) {
+    return;
+  }
+  onProgress({
+    message: options.message ?? "",
+    phase: options.phase ?? null,
+    stderrMessage: options.stderrMessage ?? null,
+    logTitle: options.logTitle ?? null,
+    logBody: options.logBody ?? null
+  });
+}
+function labelForThread(state, threadId) {
+  if (!threadId || threadId === state.rootThreadId || threadId === state.threadId) {
+    return null;
+  }
+  return state.threadLabels.get(threadId) ?? threadId;
+}
+function registerThread(state, threadId, options = {}) {
+  if (!threadId) {
+    return;
+  }
+  state.threadIds.add(threadId);
+  const label = options.threadName ?? options.name ?? options.agentNickname ?? options.agentRole ?? state.threadLabels.get(threadId) ?? null;
+  if (label) {
+    state.threadLabels.set(threadId, label);
+  }
+}
+function describeStartedItem(state, item) {
+  switch (item.type) {
+    case "enteredReviewMode":
+      return { message: `Reviewer started: ${item.review}`, phase: "reviewing" };
+    case "commandExecution":
+      return {
+        message: `Running command: ${shorten(item.command, 96)}`,
+        phase: looksLikeVerificationCommand(item.command) ? "verifying" : "running"
+      };
+    case "fileChange":
+      return { message: `Applying ${item.changes.length} file change(s).`, phase: "editing" };
+    case "mcpToolCall":
+      return { message: `Calling ${item.server}/${item.tool}.`, phase: "investigating" };
+    case "dynamicToolCall":
+      return { message: `Running tool: ${item.tool}.`, phase: "investigating" };
+    case "collabAgentToolCall": {
+      const subagents = (item.receiverThreadIds ?? []).map((threadId) => labelForThread(state, threadId) ?? threadId);
+      const summary = subagents.length > 0 ? `Starting subagent ${subagents.join(", ")} via collaboration tool: ${item.tool}.` : `Starting collaboration tool: ${item.tool}.`;
+      return { message: summary, phase: "investigating" };
+    }
+    case "webSearch":
+      return { message: `Searching: ${shorten(item.query, 96)}`, phase: "investigating" };
+    default:
+      return null;
+  }
+}
+function describeCompletedItem(state, item) {
+  switch (item.type) {
+    case "commandExecution": {
+      const exitCode = item.exitCode ?? "?";
+      const statusLabel = item.status === "completed" ? "completed" : item.status;
+      return {
+        message: `Command ${statusLabel}: ${shorten(item.command, 96)} (exit ${exitCode})`,
+        phase: looksLikeVerificationCommand(item.command) ? "verifying" : "running"
+      };
+    }
+    case "fileChange":
+      return { message: `File changes ${item.status}.`, phase: "editing" };
+    case "mcpToolCall":
+      return { message: `Tool ${item.server}/${item.tool} ${item.status}.`, phase: "investigating" };
+    case "dynamicToolCall":
+      return { message: `Tool ${item.tool} ${item.status}.`, phase: "investigating" };
+    case "collabAgentToolCall": {
+      const subagents = (item.receiverThreadIds ?? []).map((threadId) => labelForThread(state, threadId) ?? threadId);
+      const summary = subagents.length > 0 ? `Subagent ${subagents.join(", ")} ${item.status}.` : `Collaboration tool ${item.tool} ${item.status}.`;
+      return { message: summary, phase: "investigating" };
+    }
+    case "exitedReviewMode":
+      return { message: "Reviewer finished.", phase: "finalizing" };
+    default:
+      return null;
+  }
+}
+function createTurnCaptureState(threadId, options = {}) {
+  let resolveCompletion;
+  let rejectCompletion;
+  const completion = new Promise((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  return {
+    threadId,
+    rootThreadId: threadId,
+    threadIds: /* @__PURE__ */ new Set([threadId]),
+    threadTurnIds: /* @__PURE__ */ new Map(),
+    threadLabels: /* @__PURE__ */ new Map(),
+    turnId: null,
+    bufferedNotifications: [],
+    completion,
+    resolveCompletion,
+    rejectCompletion,
+    finalTurn: null,
+    completed: false,
+    finalAnswerSeen: false,
+    completionTimer: null,
+    pendingCollaborations: /* @__PURE__ */ new Set(),
+    activeSubagentTurns: /* @__PURE__ */ new Set(),
+    lastAgentMessage: "",
+    reviewText: "",
+    planDetected: false,
+    planText: "",
+    reasoningSummary: [],
+    error: null,
+    messages: [],
+    fileChanges: [],
+    commandExecutions: [],
+    pendingServerRequests: 0,
+    onProgress: options.onProgress ?? null,
+    onItemCompleted: typeof options.onItemCompleted === "function" ? options.onItemCompleted : null
+  };
+}
+function clearCompletionTimer(state) {
+  if (state.completionTimer) {
+    clearTimeout(state.completionTimer);
+    state.completionTimer = null;
+  }
+}
+function completeTurn(state, turn = null, options = {}) {
+  if (state.completed) {
+    return;
+  }
+  clearCompletionTimer(state);
+  state.completed = true;
+  if (turn) {
+    state.finalTurn = turn;
+    if (!state.turnId) {
+      state.turnId = turn.id;
+    }
+  } else if (!state.finalTurn) {
+    state.finalTurn = {
+      id: state.turnId ?? "inferred-turn",
+      status: options.inferredStatus ?? "completed"
+    };
+  }
+  if (options.inferred) {
+    emitProgress(state.onProgress, "Turn completion inferred after the main thread finished and subagent work drained.", "finalizing");
+  }
+  state.resolveCompletion(state);
+}
+function scheduleInferredCompletion(state) {
+  if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+    return;
+  }
+  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+    return;
+  }
+  clearCompletionTimer(state);
+  state.completionTimer = setTimeout(() => {
+    state.completionTimer = null;
+    if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+      return;
+    }
+    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+      return;
+    }
+    completeTurn(state, null, { inferred: true });
+  }, 250);
+  state.completionTimer.unref?.();
+}
+function belongsToTurn(state, message) {
+  const messageThreadId = extractThreadId(message);
+  if (!messageThreadId || !state.threadIds.has(messageThreadId)) {
+    return false;
+  }
+  const trackedTurnId = state.threadTurnIds.get(messageThreadId) ?? null;
+  const messageTurnId = extractTurnId(message);
+  return trackedTurnId === null || messageTurnId === null || messageTurnId === trackedTurnId;
+}
+function recordItem(state, item, lifecycle, threadId = null) {
+  if (item.type === "collabAgentToolCall") {
+    if (!threadId || threadId === state.threadId) {
+      if (lifecycle === "started" || item.status === "inProgress") {
+        state.pendingCollaborations.add(item.id);
+      } else if (lifecycle === "completed") {
+        state.pendingCollaborations.delete(item.id);
+        scheduleInferredCompletion(state);
+      }
+    }
+    for (const receiverThreadId of item.receiverThreadIds ?? []) {
+      registerThread(state, receiverThreadId);
+    }
+  }
+  if (item.type === "agentMessage") {
+    state.messages.push({
+      lifecycle,
+      phase: item.phase ?? null,
+      text: item.text ?? ""
+    });
+    if (item.text) {
+      if (!threadId || threadId === state.threadId) {
+        state.lastAgentMessage = item.text;
+        if (lifecycle === "completed" && item.phase === "final_answer") {
+          state.finalAnswerSeen = true;
+          scheduleInferredCompletion(state);
+        }
+      }
+      if (lifecycle === "completed") {
+        const sourceLabel = labelForThread(state, threadId);
+        emitLogEvent(state.onProgress, {
+          message: sourceLabel ? `Subagent ${sourceLabel}: ${shorten(item.text, 96)}` : `Assistant message captured: ${shorten(item.text, 96)}`,
+          stderrMessage: null,
+          phase: item.phase === "final_answer" ? "finalizing" : null,
+          logTitle: sourceLabel ? `Subagent ${sourceLabel} message` : "Assistant message",
+          logBody: item.text
+        });
+      }
+    }
+    return;
+  }
+  if (item.type === "plan" && lifecycle === "completed") {
+    state.planDetected = true;
+    state.planText = item.text ?? "";
+    emitLogEvent(state.onProgress, {
+      message: `Plan proposed: ${shorten(item.text ?? "", 96)}`,
+      stderrMessage: null,
+      phase: "plan_ready",
+      logTitle: "Proposed plan",
+      logBody: item.text ?? ""
+    });
+    return;
+  }
+  if (item.type === "exitedReviewMode") {
+    state.reviewText = item.review ?? "";
+    if (lifecycle === "completed" && item.review) {
+      emitLogEvent(state.onProgress, {
+        message: "Review output captured.",
+        stderrMessage: null,
+        phase: "finalizing",
+        logTitle: "Review output",
+        logBody: item.review
+      });
+    }
+    return;
+  }
+  if (item.type === "reasoning" && lifecycle === "completed") {
+    const nextSections = extractReasoningSections(item.summary);
+    state.reasoningSummary = mergeReasoningSections(state.reasoningSummary, nextSections);
+    if (nextSections.length > 0) {
+      const sourceLabel = labelForThread(state, threadId);
+      emitLogEvent(state.onProgress, {
+        message: sourceLabel ? `Subagent ${sourceLabel} reasoning: ${shorten(nextSections[0], 96)}` : `Reasoning summary captured: ${shorten(nextSections[0], 96)}`,
+        stderrMessage: null,
+        logTitle: sourceLabel ? `Subagent ${sourceLabel} reasoning summary` : "Reasoning summary",
+        logBody: nextSections.map((section) => `- ${section}`).join("\n")
+      });
+    }
+    return;
+  }
+  if (item.type === "fileChange" && lifecycle === "completed") {
+    state.fileChanges.push(item);
+    return;
+  }
+  if (item.type === "commandExecution" && lifecycle === "completed") {
+    state.commandExecutions.push(item);
+  }
+}
+function applyTurnNotification(state, message) {
+  switch (message.method) {
+    case "thread/started":
+      registerThread(state, message.params.thread.id, {
+        threadName: message.params.thread.name,
+        name: message.params.thread.name,
+        agentNickname: message.params.thread.agentNickname,
+        agentRole: message.params.thread.agentRole
+      });
+      break;
+    case "thread/name/updated":
+      registerThread(state, message.params.threadId, {
+        threadName: message.params.threadName ?? null
+      });
+      break;
+    case "turn/started":
+      registerThread(state, message.params.threadId);
+      state.threadTurnIds.set(message.params.threadId, message.params.turn.id);
+      if ((message.params.threadId ?? null) === state.threadId && !state.turnId) {
+        state.turnId = message.params.turn.id;
+      }
+      if ((message.params.threadId ?? null) !== state.threadId) {
+        state.activeSubagentTurns.add(message.params.threadId);
+      }
+      emitProgress(
+        state.onProgress,
+        `Turn started (${message.params.turn.id}).`,
+        "starting",
+        (message.params.threadId ?? null) === state.threadId ? {
+          threadId: message.params.threadId ?? null,
+          turnId: message.params.turn.id ?? null
+        } : {}
+      );
+      break;
+    case "item/started":
+      recordItem(state, message.params.item, "started", message.params.threadId ?? null);
+      {
+        const update = describeStartedItem(state, message.params.item);
+        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+      }
+      break;
+    case "item/completed":
+      recordItem(state, message.params.item, "completed", message.params.threadId ?? null);
+      {
+        const update = describeCompletedItem(state, message.params.item);
+        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+      }
+      if (typeof state.onItemCompleted === "function") {
+        try {
+          state.onItemCompleted(message.params.item, { threadId: message.params.threadId ?? null });
+        } catch (err) {
+          emitProgress(state.onProgress, `onItemCompleted threw: ${err?.message ?? err}`, null);
+        }
+      }
+      break;
+    case "error": {
+      const err = message.params.error ?? {};
+      const willRetry = message.params.will_retry ?? message.params.willRetry ?? false;
+      const codexErrorInfo = err.codexErrorInfo ?? err.codex_error_info ?? null;
+      state.error = err;
+      state.lastErrorInfo = { codexErrorInfo, willRetry };
+      if (!willRetry) {
+        emitProgress(state.onProgress, `Codex error: ${err.message} [${codexErrorInfo ?? "unknown"}]`, "failed");
+      }
+      break;
+    }
+    case "serverRequest/resolved":
+      emitProgress(state.onProgress, `Server request resolved: ${message.params.requestId}`, "confirmed");
+      break;
+    case "turn/completed":
+      if ((message.params.threadId ?? null) !== state.threadId) {
+        state.activeSubagentTurns.delete(message.params.threadId);
+        scheduleInferredCompletion(state);
+        break;
+      }
+      emitProgress(
+        state.onProgress,
+        `Turn ${message.params.turn.status === "completed" ? "completed" : message.params.turn.status}.`,
+        "finalizing"
+      );
+      {
+        const completedTurn = message.params.turn;
+        if (completedTurn?.status !== "completed" && completedTurn?.error) {
+          state.error = { ...state.error ?? {}, ...completedTurn.error };
+        }
+        completeTurn(state, completedTurn);
+      }
+      break;
+    default:
+      break;
+  }
+}
+function routeTurnNotification(state, message, previousHandler) {
+  if (message.method === "thread/started" || message.method === "thread/name/updated") {
+    applyTurnNotification(state, message);
+    return;
+  }
+  if (!belongsToTurn(state, message)) {
+    if (previousHandler) {
+      previousHandler(message);
+    }
+    return;
+  }
+  applyTurnNotification(state, message);
+}
+function flushBufferedNotifications(state, previousHandler) {
+  if (state.bufferedNotifications.length === 0 || !state.turnId) {
+    return;
+  }
+  const buffered = state.bufferedNotifications.splice(0);
+  for (const message of buffered) {
+    routeTurnNotification(state, message, previousHandler);
+    if (state.completed) {
+      break;
+    }
+  }
+}
+async function captureTurn(client, threadId, startRequest, options = {}) {
+  const state = createTurnCaptureState(threadId, options);
+  const previousHandler = client.notificationHandler;
+  const idleTimeoutMs = Number(options.idleTimeoutMs) > 0 ? Number(options.idleTimeoutMs) : 0;
+  const turnTimeoutMs = Number(options.turnTimeoutMs) > 0 ? Number(options.turnTimeoutMs) : 0;
+  let lastNotificationAt = Date.now();
+  let idleInterval = null;
+  let turnTimer = null;
+  let interruptGraceTimer = null;
+  const turnAbort = new AbortController();
+  const markActivity = () => {
+    lastNotificationAt = Date.now();
+  };
+  markActivity.startServerRequest = () => {
+    state.pendingServerRequests += 1;
+    markActivity();
+    let finished = false;
+    return () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      state.pendingServerRequests = Math.max(0, state.pendingServerRequests - 1);
+      markActivity();
+    };
+  };
+  if (typeof options.onActivityMarkerReady === "function") {
+    options.onActivityMarkerReady(markActivity);
+  }
+  if (idleTimeoutMs > 0) {
+    const checkIntervalMs = Math.min(5e3, idleTimeoutMs);
+    idleInterval = setInterval(() => {
+      if (state.completed) {
+        return;
+      }
+      if (state.pendingServerRequests > 0) {
+        markActivity();
+        return;
+      }
+      const elapsed = Date.now() - lastNotificationAt;
+      if (elapsed >= idleTimeoutMs) {
+        clearInterval(idleInterval);
+        idleInterval = null;
+        const seconds = Math.round(idleTimeoutMs / 1e3);
+        state.error = { message: `No events received for ${seconds}s (idle timeout).` };
+        emitProgress(state.onProgress, state.error.message, "failed");
+        if (typeof options.onIdleTimeout === "function") {
+          try {
+            options.onIdleTimeout({ threadId: state.threadId, turnId: state.turnId, elapsedMs: elapsed });
+          } catch {
+          }
+        }
+        completeTurn(state, null, { inferredStatus: "failed" });
+      }
+    }, checkIntervalMs);
+    idleInterval.unref?.();
+  }
+  if (turnTimeoutMs > 0) {
+    turnTimer = setTimeout(() => {
+      if (state.completed) {
+        return;
+      }
+      const message = `Turn timed out after ${turnTimeoutMs}ms.`;
+      state.error = { message, code: "TurnTimeout" };
+      emitProgress(state.onProgress, message, "failed");
+      const interruptTurnId = state.turnId ?? state.threadTurnIds.get(state.threadId) ?? null;
+      if (interruptTurnId) {
+        try {
+          Promise.resolve(client.request("turn/interrupt", { threadId: state.threadId, turnId: interruptTurnId })).catch((error) => {
+            emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
+            if (!state.completed) {
+              completeTurn(state, null, { inferredStatus: "failed" });
+            }
+          });
+        } catch (error) {
+          emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
+          completeTurn(state, null, { inferredStatus: "failed" });
+          return;
+        }
+        const interruptGraceMs = Number(options.interruptGraceMs) > 0 ? Number(options.interruptGraceMs) : TURN_INTERRUPT_GRACE_MS;
+        interruptGraceTimer = setTimeout(() => {
+          if (state.completed) {
+            return;
+          }
+          emitProgress(
+            state.onProgress,
+            `turn/interrupt did not produce turn/completed within ${interruptGraceMs}ms.`,
+            "failed"
+          );
+          completeTurn(state, null, { inferredStatus: "failed" });
+        }, interruptGraceMs);
+        interruptGraceTimer.unref?.();
+        return;
+      }
+      emitProgress(
+        state.onProgress,
+        "turn timeout fired before turn id known; upstream turn may continue running",
+        null
+      );
+      completeTurn(state, null, { inferredStatus: "failed" });
+    }, turnTimeoutMs);
+    turnTimer.unref?.();
+  }
+  client.setNotificationHandler((message) => {
+    lastNotificationAt = Date.now();
+    if (!state.turnId) {
+      const messageThreadId = extractThreadId(message);
+      if (messageThreadId === state.threadId && (message.method === "turn/started" || message.method === "turn/completed")) {
+        applyTurnNotification(state, message);
+        flushBufferedNotifications(state, previousHandler);
+        return;
+      }
+      state.bufferedNotifications.push(message);
+      return;
+    }
+    routeTurnNotification(state, message, previousHandler);
+  });
+  const onExit = () => {
+    if (state.completed) {
+      return;
+    }
+    const bufferedTerminal = state.bufferedNotifications.find(
+      (message) => message?.method === "turn/completed" && (message?.params?.threadId ?? null) === state.threadId
+    );
+    if (bufferedTerminal) {
+      applyTurnNotification(state, bufferedTerminal);
+      if (state.completed) {
+        return;
+      }
+    }
+    state.error = { message: "Codex app-server exited unexpectedly" };
+    completeTurn(state, null, { inferredStatus: "failed" });
+  };
+  if (client.on) client.on("exit", onExit);
+  try {
+    const response = await Promise.race([
+      startRequest(turnAbort.signal),
+      state.completion.then(() => null)
+    ]);
+    if (!response) {
+      turnAbort.abort(new Error("captureTurn: state.completion won the race"));
+      return await state.completion;
+    }
+    markActivity();
+    if (state.completed) {
+      return await state.completion;
+    }
+    options.onResponse?.(response, state);
+    const responseTurnId = response.turn?.id ?? null;
+    if (responseTurnId && state.turnId && state.turnId !== responseTurnId) {
+      state.error = {
+        message: `turn/start response turn id ${responseTurnId} did not match streamed turn id ${state.turnId}.`,
+        code: "ProtocolDrift"
+      };
+      completeTurn(state, null, { inferredStatus: "failed" });
+      return await state.completion;
+    }
+    state.turnId = state.turnId ?? responseTurnId;
+    if (state.turnId) {
+      state.threadTurnIds.set(state.threadId, state.turnId);
+    }
+    flushBufferedNotifications(state, previousHandler);
+    if (response.turn?.status && response.turn.status !== "inProgress") {
+      completeTurn(state, response.turn);
+    }
+    return await state.completion;
+  } finally {
+    clearCompletionTimer(state);
+    if (idleInterval) {
+      clearInterval(idleInterval);
+      idleInterval = null;
+    }
+    if (turnTimer) {
+      clearTimeout(turnTimer);
+      turnTimer = null;
+    }
+    if (interruptGraceTimer) {
+      clearTimeout(interruptGraceTimer);
+      interruptGraceTimer = null;
+    }
+    if (typeof options.onActivityMarkerReady === "function") {
+      options.onActivityMarkerReady(null);
+    }
+    client.setNotificationHandler(previousHandler ?? null);
+    if (client.off) client.off("exit", onExit);
+    else if (client.removeListener) client.removeListener("exit", onExit);
+  }
+}
+async function withAppServer(cwd, fn) {
+  let client = null;
+  try {
+    client = await CodexAppServerClient.connect(cwd);
+    const result = await fn(client);
+    await client.close();
+    return result;
+  } catch (error) {
+    const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
+    const shouldRetryDirect = client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE || brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED");
+    if (client) {
+      await client.close().catch(() => {
+      });
+      client = null;
+    }
+    if (!shouldRetryDirect) {
+      throw error;
+    }
+    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+    try {
+      return await fn(directClient);
+    } finally {
+      await directClient.close();
+    }
+  }
+}
+async function startThread(client, cwd, options = {}) {
+  const response = await client.request("thread/start", buildThreadParams(cwd, options));
+  const threadId = response.thread.id;
+  if (options.threadName) {
+    try {
+      await client.request("thread/name/set", { threadId, name: options.threadName });
+    } catch (err) {
+      const msg = String(err?.message ?? err ?? "");
+      if (!msg.includes("unknown variant") && !msg.includes("unknown method")) {
+        throw err;
+      }
+    }
+  }
+  return response;
+}
+async function resumeThread(client, threadId, cwd, options = {}) {
+  return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
+}
+function buildResultStatus(turnState) {
+  if (turnState.error?.code === "TurnTimeout") {
+    return 1;
+  }
+  return turnState.finalTurn?.status === "completed" ? 0 : 1;
+}
+var BUILTIN_PROVIDER_LABELS = /* @__PURE__ */ new Map([
+  ["openai", "OpenAI"],
+  ["ollama", "Ollama"],
+  ["lmstudio", "LM Studio"]
+]);
+function normalizeProviderId(value) {
+  const providerId = typeof value === "string" ? value.trim() : "";
+  return providerId || null;
+}
+function formatProviderLabel(providerId, providerConfig = null) {
+  const configuredName = typeof providerConfig?.name === "string" ? providerConfig.name.trim() : "";
+  if (configuredName) {
+    return configuredName;
+  }
+  if (!providerId) {
+    return "The active provider";
+  }
+  return BUILTIN_PROVIDER_LABELS.get(providerId) ?? providerId;
+}
+function buildAuthStatus(fields = {}) {
+  return {
+    available: true,
+    loggedIn: false,
+    detail: "not authenticated",
+    source: "unknown",
+    authMethod: null,
+    verified: null,
+    requiresOpenaiAuth: null,
+    provider: null,
+    ...fields
+  };
+}
+function resolveProviderConfig(configResponse) {
+  const config = configResponse?.config;
+  if (!config || typeof config !== "object") {
+    return {
+      providerId: null,
+      providerConfig: null
+    };
+  }
+  const providerId = normalizeProviderId(config.model_provider);
+  const providers = config.model_providers && typeof config.model_providers === "object" && !Array.isArray(config.model_providers) ? config.model_providers : null;
+  const providerConfig = providerId && providers?.[providerId] && typeof providers[providerId] === "object" ? providers[providerId] : null;
+  return {
+    providerId,
+    providerConfig
+  };
+}
+function buildAppServerAuthStatus(accountResponse, configResponse) {
+  const account = accountResponse?.account ?? null;
+  const requiresOpenaiAuth = typeof accountResponse?.requiresOpenaiAuth === "boolean" ? accountResponse.requiresOpenaiAuth : null;
+  const { providerId, providerConfig } = resolveProviderConfig(configResponse);
+  const providerLabel = formatProviderLabel(providerId, providerConfig);
+  if (account?.type === "chatgpt") {
+    const email = typeof account.email === "string" && account.email.trim() ? account.email.trim() : null;
+    return buildAuthStatus({
+      loggedIn: true,
+      detail: email ? `ChatGPT login active for ${email}` : "ChatGPT login active",
+      source: "app-server",
+      authMethod: "chatgpt",
+      verified: true,
+      requiresOpenaiAuth,
+      provider: providerId
+    });
+  }
+  if (account?.type === "apiKey") {
+    return buildAuthStatus({
+      loggedIn: true,
+      detail: "API key configured (unverified)",
+      source: "app-server",
+      authMethod: "apiKey",
+      verified: false,
+      requiresOpenaiAuth,
+      provider: providerId
+    });
+  }
+  if (requiresOpenaiAuth === false) {
+    return buildAuthStatus({
+      loggedIn: true,
+      detail: `${providerLabel} is configured and does not require OpenAI authentication`,
+      source: "app-server",
+      requiresOpenaiAuth,
+      provider: providerId
+    });
+  }
+  return buildAuthStatus({
+    loggedIn: false,
+    detail: `${providerLabel} requires OpenAI authentication`,
+    source: "app-server",
+    requiresOpenaiAuth,
+    provider: providerId
+  });
+}
+async function getCodexAuthStatusFromClient(client, cwd) {
+  try {
+    const accountResponse = await client.request("account/read", { refreshToken: false });
+    const configResponse = await client.request("config/read", {
+      includeLayers: false,
+      cwd
+    });
+    return buildAppServerAuthStatus(accountResponse, configResponse);
+  } catch (error) {
+    return buildAuthStatus({
+      loggedIn: false,
+      detail: error instanceof Error ? error.message : String(error),
+      source: "app-server"
+    });
+  }
+}
+function getCodexAvailability(cwd) {
+  const versionStatus = binaryAvailable("codex", ["--version"], { cwd });
+  if (!versionStatus.available) {
+    return versionStatus;
+  }
+  const appServerStatus = binaryAvailable("codex", ["app-server", "--help"], { cwd });
+  if (!appServerStatus.available) {
+    return {
+      available: false,
+      detail: `${versionStatus.detail}; advanced runtime unavailable: ${appServerStatus.detail}`
+    };
+  }
+  return {
+    available: true,
+    detail: `${versionStatus.detail}; advanced runtime available`
+  };
+}
+function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
+  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
+  if (endpoint) {
+    return {
+      mode: "shared",
+      label: "shared session",
+      detail: "This Claude session is configured to reuse one shared Codex runtime.",
+      endpoint
+    };
+  }
+  return {
+    mode: "direct",
+    label: "direct startup",
+    detail: "No shared Codex runtime is active yet. The first review or task command will start one on demand.",
+    endpoint: null
+  };
+}
+async function getCodexAuthStatus(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    return {
+      available: false,
+      loggedIn: false,
+      detail: availability.detail,
+      source: "availability",
+      authMethod: null,
+      verified: null,
+      requiresOpenaiAuth: null,
+      provider: null
+    };
+  }
+  let client = null;
+  try {
+    client = await CodexAppServerClient.connect(cwd, {
+      env: options.env,
+      reuseExistingBroker: true
+    });
+    return await getCodexAuthStatusFromClient(client, cwd);
+  } catch (error) {
+    return buildAuthStatus({
+      loggedIn: false,
+      detail: error instanceof Error ? error.message : String(error),
+      source: "app-server"
+    });
+  } finally {
+    if (client) {
+      await client.close().catch(() => {
+      });
+    }
+  }
+}
+async function interruptAppServerTurn(cwd, { threadId, turnId }) {
+  if (!threadId || !turnId) {
+    return {
+      attempted: false,
+      interrupted: false,
+      transport: null,
+      detail: "missing threadId or turnId"
+    };
+  }
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    return {
+      attempted: false,
+      interrupted: false,
+      transport: null,
+      detail: availability.detail
+    };
+  }
+  let client = null;
+  try {
+    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
+    await client.request("turn/interrupt", { threadId, turnId });
+    return {
+      attempted: true,
+      interrupted: true,
+      transport: client.transport,
+      detail: `Interrupted ${turnId} on ${threadId}.`
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      interrupted: false,
+      transport: client?.transport ?? null,
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    await client?.close().catch(() => {
+    });
+  }
+}
+async function runAppServerReview(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
+  }
+  return withAppServer(cwd, async (client) => {
+    emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
+    const thread = await startThread(client, cwd, {
+      model: options.model,
+      sandbox: "read-only",
+      ephemeral: true,
+      threadName: options.threadName
+    });
+    const sourceThreadId = thread.thread.id;
+    emitProgress(options.onProgress, `Thread ready (${sourceThreadId}).`, "starting", {
+      threadId: sourceThreadId
+    });
+    const delivery = options.delivery ?? "inline";
+    const turnState = await captureTurn(
+      client,
+      sourceThreadId,
+      (signal) => client.request("review/start", {
+        threadId: sourceThreadId,
+        delivery,
+        target: options.target
+      }, { signal }),
+      {
+        onProgress: options.onProgress,
+        idleTimeoutMs: options.idleTimeoutMs ?? null,
+        turnTimeoutMs: options.turnTimeoutMs ?? null,
+        onResponse(response, state) {
+          if (response.reviewThreadId) {
+            state.threadIds.add(response.reviewThreadId);
+            if (delivery === "detached") {
+              state.threadId = response.reviewThreadId;
+            }
+          }
+        }
+      }
+    );
+    return {
+      status: buildResultStatus(turnState),
+      threadId: turnState.threadId,
+      sourceThreadId,
+      turnId: turnState.turnId,
+      reviewText: turnState.reviewText,
+      reasoningSummary: turnState.reasoningSummary,
+      turn: turnState.finalTurn,
+      error: turnState.error,
+      stderr: cleanCodexStderr(client.stderr)
+    };
+  });
+}
+async function runAppServerTurn(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
+  }
+  return withAppServer(cwd, async (client) => {
+    let threadId;
+    let markServerRequestActivity = null;
+    if (options.onServerRequest) {
+      client.setServerRequestHandler(async (message) => {
+        const finishServerRequest = typeof markServerRequestActivity?.startServerRequest === "function" ? markServerRequestActivity.startServerRequest() : null;
+        markServerRequestActivity?.();
+        try {
+          return await options.onServerRequest(message);
+        } finally {
+          finishServerRequest?.();
+        }
+      });
+    }
+    if (options.resumeThreadId) {
+      emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
+      const response = await resumeThread(client, options.resumeThreadId, cwd, {
+        model: options.model,
+        sandbox: options.sandbox,
+        ephemeral: false
+      });
+      threadId = response.thread.id;
+    } else {
+      emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
+      const response = await startThread(client, cwd, {
+        model: options.model,
+        sandbox: options.sandbox,
+        ephemeral: options.persistThread ? false : true,
+        threadName: options.persistThread ? options.threadName : options.threadName ?? null
+      });
+      threadId = response.thread.id;
+    }
+    emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
+      threadId
+    });
+    const prompt = options.prompt?.trim() || options.defaultPrompt || "";
+    if (!prompt) {
+      throw new CliError("A prompt is required for this Codex run.", {
+        class: "validation",
+        code: "MISSING_PROMPT",
+        retryable: false
+      });
+    }
+    const turnParams = {
+      threadId,
+      input: buildTurnInput(prompt),
+      model: options.model ?? null,
+      effort: options.effort ?? null,
+      outputSchema: options.outputSchema ?? null
+    };
+    if (options.collaborationMode) {
+      turnParams.collaborationMode = options.collaborationMode;
+    }
+    if (options.sandboxPolicy) {
+      turnParams.sandboxPolicy = options.sandboxPolicy;
+    }
+    if (typeof options.onTurnStart === "function") {
+      try {
+        options.onTurnStart({
+          threadId,
+          turnParams,
+          promptLength: prompt.length,
+          promptPreview: prompt.slice(0, 200)
+        });
+      } catch (err) {
+        emitProgress(
+          options.onProgress,
+          `onTurnStart threw: ${err?.message ?? err}`,
+          null
+        );
+      }
+    }
+    const turnPromise = captureTurn(
+      client,
+      threadId,
+      (signal) => client.request("turn/start", turnParams, { signal }),
+      {
+        onProgress: options.onProgress,
+        idleTimeoutMs: options.idleTimeoutMs ?? null,
+        turnTimeoutMs: options.turnTimeoutMs ?? null,
+        onActivityMarkerReady(marker) {
+          markServerRequestActivity = marker;
+        },
+        onIdleTimeout: options.onIdleTimeout ?? null,
+        onItemCompleted: options.onItemCompleted ?? null
+      }
+    );
+    const turnState = await turnPromise;
+    return {
+      status: buildResultStatus(turnState),
+      threadId,
+      turnId: turnState.turnId,
+      finalMessage: turnState.lastAgentMessage,
+      reasoningSummary: turnState.reasoningSummary,
+      turn: turnState.finalTurn,
+      error: turnState.error,
+      stderr: cleanCodexStderr(client.stderr),
+      fileChanges: turnState.fileChanges,
+      touchedFiles: collectTouchedFiles(turnState.fileChanges),
+      commandExecutions: turnState.commandExecutions,
+      planDetected: turnState.planDetected,
+      planText: turnState.planText
+    };
+  });
+}
+async function findLatestTaskThread(cwd) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
+  }
+  return withAppServer(cwd, async (client) => {
+    const response = await client.request("thread/list", {
+      cwd,
+      limit: 20,
+      sortKey: "updated_at",
+      sourceKinds: ["appServer"],
+      searchTerm: TASK_THREAD_PREFIX
+    });
+    return response.data.find((thread) => typeof thread.name === "string" && thread.name.startsWith(TASK_THREAD_PREFIX)) ?? null;
+  });
+}
+function buildPersistentTaskThreadName(prompt) {
+  return buildTaskThreadName(prompt);
+}
+function parseStructuredOutput(rawOutput, fallback = {}) {
+  if (!rawOutput) {
+    return {
+      parsed: null,
+      parseError: fallback.failureMessage ?? "Codex did not return a final structured message.",
+      rawOutput: rawOutput ?? "",
+      ...fallback
+    };
+  }
+  try {
+    return {
+      parsed: JSON.parse(rawOutput),
+      parseError: null,
+      rawOutput,
+      ...fallback
+    };
+  } catch (error) {
+    return {
+      parsed: null,
+      parseError: error.message,
+      rawOutput,
+      ...fallback
+    };
+  }
+}
+function readOutputSchema(schemaPath) {
+  return readJsonFile(schemaPath);
+}
+
+// src/lib/registry.mjs
+import fs6 from "node:fs";
+import os3 from "node:os";
+import path6 from "node:path";
+var REGISTRY_SCHEMA_VERSION = "1.0";
+function registryRoot() {
+  const override = process.env.CODEX_BRIDGE_REGISTRY;
+  if (override && override.length > 0) return override;
+  return path6.join(os3.homedir(), ".codex-bridge", "jobs");
+}
+function jobDir(taskId) {
+  if (!taskId || typeof taskId !== "string") {
+    throw new TypeError("jobDir(taskId): taskId must be a non-empty string");
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(taskId)) {
+    throw new TypeError(
+      `jobDir(taskId): taskId contains invalid characters: ${JSON.stringify(taskId)}`
+    );
+  }
+  return path6.join(registryRoot(), taskId);
+}
+function ensureJobDir(taskId) {
+  const dir = jobDir(taskId);
+  fs6.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+function writeMeta(taskId, meta) {
+  if (!meta || typeof meta !== "object") {
+    throw new TypeError("writeMeta(taskId, meta): meta must be an object");
+  }
+  const dir = ensureJobDir(taskId);
+  const payload = {
+    schema_version: REGISTRY_SCHEMA_VERSION,
+    task_id: taskId,
+    written_at: (/* @__PURE__ */ new Date()).toISOString(),
+    ...meta
+  };
+  const target = path6.join(dir, "meta.json");
+  const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;
+  fs6.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+  fs6.renameSync(tmp, target);
+  return target;
+}
+function readMeta(taskId) {
+  const target = path6.join(jobDir(taskId), "meta.json");
+  if (!fs6.existsSync(target)) return null;
+  try {
+    return JSON.parse(fs6.readFileSync(target, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function listTasks() {
+  const root = registryRoot();
+  if (!fs6.existsSync(root)) return [];
+  try {
+    return fs6.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  } catch {
+    return [];
+  }
+}
+function readVerdict(taskId) {
+  const target = path6.join(jobDir(taskId), "verdict.json");
+  if (!fs6.existsSync(target)) return null;
+  try {
+    return JSON.parse(fs6.readFileSync(target, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function writeVerdict(taskId, verdict) {
+  if (!verdict || typeof verdict !== "object") {
+    throw new TypeError("writeVerdict(taskId, verdict): verdict must be an object");
+  }
+  if (!["approved", "needs-attention", "must-fix"].includes(verdict.verdict)) {
+    throw new TypeError(
+      "writeVerdict(taskId, verdict): verdict.verdict must be one of approved | needs-attention | must-fix"
+    );
+  }
+  const dir = ensureJobDir(taskId);
+  const payload = {
+    schema_version: REGISTRY_SCHEMA_VERSION,
+    task_id: taskId,
+    decided_at: (/* @__PURE__ */ new Date()).toISOString(),
+    ...verdict
+  };
+  const target = path6.join(dir, "verdict.json");
+  const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;
+  fs6.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+  fs6.renameSync(tmp, target);
+  return target;
+}
+
+// src/lib/job-control.mjs
+import fs8 from "node:fs";
+
+// src/lib/tracked-jobs.mjs
+import fs7 from "node:fs";
+import process7 from "node:process";
+var SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+function nowIso2() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function normalizeProgressEvent(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return {
+      message: String(value.message ?? "").trim(),
+      phase: typeof value.phase === "string" && value.phase.trim() ? value.phase.trim() : null,
+      threadId: typeof value.threadId === "string" && value.threadId.trim() ? value.threadId.trim() : null,
+      turnId: typeof value.turnId === "string" && value.turnId.trim() ? value.turnId.trim() : null,
+      stderrMessage: value.stderrMessage == null ? null : String(value.stderrMessage).trim(),
+      logTitle: typeof value.logTitle === "string" && value.logTitle.trim() ? value.logTitle.trim() : null,
+      logBody: value.logBody == null ? null : String(value.logBody).trimEnd()
+    };
+  }
+  return {
+    message: String(value ?? "").trim(),
+    phase: null,
+    threadId: null,
+    turnId: null,
+    stderrMessage: String(value ?? "").trim(),
+    logTitle: null,
+    logBody: null
+  };
+}
+function appendLogLine(logFile, message) {
+  const normalized = String(message ?? "").trim();
+  if (!logFile || !normalized) {
+    return;
+  }
+  fs7.appendFileSync(logFile, `[${nowIso2()}] ${normalized}
+`, "utf8");
+}
+function appendLogBlock(logFile, title, body) {
+  if (!logFile || !body) {
+    return;
+  }
+  fs7.appendFileSync(logFile, `
+[${nowIso2()}] ${title}
+${String(body).trimEnd()}
+`, "utf8");
+}
+function createJobLogFile(workspaceRoot, jobId, title) {
+  const logFile = resolveJobLogFile(workspaceRoot, jobId);
+  fs7.writeFileSync(logFile, "", "utf8");
+  if (title) {
+    appendLogLine(logFile, `Starting ${title}.`);
+  }
+  return logFile;
+}
+function createJobRecord(base, options = {}) {
+  const env = options.env ?? process7.env;
+  const sessionId = env[options.sessionIdEnv ?? SESSION_ID_ENV];
+  return {
+    ...base,
+    createdAt: nowIso2(),
+    ...sessionId ? { sessionId } : {}
+  };
+}
+function createJobProgressUpdater(workspaceRoot, jobId) {
+  let lastPhase = null;
+  let lastThreadId = null;
+  let lastTurnId = null;
+  return (event) => {
+    const normalized = normalizeProgressEvent(event);
+    const patch = { id: jobId };
+    let changed = false;
+    if (normalized.phase && normalized.phase !== lastPhase) {
+      lastPhase = normalized.phase;
+      patch.phase = normalized.phase;
+      changed = true;
+    }
+    if (normalized.threadId && normalized.threadId !== lastThreadId) {
+      lastThreadId = normalized.threadId;
+      patch.threadId = normalized.threadId;
+      changed = true;
+    }
+    if (normalized.turnId && normalized.turnId !== lastTurnId) {
+      lastTurnId = normalized.turnId;
+      patch.turnId = normalized.turnId;
+      changed = true;
+    }
+    if (!changed) {
+      return;
+    }
+    const jobFile = resolveJobFile(workspaceRoot, jobId);
+    if (!fs7.existsSync(jobFile)) {
+      return;
+    }
+    const storedJob = readJobFile(jobFile);
+    writeJobFile(workspaceRoot, jobId, {
+      ...storedJob,
+      ...patch
+    });
+    upsertJob(workspaceRoot, patch);
+  };
+}
+function createProgressReporter({ stderr = false, logFile = null, onEvent = null } = {}) {
+  if (!stderr && !logFile && !onEvent) {
+    return null;
+  }
+  return (eventOrMessage) => {
+    const event = normalizeProgressEvent(eventOrMessage);
+    const stderrMessage = event.stderrMessage ?? event.message;
+    if (stderr && stderrMessage) {
+      process7.stderr.write(`[codex] ${stderrMessage}
+`);
+    }
+    appendLogLine(logFile, event.message);
+    appendLogBlock(logFile, event.logTitle, event.logBody);
+    onEvent?.(event);
+  };
+}
+function readStoredJobOrNull(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs7.existsSync(jobFile)) {
+    return null;
+  }
+  return readJobFile(jobFile);
+}
+async function runTrackedJob(job, runner, options = {}) {
+  const runningRecord = {
+    ...job,
+    status: "running",
+    startedAt: nowIso2(),
+    phase: "starting",
+    pid: process7.pid,
+    logFile: options.logFile ?? job.logFile ?? null
+  };
+  writeJobFile(job.workspaceRoot, job.id, runningRecord);
+  upsertJob(job.workspaceRoot, runningRecord);
+  try {
+    const execution = await runner();
+    const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
+    const completedAt = nowIso2();
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...runningRecord,
+      status: completionStatus,
+      threadId: execution.threadId ?? null,
+      turnId: execution.turnId ?? null,
+      pid: null,
+      phase: completionStatus === "completed" ? "done" : "failed",
+      completedAt,
+      result: execution.payload,
+      rendered: execution.rendered
+    });
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: completionStatus,
+      threadId: execution.threadId ?? null,
+      turnId: execution.turnId ?? null,
+      summary: execution.summary,
+      phase: completionStatus === "completed" ? "done" : "failed",
+      pid: null,
+      completedAt
+    });
+    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    return execution;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+    const completedAt = nowIso2();
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...existing,
+      status: "failed",
+      phase: "failed",
+      errorMessage,
+      pid: null,
+      completedAt,
+      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
+    });
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      errorMessage,
+      completedAt
+    });
+    throw error;
+  }
+}
+
+// src/lib/job-control.mjs
+var DEFAULT_MAX_STATUS_JOBS = 8;
+var DEFAULT_MAX_PROGRESS_LINES = 4;
+function sortJobsNewestFirst(jobs) {
+  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
+function getCurrentSessionId(options = {}) {
+  return options.env?.[SESSION_ID_ENV] ?? process.env[SESSION_ID_ENV] ?? null;
+}
+function filterJobsForCurrentSession(jobs, options = {}) {
+  const sessionId = getCurrentSessionId(options);
+  if (!sessionId) {
+    return jobs;
+  }
+  return jobs.filter((job) => job.sessionId === sessionId);
+}
+function getJobTypeLabel(job) {
+  if (typeof job.kindLabel === "string" && job.kindLabel) {
+    return job.kindLabel;
+  }
+  if (job.kind === "adversarial-review") {
+    return "adversarial-review";
+  }
+  if (job.jobClass === "review") {
+    return "review";
+  }
+  if (job.jobClass === "task") {
+    return "task";
+  }
+  if (job.kind === "review") {
+    return "review";
+  }
+  if (job.kind === "task") {
+    return "task";
+  }
+  return "job";
+}
+function stripLogPrefix(line) {
+  return line.replace(/^\[[^\]]+\]\s*/, "").trim();
+}
+function isProgressBlockTitle(line) {
+  return ["Final output", "Assistant message", "Reasoning summary", "Review output"].includes(line) || /^Subagent .+ message$/.test(line) || /^Subagent .+ reasoning summary$/.test(line);
+}
+function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_LINES) {
+  if (!logFile || !fs8.existsSync(logFile)) {
+    return [];
+  }
+  const lines = fs8.readFileSync(logFile, "utf8").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).filter((line) => line.startsWith("[")).map(stripLogPrefix).filter((line) => line && !isProgressBlockTitle(line));
+  return lines.slice(-maxLines);
+}
+function formatElapsedDuration(startValue, endValue = null) {
+  const start = Date.parse(startValue ?? "");
+  if (!Number.isFinite(start)) {
+    return null;
+  }
+  const end = endValue ? Date.parse(endValue) : Date.now();
+  if (!Number.isFinite(end) || end < start) {
+    return null;
+  }
+  const totalSeconds = Math.max(0, Math.round((end - start) / 1e3));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+function looksLikeVerificationCommand2(line) {
+  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
+    line
+  );
+}
+function inferLegacyJobPhase(job, progressPreview = []) {
+  switch (job.status) {
+    case "queued":
+      return "queued";
+    case "cancelled":
+      return "cancelled";
+    case "failed":
+      return "failed";
+    case "completed":
+      return "done";
+    default:
+      break;
+  }
+  for (let index = progressPreview.length - 1; index >= 0; index -= 1) {
+    const line = progressPreview[index].toLowerCase();
+    if (line.startsWith("starting codex") || line.startsWith("thread ready") || line.startsWith("turn started")) {
+      return "starting";
+    }
+    if (line.startsWith("reviewer started") || line.includes("review mode")) {
+      return "reviewing";
+    }
+    if (line.startsWith("searching:") || line.startsWith("calling ") || line.startsWith("running tool:")) {
+      return "investigating";
+    }
+    if (line.startsWith("starting collaboration tool:")) {
+      return "investigating";
+    }
+    if (line.startsWith("running command:")) {
+      return looksLikeVerificationCommand2(line) ? "verifying" : job.jobClass === "review" ? "reviewing" : "investigating";
+    }
+    if (line.startsWith("command completed:")) {
+      return looksLikeVerificationCommand2(line) ? "verifying" : "running";
+    }
+    if (line.startsWith("applying ") || line.startsWith("file changes ")) {
+      return "editing";
+    }
+    if (line.startsWith("turn completed")) {
+      return "finalizing";
+    }
+    if (line.startsWith("codex error:") || line.startsWith("failed:")) {
+      return "failed";
+    }
+  }
+  return job.jobClass === "review" ? "reviewing" : "running";
+}
+function enrichJob(job, options = {}) {
+  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const enriched = {
+    ...job,
+    kindLabel: getJobTypeLabel(job),
+    progressPreview: job.status === "queued" || job.status === "running" || job.status === "failed" ? readJobProgressPreview(job.logFile, maxProgressLines) : [],
+    elapsed: formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? null),
+    duration: job.status === "completed" || job.status === "failed" || job.status === "cancelled" ? formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? job.updatedAt) : null
+  };
+  return {
+    ...enriched,
+    phase: enriched.phase ?? inferLegacyJobPhase(enriched, enriched.progressPreview)
+  };
+}
+function readStoredJob(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs8.existsSync(jobFile)) {
+    return null;
+  }
+  return readJobFile(jobFile);
+}
+function matchJobReference(jobs, reference, predicate = () => true) {
+  const filtered = jobs.filter(predicate);
+  if (!reference) {
+    return filtered[0] ?? null;
+  }
+  const exact = filtered.find((job) => job.id === reference);
+  if (exact) {
+    return exact;
+  }
+  const byThread = filtered.find((job) => job.threadId && job.threadId === reference);
+  if (byThread) {
+    return byThread;
+  }
+  const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
+  if (prefixMatches.length === 1) {
+    return prefixMatches[0];
+  }
+  if (prefixMatches.length > 1) {
+    throw new CliError(`Job reference "${reference}" is ambiguous. Use a longer job id.`, {
+      class: "validation",
+      code: "AMBIGUOUS_JOB_REFERENCE",
+      retryable: false
+    });
+  }
+  throw new CliError(`No job found for "${reference}".`, {
+    class: "not_found",
+    code: "JOB_NOT_FOUND",
+    retryable: false,
+    suggestion: "Run `status` to list known jobs."
+  });
+}
+function buildStatusSnapshot(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getConfig(workspaceRoot);
+  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
+  const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
+  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const running = jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => enrichJob(job, { maxProgressLines }));
+  const latestFinishedRaw = jobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
+  const latestFinished = latestFinishedRaw ? enrichJob(latestFinishedRaw, { maxProgressLines }) : null;
+  const recent = (options.all ? jobs : jobs.slice(0, maxJobs)).filter((job) => job.status !== "queued" && job.status !== "running" && job.id !== latestFinished?.id).map((job) => enrichJob(job, { maxProgressLines }));
+  return {
+    workspaceRoot,
+    config,
+    sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
+    running,
+    latestFinished,
+    recent,
+    needsReview: Boolean(config.stopReviewGate)
+  };
+}
+function buildSingleJobSnapshot(cwd, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const selected = matchJobReference(jobs, reference);
+  if (!selected) {
+    throw new CliError(`No job found for "${reference}".`, {
+      class: "not_found",
+      code: "JOB_NOT_FOUND",
+      retryable: false,
+      suggestion: "Run `status` to inspect known jobs."
+    });
+  }
+  return {
+    workspaceRoot,
+    job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
+  };
+}
+function resolveResultJob(cwd, reference) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+  if (reference) {
+    const activeMatch = jobs.find(
+      (job) => (job.status === "queued" || job.status === "running") && (job.id === reference || job.id.startsWith(reference) || job.threadId === reference)
+    );
+    if (activeMatch) {
+      throw new CliError(`Job ${activeMatch.id} is still ${activeMatch.status}.`, {
+        class: "conflict",
+        code: "JOB_NOT_FINISHED",
+        retryable: false,
+        suggestion: `Check \`status ${activeMatch.id} --wait\` and try again once it finishes.`
+      });
+    }
+  }
+  const selected = matchJobReference(
+    jobs,
+    reference,
+    (job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled"
+  );
+  if (selected) {
+    return { workspaceRoot, job: selected };
+  }
+  if (reference) {
+    throw new CliError(`No finished job found for "${reference}".`, {
+      class: "not_found",
+      code: "JOB_NOT_FOUND",
+      retryable: false,
+      suggestion: "Run `status` to inspect active jobs."
+    });
+  }
+  throw new CliError("No finished Codex jobs found for this repository yet.", {
+    class: "not_found",
+    code: "NO_FINISHED_JOBS",
+    retryable: false
+  });
+}
+function resolveCancelableJob(cwd, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
+  if (reference) {
+    const selected = matchJobReference(activeJobs, reference);
+    if (!selected) {
+      throw new CliError(`No active job found for "${reference}".`, {
+        class: "not_found",
+        code: "ACTIVE_JOB_NOT_FOUND",
+        retryable: false
+      });
+    }
+    return { workspaceRoot, job: selected };
+  }
+  const sessionScopedActiveJobs = filterJobsForCurrentSession(activeJobs, options);
+  if (sessionScopedActiveJobs.length === 1) {
+    return { workspaceRoot, job: sessionScopedActiveJobs[0] };
+  }
+  if (sessionScopedActiveJobs.length > 1) {
+    throw new CliError("Multiple Codex jobs are active.", {
+      class: "validation",
+      code: "AMBIGUOUS_CANCEL",
+      retryable: false,
+      suggestion: "Pass a job id to `cancel`."
+    });
+  }
+  if (getCurrentSessionId(options)) {
+    throw new CliError("No active Codex jobs to cancel for this session.", {
+      class: "not_found",
+      code: "NO_ACTIVE_JOBS",
+      retryable: false
+    });
+  }
+  throw new CliError("No active Codex jobs to cancel.", {
+    class: "not_found",
+    code: "NO_ACTIVE_JOBS",
+    retryable: false
+  });
+}
+
+// src/lib/render.mjs
+function severityRank(severity) {
+  switch (severity) {
+    case "critical":
+      return 0;
+    case "high":
+      return 1;
+    case "medium":
+      return 2;
+    default:
+      return 3;
+  }
+}
+function formatLineRange(finding) {
+  if (!finding.line_start) {
+    return "";
+  }
+  if (!finding.line_end || finding.line_end === finding.line_start) {
+    return `:${finding.line_start}`;
+  }
+  return `:${finding.line_start}-${finding.line_end}`;
+}
+var ALLOWED_FINDING_SEVERITIES = /* @__PURE__ */ new Set(["critical", "high", "medium", "low"]);
+function validateReviewFinding(finding, index) {
+  if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+    return `finding[${index}] is not an object`;
+  }
+  if (typeof finding.severity !== "string" || !finding.severity.trim()) {
+    return `finding[${index}] missing required field 'severity'`;
+  }
+  if (!ALLOWED_FINDING_SEVERITIES.has(finding.severity.trim())) {
+    return `finding[${index}] has invalid severity '${finding.severity}'`;
+  }
+  if (typeof finding.title !== "string" || !finding.title.trim()) {
+    return `finding[${index}] missing required field 'title'`;
+  }
+  if (typeof finding.body !== "string" || !finding.body.trim()) {
+    return `finding[${index}] missing required field 'body'`;
+  }
+  if (typeof finding.file !== "string" || !finding.file.trim()) {
+    return `finding[${index}] missing required field 'file'`;
+  }
+  if (!Number.isInteger(finding.line_start) || finding.line_start < 1) {
+    return `finding[${index}] missing required field 'line_start'`;
+  }
+  if (!Number.isInteger(finding.line_end) || finding.line_end < finding.line_start) {
+    return `finding[${index}] missing required field 'line_end'`;
+  }
+  if (typeof finding.confidence !== "number" || Number.isNaN(finding.confidence) || finding.confidence < 0 || finding.confidence > 1) {
+    return `finding[${index}] missing required field 'confidence'`;
+  }
+  if (typeof finding.recommendation !== "string") {
+    return `finding[${index}] missing required field 'recommendation'`;
+  }
+  return null;
+}
+function validateReviewResultShape(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return "Expected a top-level JSON object.";
+  }
+  if (typeof data.verdict !== "string" || !data.verdict.trim()) {
+    return "Missing string `verdict`.";
+  }
+  if (typeof data.summary !== "string" || !data.summary.trim()) {
+    return "Missing string `summary`.";
+  }
+  if (!Array.isArray(data.findings)) {
+    return "Missing array `findings`.";
+  }
+  if (!Array.isArray(data.next_steps)) {
+    return "Missing array `next_steps`.";
+  }
+  for (let index = 0; index < data.findings.length; index += 1) {
+    const findingError = validateReviewFinding(data.findings[index], index);
+    if (findingError) {
+      return findingError;
+    }
+  }
+  return null;
+}
+function normalizeReviewFinding(finding, index) {
+  const source = finding && typeof finding === "object" && !Array.isArray(finding) ? finding : {};
+  const lineStart = Number.isInteger(source.line_start) && source.line_start > 0 ? source.line_start : null;
+  const lineEnd = Number.isInteger(source.line_end) && source.line_end > 0 && (!lineStart || source.line_end >= lineStart) ? source.line_end : lineStart;
+  return {
+    severity: typeof source.severity === "string" && source.severity.trim() ? source.severity.trim() : "low",
+    title: typeof source.title === "string" && source.title.trim() ? source.title.trim() : `Finding ${index + 1}`,
+    body: typeof source.body === "string" && source.body.trim() ? source.body.trim() : "No details provided.",
+    file: typeof source.file === "string" && source.file.trim() ? source.file.trim() : "unknown",
+    line_start: lineStart,
+    line_end: lineEnd,
+    confidence: typeof source.confidence === "number" && source.confidence >= 0 && source.confidence <= 1 ? source.confidence : null,
+    recommendation: typeof source.recommendation === "string" ? source.recommendation.trim() : ""
+  };
+}
+function normalizeReviewResultData(data) {
+  return {
+    verdict: data.verdict.trim(),
+    summary: data.summary.trim(),
+    findings: data.findings.map((finding, index) => normalizeReviewFinding(finding, index)),
+    next_steps: data.next_steps.filter((step) => typeof step === "string" && step.trim()).map((step) => step.trim())
+  };
+}
+function isStructuredReviewStoredResult(storedJob) {
+  const result = storedJob?.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return false;
+  }
+  return Object.prototype.hasOwnProperty.call(result, "result") || Object.prototype.hasOwnProperty.call(result, "parseError");
+}
+function formatJobLine(job) {
+  const parts = [job.id, `${job.status || "unknown"}`];
+  if (job.kindLabel) {
+    parts.push(job.kindLabel);
+  }
+  if (job.title) {
+    parts.push(job.title);
+  }
+  return parts.join(" | ");
+}
+function escapeMarkdownCell(value) {
+  return String(value ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
+}
+function formatCodexResumeCommand(job) {
+  if (!job?.threadId) {
+    return null;
+  }
+  return `codex resume ${job.threadId}`;
+}
+function appendActiveJobsTable(lines, jobs) {
+  lines.push("Active jobs:");
+  lines.push("| Job | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const job of jobs) {
+    const actions = [`codex-bridge status ${job.id}`];
+    if (job.status === "queued" || job.status === "running") {
+      actions.push(`codex-bridge cancel ${job.id}`);
+    }
+    lines.push(
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+    );
+  }
+}
+function pushJobDetails(lines, job, options = {}) {
+  lines.push(`- ${formatJobLine(job)}`);
+  if (job.summary) {
+    lines.push(`  Summary: ${job.summary}`);
+  }
+  if (job.phase) {
+    lines.push(`  Phase: ${job.phase}`);
+  }
+  if (options.showElapsed && job.elapsed) {
+    lines.push(`  Elapsed: ${job.elapsed}`);
+  }
+  if (options.showDuration && job.duration) {
+    lines.push(`  Duration: ${job.duration}`);
+  }
+  if (job.threadId) {
+    lines.push(`  Codex session ID: ${job.threadId}`);
+  }
+  const resumeCommand = formatCodexResumeCommand(job);
+  if (resumeCommand) {
+    lines.push(`  Resume in Codex: ${resumeCommand}`);
+  }
+  if (job.logFile && options.showLog) {
+    lines.push(`  Log: ${job.logFile}`);
+  }
+  if ((job.status === "queued" || job.status === "running") && options.showCancelHint) {
+    lines.push(`  Cancel: codex-bridge cancel ${job.id}`);
+  }
+  if (job.status !== "queued" && job.status !== "running" && options.showResultHint) {
+    lines.push(`  Result: codex-bridge result ${job.id}`);
+  }
+  if (job.status !== "queued" && job.status !== "running" && job.jobClass === "task" && job.write && options.showReviewHint) {
+    lines.push("  Review changes: codex-bridge review");
+    lines.push("  Stricter review: codex-bridge adversarial-review");
+  }
+  if (job.progressPreview?.length) {
+    lines.push("  Progress:");
+    for (const line of job.progressPreview) {
+      lines.push(`    ${line}`);
+    }
+  }
+}
+function appendReasoningSection(lines, reasoningSummary) {
+  if (!Array.isArray(reasoningSummary) || reasoningSummary.length === 0) {
+    return;
+  }
+  lines.push("", "Reasoning:");
+  for (const section of reasoningSummary) {
+    lines.push(`- ${section}`);
+  }
+}
+function renderSetupReport(report) {
+  const lines = [
+    "# Codex Setup",
+    "",
+    `Status: ${report.ready ? "ready" : "needs attention"}`,
+    "",
+    "Checks:",
+    `- node: ${report.node.detail}`,
+    `- npm: ${report.npm.detail}`,
+    `- codex: ${report.codex.detail}`,
+    `- auth: ${report.auth.detail}`,
+    `- session runtime: ${report.sessionRuntime.label}`,
+    `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
+    `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
+    `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
+    ""
+  ];
+  if (report.reviewGateSuppressionReason) {
+    lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
+  }
+  if (report.actionsTaken.length > 0) {
+    lines.push("Actions taken:");
+    for (const action of report.actionsTaken) {
+      lines.push(`- ${action}`);
+    }
+    lines.push("");
+  }
+  if (report.nextSteps.length > 0) {
+    lines.push("Next steps:");
+    for (const step of report.nextSteps) {
+      lines.push(`- ${step}`);
+    }
+  }
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderReviewResult(parsedResult, meta) {
+  if (!parsedResult.parsed) {
+    const lines2 = [
+      `# Codex ${meta.reviewLabel}`,
+      "",
+      "Codex did not return valid structured JSON.",
+      "",
+      `- Parse error: ${parsedResult.parseError}`
+    ];
+    if (parsedResult.rawOutput) {
+      lines2.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");
+    }
+    appendReasoningSection(lines2, meta.reasoningSummary ?? parsedResult.reasoningSummary);
+    return `${lines2.join("\n").trimEnd()}
+`;
+  }
+  const validationError2 = validateReviewResultShape(parsedResult.parsed);
+  if (validationError2) {
+    const lines2 = [
+      `# Codex ${meta.reviewLabel}`,
+      "",
+      `Target: ${meta.targetLabel}`,
+      "Codex returned JSON with an unexpected review shape.",
+      "",
+      `- Validation error: ${validationError2}`
+    ];
+    if (parsedResult.rawOutput) {
+      lines2.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");
+    }
+    appendReasoningSection(lines2, meta.reasoningSummary ?? parsedResult.reasoningSummary);
+    return `${lines2.join("\n").trimEnd()}
+`;
+  }
+  const data = normalizeReviewResultData(parsedResult.parsed);
+  const findings = [...data.findings].sort((left, right) => severityRank(left.severity) - severityRank(right.severity));
+  const lines = [
+    `# Codex ${meta.reviewLabel}`,
+    "",
+    `Target: ${meta.targetLabel}`,
+    `Verdict: ${data.verdict}`,
+    "",
+    data.summary,
+    ""
+  ];
+  if (findings.length === 0) {
+    lines.push("No material findings.");
+  } else {
+    lines.push("Findings:");
+    for (const finding of findings) {
+      const lineSuffix = formatLineRange(finding);
+      const severityHeader = typeof finding.confidence === "number" ? `${finding.severity} \xB7 conf=${finding.confidence.toFixed(2)}` : finding.severity;
+      lines.push(`- [${severityHeader}] ${finding.title} (${finding.file}${lineSuffix})`);
+      lines.push(`  ${finding.body}`);
+      if (finding.recommendation) {
+        lines.push(`  Recommendation: ${finding.recommendation}`);
+      }
+    }
+  }
+  if (data.next_steps.length > 0) {
+    lines.push("", "Next steps:");
+    for (const step of data.next_steps) {
+      lines.push(`- ${step}`);
+    }
+  }
+  appendReasoningSection(lines, meta.reasoningSummary);
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderNativeReviewResult(result, meta) {
+  const stdout = result.stdout.trim();
+  const stderr = result.stderr.trim();
+  const lines = [
+    `# Codex ${meta.reviewLabel}`,
+    "",
+    `Target: ${meta.targetLabel}`,
+    ""
+  ];
+  if (stdout) {
+    lines.push(stdout);
+  } else if (result.status === 0) {
+    lines.push("Codex review completed without any stdout output.");
+  } else {
+    lines.push("Codex review failed.");
+  }
+  if (stderr) {
+    lines.push("", "stderr:", "", "```text", stderr, "```");
+  }
+  appendReasoningSection(lines, meta.reasoningSummary);
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderTaskResult(parsedResult, meta) {
+  const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
+  if (rawOutput) {
+    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}
+`;
+  }
+  const message = String(parsedResult?.failureMessage ?? "").trim() || "Codex did not return a final message.";
+  return `${message}
+`;
+}
+function renderStatusReport(report) {
+  const lines = [
+    "# Codex Status",
+    "",
+    `Session runtime: ${report.sessionRuntime.label}`,
+    `Review gate: ${report.config.stopReviewGate ? "enabled" : "disabled"}`,
+    ""
+  ];
+  if (report.running.length > 0) {
+    appendActiveJobsTable(lines, report.running);
+    lines.push("");
+    lines.push("Live details:");
+    for (const job of report.running) {
+      pushJobDetails(lines, job, {
+        showElapsed: true,
+        showLog: true
+      });
+    }
+    lines.push("");
+  }
+  if (report.latestFinished) {
+    lines.push("Latest finished:");
+    pushJobDetails(lines, report.latestFinished, {
+      showDuration: true,
+      showLog: report.latestFinished.status === "failed"
+    });
+    lines.push("");
+  }
+  if (report.recent.length > 0) {
+    lines.push("Recent jobs:");
+    for (const job of report.recent) {
+      pushJobDetails(lines, job, {
+        showDuration: true,
+        showLog: job.status === "failed"
+      });
+    }
+    lines.push("");
+  } else if (report.running.length === 0 && !report.latestFinished) {
+    lines.push("No jobs recorded yet.", "");
+  }
+  if (report.needsReview) {
+    lines.push("The stop-time review gate is enabled.");
+    if (report.config.stopReviewGateLockPath) {
+      lines.push(`Project lock: ${report.config.stopReviewGateLockPath}`);
+    }
+    lines.push("Ending the session will trigger a fresh Codex stop-time review and block if it finds issues.");
+  } else if (report.reviewGateLockIgnored) {
+    lines.push("The Codex Bridge stop-time review gate lock is present but ignored.");
+    if (report.reviewGateSuppressionReason) {
+      lines.push(`Reason: ${report.reviewGateSuppressionReason}`);
+    }
+  }
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderJobStatusReport(job) {
+  const lines = ["# Codex Job Status", ""];
+  pushJobDetails(lines, job, {
+    showElapsed: job.status === "queued" || job.status === "running",
+    showDuration: job.status !== "queued" && job.status !== "running",
+    showLog: true,
+    showCancelHint: true,
+    showResultHint: true,
+    showReviewHint: true
+  });
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderStoredJobResult(job, storedJob) {
+  const threadId = storedJob?.threadId ?? job.threadId ?? null;
+  const resumeCommand = threadId ? `codex resume ${threadId}` : null;
+  if (isStructuredReviewStoredResult(storedJob) && storedJob?.rendered) {
+    const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}
+`;
+    if (!threadId) {
+      return output;
+    }
+    return `${output}
+Codex session ID: ${threadId}
+Resume in Codex: ${resumeCommand}
+`;
+  }
+  const rawOutput = typeof storedJob?.result?.rawOutput === "string" && storedJob.result.rawOutput || typeof storedJob?.result?.codex?.stdout === "string" && storedJob.result.codex.stdout || "";
+  if (rawOutput) {
+    const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}
+`;
+    if (!threadId) {
+      return output;
+    }
+    return `${output}
+Codex session ID: ${threadId}
+Resume in Codex: ${resumeCommand}
+`;
+  }
+  if (storedJob?.rendered) {
+    const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}
+`;
+    if (!threadId) {
+      return output;
+    }
+    return `${output}
+Codex session ID: ${threadId}
+Resume in Codex: ${resumeCommand}
+`;
+  }
+  const lines = [
+    `# ${job.title ?? "Codex Result"}`,
+    "",
+    `Job: ${job.id}`,
+    `Status: ${job.status}`
+  ];
+  if (threadId) {
+    lines.push(`Codex session ID: ${threadId}`);
+    lines.push(`Resume in Codex: ${resumeCommand}`);
+  }
+  if (job.summary) {
+    lines.push(`Summary: ${job.summary}`);
+  }
+  if (job.errorMessage) {
+    lines.push("", job.errorMessage);
+  } else if (storedJob?.errorMessage) {
+    lines.push("", storedJob.errorMessage);
+  } else {
+    lines.push("", "No captured result payload was stored for this job.");
+  }
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderCancelReport(job) {
+  const lines = [
+    "# Codex Cancel",
+    "",
+    `Cancelled ${job.id}.`,
+    ""
+  ];
+  if (job.title) {
+    lines.push(`- Title: ${job.title}`);
+  }
+  if (job.summary) {
+    lines.push(`- Summary: ${job.summary}`);
+  }
+  lines.push("- Check `codex-bridge status` for the updated queue.");
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+
+// src/lib/config.mjs
+import fs9 from "node:fs";
+import path7 from "node:path";
+import os4 from "node:os";
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
 
 // node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
@@ -3490,6 +7488,46 @@ var DEFAULT_CONFIG = {
   question_answer_ms: 3e5,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
+<<<<<<< HEAD
+=======
+function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
+  const readYaml = (p) => {
+    try {
+      const raw = fs9.readFileSync(p, "utf8");
+      const doc = jsYaml.load(raw) ?? {};
+      const bridge = doc.codex_bridge ?? doc;
+      return typeof bridge === "object" && bridge !== null ? bridge : {};
+    } catch {
+      return {};
+    }
+  };
+  const skillConfigPath = skillDir ? path7.join(skillDir, "config.yaml") : path7.join(os4.homedir(), ".codex-bridge", "config.yaml");
+  const skillLayer = readYaml(skillConfigPath);
+  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path7.join(workspaceRoot, "config.yaml") : null;
+  const workspaceLayer = workspaceConfigPath && fs9.existsSync(workspaceConfigPath) ? readYaml(workspaceConfigPath) : {};
+  const overrideConfigPath = overrideDir ? path7.join(overrideDir, "config.yaml") : null;
+  const overrideLayer = overrideConfigPath && fs9.existsSync(overrideConfigPath) ? readYaml(overrideConfigPath) : {};
+  return {
+    ...DEFAULT_CONFIG,
+    ...skillLayer,
+    ...workspaceLayer,
+    ...overrideLayer
+  };
+}
+function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
+  const skillConfigPath = skillDir ? path7.join(skillDir, "config.yaml") : path7.join(os4.homedir(), ".codex-bridge", "config.yaml");
+  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path7.join(workspaceRoot, "config.yaml") : null;
+  const overrideConfigPath = overrideDir ? path7.join(overrideDir, "config.yaml") : null;
+  return {
+    skillConfigPath,
+    skillConfigExists: fs9.existsSync(skillConfigPath),
+    workspaceConfigPath,
+    workspaceConfigExists: workspaceConfigPath ? fs9.existsSync(workspaceConfigPath) : false,
+    overrideConfigPath,
+    overrideConfigExists: overrideConfigPath ? fs9.existsSync(overrideConfigPath) : false
+  };
+}
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
 function resolveEffort(config, options = {}) {
   return options.effort ?? config.effort ?? "high";
 }
@@ -3544,6 +7582,7 @@ var COMPLETION_CHECK_SCHEMA = {
   additionalProperties: false
 };
 
+<<<<<<< HEAD
 // src/lib/config.mjs
 function readConfigFile(filePath) {
   try {
@@ -8069,6 +12108,8 @@ function renderCancelReport(job) {
 `;
 }
 
+=======
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
 // src/lib/session-log.mjs
 import fs10 from "node:fs";
 import path8 from "node:path";
@@ -9423,6 +13464,7 @@ function writeCache(entry) {
     const p = cachePath();
     fs13.mkdirSync(path11.dirname(p), { recursive: true });
     fs13.writeFileSync(p, JSON.stringify(entry, null, 2));
+<<<<<<< HEAD
     return true;
   } catch {
     return false;
@@ -9473,6 +13515,8 @@ function releaseCacheLock(lock) {
   }
   try {
     fs13.unlinkSync(lock.lockPath);
+=======
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
   } catch {
   }
 }
@@ -9644,6 +13688,7 @@ function spawnDetachedAutoApply(targetVersion) {
     } catch {
     }
     const fd = fs14.openSync(logFile, "a");
+<<<<<<< HEAD
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
@@ -9671,6 +13716,32 @@ function spawnDetachedAutoApply(targetVersion) {
         fs14.closeSync(fd);
       } catch {
       }
+=======
+    const banner = `
+[${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
+`;
+    fs14.writeSync(fd, banner);
+    const child = spawn3(
+      "npx",
+      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+      {
+        detached: true,
+        stdio: ["ignore", fd, fd],
+        env: process8.env
+      }
+    );
+    child.on("error", () => {
+      try {
+        fs14.writeSync(fd, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+`);
+      } catch {
+      }
+    });
+    child.unref();
+    try {
+      fs14.closeSync(fd);
+    } catch {
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
     }
   } catch {
   }
@@ -10035,6 +14106,20 @@ var COMMANDS = Object.freeze({
     synopsis: "task-resume-candidate [--json]",
     summary: "Report the latest resumable task for this Claude session (useful before `task --resume`).",
     examples: ["codex-bridge task-resume-candidate --json"]
+  },
+  verdict: {
+    synopsis: "verdict <task_id> [--set approved|needs-attention|must-fix] [--summary <text>] [--finding <text>] [--reviewer <name>] [--discard] [--json]",
+    summary: "Read, write, or discard a task's post-review verdict artifact.",
+    examples: [
+      "codex-bridge verdict task-abc",
+      'codex-bridge verdict task-abc --set approved --summary "review passed" --json',
+      "codex-bridge verdict task-abc --discard"
+    ]
+  },
+  verdicts: {
+    synopsis: "verdicts --pending [--json]",
+    summary: "List unresolved task verdicts that still need merge, iteration, or discard.",
+    examples: ["codex-bridge verdicts --pending --json"]
   }
 });
 var EXIT_CODE_DOC = [
@@ -10140,7 +14225,11 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
+<<<<<<< HEAD
   return options.cwd ? path12.resolve(process9.cwd(), options.cwd) : process9.cwd();
+=======
+  return options.cwd ? path12.resolve(process8.cwd(), options.cwd) : process8.cwd();
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
@@ -12196,8 +16285,47 @@ async function handleTask(argv) {
   const noPipeline = Boolean(options["no-pipeline"]);
   const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
   let cwd = resolveCommandCwd(options);
+<<<<<<< HEAD
   const stateCwd = cwd;
+=======
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
   const workspaceRoot = resolveCommandWorkspace(options);
+  let worktreeInfo = null;
+  if (options["worktree-auto"]) {
+    if (Boolean(options["read-only"])) {
+      throw conflictError(
+        "--worktree-auto is only meaningful for write-mode tasks; --read-only conflicts.",
+        "WORKTREE_READ_ONLY_CONFLICT"
+      );
+    }
+    const wtTaskId = generateJobId();
+    try {
+      worktreeInfo = createSubagentWorktree({
+        cwd,
+        taskId: wtTaskId,
+        backend: "codex"
+      });
+      try {
+        writeMeta(wtTaskId, {
+          backend: "codex",
+          worktree: worktreeInfo,
+          isolation_mode: worktreeInfo.isolation_mode,
+          base_ref: worktreeInfo.base_ref,
+          base_sha: worktreeInfo.base_sha,
+          phase: "queued"
+        });
+      } catch {
+      }
+      if (worktreeInfo.isolation_mode === "worktree") {
+        cwd = worktreeInfo.path;
+      }
+    } catch (err) {
+      throw new CliError(
+        `failed to create subagent worktree for ${wtTaskId}: ${err.message ?? err}`,
+        { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" }
+      );
+    }
+  }
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
@@ -13128,6 +17256,7 @@ function resolvePromptInput(options, positionals, cwd) {
   if (text) return text;
   return readStdinIfPiped();
 }
+<<<<<<< HEAD
 function readReviewedBranchHeadSha(verdict) {
   const candidates = [
     verdict?.branch_head_sha,
@@ -13142,6 +17271,111 @@ function readReviewedBranchHeadSha(verdict) {
     }
   }
   return null;
+=======
+async function handleVerdict(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["set", "summary", "finding", "reviewer", "cwd"],
+    booleanOptions: ["json", "discard"]
+  });
+  const taskId = positionals[0];
+  if (!taskId) {
+    throw usageError("verdict requires a task_id positional argument");
+  }
+  if (options.discard) {
+    const target = path12.join(jobDir(taskId), "verdict.json");
+    let removed = false;
+    if (fs14.existsSync(target)) {
+      fs14.rmSync(target, { force: true });
+      removed = true;
+    }
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "discarded", removed },
+      `Discarded verdict for ${taskId}
+`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  if (options.set) {
+    const verdict = options.set;
+    if (!["approved", "needs-attention", "must-fix"].includes(verdict)) {
+      throw usageError(
+        `--set must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`
+      );
+    }
+    const payload = {
+      verdict,
+      summary: options.summary ?? null,
+      findings: options.finding ? [options.finding] : [],
+      reviewer: options.reviewer ?? null
+    };
+    writeVerdict(taskId, payload);
+    const stored2 = readVerdict(taskId);
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "set", verdict: stored2 },
+      `Verdict for ${taskId}: ${verdict}
+`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  const stored = readVerdict(taskId);
+  if (!stored) {
+    throw notFoundError(
+      `no verdict found for ${taskId}; use --set to create one`
+    );
+  }
+  emitSuccess(
+    "verdict",
+    { task_id: taskId, verdict: stored },
+    JSON.stringify(stored, null, 2) + "\n",
+    { json: options.json, startedAt }
+  );
+}
+async function handleVerdictsPending(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "pending"]
+  });
+  if (!options.pending) {
+    throw usageError(
+      "verdicts requires --pending (only mode currently supported)"
+    );
+  }
+  const pendingVerdicts = /* @__PURE__ */ new Set(["approved", "needs-attention", "must-fix"]);
+  const tasks = listTasks();
+  const pending = [];
+  for (const taskId of tasks) {
+    const verdict = readVerdict(taskId);
+    if (!verdict) continue;
+    const meta = readMeta(taskId);
+    if (verdict.merged_at || meta?.merged_at || meta?.phase === "merged") {
+      continue;
+    }
+    if (pendingVerdicts.has(verdict.verdict)) {
+      pending.push({
+        task_id: taskId,
+        verdict: verdict.verdict,
+        summary: verdict.summary ?? null,
+        decided_at: verdict.decided_at,
+        branch: meta?.worktree?.branch ?? null
+      });
+    }
+  }
+  const rendered = pending.length === 0 ? "No pending verdicts.\n" : pending.map(
+    (p) => `${p.task_id}  ${p.verdict}  ${p.branch ?? "(no branch)"}  ${p.summary ?? ""}`
+  ).join("\n") + "\n";
+  emitSuccess(
+    "verdicts",
+    { count: pending.length, pending },
+    rendered,
+    { json: options.json, startedAt }
+  );
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
 }
 async function handleMerge(argv) {
   const startedAt = Date.now();
@@ -13157,11 +17391,16 @@ async function handleMerge(argv) {
   const verdict = readVerdict(taskId);
   if (!verdict) {
     throw notFoundError(
+<<<<<<< HEAD
       `no verdict found for ${taskId}; run review and record an approved verdict before merging`
+=======
+      `no verdict found for ${taskId}; run /codex-bridge:verdict <task_id> --set <verdict> first`
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
     );
   }
   if (verdict.verdict !== "approved") {
     throw new CliError(
+<<<<<<< HEAD
       `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run review or iterate before approving this task.`,
       { code: "VERDICT_NOT_APPROVED", class: "conflict" }
     );
@@ -13171,6 +17410,10 @@ async function handleMerge(argv) {
     throw new CliError(
       `approved verdict for ${taskId} is missing branch_head_sha; rerun review so the approval is bound to the reviewed branch head`,
       { code: "VERDICT_HEAD_SHA_MISSING", class: "conflict" }
+=======
+      `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run /codex-bridge:iterate or /codex-bridge:verdict --set approved.`,
+      { code: "VERDICT_NOT_APPROVED", exitClass: "conflict" }
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
     );
   }
   const meta = readMeta(taskId);
@@ -13184,13 +17427,21 @@ async function handleMerge(argv) {
   if (!branch) {
     throw new CliError(
       `meta.json for ${taskId} missing worktree.branch \u2014 task may not have been dispatched via --worktree-auto`,
+<<<<<<< HEAD
       { code: "MERGE_META_INVALID", class: "internal" }
+=======
+      { code: "MERGE_META_INVALID", exitClass: "internal" }
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
     );
   }
   if (options.pr) {
     throw new CliError(
       "--pr mode not yet implemented; ff-merge into the base ref is the only supported strategy in v2.0. Drop --pr or wait for the follow-up.",
+<<<<<<< HEAD
       { code: "MERGE_PR_NOT_IMPLEMENTED", class: "internal" }
+=======
+      { code: "MERGE_PR_NOT_IMPLEMENTED", exitClass: "internal" }
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
     );
   }
   let mergeResult;
@@ -13200,6 +17451,7 @@ async function handleMerge(argv) {
       taskId,
       branch,
       baseRef,
+<<<<<<< HEAD
       expectedBranchSha: reviewedBranchHeadSha,
       worktreePath: meta.worktree?.path,
       runTests: !options["no-tests"]
@@ -13234,6 +17486,44 @@ async function handleMerge(argv) {
     merge: mergeResult,
     verdict: verdict.verdict,
     reviewed_branch_head_sha: reviewedBranchHeadSha
+=======
+      runTests: !options["no-tests"]
+    });
+  } catch (err) {
+    throw new CliError(
+      `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
+      { code: "MERGE_CONFLICT", exitClass: "conflict" }
+    );
+  }
+  const mergedAt = nowIso2();
+  const {
+    schema_version: _verdictSchemaVersion,
+    task_id: _verdictTaskId,
+    decided_at: _verdictDecidedAt,
+    ...verdictBody
+  } = verdict;
+  writeVerdict(taskId, {
+    ...verdictBody,
+    merged_at: mergedAt,
+    merge: mergeResult
+  });
+  const {
+    schema_version: _schemaVersion,
+    task_id: _taskId,
+    written_at: _writtenAt,
+    ...metaBody
+  } = meta;
+  writeMeta(taskId, {
+    ...metaBody,
+    phase: "merged",
+    merged_at: mergedAt,
+    merge: mergeResult
+  });
+  const payload = {
+    task_id: taskId,
+    merge: mergeResult,
+    verdict: verdict.verdict
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
   };
   emitSuccess(
     "merge",
@@ -13629,7 +17919,13 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel,
   "await-artifact": handleAwaitArtifact,
+<<<<<<< HEAD
   merge: handleMerge
+=======
+  merge: handleMerge,
+  verdict: handleVerdict,
+  verdicts: handleVerdictsPending
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
 });
 process9.on("SIGPIPE", () => {
 });
@@ -13646,7 +17942,11 @@ function writeCrashLog(kind, error) {
     const crashDir = path12.join(os7.homedir(), ".codex-bridge", "crashes");
     fs14.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+<<<<<<< HEAD
     const file = path12.join(crashDir, `${ts}-${process9.pid}.log`);
+=======
+    const file = path12.join(crashDir, `${ts}-${process8.pid}.log`);
+>>>>>>> c25eea8 (review: address codex findings on PR #53)
     const payload = {
       kind,
       ts,
