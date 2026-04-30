@@ -171,10 +171,12 @@ test("task command routes substantial work through the runner subagent and Monit
 });
 
 test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () => {
-  const hooksConfig = readJson("hooks/hooks.json");
-  const sessionHook = readText("hooks/session-lifecycle-hook.mjs");
-  const stopHook = readText("hooks/stop-review-gate-hook.mjs");
+  const manifest = readJson("plugin/.claude-plugin/plugin.json");
+  const hooksConfig = readJson("plugin/hooks/hooks.json");
+  const sessionHook = readText("plugin/hooks/session-lifecycle-hook.mjs");
+  const stopHook = readText("plugin/hooks/stop-review-gate-hook.mjs");
 
+  assert.equal(manifest.hooks, "./hooks/hooks.json");
   assert.deepEqual(Object.keys(hooksConfig.hooks).sort(), ["SessionEnd", "SessionStart", "Stop"]);
   assert.match(JSON.stringify(hooksConfig), /session-lifecycle-hook\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /stop-review-gate-hook\.mjs/);
@@ -190,7 +192,8 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(stopHook, /if \(!activation\.active\)/);
   assert.doesNotMatch(stopHook, /CODEX_BRIDGE_STOP_REVIEW_GATE/);
   assert.match(stopHook, /decision: "block"/);
-  assert.match(stopHook, /skill", "scripts", "codex-bridge\.mjs"/);
+  assert.match(stopHook, /"scripts", "codex-bridge\.mjs"/);
+  assert.doesNotMatch(stopHook, /"skill", "scripts", "codex-bridge\.mjs"/);
 });
 
 test("stop review hook re-reads activation after legacy setup migration", () => {
@@ -233,11 +236,13 @@ test("setup owns project-scoped review gate lock creation", () => {
 });
 
 test("runner subagent remains a thin forwarding wrapper", () => {
-  const runner = readText("agents/codex-bridge-runner.md");
+  const manifest = readJson("plugin/.claude-plugin/plugin.json");
+  const runner = readText("plugin/agents/codex-bridge-runner.md");
 
+  assert.equal(manifest.agents, "./agents");
   assert.match(runner, /name: codex-bridge-runner/);
   assert.match(runner, /Use exactly one `Bash` call/);
-  assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs" task/);
+  assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
   assert.match(runner, /Do not inspect the repository/);
   assert.match(runner, /Return the stdout of the bridge command exactly as-is/);
 });
