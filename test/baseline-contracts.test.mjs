@@ -96,6 +96,39 @@ function parseEnvelope(result, expectedStatus = 0) {
   return JSON.parse(result.stdout);
 }
 
+function getPathValue(value, dottedPath) {
+  if (dottedPath.includes(":")) {
+    const [pathPart, expectedLiteral] = dottedPath.split(":");
+    const resolved = getPathValue(value, pathPart);
+    if (expectedLiteral === "false") return resolved === false;
+    if (expectedLiteral === "true") return resolved === true;
+    return resolved === expectedLiteral;
+  }
+  return dottedPath.split(".").reduce((current, part) => current?.[part], value);
+}
+
+function assertExpectedProbe(report, command, envelope) {
+  const probe = report.json_envelope_probes.find((entry) => entry.command === command);
+  assert.ok(probe, `missing probe metadata for ${command}`);
+  for (const expected of probe.expected) {
+    const resolved = getPathValue(envelope, expected);
+    if (expected.includes(":")) {
+      assert.equal(resolved, true, `${command} expected ${expected}`);
+    } else {
+      assert.notEqual(resolved, undefined, `${command} expected ${expected}`);
+    }
+  }
+}
+
+function makeContractFixture() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-contract-fixture-"));
+  for (const entry of ["package.json", "src", "skill", "plugin", "hooks", "test"]) {
+    fs.cpSync(path.join(rootPath, entry), path.join(tempRoot, entry), { recursive: true });
+  }
+  fs.symlinkSync(path.join(rootPath, "node_modules"), path.join(tempRoot, "node_modules"), "dir");
+  return tempRoot;
+}
+
 test("baseline contract report verifies static gate, generated surfaces, and command classification", () => {
   const report = buildBaselineContracts(rootPath);
   const check = verifyBaselineContracts(rootPath, report);
@@ -117,6 +150,54 @@ test("baseline contract report verifies static gate, generated surfaces, and com
   assert.ok(Object.hasOwn(report.mutating_command_coverage, "merge"));
 });
 
+test("baseline contract checker fails on stale generated bundles", () => {
+  const tempRoot = makeContractFixture();
+  try {
+    fs.appendFileSync(path.join(tempRoot, "skill/scripts/codex-bridge.mjs"), "\n// stale bundle probe\n");
+    const check = verifyBaselineContracts(tempRoot);
+    assert.equal(check.ok, false);
+    assert.ok(check.failures.includes("stale generated bundle: skill/scripts/codex-bridge.mjs"));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("baseline contract checker fails closed on dispatch and metadata drift", () => {
+  const brokenDispatchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-broken-dispatch-"));
+  try {
+    fs.mkdirSync(path.join(brokenDispatchRoot, "src"), { recursive: true });
+    fs.writeFileSync(path.join(brokenDispatchRoot, "package.json"), JSON.stringify({ name: "codex-bridge", version: "0.0.0" }));
+    fs.writeFileSync(path.join(brokenDispatchRoot, "src/codex-bridge.mjs"), "const HANDLERS = {};\n");
+    assert.throws(
+      () => buildBaselineContracts(brokenDispatchRoot),
+      /Unable to locate SUBCOMMAND_DISPATCH/
+    );
+  } finally {
+    fs.rmSync(brokenDispatchRoot, { recursive: true, force: true });
+  }
+
+  const report = buildBaselineContracts(rootPath);
+  const missingExpected = verifyBaselineContracts(rootPath, {
+    ...report,
+    json_envelope_probes: report.json_envelope_probes.map((probe) => ({ ...probe, expected: [] })),
+  });
+  assert.equal(missingExpected.ok, false);
+  assert.ok(missingExpected.failures.some((failure) => failure.startsWith("JSON probe has no expected fields:")));
+
+  const nonTestCoverage = verifyBaselineContracts(rootPath, {
+    ...report,
+    mutating_command_coverage: {
+      ...report.mutating_command_coverage,
+      setup: {
+        ...report.mutating_command_coverage.setup,
+        success_tests: ["package.json"],
+      },
+    },
+  });
+  assert.equal(nonTestCoverage.ok, false);
+  assert.ok(nonTestCoverage.failures.includes("setup references non-test coverage file: package.json"));
+});
+
 test("baseline contract CLI emits JSON and check mode exits cleanly", () => {
   const json = spawnSync(process.execPath, [contractsPath, "--json"], {
     cwd: rootPath,
@@ -136,14 +217,17 @@ test("baseline contract CLI emits JSON and check mode exits cleanly", () => {
 });
 
 test("required machine-readable CLI envelopes keep the shared schema shape", () => {
+  const report = buildBaselineContracts(rootPath);
   withCliFixture((fixture) => {
     const help = parseEnvelope(runBridge(["help", "--json"], fixture));
+    assertExpectedProbe(report, "help --json", help);
     assert.equal(help.ok, true);
     assert.equal(help.command, "help");
     assert.ok(help.result.commands.some((command) => command.name === "status"));
     assert.equal(typeof help.meta.duration_ms, "number");
 
     const config = parseEnvelope(runBridge(["config", "show", "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "config show --json", config);
     assert.equal(config.command, "config");
     assert.ok(config.result.effective_config);
     assert.deepEqual(config.result.precedence_order_low_to_high, [
@@ -154,23 +238,27 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     ]);
 
     const version = parseEnvelope(runBridge(["version", "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "version --json", version);
     assert.equal(version.command, "version");
     assert.equal(version.result.version, packageJson.version);
     assert.equal(version.result.active_backend, "codex");
     assert.equal(typeof version.result.adapter_capabilities, "object");
 
     const setup = parseEnvelope(runBridge(["setup", "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "setup --json", setup);
     assert.equal(setup.command, "setup");
     assert.equal(typeof setup.result.ready, "boolean");
     assert.equal(typeof setup.result.reviewGateEnabled, "boolean");
     assert.equal(typeof setup.result.reviewGateLockPath, "string");
 
     const status = parseEnvelope(runBridge(["status", "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "status --json", status);
     assert.equal(status.command, "status");
     assert.equal(status.result.workspaceRoot, fixture.workspace);
     assert.equal(status.result.latestFinished.id, fixture.job.id);
 
     const result = parseEnvelope(runBridge(["result", fixture.job.id, "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "result <job-id> --json", result);
     assert.equal(result.command, "result");
     assert.equal(result.result.job.id, fixture.job.id);
     assert.equal(result.result.storedJob.result.rawOutput, "baseline task output\n");
@@ -178,12 +266,14 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     const wait = parseEnvelope(
       runBridge(["wait", fixture.job.id, "--json", "--timeout-ms", "1000", "--cwd", fixture.workspace], fixture)
     );
+    assertExpectedProbe(report, "wait <job-id> --json", wait);
     assert.equal(wait.command, "wait");
     assert.equal(wait.result.jobId, fixture.job.id);
     assert.equal(wait.result.threadId, fixture.job.threadId);
     assert.equal(wait.result.terminalTag, "DONE");
 
     const events = parseEnvelope(runBridge(["events", fixture.job.id, "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "events <job-id> --json", events);
     assert.equal(events.command, "events");
     assert.equal(events.result.jobId, fixture.job.id);
     assert.equal(events.result.threadId, fixture.job.threadId);
@@ -193,6 +283,7 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.notEqual(error.status, 0);
     assert.equal(error.stderr, "");
     const errorEnvelope = JSON.parse(error.stdout);
+    assertExpectedProbe(report, "unknown-subcommand --json", errorEnvelope);
     assert.equal(errorEnvelope.ok, false);
     assert.equal(errorEnvelope.schema_version, "1.0");
     assert.equal(errorEnvelope.error.code, "UNKNOWN_SUBCOMMAND");

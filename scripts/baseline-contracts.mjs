@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 
 const REQUIRED_JSON_PROBES = Object.freeze([
   "help",
@@ -223,11 +225,19 @@ function pathExists(rootDir, relativePath) {
 }
 
 function extractDispatchCommands(source) {
-  const block = /const SUBCOMMAND_DISPATCH = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(source)?.[1] ?? "";
-  return Array.from(
+  const match = /const SUBCOMMAND_DISPATCH = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(source);
+  if (!match) {
+    throw new Error("Unable to locate SUBCOMMAND_DISPATCH in src/codex-bridge.mjs");
+  }
+  const block = match[1];
+  const commands = Array.from(
     block.matchAll(/^\s*(?:"([^"]+)"|([A-Za-z_$][\w$-]*))\s*:/gm),
     (match) => match[1] ?? match[2]
   ).sort();
+  if (commands.length === 0) {
+    throw new Error("SUBCOMMAND_DISPATCH parsed to zero commands");
+  }
+  return commands;
 }
 
 function withPluginPathTransform(content) {
@@ -242,7 +252,51 @@ function withPluginPathTransform(content) {
     );
 }
 
-function compareGeneratedSurface(rootDir, surface) {
+function buildExpectedBundleRoot(rootDir) {
+  const expectedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-expected-bundles-"));
+  const targets = [
+    {
+      cliOut: "skill/scripts/codex-bridge.mjs",
+      brokerOut: "skill/app-server-broker.mjs",
+    },
+    {
+      cliOut: "plugin/scripts/codex-bridge.mjs",
+      brokerOut: "plugin/scripts/app-server-broker.mjs",
+    },
+  ];
+
+  for (const target of targets) {
+    buildSync({
+      absWorkingDir: rootDir,
+      entryPoints: ["src/codex-bridge.mjs"],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      outfile: path.join(expectedRoot, target.cliOut),
+      external: [],
+      minify: false,
+      sourcemap: false,
+      logLevel: "silent",
+    });
+
+    buildSync({
+      absWorkingDir: rootDir,
+      entryPoints: ["src/adapters/codex/broker.mjs"],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      outfile: path.join(expectedRoot, target.brokerOut),
+      external: [],
+      minify: false,
+      sourcemap: false,
+      logLevel: "silent",
+    });
+  }
+
+  return expectedRoot;
+}
+
+function compareGeneratedSurface(rootDir, surface, expectedBundleRoot = null) {
   const failures = [];
   if (!pathExists(rootDir, surface.source)) {
     failures.push(`missing source: ${surface.source}`);
@@ -258,6 +312,15 @@ function compareGeneratedSurface(rootDir, surface) {
       const source = readText(rootDir, surface.source);
       const generated = readText(rootDir, output);
       if (source !== generated) failures.push(`stale generated static copy: ${output}`);
+    }
+    if (surface.kind === "bundle") {
+      if (!expectedBundleRoot) {
+        failures.push(`missing expected bundle build root for ${output}`);
+      } else {
+        const expected = fs.readFileSync(path.join(expectedBundleRoot, output), "utf8");
+        const generated = readText(rootDir, output);
+        if (expected !== generated) failures.push(`stale generated bundle: ${output}`);
+      }
     }
     if (surface.source === "skill/config.yaml") {
       const source = readText(rootDir, surface.source);
@@ -324,50 +387,71 @@ export function buildBaselineContracts(rootDir = process.cwd()) {
 export function verifyBaselineContracts(rootDir = process.cwd(), report = buildBaselineContracts(rootDir)) {
   const failures = [];
   const pkg = JSON.parse(readText(rootDir, "package.json"));
+  const expectedBundleRoot = report.generated_surfaces.some((surface) => surface.kind === "bundle")
+    ? buildExpectedBundleRoot(rootDir)
+    : null;
 
-  if (!pkg.scripts?.["verify:static"]) failures.push("package.json missing scripts.verify:static");
-  if (!pkg.scripts?.["baseline:contracts"]) failures.push("package.json missing scripts.baseline:contracts");
-  if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("npm run build")) {
-    failures.push("verify:static must run npm run build");
-  }
-  if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("npm test")) {
-    failures.push("verify:static must run npm test");
-  }
-  if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("baseline:contracts")) {
-    failures.push("verify:static must run baseline:contracts -- --check");
-  }
-
-  for (const surface of report.generated_surfaces) {
-    failures.push(...compareGeneratedSurface(rootDir, surface));
-  }
-
-  const coveredCommands = new Set([...report.read_only_commands, ...Object.keys(report.mutating_command_coverage)]);
-  for (const command of report.dispatch_commands) {
-    if (!coveredCommands.has(command)) {
-      failures.push(`dispatch command is not classified as read-only or mutating: ${command}`);
+  try {
+    if (!pkg.scripts?.["verify:static"]) failures.push("package.json missing scripts.verify:static");
+    if (!pkg.scripts?.["baseline:contracts"]) failures.push("package.json missing scripts.baseline:contracts");
+    if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("npm run build")) {
+      failures.push("verify:static must run npm run build");
     }
-  }
+    if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("npm test")) {
+      failures.push("verify:static must run npm test");
+    }
+    if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("baseline:contracts")) {
+      failures.push("verify:static must run baseline:contracts -- --check");
+    }
 
-  for (const probe of REQUIRED_JSON_PROBES) {
-    if (!report.json_envelope_probes.some((entry) => entry.command.split(" ")[0] === probe || probe === "error" && entry.command.includes("unknown-subcommand"))) {
-      failures.push(`missing JSON envelope probe target: ${probe}`);
+    for (const surface of report.generated_surfaces) {
+      failures.push(...compareGeneratedSurface(rootDir, surface, expectedBundleRoot));
     }
-  }
 
-  for (const [command, coverage] of Object.entries(report.mutating_command_coverage)) {
-    if (!Array.isArray(coverage.success_tests) || coverage.success_tests.length === 0) {
-      failures.push(`${command} missing success_tests coverage entry`);
+    const coveredCommands = new Set([...report.read_only_commands, ...Object.keys(report.mutating_command_coverage)]);
+    for (const command of report.dispatch_commands) {
+      if (!coveredCommands.has(command)) {
+        failures.push(`dispatch command is not classified as read-only or mutating: ${command}`);
+      }
     }
-    if (!Array.isArray(coverage.failure_tests) || coverage.failure_tests.length === 0) {
-      failures.push(`${command} missing failure_tests coverage entry`);
-    }
-    for (const testFile of [...coverage.success_tests, ...coverage.failure_tests]) {
-      if (!pathExists(rootDir, testFile)) failures.push(`${command} references missing test file: ${testFile}`);
-    }
-  }
 
-  for (const probe of report.json_envelope_probes) {
-    if (!pathExists(rootDir, probe.test)) failures.push(`JSON probe references missing test file: ${probe.test}`);
+    for (const probe of REQUIRED_JSON_PROBES) {
+      if (!report.json_envelope_probes.some((entry) => entry.command.split(" ")[0] === probe || probe === "error" && entry.command.includes("unknown-subcommand"))) {
+        failures.push(`missing JSON envelope probe target: ${probe}`);
+      }
+    }
+
+    for (const [command, coverage] of Object.entries(report.mutating_command_coverage)) {
+      if (!Array.isArray(coverage.success_tests) || coverage.success_tests.length === 0) {
+        failures.push(`${command} missing success_tests coverage entry`);
+      }
+      if (!Array.isArray(coverage.failure_tests) || coverage.failure_tests.length === 0) {
+        failures.push(`${command} missing failure_tests coverage entry`);
+      }
+      if (coverage.baseline_gap != null && typeof coverage.baseline_gap !== "string") {
+        failures.push(`${command} baseline_gap must be null or a string`);
+      }
+      for (const testFile of [...coverage.success_tests, ...coverage.failure_tests]) {
+        if (!testFile.startsWith("test/") || !testFile.endsWith(".test.mjs")) {
+          failures.push(`${command} references non-test coverage file: ${testFile}`);
+        }
+        if (!pathExists(rootDir, testFile)) failures.push(`${command} references missing test file: ${testFile}`);
+      }
+    }
+
+    for (const probe of report.json_envelope_probes) {
+      if (!Array.isArray(probe.expected) || probe.expected.length === 0) {
+        failures.push(`JSON probe has no expected fields: ${probe.command}`);
+      }
+      if (!probe.test.startsWith("test/") || !probe.test.endsWith(".test.mjs")) {
+        failures.push(`JSON probe references non-test file: ${probe.test}`);
+      }
+      if (!pathExists(rootDir, probe.test)) failures.push(`JSON probe references missing test file: ${probe.test}`);
+    }
+  } finally {
+    if (expectedBundleRoot) {
+      fs.rmSync(expectedBundleRoot, { recursive: true, force: true });
+    }
   }
 
   return {
