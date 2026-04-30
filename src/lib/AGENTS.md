@@ -7,8 +7,8 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 
 | File | Responsibility |
 |---|---|
-| `app-server.mjs` | JSONL app-server client, direct Codex spawn, broker transport, server requests |
-| `app-server-protocol.d.ts` | JSDoc TypeScript surface for app-server shapes |
+| `../adapters/codex/protocol.mjs` | JSONL app-server client, direct Codex spawn, broker transport, server requests |
+| `../adapters/codex/protocol.d.ts` | JSDoc TypeScript surface for app-server shapes |
 | `args.mjs` | Strict CLI argument parser and raw string tokenizer |
 | `auto-pipeline.mjs` | Post-task diff, review, fix, completion-check pipeline |
 | `broker-endpoint.mjs` | Unix socket / Windows pipe endpoint formatting and parsing |
