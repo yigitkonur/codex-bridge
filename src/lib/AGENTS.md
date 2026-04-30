@@ -14,7 +14,7 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 | `broker-endpoint.mjs` | Unix socket / Windows pipe endpoint formatting and parsing |
 | `broker-lifecycle.mjs` | Shared broker session spawn, readiness, persistence, teardown |
 | `cli-errors.mjs` | Exit-code taxonomy, Codex error normalization, retry/handoff envelopes |
-| `codex.mjs` | Codex app-server turn/review/auth runtime wrapper and notification capture |
+| `../adapters/codex/codex.mjs` | Codex app-server turn/review/auth runtime wrapper and notification capture |
 | `config.mjs` | Default config, config layering, collaboration mode, sandbox policy |
 | `fs.mjs` | Small filesystem helpers and stdin/text sniffing |
 | `git.mjs` | Review target resolution and review-context collection |
@@ -71,7 +71,7 @@ before tightening type checking.
 
 ## Codex Runtime
 
-`codex.mjs` owns app-server interactions above the transport:
+`src/adapters/codex/codex.mjs` owns app-server interactions above the transport:
 
 - `runAppServerTurn` starts or resumes a thread, builds text input, attaches
   collaboration mode, sandbox policy, effort, output schema, and optional server
@@ -83,7 +83,7 @@ before tightening type checking.
   command executions, idle timeouts, turn timeouts, and process death.
 - Completion is preferentially driven by `turn/completed`, but
   `scheduleInferredCompletion` (called from agent-message and drained-subagent
-  paths in `src/lib/codex.mjs`) can also conclude the capture when
+  paths in `src/adapters/codex/codex.mjs`) can also conclude the capture when
   `turn/completed` is missing — final answer text alone is not enough on its
   own, but it is one of several signals the inferred-completion path
   considers.
@@ -249,7 +249,7 @@ read-only completion check read-only.
   normalization layer. Variants the upstream sends camelCase are matched
   as-is; unknown values fall through to the generic classifier.
 - The per-turn-budget rejection synthesized in `runAppServerTurn`
-  (`Turn timed out after <ms>ms`, `src/lib/codex.mjs:1172`) has no
+  (`Turn timed out after <ms>ms`, `src/adapters/codex/codex.mjs:712`) has no
   dedicated retryable branch in `classifyError`; it falls through to the
   generic catch-all and surfaces as `INTERNAL_ERROR` (exit 1). Only the
   idle-watchdog message (`/No events received for \d+s/`) maps to the
