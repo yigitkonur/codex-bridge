@@ -243,6 +243,11 @@ export function loadBrief(arg) {
     brief.backend_hint !== undefined &&
     !VALID_BACKENDS.has(brief.backend_hint)
   ) {
+    // Defensive: in v2.0 the schema enum equals VALID_BACKENDS so this
+    // branch is unreachable (validateBriefShape rejects first). Kept for
+    // the future split where the schema permits a wider set than the
+    // runtime has installed (e.g., adding a "claude" backend without
+    // shipping the adapter in the same release).
     return fail(
       ERR.BACKEND_UNAVAILABLE,
       `brief.backend_hint=${JSON.stringify(brief.backend_hint)} is not installed in v2.0; valid: ${[...VALID_BACKENDS].join(", ")}`,

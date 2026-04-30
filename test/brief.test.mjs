@@ -106,8 +106,11 @@ test("loadBrief rejects bad backend_hint", () => {
     JSON.stringify({ ...minimal(), backend_hint: "not-real" }),
   );
   assert.equal(r.ok, false);
-  // Could be SCHEMA_VIOLATION (enum check) or BACKEND_UNAVAILABLE
-  assert.ok(["BRIEF_SCHEMA_VIOLATION", "BRIEF_BACKEND_UNAVAILABLE"].includes(r.code));
+  // Schema validation runs first and is authoritative for unknown
+  // backends in v2.0 (only `codex` exists). The runtime
+  // BACKEND_UNAVAILABLE branch is reserved for the future where the
+  // schema enum is wider than the installed adapter set.
+  assert.equal(r.code, "BRIEF_SCHEMA_VIOLATION");
 });
 
 test("loadBrief accepts backend_hint=codex", () => {
