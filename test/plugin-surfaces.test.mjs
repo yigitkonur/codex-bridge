@@ -20,6 +20,54 @@ function listMarkdownFiles(relativeDir) {
     .sort();
 }
 
+function exists(relativePath) {
+  return fs.existsSync(new URL(relativePath, root));
+}
+
+function pluginManifestPath(relativePath) {
+  assert.match(relativePath, /^\.\//);
+  return `plugin/${relativePath.slice(2)}`;
+}
+
+function collectPluginRootReferences(value) {
+  const references = [];
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\s]+)/g)) {
+      references.push(match[1]);
+    }
+  } else if (Array.isArray(value)) {
+    for (const entry of value) {
+      references.push(...collectPluginRootReferences(entry));
+    }
+  } else if (value && typeof value === "object") {
+    for (const entry of Object.values(value)) {
+      references.push(...collectPluginRootReferences(entry));
+    }
+  }
+  return references;
+}
+
+const expectedCommands = [
+  "adversarial-review.md",
+  "auth-status.md",
+  "await-artifact.md",
+  "cancel.md",
+  "config.md",
+  "events.md",
+  "respond.md",
+  "result.md",
+  "review.md",
+  "send.md",
+  "setup.md",
+  "status.md",
+  "steer.md",
+  "summary.md",
+  "task.md",
+  "update.md",
+  "version.md",
+  "wait.md"
+];
+
 test("Claude plugin manifest version matches package and skill metadata", () => {
   const manifest = readJson(".claude-plugin/plugin.json");
   const pkg = readJson("package.json");
@@ -45,33 +93,71 @@ test("marketplace keeps the v2 scaffold on a noncanonical alpha channel", () => 
 });
 
 test("Claude plugin exposes command coverage for bridge orchestration", () => {
-  const expectedCommands = [
-    "adversarial-review.md",
-    "auth-status.md",
-    "await-artifact.md",
-    "cancel.md",
-    "config.md",
-    "events.md",
-    "respond.md",
-    "result.md",
-    "review.md",
-    "send.md",
-    "setup.md",
-    "status.md",
-    "steer.md",
-    "summary.md",
-    "task.md",
-    "update.md",
-    "version.md",
-    "wait.md"
-  ];
-
   assert.deepEqual(listMarkdownFiles("commands/"), expectedCommands);
 
   for (const command of expectedCommands) {
     const body = readText(path.join("commands", command));
     assert.match(body, /CLAUDE_PLUGIN_ROOT/);
     assert.match(body, /skill\/scripts\/codex-bridge\.mjs|codex-bridge-runner/);
+  }
+});
+
+test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
+  const manifest = readJson("plugin/.claude-plugin/plugin.json");
+
+  assert.equal(readText("plugin/config.yaml"), readText("skill/config.yaml"));
+
+  for (const skillPath of manifest.skills) {
+    const resolvedSkillPath = pluginManifestPath(skillPath);
+    assert.ok(exists(`${resolvedSkillPath}/SKILL.md`), `${skillPath} must contain SKILL.md`);
+  }
+
+  if (manifest.commands) {
+    assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.commands)), expectedCommands);
+  }
+  if (manifest.agents) {
+    assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.agents)), ["codex-bridge-runner.md"]);
+  }
+  assert.ok(exists(pluginManifestPath(manifest.hooks)), `${manifest.hooks} must exist`);
+
+  const authoredHooks = readJson("hooks/hooks.json");
+  const packagedHooks = readJson(pluginManifestPath(manifest.hooks));
+  // packaged hooks may be a subset (empty during alpha phase) — only require structural compatibility
+  if (Object.keys(packagedHooks.hooks ?? {}).length > 0) {
+    assert.deepEqual(packagedHooks, authoredHooks);
+    assert.deepEqual(Object.keys(packagedHooks.hooks).sort(), ["SessionEnd", "SessionStart", "Stop"]);
+
+    const hookScriptRefs = collectPluginRootReferences(packagedHooks)
+      .filter((reference) => reference.startsWith("hooks/"))
+      .sort();
+    assert.deepEqual(hookScriptRefs, [
+      "hooks/session-lifecycle-hook.mjs",
+      "hooks/session-lifecycle-hook.mjs",
+      "hooks/stop-review-gate-hook.mjs"
+    ]);
+
+    for (const hookScriptRef of new Set(hookScriptRefs)) {
+      const hookScriptPath = `plugin/${hookScriptRef}`;
+      assert.ok(exists(hookScriptPath), `${hookScriptRef} must exist in packaged plugin hooks`);
+      const hookScript = readText(hookScriptPath);
+      assert.match(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "scripts", "codex-bridge\.mjs"\)/);
+      assert.doesNotMatch(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "skill", "scripts", "codex-bridge\.mjs"\)/);
+    }
+  }
+
+  if (manifest.commands) {
+    for (const command of expectedCommands) {
+      const body = readText(path.join(pluginManifestPath(manifest.commands), command));
+      assert.match(body, /CLAUDE_PLUGIN_ROOT/);
+      assert.doesNotMatch(body, /CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs/);
+      assert.match(body, /scripts\/codex-bridge\.mjs|codex-bridge-runner/);
+    }
+  }
+
+  if (manifest.agents && exists("plugin/agents/codex-bridge-runner.md")) {
+    const runner = readText("plugin/agents/codex-bridge-runner.md");
+    assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
+    assert.doesNotMatch(runner, /\$\{CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs/);
   }
 });
 

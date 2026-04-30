@@ -32,6 +32,11 @@ test("broker clears resolved server requests and preserves orphaned upstream own
   assert.match(broker, /activeRequestToken/);
 });
 
+test("broker direct invocation detection uses platform-safe file URLs", () => {
+  assert.match(broker, /pathToFileURL\(process\.argv\[1\]\)\.href/);
+  assert.doesNotMatch(broker, /new URL\(`file:\/\/\$\{process\.argv\[1\]\}`\)/);
+});
+
 test("wait terminal matching is anchored to event headers", () => {
   assert.match(bridge, /const TERMINAL = \/\^\\\[\(DONE\|ERROR\|INCOMPLETE\)\\\]\//);
   assert.match(bridge, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*/);

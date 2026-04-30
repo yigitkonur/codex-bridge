@@ -42,10 +42,10 @@ Severity:
 
 ## Conventions
 
-20. **[WARN]** Edits under `src/` must be accompanied by a `npm run build` run locally before commit when CI doesn't cover it. The `skill/scripts/*` bundle is gitignored, so commits containing `src/` changes without a matching tree update will ship stale bundles to end users.
-21. **[WARN]** New bundled assets must land in both `esbuild.config.mjs::copies` and `.gitignore` in the same change. Missing either leaks build output into git or leaves the skill without the asset at runtime.
-22. **[WARN]** New CLI subcommands need: handler in `src/codex-bridge.mjs`, `main()` switch entry, `printUsage()` line, AND a reference entry in `skill/references/command-reference.md`. Once `feat/runtime-improvements` lands, also require behavioral coverage in `test/<name>.test.mjs`; on this branch alone the test suite is not yet wired so reviewers must instead exercise the new subcommand against an authenticated Codex install. PRs missing the non-test items are incomplete.
-23. **[WARN]** New notification tags need: format helper in `src/lib/session-log.mjs`, spec in `skill/references/notification-format.md`. Once `feat/runtime-improvements` lands, also require behavioral coverage in `test/<name>.test.mjs`; on this branch alone the suite is not yet wired so verify the tag end-to-end via the CLI. PRs missing the non-test items are incomplete.
+20. **[WARN]** Edits under runtime source must be accompanied by `npm run build` before commit. The committed `skill/` and `plugin/` bundles are shipped artifacts; commits containing source changes without matching generated output will ship stale code to end users.
+21. **[WARN]** New bundled assets must land in `esbuild.config.mjs` (`staticAssets` or a layout-specific asset list) and in CI's generated-path/existence checks in the same change. The shipped bundle outputs are intentionally tracked, not ignored; do not add committed distributable paths to `.gitignore`.
+22. **[WARN]** New CLI subcommands need: handler in `src/codex-bridge.mjs`, `main()` switch entry, `printUsage()` line, a reference entry in `skill/references/command-reference.md`, matching plugin command coverage when user-facing, and behavioral coverage in `test/<name>.test.mjs`. Protocol-affecting commands still need manual CLI exercise against an authenticated Codex install.
+23. **[WARN]** New notification tags need: format helper in `src/lib/session-log.mjs`, spec in `skill/references/notification-format.md`, and behavioral coverage in `test/<name>.test.mjs`. For protocol-affecting tags, also verify the tag end-to-end via the CLI.
 24. **[INFO]** Prefer `outputCommandResult(payload, rendered, options.json)` over raw `console.log` in handlers. Consistent JSON flag support.
 25. **[INFO]** Prefer `src/lib/` helpers to inline logic in `src/codex-bridge.mjs`. Handler file already pushes ~1500 lines.
 
@@ -70,7 +70,7 @@ Severity:
 
 ## Testing
 
-- **The runnable test suite arrives with `feat/runtime-improvements`** (`test/*.test.mjs` via `npm test`, Node built-in test runner). On this branch alone `package.json` declares only `build` and `dev`, so `npm test` is not yet runnable — reviewers must manually verify behavior a PR changes by running `npm run build && node skill/scripts/codex-bridge.mjs …` against a real Codex install. Once that stack lands, the suite will cover static contracts (plugin surfaces, config defaults, command coverage) but will still not exercise live app-server round trips, so the manual verification step remains required for protocol-affecting changes.
+- **The runnable test suite is `npm test`** (`node --test test/*.test.mjs`). It covers static contracts, plugin surfaces, config defaults, command coverage, and broker/client unit behavior, but it still does not exercise live app-server round trips. Manual CLI verification remains required for protocol-affecting changes.
 - **Before approving a PR that touches protocol code**, run a task round-trip locally: `node src/codex-bridge.mjs task --write "<trivial prompt>"`, observe the plan, approve with `send --mode default`, wait for `[DONE]`. Confirm `.events` and `.ndjson` are well-formed.
 - **Before approving a PR that touches `captureTurn` or the state machine**, additionally run a task with `--write` that triggers a question (`requestUserInput` path) and verify `respond` works end-to-end.
 - **Before approving a PR that changes `protocol.mjs` wire handling**, additionally re-read `codex-rs/app-server/README.md` and diff-check `src/adapters/codex/protocol.d.ts` against a freshly-regenerated TS schema from the upstream `codex app-server generate-ts --experimental` command.

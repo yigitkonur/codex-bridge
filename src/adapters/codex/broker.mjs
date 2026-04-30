@@ -4,6 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import { parseArgs } from "../../lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./protocol.mjs";
@@ -584,7 +585,7 @@ const invokedDirectly = (() => {
     return false;
   }
   try {
-    const entryUrl = new URL(`file://${process.argv[1]}`).href;
+    const entryUrl = pathToFileURL(process.argv[1]).href;
     return entryUrl === import.meta.url;
   } catch {
     return false;
