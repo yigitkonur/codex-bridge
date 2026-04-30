@@ -684,8 +684,8 @@ export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, last
 }
 
 // Shared across formatHeartbeatEvent / formatCheckpointEvent. Same
-// behavior as auto-pipeline.mjs's internal fmtSeconds — consolidated as
-// the single source so `.events` time strings never drift.
+// behavior as the pipeline's former local fmtSeconds, consolidated here
+// so `.events` time strings never drift.
 export function fmtSeconds(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `${s}s`;

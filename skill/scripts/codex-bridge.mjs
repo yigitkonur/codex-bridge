@@ -7349,7 +7349,7 @@ var DEFAULT_CONFIG = {
   turn_plan_ms: 18e5,
   turn_default_ms: 18e5,
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
-  // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
+  // Pre-1.2.5 both were hard-coded in the pipeline implementation; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
   pipeline_stage_ms: 3e5,
   pipeline_total_ms: 9e5,

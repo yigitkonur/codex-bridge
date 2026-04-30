@@ -10,7 +10,6 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 | `../adapters/codex/protocol.mjs` | JSONL app-server client, direct Codex spawn, broker transport, server requests |
 | `../adapters/codex/protocol.d.ts` | JSDoc TypeScript surface for app-server shapes |
 | `args.mjs` | Strict CLI argument parser and raw string tokenizer |
-| `auto-pipeline.mjs` | Post-task diff, review, fix, completion-check pipeline |
 | `broker-endpoint.mjs` | Unix socket / Windows pipe endpoint formatting and parsing |
 | `broker-lifecycle.mjs` | Shared broker session spawn, readiness, persistence, teardown |
 | `cli-errors.mjs` | Exit-code taxonomy, Codex error normalization, retry/handoff envelopes |
@@ -223,7 +222,7 @@ prompt and uses `turn/start` with the JSON schema from `src/schemas`.
 
 ## Auto-Pipeline
 
-`auto-pipeline.mjs` runs after successful task execution when enabled:
+`src/adapters/codex/pipeline.mjs` runs after successful task execution when enabled:
 
 1. Capture initial git diff.
 2. Optionally run native review.

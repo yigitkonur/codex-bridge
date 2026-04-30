@@ -19,9 +19,9 @@ NDJSON captures a curated slice of the run — **not every wire-level notificati
 | `SERVER_RESPONSE` | `respond` CLI delivered a payload | `requestId`, `payload` | `handleRespond` |
 | `STEER` | `steer` CLI sent mid-turn guidance | `turnId`, `prompt` (120-char preview) | `handleSteer` |
 | `ERROR` | Turn failed with a Codex-reported error (`will_retry: false`) | `errorCode`, `message`, `origin` (`turn` or `pipeline:<stage>`) | `src/codex-bridge.mjs` |
-| `PIPELINE_STAGE` | Auto-pipeline entered a stage | `stage` ∈ `{diff, review, fix, check}`, optionally `findingCount` | `src/lib/auto-pipeline.mjs` |
-| `PIPELINE_COMPLETE` | Auto-pipeline finished cleanly (on-disk counterpart to `[PIPELINE:done]`) | `completedStages`, `duration`, `complete`, `touchedFiles` (files the fix stage wrote) | `src/lib/auto-pipeline.mjs` |
-| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `duration`, `error`, `origin` (`pipeline:<stage>`), `touchedFiles` | `src/lib/auto-pipeline.mjs` |
+| `PIPELINE_STAGE` | Auto-pipeline entered a stage | `stage` ∈ `{diff, review, fix, check}`, optionally `findingCount` | `src/adapters/codex/pipeline.mjs` |
+| `PIPELINE_COMPLETE` | Auto-pipeline finished cleanly (on-disk counterpart to `[PIPELINE:done]`) | `completedStages`, `duration`, `complete`, `touchedFiles` (files the fix stage wrote) | `src/adapters/codex/pipeline.mjs` |
+| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `duration`, `error`, `origin` (`pipeline:<stage>`), `touchedFiles` | `src/adapters/codex/pipeline.mjs` |
 | `PIPELINE_SKIPPED` | Run launched with `--no-pipeline` (pipeline stages never ran) | `reason` (`"--no-pipeline flag"`) | `runBridgeTask` |
 | `CIRCUIT_BREAKER` | Command-family circuit breaker tripped (on-disk counterpart to `[WARNING]`) | `family`, `threshold`, `windowSize`, `failsInWindow`, `wrapperDetected`, `turnInterrupted` | `runBridgeTask::onItemCompleted` |
 
