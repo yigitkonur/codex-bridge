@@ -1,6 +1,6 @@
 ---
 description: Show Codex Bridge version and update status
-argument-hint: "[--check-update] [--json]"
+argument-hint: "[--backend <name>] [--check-update] [--json]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---

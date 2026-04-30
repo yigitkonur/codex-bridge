@@ -10,6 +10,14 @@ codex_bridge:
   # Default model (inherits from Codex config if not set here)
   # model: "gpt-5.4"
 
+  # Backend selection. This build ships only the codex backend; non-codex
+  # values fail with BACKEND_INCAPABLE until future adapters land.
+  # Per-run override: `--backend <name>`, then CODEX_BRIDGE_BACKEND.
+  # default_backend: "codex"
+  # adapter_routing:
+  #   codex-bridge:codex-bridge-runner:
+  #     backend: "codex"
+
   # Execution reasoning effort: none | minimal | low | medium | high | xhigh
   # Plan mode always uses xhigh regardless of this setting. Shipped default
   # is xhigh (changed in 1.3.0) — live delegations on non-trivial work

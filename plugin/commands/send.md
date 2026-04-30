@@ -1,6 +1,6 @@
 ---
 description: Send a follow-up prompt to an existing Codex Bridge thread
-argument-hint: "<thread-id> [--mode plan|default] [--effort <level>] [prompt]"
+argument-hint: "<thread-id> [--backend <name>] [--mode plan|default] [--effort <level>] [prompt]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
