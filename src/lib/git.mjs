@@ -725,8 +725,11 @@ export function mergeSubagentBranch({
 
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
-  assertSafeGitRefToken(baseRef, "baseRef");
-  assertValidBranchName(repoRoot, branch);
+  // baseRef and branch must be safe git tokens (no shell injection).
+  if (typeof baseRef !== "string" || /[\s;|&`$()<>"'\\]/.test(baseRef)) {
+    throw new Error(`mergeSubagentBranch: unsafe baseRef: ${JSON.stringify(baseRef)}`);
+  }
+  assertSafeBranchName(repoRoot, branch, "mergeSubagentBranch");
 
   // Refresh base ref from remote so we merge against the latest tip.
   // Best-effort with a hard timeout: a hung remote must not stall the
