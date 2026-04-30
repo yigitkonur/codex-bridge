@@ -586,10 +586,11 @@ const COMMANDS = Object.freeze({
     ]
   },
   "adversarial-review": {
-    synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json] [focus text...]",
+    synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [--brief @<path>.json] [--concern <text>]... [-m <model>] [--json] [focus text...]",
     summary: "Run an adversarial review with a structured JSON result.",
     examples: [
       'codex-bridge adversarial-review "focus on SQL injection risks"',
+      'codex-bridge adversarial-review --brief @review-brief.json --concern "check auth fallback"',
       "codex-bridge adversarial-review --scope branch --base main"
     ]
   },
@@ -1436,6 +1437,8 @@ function buildMachineReadableHelp() {
 // User-controlled text (concerns, focusText) is sanitized through
 // sanitizePromptValue to keep `</orchestrator_concerns>` and similar
 // instruction-like wrappers from being injected by user input.
+const OPUS_CONCERN_MAX_LEN = 1000;
+
 function formatOpusConcerns(concerns) {
   const list = Array.isArray(concerns)
     ? concerns
@@ -1445,7 +1448,9 @@ function formatOpusConcerns(concerns) {
   if (list.length === 0) {
     return "(No orchestrator-supplied concerns. Run the review with --brief @<path>.json or --concern \"...\" to surface focus areas.)";
   }
-  return list.map((c) => `- ${sanitizePromptValue(c)}`).join("\n");
+  return list
+    .map((c) => `- ${sanitizePromptValue(c, { maxLength: OPUS_CONCERN_MAX_LEN })}`)
+    .join("\n");
 }
 
 function buildAdversarialReviewPrompt(context, focusText, opusConcerns = []) {
@@ -1454,7 +1459,7 @@ function buildAdversarialReviewPrompt(context, focusText, opusConcerns = []) {
     template,
     {
       TARGET_LABEL: sanitizePromptValue(context.target.label),
-      USER_FOCUS: focusText || "No extra focus provided.",
+      USER_FOCUS: sanitizePromptValue(focusText) || "No extra focus provided.",
       REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
       OPUS_CONCERNS: formatOpusConcerns(opusConcerns),
       REVIEW_INPUT: context.content
@@ -2068,11 +2073,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
 }
 
 function buildTaskRequest({
-<<<<<<< HEAD
   cwd, stateCwd, model, effort, prompt, write, readOnly, resumeLast, jobId, mode,
-=======
-  cwd, workspaceRoot, model, effort, prompt, write, readOnly, resumeLast, jobId, mode,
->>>>>>> f6b609c (review: address codex findings on PR #59)
   idleTimeoutMs, noPipeline,
   turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs,
   backend = null,
@@ -2080,11 +2081,7 @@ function buildTaskRequest({
   const opt = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null);
   return {
     cwd,
-<<<<<<< HEAD
     stateCwd: stateCwd ?? cwd,
-=======
-    workspaceRoot: workspaceRoot ?? null,
->>>>>>> f6b609c (review: address codex findings on PR #59)
     model,
     effort,
     prompt,
@@ -2254,11 +2251,7 @@ async function runForegroundCommand(job, runner, options = {}) {
   return execution;
 }
 
-<<<<<<< HEAD
 function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
-=======
-function spawnDetachedTaskWorker(cwd, jobId, logFile = null, workspaceRoot = null) {
->>>>>>> f6b609c (review: address codex findings on PR #59)
   const scriptPath = SCRIPT_PATH;
   // Capture the detached child's stderr to a sibling of the per-job `.log`
   // so silent crashes (e.g. an uncaught exception before the first progress
@@ -2276,7 +2269,6 @@ function spawnDetachedTaskWorker(cwd, jobId, logFile = null, workspaceRoot = nul
       // itself must never fail because observability couldn't.
     }
   }
-<<<<<<< HEAD
   const child = spawn(process.execPath, [
     scriptPath,
     "task-worker",
@@ -2287,13 +2279,6 @@ function spawnDetachedTaskWorker(cwd, jobId, logFile = null, workspaceRoot = nul
     "--job-id",
     jobId
   ], {
-=======
-  const args = [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId];
-  if (workspaceRoot) {
-    args.push("--workspace-root", workspaceRoot);
-  }
-  const child = spawn(process.execPath, args, {
->>>>>>> f6b609c (review: address codex findings on PR #59)
     cwd,
     env: process.env,
     detached: true,
@@ -2311,10 +2296,6 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-<<<<<<< HEAD
-=======
-  const child = spawnDetachedTaskWorker(cwd, job.id, logFile, job.workspaceRoot);
->>>>>>> f6b609c (review: address codex findings on PR #59)
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -2493,12 +2474,8 @@ async function handleReview(argv) {
 // timeout, and auto-pipeline.
 
 async function runBridgeTask(request) {
-<<<<<<< HEAD
   const stateCwd = request.stateCwd ?? request.cwd;
   const workspaceRoot = resolveWorkspaceRoot(stateCwd);
-=======
-  const workspaceRoot = request.workspaceRoot ?? resolveWorkspaceRoot(request.cwd);
->>>>>>> f6b609c (review: address codex findings on PR #59)
   const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
   const adapter = await resolveCommandAdapter({
     cwd: request.cwd ?? null,
@@ -3721,68 +3698,6 @@ async function handleTask(argv) {
     briefHash = result.briefHash;
   }
 
-<<<<<<< HEAD
-=======
-  // --worktree-auto isolates write-mode tasks inside a per-task worktree
-  // at <repoRoot>/../.codex-bridge-worktrees/<task_id> on a branch named
-  // subagent/codex/<task_id>. The branch + worktree are created here
-  // BEFORE adapter dispatch; the dispatch then runs with cwd pointing
-  // at the worktree path. The PreToolUse(Bash) hook in T24 enforces
-  // this flag for write-mode invocations to prevent half-baked diffs
-  // landing in the user's main checkout.
-  let worktreeInfo = null;
-  const worktreeTaskId = options["worktree-auto"] ? generateJobId("task") : null;
-  if (options["worktree-auto"]) {
-    if (Boolean(options["read-only"])) {
-      throw conflictError(
-        "--worktree-auto is only meaningful for write-mode tasks; --read-only conflicts.",
-        "WORKTREE_READ_ONLY_CONFLICT",
-      );
-    }
-    try {
-      worktreeInfo = createSubagentWorktree({
-        cwd,
-        taskId: worktreeTaskId,
-        backend: "codex",
-      });
-      try {
-        writeMeta(worktreeTaskId, {
-          backend: "codex",
-          worktree: worktreeInfo,
-          isolation_mode: worktreeInfo.isolation_mode,
-          base_ref: worktreeInfo.base_ref,
-          base_sha: worktreeInfo.base_sha,
-          phase: "queued",
-          brief_hash: briefHash,
-          intercepted_from: options["intercepted-from"] ?? null,
-        });
-        // Persist brief verbatim alongside meta.json so the original
-        // intent is recoverable.
-        if (brief) {
-          fs.writeFileSync(
-            path.join(jobDir(worktreeTaskId), "brief.json"),
-            JSON.stringify(brief, null, 2) + "\n",
-          );
-          fs.writeFileSync(
-            path.join(jobDir(worktreeTaskId), "brief.md"),
-            renderBriefAsMarkdown(brief) + "\n",
-          );
-        }
-      } catch {
-        // Registry writes are best-effort — never block dispatch.
-      }
-      if (worktreeInfo.isolation_mode === "worktree") {
-        cwd = worktreeInfo.path;
-      }
-    } catch (err) {
-      throw new CliError(
-        `failed to create subagent worktree for ${worktreeTaskId}: ${err.message ?? err}`,
-        { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" },
-      );
-    }
-  }
-
->>>>>>> f6b609c (review: address codex findings on PR #59)
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
@@ -3815,7 +3730,6 @@ async function handleTask(argv) {
     prompt,
     resumeLast
   });
-<<<<<<< HEAD
   const adapter = await resolveCommandAdapter({
     cwd,
     workspaceRoot,
@@ -3870,25 +3784,13 @@ async function handleTask(argv) {
       );
     }
   }
-=======
-  const taskJobOptions = worktreeInfo
-    ? { id: worktreeTaskId, worktree: worktreeInfo }
-    : {};
->>>>>>> f6b609c (review: address codex findings on PR #59)
 
   if (options.background) {
     ensureCodexAvailable(cwd);
 
-<<<<<<< HEAD
     const request = buildTaskRequest({
       cwd,
       stateCwd,
-=======
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write, taskJobOptions);
-    const request = buildTaskRequest({
-      cwd,
-      workspaceRoot,
->>>>>>> f6b609c (review: address codex findings on PR #59)
       model,
       effort,
       prompt,
@@ -3914,20 +3816,12 @@ async function handleTask(argv) {
     return;
   }
 
-<<<<<<< HEAD
-=======
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write, taskJobOptions);
->>>>>>> f6b609c (review: address codex findings on PR #59)
   await runForegroundCommand(
     job,
     (progress) =>
       runBridgeTask({
         cwd,
-<<<<<<< HEAD
         stateCwd,
-=======
-        workspaceRoot,
->>>>>>> f6b609c (review: address codex findings on PR #59)
         model,
         effort,
         prompt,
@@ -3955,11 +3849,7 @@ async function handleTask(argv) {
 
 async function handleTaskWorker(argv) {
   const { options } = parseCommandInput(argv, {
-<<<<<<< HEAD
     valueOptions: ["cwd", "workspace-root", "job-id"]
-=======
-    valueOptions: ["cwd", "job-id", "workspace-root"]
->>>>>>> f6b609c (review: address codex findings on PR #59)
   });
 
   if (!options["job-id"]) {

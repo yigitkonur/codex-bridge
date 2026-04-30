@@ -49,6 +49,13 @@ test("buildAdversarialReviewPrompt passes OPUS_CONCERNS at the call site", () =>
   assert.match(callBlock, /requiredKeys:[\s\S]*?"OPUS_CONCERNS"/);
 });
 
+test("buildAdversarialReviewPrompt sanitizes USER_FOCUS before interpolation", () => {
+  const callBlock =
+    BRIDGE_SRC.match(/function buildAdversarialReviewPrompt[\s\S]*?\n\}\n/)?.[0] ?? "";
+  assert.ok(callBlock.length > 0);
+  assert.match(callBlock, /USER_FOCUS:\s*sanitizePromptValue\(focusText\)\s*\|\|\s*"No extra focus provided\."/);
+});
+
 test("formatOpusConcerns renders bullet list when concerns are provided", () => {
   const block = BRIDGE_SRC.match(/function formatOpusConcerns[\s\S]*?\n\}\n/)?.[0] ?? "";
   assert.ok(block.length > 0);
@@ -56,7 +63,8 @@ test("formatOpusConcerns renders bullet list when concerns are provided", () => 
   assert.match(block, /\.join\("\\n"\)/);
   // sanitizePromptValue must run on each concern so a malicious string
   // cannot inject a fake </orchestrator_concerns> wrapper.
-  assert.match(block, /sanitizePromptValue\(c\)/);
+  assert.match(BRIDGE_SRC, /const OPUS_CONCERN_MAX_LEN = 1000/);
+  assert.match(block, /sanitizePromptValue\(c,\s*\{\s*maxLength:\s*OPUS_CONCERN_MAX_LEN\s*\}\)/);
 });
 
 test("formatOpusConcerns falls back to a sentinel when no concerns are provided", () => {
@@ -124,4 +132,13 @@ test("handleReviewCommand declares brief + repeatable concern in its parseComman
   // The handler must forward brief + opusConcerns into executeReviewRun.
   assert.match(block, /brief,/);
   assert.match(block, /opusConcerns,/);
+});
+
+test("adversarial-review help advertises brief and repeatable concern flags", () => {
+  const block =
+    BRIDGE_SRC.match(/"adversarial-review": \{[\s\S]*?\n  \},/)?.[0] ?? "";
+  assert.ok(block.length > 0);
+  assert.match(block, /--brief @<path>\.json/);
+  assert.match(block, /--concern <text>\]\.\.\./);
+  assert.match(block, /--brief @review-brief\.json/);
 });

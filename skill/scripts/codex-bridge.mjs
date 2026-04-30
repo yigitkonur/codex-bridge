@@ -1105,16 +1105,18 @@ function interpolateTemplate(template, variables, options = {}) {
   });
 }
 var PROMPT_VALUE_MAX_LEN = 200;
-function sanitizePromptValue(value) {
+function sanitizePromptValue(value, options = {}) {
   if (typeof value !== "string") {
     return "";
   }
+  const requestedMaxLength = options?.maxLength;
+  const maxLength = Number.isInteger(requestedMaxLength) && requestedMaxLength >= 0 ? requestedMaxLength : PROMPT_VALUE_MAX_LEN;
   const stripped = value.replace(/[\n\r<>]/g, " ");
   const collapsed = stripped.replace(/\s+/g, " ");
-  if (collapsed.length <= PROMPT_VALUE_MAX_LEN) {
+  if (collapsed.length <= maxLength) {
     return collapsed;
   }
-  return collapsed.slice(0, PROMPT_VALUE_MAX_LEN);
+  return collapsed.slice(0, maxLength);
 }
 
 // src/lib/git.mjs
@@ -9211,10 +9213,11 @@ var COMMANDS = Object.freeze({
     ]
   },
   "adversarial-review": {
-    synopsis: "adversarial-review [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json] [focus text...]",
+    synopsis: "adversarial-review [--scope auto|working-tree|branch] [--base <ref>] [--brief @<path>.json] [--concern <text>]... [-m <model>] [--json] [focus text...]",
     summary: "Run an adversarial review with a structured JSON result.",
     examples: [
       'codex-bridge adversarial-review "focus on SQL injection risks"',
+      'codex-bridge adversarial-review --brief @review-brief.json --concern "check auth fallback"',
       "codex-bridge adversarial-review --scope branch --base main"
     ]
   },
@@ -9890,12 +9893,13 @@ function buildMachineReadableHelp() {
     }
   };
 }
+var OPUS_CONCERN_MAX_LEN = 1e3;
 function formatOpusConcerns(concerns) {
   const list = Array.isArray(concerns) ? concerns.map((c) => typeof c === "string" ? c.trim() : "").filter((c) => c.length > 0) : [];
   if (list.length === 0) {
     return '(No orchestrator-supplied concerns. Run the review with --brief @<path>.json or --concern "..." to surface focus areas.)';
   }
-  return list.map((c) => `- ${sanitizePromptValue(c)}`).join("\n");
+  return list.map((c) => `- ${sanitizePromptValue(c, { maxLength: OPUS_CONCERN_MAX_LEN })}`).join("\n");
 }
 function buildAdversarialReviewPrompt(context, focusText, opusConcerns = []) {
   const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
@@ -9903,7 +9907,7 @@ function buildAdversarialReviewPrompt(context, focusText, opusConcerns = []) {
     template,
     {
       TARGET_LABEL: sanitizePromptValue(context.target.label),
-      USER_FOCUS: focusText || "No extra focus provided.",
+      USER_FOCUS: sanitizePromptValue(focusText) || "No extra focus provided.",
       REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
       OPUS_CONCERNS: formatOpusConcerns(opusConcerns),
       REVIEW_INPUT: context.content

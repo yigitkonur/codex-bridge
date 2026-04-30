@@ -46,6 +46,17 @@ test("sanitizePromptValue caps length at 200 characters", () => {
   assert.equal(out.length, 200);
 });
 
+test("sanitizePromptValue accepts a custom maxLength for longer prompt fields", () => {
+  const withinLimit = sanitizePromptValue("a".repeat(1000), { maxLength: 1000 });
+  const overLimit = sanitizePromptValue("a".repeat(1001), { maxLength: 1000 });
+  assert.equal(withinLimit.length, 1000);
+  assert.equal(overLimit.length, 1000);
+});
+
+test("sanitizePromptValue treats null options as defaults", () => {
+  assert.equal(sanitizePromptValue("a".repeat(300), null).length, 200);
+});
+
 test("sanitizePromptValue maps null to empty string", () => {
   assert.equal(sanitizePromptValue(null), "");
 });

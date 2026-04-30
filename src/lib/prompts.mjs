@@ -23,14 +23,19 @@ export function interpolateTemplate(template, variables, options = {}) {
 
 const PROMPT_VALUE_MAX_LEN = 200;
 
-export function sanitizePromptValue(value) {
+export function sanitizePromptValue(value, options = {}) {
   if (typeof value !== "string") {
     return "";
   }
+  const requestedMaxLength = options?.maxLength;
+  const maxLength =
+    Number.isInteger(requestedMaxLength) && requestedMaxLength >= 0
+      ? requestedMaxLength
+      : PROMPT_VALUE_MAX_LEN;
   const stripped = value.replace(/[\n\r<>]/g, " ");
   const collapsed = stripped.replace(/\s+/g, " ");
-  if (collapsed.length <= PROMPT_VALUE_MAX_LEN) {
+  if (collapsed.length <= maxLength) {
     return collapsed;
   }
-  return collapsed.slice(0, PROMPT_VALUE_MAX_LEN);
+  return collapsed.slice(0, maxLength);
 }

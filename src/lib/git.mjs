@@ -1,9 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-<<<<<<< HEAD
 import { execFileSync as childExecFileSync } from "node:child_process";
-=======
->>>>>>> f6b609c (review: address codex findings on PR #59)
 
 import { CliError } from "./cli-errors.mjs";
 import { isProbablyText } from "./fs.mjs";
@@ -463,7 +460,6 @@ export function collectReviewContext(cwd, target, options = {}) {
 // contract.
 
 function runGit(cwd, args, opts = {}) {
-<<<<<<< HEAD
   if (!Array.isArray(args)) {
     throw new TypeError("runGit: args must be an array of git arguments (no shell strings)");
   }
@@ -474,16 +470,6 @@ function runGit(cwd, args, opts = {}) {
     stdio: ["ignore", "pipe", swallowStderr ? "pipe" : "inherit"],
     ...rest,
   });
-=======
-  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
-    throw new TypeError("runGit: args must be an array of strings");
-  }
-  return runCommandChecked("git", args, {
-    cwd,
-    stdio: ["ignore", "pipe", opts.swallowStderr ? "pipe" : "inherit"],
-    maxBuffer: opts.maxBuffer,
-  }).stdout;
->>>>>>> f6b609c (review: address codex findings on PR #59)
 }
 
 function tryRunGit(cwd, args, options = {}) {
@@ -515,7 +501,6 @@ function buildBranchName({ taskId, backend, branchPrefix }) {
   return `${prefix}/${back}/${taskId}`;
 }
 
-<<<<<<< HEAD
 function assertSafeBranchName(cwd, branch, caller) {
   const result = tryRunGit(cwd, ["check-ref-format", "--branch", branch]);
   if (!result.ok) {
@@ -533,34 +518,6 @@ function currentCheckoutRef(cwd) {
   const symbolic = tryRunGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
   if (symbolic.ok) return symbolic.stdout.trim();
   return runGit(cwd, ["rev-parse", "HEAD"]).trim();
-=======
-function assertSafeGitRefToken(value, label) {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`${label} must be a non-empty string`);
-  }
-  if (
-    value.startsWith("-") ||
-    !/^[A-Za-z0-9._/-]+$/.test(value) ||
-    value.includes("..") ||
-    value.includes("//") ||
-    value.includes("@{") ||
-    value.endsWith(".lock")
-  ) {
-    throw new Error(`${label} contains unsafe git ref characters: ${JSON.stringify(value)}`);
-  }
-}
-
-function assertValidBranchName(cwd, branch) {
-  assertSafeGitRefToken(branch, "branch");
-  runGit(cwd, ["check-ref-format", "--branch", branch], { swallowStderr: true });
-}
-
-function resolveCommitSha(cwd, ref, label = "ref") {
-  assertSafeGitRefToken(ref, label);
-  return runGit(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], {
-    swallowStderr: true,
-  }).trim();
->>>>>>> f6b609c (review: address codex findings on PR #59)
 }
 
 // createSubagentWorktree({ cwd, taskId, backend, baseRef, branchPrefix, worktreeRoot })
@@ -585,7 +542,6 @@ export function createSubagentWorktree({
   // ?? chain previously skipped detectDefaultBranch entirely. Treat
   // detached HEAD explicitly so the default-branch fallback can fire.
   const resolvedBaseRef =
-<<<<<<< HEAD
     baseRef ??
     (currentBranch !== "HEAD" ? currentBranch : null) ??
     detectDefaultBranch(cwd) ??
@@ -598,23 +554,12 @@ export function createSubagentWorktree({
   ], { swallowStderr: true }).trim();
   const branch = buildBranchName({ taskId, backend, branchPrefix });
   assertSafeBranchName(repoRoot, branch, "createSubagentWorktree");
-=======
-    baseRef ?? getCurrentBranch(cwd) ?? detectDefaultBranch(cwd) ?? "HEAD";
-  const baseSha = resolveCommitSha(repoRoot, resolvedBaseRef, "baseRef");
-  const branch = buildBranchName({ taskId, backend, branchPrefix });
-  assertValidBranchName(repoRoot, branch);
->>>>>>> f6b609c (review: address codex findings on PR #59)
   const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
   const wtPath = path.join(root, taskId);
   const createdAt = new Date().toISOString();
 
   // Refuse to clobber an existing branch that we didn't create.
-<<<<<<< HEAD
   if (branchExists(repoRoot, branch)) {
-=======
-  const branchExists = tryRunGit(repoRoot, ["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}`]);
-  if (branchExists !== null) {
->>>>>>> f6b609c (review: address codex findings on PR #59)
     throw new Error(
       `createSubagentWorktree: branch ${branch} already exists; remove or rename before retrying`,
     );
@@ -635,7 +580,6 @@ export function createSubagentWorktree({
       created_at: createdAt,
     };
   } catch (err) {
-<<<<<<< HEAD
     // Roll back the partial worktree creation so we don't leave a
     // half-set worktree pointer. `git worktree add -b` can create the branch
     // before failing on the checkout path, so remove that exact branch before
@@ -674,13 +618,6 @@ export function createSubagentWorktree({
       previous_ref: previousRef,
       fallback_reason: err.message ?? String(err),
     };
-=======
-    // Roll back partial worktree creation and the branch created by
-    // `worktree add -b` before surfacing the isolation failure.
-    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
-    tryRunGit(repoRoot, ["branch", "-D", branch]);
-    throw new Error(`createSubagentWorktree: worktree creation failed: ${err.message ?? err}`);
->>>>>>> f6b609c (review: address codex findings on PR #59)
   }
 }
 
@@ -699,7 +636,6 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
 
-<<<<<<< HEAD
   // Resolve the worktree path. Priority:
   //   1. caller-supplied explicit `path`
   //   2. caller-supplied `worktreeRoot` joined with `taskId`
@@ -752,15 +688,6 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
         throw new Error(`pruneWorktreeOnCancel: branch still exists after delete: ${branch}`);
       }
     }
-=======
-  if (fs.existsSync(wtPath)) {
-    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
-  }
-  if (branch) {
-    assertValidBranchName(repoRoot, branch);
-    // -D not -d: branch may have unmerged commits while we're cancelling.
-    tryRunGit(repoRoot, ["branch", "-D", branch]);
->>>>>>> f6b609c (review: address codex findings on PR #59)
   }
   return { pruned: !fs.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
 }
@@ -802,7 +729,6 @@ export function mergeSubagentBranch({
   assertValidBranchName(repoRoot, branch);
 
   // Refresh base ref from remote so we merge against the latest tip.
-<<<<<<< HEAD
   // Best-effort with a hard timeout: a hung remote must not stall the
   // merge gate forever. tryRunGit silently no-ops if `origin` is missing
   // or the network is unreachable.
@@ -820,22 +746,11 @@ export function mergeSubagentBranch({
   if (dirty.ok && dirty.stdout.trim().length > 0) {
     const err = new Error(
       `repo is dirty; commit or stash before merging. Status: ${dirty.stdout.trim()}`,
-=======
-  // Best-effort: if there's no `origin` remote, skip the fetch.
-  tryRunGit(repoRoot, ["fetch", "origin", baseRef]);
-
-  // Switch to base ref. Refuse if working tree is dirty.
-  const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
-  if (dirty && dirty.trim().length > 0) {
-    throw new Error(
-      `repo is dirty; commit or stash before merging. Status: ${dirty.trim()}`,
->>>>>>> f6b609c (review: address codex findings on PR #59)
     );
     err.kind = "precondition";
     throw err;
   }
 
-<<<<<<< HEAD
   const expectedSha = String(expectedBranchSha).trim().toLowerCase();
   const taskWorktreePath = worktreePath ?? path.join(defaultWorktreeRoot(repoRoot), taskId);
   if (taskWorktreePath && fs.existsSync(taskWorktreePath) && path.resolve(taskWorktreePath) !== repoRoot) {
@@ -852,13 +767,6 @@ export function mergeSubagentBranch({
   // Verify the branch is reachable.
   const branchShaResult = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
   const branchSha = branchShaResult.ok ? branchShaResult.stdout.trim().toLowerCase() : "";
-=======
-  resolveCommitSha(repoRoot, baseRef, "baseRef");
-  runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
-
-  // Verify the branch is reachable.
-  const branchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}`]);
->>>>>>> f6b609c (review: address codex findings on PR #59)
   if (!branchSha) {
     const err = new Error(`branch ${branch} does not exist`);
     err.kind = "precondition";
@@ -904,13 +812,9 @@ export function mergeSubagentBranch({
     throw wrapped;
   }
 
-<<<<<<< HEAD
   const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true })
     .toString()
     .trim();
-=======
-  const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true }).trim();
->>>>>>> f6b609c (review: address codex findings on PR #59)
 
   // Clean up the worktree — the branch lives on in base from here.
   pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
@@ -931,11 +835,7 @@ export function listSubagentWorktrees(cwd) {
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
   const out = tryRunGit(repoRoot, ["worktree", "list", "--porcelain"]);
-<<<<<<< HEAD
   if (!out.ok) return [];
-=======
-  if (!out) return [];
->>>>>>> f6b609c (review: address codex findings on PR #59)
   const entries = [];
   let current = null;
   for (const line of out.stdout.split(/\r?\n/)) {

@@ -1,10 +1,6 @@
 ---
 description: Run a Codex Bridge review that challenges implementation approach and design assumptions
-<<<<<<< HEAD
 argument-hint: "[--wait|--background] [--backend <name>] [--base <ref>] [--scope auto|working-tree|branch] [focus ...]"
-=======
-argument-hint: "[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--brief @<path>.json] [--concern <text>]... [focus ...]"
->>>>>>> 40deb5c (feat(prompts): adversarial-review gains {{OPUS_CONCERNS}} channel (Phase 2b / T26))
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
