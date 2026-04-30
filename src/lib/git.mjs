@@ -582,8 +582,14 @@ export function createSubagentWorktree({
     };
   } catch (err) {
     // Roll back the partial worktree creation so we don't leave a
-    // half-set worktree pointer.
+    // half-set worktree pointer. `git worktree add -b` can create the branch
+    // before failing on the checkout path, so remove that exact branch before
+    // retrying the branch-only fallback.
     tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    const partialBranchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
+    if (partialBranchSha.ok && partialBranchSha.stdout.trim() === baseSha) {
+      tryRunGit(repoRoot, ["branch", "-D", branch]);
+    }
     if (!allowBranchFallback) {
       throw new Error(
         `createSubagentWorktree: worktree creation failed and branch fallback is disabled: ${err.message ?? err}`,
