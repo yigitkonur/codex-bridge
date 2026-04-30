@@ -1,11 +1,11 @@
 /**
- * @typedef {import("../adapters/codex/protocol").AppServerNotification} AppServerNotification
- * @typedef {import("../adapters/codex/protocol").ReviewTarget} ReviewTarget
- * @typedef {import("../adapters/codex/protocol").ThreadItem} ThreadItem
- * @typedef {import("../adapters/codex/protocol").ThreadResumeParams} ThreadResumeParams
- * @typedef {import("../adapters/codex/protocol").ThreadStartParams} ThreadStartParams
- * @typedef {import("../adapters/codex/protocol").Turn} Turn
- * @typedef {import("../adapters/codex/protocol").UserInput} UserInput
+ * @typedef {import("./protocol").AppServerNotification} AppServerNotification
+ * @typedef {import("./protocol").ReviewTarget} ReviewTarget
+ * @typedef {import("./protocol").ThreadItem} ThreadItem
+ * @typedef {import("./protocol").ThreadResumeParams} ThreadResumeParams
+ * @typedef {import("./protocol").ThreadStartParams} ThreadStartParams
+ * @typedef {import("./protocol").Turn} Turn
+ * @typedef {import("./protocol").UserInput} UserInput
  * @typedef {((update: string | { message: string, phase: string | null, threadId?: string | null, turnId?: string | null, stderrMessage?: string | null, logTitle?: string | null, logBody?: string | null }) => void)} ProgressReporter
  * @typedef {{
  *   threadId: string,
