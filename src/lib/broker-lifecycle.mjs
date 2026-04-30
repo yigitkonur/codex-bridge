@@ -123,7 +123,11 @@ function resolveBrokerScriptPath() {
     const p = fileURLToPath(url);
     if (fs.existsSync(p)) return p;
   }
-  return fileURLToPath(candidates[0]);
+  throw new Error(
+    `Could not locate broker script. Tried:\n  ${candidates
+      .map((url) => fileURLToPath(url))
+      .join("\n  ")}`
+  );
 }
 
 export async function ensureBrokerSession(cwd, options = {}) {

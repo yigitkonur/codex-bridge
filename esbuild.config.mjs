@@ -3,10 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 // Bundle both entry points. The broker is spawned separately by
-// `broker-lifecycle.mjs` via `new URL("../app-server-broker.mjs", import.meta.url)`,
-// so after bundling it must live adjacent to the main CLI at the same relative
-// depth (`skill/scripts/` contains both → `../` resolves to `skill/`).
-// Instead we emit the broker to `skill/app-server-broker.mjs`.
+// `broker-lifecycle.mjs` via `resolveBrokerScriptPath()`, which probes bundled
+// locations based on the runtime context. After bundling, the bundled broker
+// is emitted to `skill/app-server-broker.mjs` for use in installed plugins.
+// Source mode resolves to `src/adapters/codex/broker.mjs`.
 await build({
   entryPoints: ["src/codex-bridge.mjs"],
   bundle: true,

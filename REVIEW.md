@@ -11,7 +11,7 @@ Severity:
 
 ### Protocol fidelity with the Codex app-server
 
-1. **[ERROR]** `DEFAULT_CLIENT_INFO.name` in `src/lib/app-server.mjs` must remain ASCII, no CR/LF/colons. Upstream echoes it as the `originator` HTTP header on every `/v1/responses` call; invalid values return `-32600 "Invalid clientInfo.name..."`. Tested upstream in `initialize.rs::initialize_rejects_invalid_client_name`.
+1. **[ERROR]** `DEFAULT_CLIENT_INFO.name` in `src/adapters/codex/protocol.mjs` must remain ASCII, no CR/LF/colons. Upstream echoes it as the `originator` HTTP header on every `/v1/responses` call; invalid values return `-32600 "Invalid clientInfo.name..."`. Tested upstream in `initialize.rs::initialize_rejects_invalid_client_name`.
 2. **[ERROR]** Never add `"jsonrpc": "2.0"` to outbound messages. The upstream README explicitly documents the field is omitted. Parsers on both ends will mis-handle the addition.
 3. **[ERROR]** Wire framing on stdio must stay newline-delimited JSON. Any change to read/write path must preserve this — the upstream Rust client enforces the same framing and will drop the connection if it breaks.
 4. **[ERROR]** `turn/interrupt` handling must not treat the `{}` response as "turn done". The state machine in `src/lib/codex.mjs::captureTurn` must wait for `turn/completed` with `status: "interrupted"`. Any shortcut that resolves the turn earlier corrupts subsequent follow-ups.
@@ -30,7 +30,7 @@ Severity:
 ### Lifecycle and IPC
 
 13. **[ERROR]** The `pending-requests` protocol (disk-based IPC for `requestUserInput`) must be preserved. The worker process is the sole writer of `.pending.json`; the `respond` CLI is the sole writer of `.response.json`; the response file is consumed on read. PRs that add a second writer, or switch to an in-memory channel, break cross-process semantics.
-14. **[ERROR]** `app-server-broker.mjs::STREAMING_METHODS` exclusive-ownership semantics must remain: another client making a non-interrupt request during an active stream gets `-32001 BROKER_BUSY_RPC_CODE`. The `turn/interrupt` carve-out must remain, so hung turns can be cancelled from a sibling client.
+14. **[ERROR]** `broker.mjs::STREAMING_METHODS` exclusive-ownership semantics must remain: another client making a non-interrupt request during an active stream gets `-32001 BROKER_BUSY_RPC_CODE`. The `turn/interrupt` carve-out must remain, so hung turns can be cancelled from a sibling client.
 
 ## Security
 
@@ -59,7 +59,7 @@ Severity:
 
 29. **[WARN]** JSON-RPC ID allocation must stay centralized in the client (monotonic `this.nextId++`). Exposing ID generation to callers (as the Rust reference client does) is error-prone in JS where `Promise`-based awaits encourage interleaved requests.
 30. **[WARN]** Workspace vs cwd split: state and jobs key off workspace root (`src/lib/workspace.mjs::resolveWorkspaceRoot`); git and Codex spawn env use cwd. Blending them will break per-subdirectory invocations in the same repo.
-31. **[INFO]** Prefer the existing typed-ish JSDoc in `src/lib/app-server-protocol.d.ts` over ad-hoc shapes. If a new upstream field is used, add it to the .d.ts first.
+31. **[INFO]** Prefer the existing typed-ish JSDoc in `src/adapters/codex/protocol.d.ts` over ad-hoc shapes. If a new upstream field is used, add it to the .d.ts first.
 
 ## Ignore
 
@@ -73,7 +73,7 @@ Severity:
 - **The runnable test suite arrives with `feat/runtime-improvements`** (`test/*.test.mjs` via `npm test`, Node built-in test runner). On this branch alone `package.json` declares only `build` and `dev`, so `npm test` is not yet runnable — reviewers must manually verify behavior a PR changes by running `npm run build && node skill/scripts/codex-bridge.mjs …` against a real Codex install. Once that stack lands, the suite will cover static contracts (plugin surfaces, config defaults, command coverage) but will still not exercise live app-server round trips, so the manual verification step remains required for protocol-affecting changes.
 - **Before approving a PR that touches protocol code**, run a task round-trip locally: `node src/codex-bridge.mjs task --write "<trivial prompt>"`, observe the plan, approve with `send --mode default`, wait for `[DONE]`. Confirm `.events` and `.ndjson` are well-formed.
 - **Before approving a PR that touches `captureTurn` or the state machine**, additionally run a task with `--write` that triggers a question (`requestUserInput` path) and verify `respond` works end-to-end.
-- **Before approving a PR that changes `app-server.mjs` wire handling**, additionally re-read `codex-rs/app-server/README.md` and diff-check `src/lib/app-server-protocol.d.ts` against a freshly-regenerated TS schema from the upstream `codex app-server generate-ts --experimental` command.
+- **Before approving a PR that changes `protocol.mjs` wire handling**, additionally re-read `codex-rs/app-server/README.md` and diff-check `src/adapters/codex/protocol.d.ts` against a freshly-regenerated TS schema from the upstream `codex app-server generate-ts --experimental` command.
 
 ## Upstream drift watchlist
 

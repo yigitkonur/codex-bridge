@@ -8,7 +8,7 @@ This folder contains the authored runtime source. Build outputs live under
 | Path | Role |
 |---|---|
 | `codex-bridge.mjs` | Main CLI entry point and orchestration layer |
-| `app-server-broker.mjs` | Standalone shared Codex app-server broker process |
+| `adapters/codex/broker.mjs` | Standalone shared Codex app-server broker process |
 | `lib/` | Reusable client, state, config, git, session-log, render, update, and error modules |
 | `prompts/` | Authored prompt source copied to `skill/prompts/` |
 | `schemas/` | Authored JSON schema source copied to `skill/schemas/` |
@@ -83,7 +83,7 @@ it so foreground and background runs produce the same session artifacts.
 
 ## Broker Entry
 
-`app-server-broker.mjs` serves one shared Codex app-server connection. It:
+`adapters/codex/broker.mjs` serves one shared Codex app-server connection. It:
 
 - Accepts `serve --endpoint <value> [--cwd <path>] [--pid-file <path>]`.
 - Handles newline-delimited JSON messages.
