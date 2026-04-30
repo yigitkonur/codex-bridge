@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "project": {
+    "name": "codex-bridge",
+    "type": "brownfield",
+    "initialized_at": "2026-04-30",
+    "evidence_policy": "Source, tests, package metadata, plugin manifests, hooks, and CI workflows are authoritative. Repository Markdown is treated as stale unless re-verified against implementation."
+  },
+  "mode": "yolo",
+  "granularity": "coarse",
+  "parallelization": true,
+  "commit_docs": true,
+  "model_profile": "quality",
+  "workflow": {
+    "research": true,
+    "plan_check": true,
+    "verifier": true,
+    "nyquist_validation": false,
+    "auto_advance": false
+  },
+  "planning": {
+    "sub_repos": [],
+    "phase_count_target": "4-6",
+    "source_truth": [
+      "package.json",
+      "package-lock.json",
+      "src/**/*.mjs",
+      "src/**/*.json",
+      "src/**/*.d.ts",
+      "test/**/*.mjs",
+      "hooks/**/*.mjs",
+      "hooks/**/*.json",
+      ".claude-plugin/**/*.json",
+      "plugin/**/*.json",
+      "plugin/**/*.yaml",
+      "plugin/**/*.mjs",
+      "skill/**/*.yaml",
+      "skill/**/*.mjs",
+      ".github/workflows/*.yml",
+      "esbuild.config.mjs"
+    ],
+    "do_not_trust_without_reverification": [
+      "README or release notes",
+      "historical planning notes",
+      "repository Markdown prose",
+      "generated bundle comments when source disagrees"
+    ]
+  }
+}
