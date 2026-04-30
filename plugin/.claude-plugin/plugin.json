@@ -21,5 +21,7 @@
     "iteration"
   ],
   "skills": ["./skills/codex-bridge"],
+  "commands": "./commands",
+  "agents": "./agents",
   "hooks": "./hooks/hooks.json"
 }

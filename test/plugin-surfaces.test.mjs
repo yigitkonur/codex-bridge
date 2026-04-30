@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
+const rootPath = fileURLToPath(root);
 
 function readText(relativePath) {
   return fs.readFileSync(new URL(relativePath, root), "utf8");
@@ -93,12 +96,19 @@ test("marketplace keeps the v2 scaffold on a noncanonical alpha channel", () => 
 });
 
 test("Claude plugin exposes command coverage for bridge orchestration", () => {
-  assert.deepEqual(listMarkdownFiles("commands/"), expectedCommands);
+  assert.deepEqual(listMarkdownFiles("plugin/commands/"), expectedCommands);
 
   for (const command of expectedCommands) {
-    const body = readText(path.join("commands", command));
+    const body = readText(path.join("plugin/commands", command));
     assert.match(body, /CLAUDE_PLUGIN_ROOT/);
-    assert.match(body, /skill\/scripts\/codex-bridge\.mjs|codex-bridge-runner/);
+    assert.match(
+      body,
+      /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs|codex-bridge-runner/
+    );
+    assert.doesNotMatch(
+      body,
+      /\$\{CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs/
+    );
   }
 });
 
@@ -162,7 +172,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
 });
 
 test("task command routes substantial work through the runner subagent and Monitor", () => {
-  const taskCommand = readText("commands/task.md");
+  const taskCommand = readText("plugin/commands/task.md");
 
   assert.match(taskCommand, /subagent_type: "codex-bridge:codex-bridge-runner"/);
   assert.match(taskCommand, /task-resume-candidate --json/);
@@ -171,10 +181,12 @@ test("task command routes substantial work through the runner subagent and Monit
 });
 
 test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () => {
-  const hooksConfig = readJson("hooks/hooks.json");
-  const sessionHook = readText("hooks/session-lifecycle-hook.mjs");
-  const stopHook = readText("hooks/stop-review-gate-hook.mjs");
+  const manifest = readJson("plugin/.claude-plugin/plugin.json");
+  const hooksConfig = readJson("plugin/hooks/hooks.json");
+  const sessionHook = readText("plugin/hooks/session-lifecycle-hook.mjs");
+  const stopHook = readText("plugin/hooks/stop-review-gate-hook.mjs");
 
+  assert.equal(manifest.hooks, "./hooks/hooks.json");
   assert.deepEqual(Object.keys(hooksConfig.hooks).sort(), ["SessionEnd", "SessionStart", "Stop"]);
   assert.match(JSON.stringify(hooksConfig), /session-lifecycle-hook\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /stop-review-gate-hook\.mjs/);
@@ -188,9 +200,13 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(stopHook, /Run a stop-gate review of the previous Claude turn\./);
   assert.match(stopHook, /\.codex-bridge-stop-review-gate\.lock/);
   assert.match(stopHook, /if \(!activation\.active\)/);
+  assert.match(stopHook, /maybeMigrateLegacyGate/);
+  assert.match(stopHook, /config\?\.stopReviewGate === true/);
+  assert.match(stopHook, /CODEX_BRIDGE_PLUGIN_DATA/);
   assert.doesNotMatch(stopHook, /CODEX_BRIDGE_STOP_REVIEW_GATE/);
   assert.match(stopHook, /decision: "block"/);
-  assert.match(stopHook, /skill", "scripts", "codex-bridge\.mjs"/);
+  assert.match(stopHook, /"scripts", "codex-bridge\.mjs"/);
+  assert.doesNotMatch(stopHook, /"skill", "scripts", "codex-bridge\.mjs"/);
 });
 
 test("stop review hook re-reads activation after legacy setup migration", () => {
@@ -220,7 +236,7 @@ test("stop review hook re-reads activation after legacy setup migration", () => 
 
 test("setup owns project-scoped review gate lock creation", () => {
   const bridge = readText("src/codex-bridge.mjs");
-  const setupCommand = readText("commands/setup.md");
+  const setupCommand = readText("plugin/commands/setup.md");
 
   assert.match(bridge, /\.codex-bridge-stop-review-gate\.lock/);
   assert.match(bridge, /detectOfficialOpenAICodexPlugin/);
@@ -233,11 +249,44 @@ test("setup owns project-scoped review gate lock creation", () => {
 });
 
 test("runner subagent remains a thin forwarding wrapper", () => {
-  const runner = readText("agents/codex-bridge-runner.md");
+  const manifest = readJson("plugin/.claude-plugin/plugin.json");
+  const runner = readText("plugin/agents/codex-bridge-runner.md");
 
+  assert.equal(manifest.agents, "./agents");
   assert.match(runner, /name: codex-bridge-runner/);
   assert.match(runner, /Use exactly one `Bash` call/);
-  assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs" task/);
+  assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
   assert.match(runner, /Do not inspect the repository/);
   assert.match(runner, /Return the stdout of the bridge command exactly as-is/);
+});
+
+test("canonical plugin manifest paths resolve inside the plugin package", () => {
+  const manifest = readJson("plugin/.claude-plugin/plugin.json");
+
+  for (const skillPath of manifest.skills ?? []) {
+    assert.equal(
+      exists(path.join("plugin", skillPath, "SKILL.md")),
+      true,
+      `missing plugin skill referenced by manifest: ${skillPath}`
+    );
+  }
+  assert.equal(exists(path.join("plugin", manifest.commands)), true);
+  assert.equal(exists(path.join("plugin", manifest.agents)), true);
+  assert.equal(exists(path.join("plugin", manifest.hooks)), true);
+  assert.equal(exists("plugin/config.yaml"), true);
+
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("plugin/scripts/codex-bridge.mjs", root)), "config", "show", "--json"],
+    {
+      cwd: rootPath,
+      env: { ...process.env, CODEX_BRIDGE_NO_UPDATE_CHECK: "1" },
+      encoding: "utf8"
+    }
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.result.sources.skill_config_exists, true);
+  assert.match(payload.result.sources.skill_config_path, /plugin[/\\]config\.yaml$/);
 });

@@ -109,9 +109,17 @@ for (const target of targets) {
       copyFile(src, `${target.assetsRoot}/${suffix}`);
     }
 
-    copyDirectory("commands", "plugin/commands", toPluginRuntimePath);
-    copyDirectory("agents", "plugin/agents", toPluginRuntimePath);
-    copyDirectory("hooks", "plugin/hooks", toPluginRuntimePath);
+    // T9+: commands are now authored under plugin/commands/ directly. Only
+    // copy from root if the legacy directory still exists during overlap.
+    if (fs.existsSync("commands")) {
+      copyDirectory("commands", "plugin/commands", toPluginRuntimePath);
+    }
+    if (fs.existsSync("agents")) {
+      copyDirectory("agents", "plugin/agents", toPluginRuntimePath);
+    }
+    if (fs.existsSync("hooks")) {
+      copyDirectory("hooks", "plugin/hooks", toPluginRuntimePath);
+    }
   }
 
   console.log(`Build complete: ${target.label} -> ${target.cliOut}`);

@@ -3398,7 +3398,7 @@ var jsYaml = {
   safeDump
 };
 
-// src/lib/config.mjs
+// src/lib/runtime-options.mjs
 var DEFAULT_CONFIG = {
   mode: "plan",
   model: "gpt-5.4",
@@ -3479,7 +3479,7 @@ var DEFAULT_CONFIG = {
   turn_plan_ms: 18e5,
   turn_default_ms: 18e5,
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
-  // Pre-1.2.5 both were hard-coded in the pipeline implementation; long native reviews
+  // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
   pipeline_stage_ms: 3e5,
   pipeline_total_ms: 9e5,
@@ -3490,55 +3490,6 @@ var DEFAULT_CONFIG = {
   question_answer_ms: 3e5,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
-function readConfigFile(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const doc = jsYaml.load(raw) ?? {};
-    const bridge = doc.codex_bridge ?? doc;
-    return typeof bridge === "object" && bridge !== null ? bridge : {};
-  } catch {
-    return {};
-  }
-}
-function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
-  const skillConfigPath = skillDir ? path.join(skillDir, "config.yaml") : path.join(os.homedir(), ".codex-bridge", "config.yaml");
-  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path.join(workspaceRoot, "config.yaml") : null;
-  const overrideConfigPath = overrideDir ? path.join(overrideDir, "config.yaml") : null;
-  return { skillConfigPath, workspaceConfigPath, overrideConfigPath };
-}
-function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
-  const { skillConfigPath, workspaceConfigPath, overrideConfigPath } = configPaths(skillDir, overrideDir, workspaceRoot);
-  const skillLayer = readConfigFile(skillConfigPath);
-  const workspaceLayer = workspaceConfigPath && fs.existsSync(workspaceConfigPath) ? readConfigFile(workspaceConfigPath) : {};
-  const overrideLayer = overrideConfigPath && fs.existsSync(overrideConfigPath) ? readConfigFile(overrideConfigPath) : {};
-  const mergedConfig = {
-    ...DEFAULT_CONFIG,
-    ...skillLayer,
-    ...workspaceLayer,
-    ...overrideLayer
-  };
-  return {
-    defaults: DEFAULT_CONFIG,
-    skillConfig: skillLayer,
-    workspaceConfig: workspaceLayer,
-    cwdConfig: overrideLayer,
-    mergedConfig,
-    sources: {
-      skillConfigPath,
-      skillConfigExists: fs.existsSync(skillConfigPath),
-      workspaceConfigPath,
-      workspaceConfigExists: workspaceConfigPath ? fs.existsSync(workspaceConfigPath) : false,
-      overrideConfigPath,
-      overrideConfigExists: overrideConfigPath ? fs.existsSync(overrideConfigPath) : false
-    }
-  };
-}
-function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
-  return loadConfigLayers(skillDir, overrideDir, workspaceRoot).mergedConfig;
-}
-function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
-  return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
-}
 function resolveEffort(config, options = {}) {
   return options.effort ?? config.effort ?? "high";
 }
@@ -3592,6 +3543,57 @@ var COMPLETION_CHECK_SCHEMA = {
   required: ["complete", "missing_items", "summary"],
   additionalProperties: false
 };
+
+// src/lib/config.mjs
+function readConfigFile(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const doc = jsYaml.load(raw) ?? {};
+    const bridge = doc.codex_bridge ?? doc;
+    return typeof bridge === "object" && bridge !== null ? bridge : {};
+  } catch {
+    return {};
+  }
+}
+function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
+  const skillConfigPath = skillDir ? path.join(skillDir, "config.yaml") : path.join(os.homedir(), ".codex-bridge", "config.yaml");
+  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path.join(workspaceRoot, "config.yaml") : null;
+  const overrideConfigPath = overrideDir ? path.join(overrideDir, "config.yaml") : null;
+  return { skillConfigPath, workspaceConfigPath, overrideConfigPath };
+}
+function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
+  const { skillConfigPath, workspaceConfigPath, overrideConfigPath } = configPaths(skillDir, overrideDir, workspaceRoot);
+  const skillLayer = readConfigFile(skillConfigPath);
+  const workspaceLayer = workspaceConfigPath && fs.existsSync(workspaceConfigPath) ? readConfigFile(workspaceConfigPath) : {};
+  const overrideLayer = overrideConfigPath && fs.existsSync(overrideConfigPath) ? readConfigFile(overrideConfigPath) : {};
+  const mergedConfig = {
+    ...DEFAULT_CONFIG,
+    ...skillLayer,
+    ...workspaceLayer,
+    ...overrideLayer
+  };
+  return {
+    defaults: DEFAULT_CONFIG,
+    skillConfig: skillLayer,
+    workspaceConfig: workspaceLayer,
+    cwdConfig: overrideLayer,
+    mergedConfig,
+    sources: {
+      skillConfigPath,
+      skillConfigExists: fs.existsSync(skillConfigPath),
+      workspaceConfigPath,
+      workspaceConfigExists: workspaceConfigPath ? fs.existsSync(workspaceConfigPath) : false,
+      overrideConfigPath,
+      overrideConfigExists: overrideConfigPath ? fs.existsSync(overrideConfigPath) : false
+    }
+  };
+}
+function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
+  return loadConfigLayers(skillDir, overrideDir, workspaceRoot).mergedConfig;
+}
+function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
+  return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
+}
 
 // src/adapters/index.mjs
 var REQUIRED_FIELDS = ["name", "displayName"];
