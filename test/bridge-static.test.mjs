@@ -135,7 +135,7 @@ test("background task enqueue persists queued record before spawning worker", ()
   const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
   const writeQueued = enqueue.indexOf("writeJobFile(job.workspaceRoot, job.id, queuedRecord);");
   const upsertQueued = enqueue.indexOf("upsertJob(job.workspaceRoot, queuedRecord);");
-  const spawnWorker = enqueue.indexOf("spawnDetachedTaskWorker(cwd, job.id, logFile);");
+  const spawnWorker = enqueue.indexOf("spawnDetachedTaskWorker(cwd, job.workspaceRoot, job.id, logFile);");
   assert.notEqual(writeQueued, -1);
   assert.notEqual(upsertQueued, -1);
   assert.notEqual(spawnWorker, -1);
@@ -145,7 +145,7 @@ test("background task enqueue persists queued record before spawning worker", ()
   assert.match(enqueue, /const existingRecord = readStoredJob\(job\.workspaceRoot, job\.id\) \?\? queuedRecord;/);
   assert.match(enqueue, /if \(existingRecord\.status === "queued"\) \{/);
   assert.match(enqueue, /pid: spawnedPid/);
-  assert.match(enqueue, /monitor: buildMonitorHint\(\{ eventsPath: null, jobId: job\.id, threadId: null, cwd \}\)/);
+  assert.match(enqueue, /monitor: buildMonitorHint\(\{ eventsPath: null, jobId: job\.id, threadId: null, cwd: request\.stateCwd \?\? job\.workspaceRoot \}\)/);
 });
 
 test("review sessions emit terminal events", () => {
@@ -195,7 +195,7 @@ test("version json exposes backend adapter capability contract", () => {
 test("background task writes job record before spawning worker", () => {
   const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
   const writeIdx = enqueue.indexOf("writeJobFile(job.workspaceRoot, job.id, queuedRecord)");
-  const spawnIdx = enqueue.indexOf("spawnDetachedTaskWorker(cwd, job.id, logFile)");
+  const spawnIdx = enqueue.indexOf("spawnDetachedTaskWorker(cwd, job.workspaceRoot, job.id, logFile)");
   assert.ok(writeIdx >= 0, "queued job record must be written");
   assert.ok(spawnIdx >= 0, "worker spawn must remain in enqueueBackgroundTask");
   assert.ok(writeIdx < spawnIdx, "job record must be persisted before worker spawn");

@@ -2173,10 +2173,6 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-<<<<<<< HEAD
-=======
-  const child = spawnDetachedTaskWorker(cwd, job.workspaceRoot, job.id, logFile);
->>>>>>> 7e860af (review: address codex findings on PR #51)
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -2192,7 +2188,7 @@ function enqueueBackgroundTask(cwd, job, request) {
   // so a fast child cannot fail with JOB_NOT_FOUND.
   let child;
   try {
-    child = spawnDetachedTaskWorker(cwd, job.id, logFile);
+    child = spawnDetachedTaskWorker(cwd, job.workspaceRoot, job.id, logFile);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const completedAt = nowIso();
@@ -3221,23 +3217,6 @@ async function runBridgeTask(request) {
       });
     }
 
-<<<<<<< HEAD
-=======
-    logEvent(session, formatErrorEvent(session, {
-      errorCode,
-      message: errorMessage,
-      phase: isPlanMode ? "plan" : "execution",
-      origin,
-      scriptPath: SCRIPT_PATH,
-      jobId: request.jobId ?? null,
-      upstreamRequestId,
-      cwd: request.cwd,
-      stateCwd,
-    }));
-    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
-    markTerminalEmitted();
-
->>>>>>> 7e860af (review: address codex findings on PR #51)
     // Attach partial + handoff to the thrown-error surface so
     // `runForegroundCommand`'s `emitError` → `buildErrorEnvelope` can
     // propagate them into the JSON envelope under `error.partial` /
@@ -3566,7 +3545,6 @@ async function handleTask(argv) {
     prompt,
     resumeLast
   });
-<<<<<<< HEAD
   const adapter = await resolveCommandAdapter({
     cwd,
     workspaceRoot,
@@ -3574,7 +3552,7 @@ async function handleTask(argv) {
     taskMetadata,
   });
   ensureCodexRuntimeAdapter(adapter);
-=======
+
   const job = buildTaskJob(workspaceRoot, taskMetadata, write);
 
   // --worktree-auto isolates write-mode tasks inside a per-task worktree
@@ -3621,7 +3599,6 @@ async function handleTask(argv) {
       );
     }
   }
->>>>>>> 7e860af (review: address codex findings on PR #51)
 
   if (options.background) {
     ensureCodexAvailable(cwd);

@@ -175,14 +175,10 @@ export interface RuntimeAdapterOptions extends SelectAdapterOptions {
 
 export const BACKEND_ENV_VAR: "CODEX_BRIDGE_BACKEND";
 export function loadAdapter(name: string): Promise<BackendAdapter>;
-<<<<<<< HEAD
 export function selectAdapter(options?: SelectAdapterOptions): Promise<BackendAdapter>;
-=======
-export function selectAdapter(options: SelectAdapterOptions): Promise<BackendAdapter>;
 export function buildAdapterSelectionOptions(options: RuntimeAdapterOptions): SelectAdapterOptions;
 export function resolveAdapter(options: RuntimeAdapterOptions): Promise<BackendAdapter>;
 export function resolveAdapterForRuntime(options: RuntimeAdapterOptions): Promise<BackendAdapter>;
->>>>>>> 1e991d7 (review(stage 4): apply adversarial-review findings)
 export function guardCapability(
   adapter: BackendAdapter,
   capability: BooleanCapability,

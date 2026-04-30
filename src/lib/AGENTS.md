@@ -269,20 +269,12 @@ failure.
 
 ## Broker Lifecycle
 
-<<<<<<< HEAD
-`broker-lifecycle.mjs` starts `src/adapters/codex/broker.mjs` as a detached Node
-process (via `resolveBrokerScriptPath()` which probes both bundled and source
-locations), stores `broker.json` in the workspace state dir, waits for readiness,
-and tears down stale endpoints. `broker-endpoint.mjs` supports `unix:` and
-`pipe:` endpoints.
-=======
 `broker-lifecycle.mjs` starts the resolved broker script as a detached Node
 process, stores `broker.json` in the workspace state dir, waits for readiness,
 and tears down stale endpoints. Source mode resolves to
 `src/adapters/codex/broker.mjs`; bundled mode resolves to either
 `skill/app-server-broker.mjs` or `plugin/scripts/app-server-broker.mjs`.
 `broker-endpoint.mjs` supports `unix:` and `pipe:` endpoints.
->>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 
 `BROKER_BUSY_RPC_CODE` is `-32001`. Preserve the `turn/interrupt` exception in
 the broker so a sibling client can cancel an active stream.

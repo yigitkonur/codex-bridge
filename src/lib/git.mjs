@@ -571,24 +571,19 @@ export function createSubagentWorktree({
   } catch (err) {
     // Roll back the partial worktree creation so we don't leave a
     // half-set worktree pointer.
-<<<<<<< HEAD
     tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    if (!allowBranchFallback) {
+      throw new Error(
+        `createSubagentWorktree: worktree creation failed and branch fallback is disabled: ${err.message ?? err}`,
+      );
+    }
     if (getWorkingTreeState(repoRoot).isDirty) {
       throw new Error(
         "createSubagentWorktree: worktree creation failed and branch-only fallback is unsafe with a dirty working tree",
       );
     }
     const previousRef = currentCheckoutRef(repoRoot);
-=======
-    tryRunGit(repoRoot, `worktree remove --force "${wtPath}"`);
-    tryRunGit(repoRoot, `branch -D ${branch}`);
-    if (!allowBranchFallback) {
-      throw new Error(
-        `createSubagentWorktree: worktree creation failed and branch fallback is disabled: ${err.message ?? err}`,
-      );
-    }
     // Branch-only fallback: stay in cwd, create the branch in place.
->>>>>>> 7e860af (review: address codex findings on PR #51)
     try {
       runGit(repoRoot, ["checkout", "-b", branch, baseSha]);
     } catch (innerErr) {

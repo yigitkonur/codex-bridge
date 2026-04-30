@@ -9,10 +9,7 @@ This folder contains the authored runtime source. Build outputs live under
 |---|---|
 | `codex-bridge.mjs` | Main CLI entry point and orchestration layer |
 | `adapters/codex/broker.mjs` | Standalone shared Codex app-server broker process |
-<<<<<<< HEAD
-=======
 | `adapters/codex/` | Codex protocol, turn/review capture, broker, and pipeline adapter code |
->>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 | `lib/` | Reusable client, state, config, git, session-log, render, update, and error modules |
 | `prompts/` | Authored prompt source copied to bundled layouts |
 | `schemas/` | Authored JSON schema source copied to bundled layouts |
@@ -87,12 +84,7 @@ it so foreground and background runs produce the same session artifacts.
 
 ## Broker Entry
 
-<<<<<<< HEAD
-`adapters/codex/broker.mjs` serves one shared Codex app-server connection. It:
-=======
-`src/adapters/codex/broker.mjs` serves one shared Codex app-server connection.
-It:
->>>>>>> c6e1250 (review(stage 3): address existing PR comments)
+`src/adapters/codex/broker.mjs` serves one shared Codex app-server connection. It:
 
 - Accepts `serve --endpoint <value> [--cwd <path>] [--pid-file <path>]`.
 - Handles newline-delimited JSON messages.
@@ -101,7 +93,6 @@ It:
 - Allows `turn/interrupt` from a different socket during an active stream.
 - Routes server-side notifications to the active downstream client via
   `appClient.setNotificationHandler(routeNotification)`.
-<<<<<<< HEAD
 - Routes server-initiated requests through
   `appClient.setServerRequestHandler(routeServerRequest)`. `routeServerRequest`
   selects the active downstream request or stream socket, records the upstream
@@ -110,10 +101,6 @@ It:
   `resolveServerRequest` or `rejectServerRequest`. If no active downstream
   client exists, the downstream socket closes before answering, or the forward
   write fails, the broker rejects the upstream request with a JSON-RPC error.
-=======
-- Forwards server-initiated requests through `pendingServerRequests` and
-  resolves or rejects them when the downstream client replies.
->>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 - Removes unix sockets and pid files on shutdown.
 
 Any broker change needs `npm test`; `test/bridge-static.test.mjs` and
