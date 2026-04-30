@@ -101,6 +101,9 @@ test("readMeta and readVerdict throw on corrupt JSON", () => {
       assert.ok(error instanceof RegistryReadError);
       assert.equal(error.code, "REGISTRY_READ_FAILED");
       assert.equal(error.filePath, metaPath);
+      // The original SyntaxError must be preserved on .cause so
+      // operators can see the underlying parser message in logs.
+      assert.ok(error.cause instanceof SyntaxError);
       return true;
     });
 
@@ -108,6 +111,7 @@ test("readMeta and readVerdict throw on corrupt JSON", () => {
       assert.ok(error instanceof RegistryReadError);
       assert.equal(error.code, "REGISTRY_READ_FAILED");
       assert.equal(error.filePath, verdictPath);
+      assert.ok(error.cause instanceof SyntaxError);
       return true;
     });
   });
@@ -127,6 +131,20 @@ test("listTasks enumerates registered tasks alphabetically", () => {
     ensureJobDir("task-a");
     ensureJobDir("task-b");
     assert.deepEqual(listTasks(), ["task-a", "task-b", "task-c"]);
+  });
+});
+
+test("listTasks filters non-conforming directory names", () => {
+  // Defends the contract that every name in listTasks() is callable
+  // through readMeta/readVerdict without TypeError. A stray directory
+  // (manual mkdir, partial migration, abandoned tmp artifact) must not
+  // poison the listing.
+  withTempRegistry((root) => {
+    ensureJobDir("task-good");
+    fs.mkdirSync(path.join(root, "with space"));
+    fs.mkdirSync(path.join(root, "has@symbol"));
+    fs.writeFileSync(path.join(root, "loose-file"), "");
+    assert.deepEqual(listTasks(), ["task-good"]);
   });
 });
 

@@ -59,6 +59,9 @@ export function jobDir(taskId) {
 }
 
 export function existsTask(taskId) {
+  // Returns false for both "no such task directory" and "invalid task id"
+  // (TypeError from jobDir). Callers that want to distinguish the two
+  // should call jobDir() directly and let the validation error propagate.
   try {
     return fs.existsSync(jobDir(taskId));
   } catch {
@@ -120,13 +123,18 @@ function readRegistryJson(target) {
   }
 }
 
+// Same shape as the validation in jobDir(); enforced here so listTasks()
+// only returns names that downstream readers (readMeta/readVerdict) can
+// actually resolve without TypeError.
+const TASK_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
 export function listTasks() {
   const root = registryRoot();
   if (!fs.existsSync(root)) return [];
   try {
     return fs
       .readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && TASK_ID_PATTERN.test(entry.name))
       .map((entry) => entry.name)
       .sort();
   } catch {
@@ -162,6 +170,16 @@ export function writeVerdict(taskId, verdict) {
   return target;
 }
 
+// v1 append semantics:
+//   - Synchronous fs.appendFileSync; throws if the underlying write fails
+//     (ENOSPC, EROFS, EBUSY on Windows, etc.). Callers decide whether to
+//     swallow — this differs from src/lib/session-log.mjs, which is
+//     intentionally best-effort, because registry events are a forensics
+//     artifact and silent loss would be worse than a loud failure.
+//   - Single-process line atomicity is guaranteed for entries shorter than
+//     PIPE_BUF (~4096 bytes on Linux); cross-process or oversized payloads
+//     can interleave. The flock-guarded writer lands with the locking
+//     helpers in a follow-up task.
 export function appendEvent(taskId, event) {
   if (!event || typeof event !== "object") {
     throw new TypeError("appendEvent(taskId, event): event must be an object");
