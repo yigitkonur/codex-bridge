@@ -41,6 +41,7 @@ const BRIDGE_AGENT_TYPES = new Set([
 ]);
 const TERMINAL_TAG_PATTERN = /\[(?:DONE|ERROR|INCOMPLETE)[^\]]*\]/;
 const JOB_ID_PATTERN = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/i;
+const JOB_ID_PATTERN_GLOBAL = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/gi;
 
 function logHookError(err) {
   try {
@@ -66,10 +67,19 @@ function readStdinJson() {
   return JSON.parse(raw);
 }
 
-function extractJobId(value) {
+function extractJobId(value, { latest = false } = {}) {
   if (value == null) return null;
   const text =
     typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  if (latest) {
+    let lastMatch = null;
+    JOB_ID_PATTERN_GLOBAL.lastIndex = 0;
+    let m;
+    while ((m = JOB_ID_PATTERN_GLOBAL.exec(text)) !== null) {
+      lastMatch = m[0];
+    }
+    return lastMatch;
+  }
   const match = JOB_ID_PATTERN.exec(text);
   return match ? match[0] : null;
 }
@@ -84,7 +94,9 @@ function extractJobIdFromTranscript(filePath) {
     try {
       const buffer = Buffer.alloc(stat.size - start);
       fs.readSync(fd, buffer, 0, buffer.length, start);
-      return extractJobId(buffer.toString("utf8"));
+      // Latest match wins: a transcript may reference an earlier task id
+      // before mentioning the one the subagent actually just finished.
+      return extractJobId(buffer.toString("utf8"), { latest: true });
     } finally {
       fs.closeSync(fd);
     }

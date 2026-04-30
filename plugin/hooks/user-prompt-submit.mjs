@@ -45,7 +45,7 @@ import {
 
 const HOOK_NAME = "user-prompt-submit";
 const RESUME_INTENT_PATTERN =
-  /^\s*(continue|keep going|resume|continue codex|that codex one|dig deeper)\b/i;
+  /^\s*(continue codex|that codex one|keep going|dig deeper|continue|resume)\b/i;
 
 function logHookError(err) {
   try {
@@ -86,22 +86,37 @@ function consumePendingRewakeSignals(input) {
   const messages = [];
   let entries;
   try {
-    entries = fs.readdirSync(root);
+    entries = fs.readdirSync(root, { withFileTypes: true });
   } catch {
     return [];
   }
   for (const entry of entries) {
-    const signalPath = path.join(root, entry, "rewake.signal");
-    if (!fs.existsSync(signalPath)) continue;
-    const job = readJobMetadata(root, entry);
-    if (!jobMatchesHookContext(job, { workspaceRoot, sessionId })) continue;
+    // Skip symlinks so a corrupted or hostile state directory cannot
+    // redirect the unlink/rename below to an arbitrary path outside
+    // the jobs root.
+    if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+    const signalPath = path.join(root, entry.name, "rewake.signal");
+    let signalLstat;
     try {
-      const claimedPath = claimRewakeSignal(signalPath);
+      signalLstat = fs.lstatSync(signalPath);
+    } catch {
+      continue;
+    }
+    if (!signalLstat.isFile()) continue;
+    const job = readJobMetadata(root, entry.name);
+    if (!jobMatchesHookContext(job, { workspaceRoot, sessionId })) continue;
+    let claimedPath = null;
+    try {
+      claimedPath = claimRewakeSignal(signalPath);
       const text = fs.readFileSync(claimedPath, "utf8").trim();
-      if (text) messages.push(`- ${entry}: ${text}`);
+      if (text) messages.push(`- ${entry.name}: ${text}`);
     } catch (err) {
       logHookError(err);
     }
+    // Note: we intentionally leave the .claimed-* file in place as an
+    // audit breadcrumb that the signal was consumed by this hook (and
+    // by which pid). Cleanup is the registry writer's responsibility
+    // when it lands in T15/T22.
   }
   return messages;
 }
