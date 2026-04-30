@@ -48,7 +48,7 @@ import {
     runAppServerReview,
     runAppServerTurn,
     withAppServer
-  } from "./lib/codex.mjs";
+  } from "./adapters/codex/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";

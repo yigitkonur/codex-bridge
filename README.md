@@ -281,8 +281,8 @@ codex-bridge/
 ├── .claude-plugin/plugin.json      manifest: declares ./skill for skills.sh + Claude plugin discovery
 ├── src/                            authored source (ESM, Node 22+)
 │   ├── codex-bridge.mjs            CLI entry + per-subcommand handlers
-│   ├── app-server-broker.mjs       standalone JSON-RPC multiplexer
-│   ├── lib/                        app-server client, turn capture, session log, auto-pipeline, …
+│   ├── adapters/codex/             Codex runtime, protocol/client, broker
+│   ├── lib/                        state, broker lifecycle, session log, auto-pipeline, …
 │   ├── prompts/                    adversarial-review prompt (copied into skill/)
 │   ├── schemas/                    review-output.schema.json (copied into skill/)
 │   └── templates/                  execute-instructions.md, plan-enforcement.md (copied into skill/)

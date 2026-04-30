@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 import { CliError } from "./cli-errors.mjs";
-import { getSessionRuntimeStatus } from "./codex.mjs";
+import { getSessionRuntimeStatus } from "../adapters/codex/codex.mjs";
 import { getConfig, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";

@@ -106,10 +106,8 @@ skill tree.
 
 - If you touch generated paths, stop and move the edit to `src/` instead.
 - If you touch `src/`, run `npm run build` before verification.
-- If you only touch authored skill docs/config, `npm test` is usually enough
-  once `feat/runtime-improvements` lands; on this branch alone the suite is
-  not yet wired (`package.json` defines only `build` and `dev`), so re-read
-  the cited code paths manually.
+- If you only touch authored skill docs/config, `npm test` is usually enough.
+  Re-read cited code paths manually when updating instructions.
 - Keep examples runnable against the checked-in bundle.
 - Do not describe features that only exist in prose. Verify the command, flag,
   tag, or field in code first.

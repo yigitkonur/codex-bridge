@@ -14,7 +14,7 @@ Severity:
 1. **[ERROR]** `DEFAULT_CLIENT_INFO.name` in `src/adapters/codex/protocol.mjs` must remain ASCII, no CR/LF/colons. Upstream echoes it as the `originator` HTTP header on every `/v1/responses` call; invalid values return `-32600 "Invalid clientInfo.name..."`. Tested upstream in `initialize.rs::initialize_rejects_invalid_client_name`.
 2. **[ERROR]** Never add `"jsonrpc": "2.0"` to outbound messages. The upstream README explicitly documents the field is omitted. Parsers on both ends will mis-handle the addition.
 3. **[ERROR]** Wire framing on stdio must stay newline-delimited JSON. Any change to read/write path must preserve this — the upstream Rust client enforces the same framing and will drop the connection if it breaks.
-4. **[ERROR]** `turn/interrupt` handling must not treat the `{}` response as "turn done". The state machine in `src/lib/codex.mjs::captureTurn` must wait for `turn/completed` with `status: "interrupted"`. Any shortcut that resolves the turn earlier corrupts subsequent follow-ups.
+4. **[ERROR]** `turn/interrupt` handling must not treat the `{}` response as "turn done". The state machine in `src/adapters/codex/codex.mjs::captureTurn` must wait for `turn/completed` with `status: "interrupted"`. Any shortcut that resolves the turn earlier corrupts subsequent follow-ups.
 5. **[ERROR]** `serverRequest/resolved` must precede `turn/completed` for any outstanding server request. Our state machine upholds this by draining `pendingCollaborations`. A change that resolves the capture before the drain will regress against upstream tests `request_user_input.rs` / `request_permissions.rs`.
 6. **[ERROR]** `outputSchema` must be passed per-turn, never cached at thread level. Upstream tests pin this (`output_schema.rs::turn_start_output_schema_is_per_turn_v2`).
 7. **[ERROR]** `turn/steer` must never be sent to review turns or manual-compact turns, and must always include `expectedTurnId`. Upstream rejects with `-32600` and we should pre-empt.
@@ -51,7 +51,7 @@ Severity:
 
 ## Performance
 
-26. **[WARN]** Completion is preferentially driven by `turn/completed`, but `src/lib/codex.mjs::scheduleInferredCompletion` (defined at line 375, called from agent-message and drained-subagent paths at lines 415/434/577) is an intentional fallback that completes the capture when `turn/completed` is missing after a final-answer item plus drained collaboration work. Do not remove or short-circuit that path; do not infer completion from text alone outside that helper.
+26. **[WARN]** Completion is preferentially driven by `turn/completed`, but `src/adapters/codex/codex.mjs::scheduleInferredCompletion` (defined at line 382, called from agent-message and drained-subagent paths at lines 422/441/587) is an intentional fallback that completes the capture when `turn/completed` is missing after a final-answer item plus drained collaboration work. Do not remove or short-circuit that path; do not infer completion from text alone outside that helper.
 27. **[WARN]** Idle-check interval is `Math.min(5000, idleTimeoutMs)`. Hard-coding 5000 regresses short timeouts; removing the check regresses stall detection.
 28. **[INFO]** Broker ready-poll interval is 50 ms with no published justification. Changes should note the startup-latency / syscall-budget tradeoff.
 

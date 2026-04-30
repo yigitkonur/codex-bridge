@@ -8,12 +8,12 @@
 // Currently this exports only the BackendAdapter shell + capability
 // declaration. Lifecycle methods throw NOT_IMPLEMENTED until later
 // Phase 0 tasks complete. The bridge handlers continue to call
-// src/lib/codex.mjs directly during Phase 0; the swap-in to
+// src/adapters/codex/codex.mjs directly during Phase 0; the swap-in to
 // selectAdapter() lands in T5.
 
 const NOT_IMPLEMENTED = (verb) => () => {
   const err = new Error(
-    `codex adapter '${verb}' not implemented yet (lands in T2-T5; bridge currently calls src/lib/codex.mjs directly)`,
+    `codex adapter '${verb}' not implemented yet (lands in T2-T5; bridge currently calls src/adapters/codex/codex.mjs directly)`,
   );
   err.code = "NOT_IMPLEMENTED";
   throw err;
