@@ -736,12 +736,12 @@ var adapter = {
   name: "codex",
   displayName: "OpenAI Codex",
   capabilities() {
-    return {
+    return Object.freeze({
       supports_plan_mode: true,
-      supports_questions: true,
+      supports_questions: false,
       supports_streaming: true,
-      supports_resume: true,
-      supports_steering: true,
+      supports_resume: false,
+      supports_steering: false,
       supports_background: true,
       supports_auto_pipeline: true,
       supports_adversarial_review: true,
@@ -753,7 +753,7 @@ var adapter = {
       billing_model: "subscription",
       auth_strategy: "oauth-cli",
       transport: "json-rpc-unix-socket"
-    };
+    });
   },
   validateConfig(_config) {
     return { valid: true, errors: [] };
@@ -766,18 +766,27 @@ var adapter = {
 var codex_default = adapter;
 
 // src/adapters/index.mjs
-var REQUIRED_FIELDS = ["name", "displayName", "capabilities", "validateConfig"];
-var REQUIRED_METHODS = ["dispatch", "streamEvents", "getResult", "cancel"];
-var KNOWN_ADAPTERS = /* @__PURE__ */ new Map([
-  ["codex", codex_default]
-]);
+var REQUIRED_FIELDS = ["name", "displayName"];
+var REQUIRED_METHODS = ["capabilities", "validateConfig", "dispatch", "streamEvents", "getResult", "cancel"];
+var OPTIONAL_CAPABILITY_METHODS = Object.freeze({
+  supports_questions: "respond",
+  supports_resume: "resume",
+  supports_steering: "steer"
+});
+var ADAPTER_LOADERS = {
+  codex: () => codex_default
+};
+var KNOWN_ADAPTERS = Object.keys(ADAPTER_LOADERS);
 var adapterCache = /* @__PURE__ */ new Map();
-var AdapterError = class extends Error {
+var AdapterError = class extends CliError {
   constructor(code, message, details) {
-    super(message);
+    super(message, {
+      class: "validation",
+      code,
+      retryable: false,
+      details
+    });
     this.name = "AdapterError";
-    this.code = code;
-    this.details = details;
   }
 };
 function validateAdapter(adapter2, name) {
@@ -788,7 +797,7 @@ function validateAdapter(adapter2, name) {
     );
   }
   for (const field of REQUIRED_FIELDS) {
-    if (!(field in adapter2)) {
+    if (!Object.hasOwn(adapter2, field)) {
       throw new AdapterError(
         "BACKEND_INCAPABLE",
         `Adapter '${name}' missing required field: ${field}`
@@ -809,27 +818,63 @@ function validateAdapter(adapter2, name) {
       `Adapter at '${name}/index.mjs' declares name='${adapter2.name}', expected '${name}'`
     );
   }
-}
-async function loadAdapter(name) {
-  const moduleAdapter = KNOWN_ADAPTERS.get(name);
-  if (!moduleAdapter) {
+  const capabilities = adapter2.capabilities();
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
     throw new AdapterError(
       "BACKEND_INCAPABLE",
-      `Unknown backend '${name}'. Known: ${[...KNOWN_ADAPTERS.keys()].join(", ")}`
+      `Adapter '${name}' capabilities() must return an object`
+    );
+  }
+  for (const [capability, method] of Object.entries(OPTIONAL_CAPABILITY_METHODS)) {
+    if (capabilities[capability] === true && typeof adapter2[method] !== "function") {
+      throw new AdapterError(
+        "BACKEND_INCAPABLE",
+        `Adapter '${name}' declares ${capability}=true but is missing optional method: ${method}`,
+        { backend: name, capability, method }
+      );
+    }
+  }
+}
+async function loadAdapter(name) {
+  if (!KNOWN_ADAPTERS.includes(name)) {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Unknown backend '${name}'. Known: ${KNOWN_ADAPTERS.join(", ")}`
     );
   }
   const cached2 = adapterCache.get(name);
   if (cached2) return cached2;
-  validateAdapter(moduleAdapter, name);
-  adapterCache.set(name, moduleAdapter);
-  return moduleAdapter;
+  const adapter2 = ADAPTER_LOADERS[name]();
+  validateAdapter(adapter2, name);
+  adapterCache.set(name, adapter2);
+  return adapter2;
 }
 async function selectAdapter(options = {}) {
+  if (options.cwdConfig && typeof options.cwdConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: cwdConfig must be an object"
+    );
+  }
+  if (options.workspaceConfig && typeof options.workspaceConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: workspaceConfig must be an object"
+    );
+  }
+  if (options.userConfig && typeof options.userConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: userConfig must be an object"
+    );
+  }
   const candidates = [
     options.backend,
     options.envBackend,
     options.metaBackend,
+    options.subagentType ? options.cwdConfig?.adapter_routing?.[options.subagentType]?.backend : void 0,
     options.subagentType ? options.workspaceConfig?.adapter_routing?.[options.subagentType]?.backend : void 0,
+    options.subagentType ? options.userConfig?.adapter_routing?.[options.subagentType]?.backend : void 0,
     options.cwdConfig?.default_backend,
     options.workspaceConfig?.default_backend,
     options.userConfig?.default_backend,
@@ -11448,8 +11493,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           command: `git -C ${cwdArg} add -A && git -C ${cwdArg} commit -m "<subject>"`,
           description: "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
         }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
-<<<<<<< HEAD
-=======
         let dirtyDiff;
         try {
           dirtyDiff = captureGitDiff(request.cwd, session);
@@ -11468,7 +11511,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           jobId: request.jobId ?? null,
           cwd: request.cwd
         }));
->>>>>>> 06f738d (review(stage 3): address existing PR comments)
         markTerminalEmitted();
         return { ...result, session, exitStatus: 0, error: null };
       }
