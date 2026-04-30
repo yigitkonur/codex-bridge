@@ -36,6 +36,6 @@ src/adapters/
 
 ## Phase A status (v2.0.0)
 
-This abstraction ships as an internal-only refactor in v2.0.0. The registry is wired through every CLI handler, but only the `codex` adapter is implemented. `--backend codex` is accepted; `--backend <other>` returns `BACKEND_INCAPABLE`.
+This abstraction ships as internal-only scaffolding in v2.0.0. T1 (this PR) introduces the registry and type contracts. T2–T5 will relocate the Codex protocol layer into `src/adapters/codex/`, implement lifecycle methods, and wire `selectAdapter()` through CLI handlers (landing in T5). During Phase 0 (T1–T6), CLI handlers continue to call `src/lib/codex.mjs` directly; the adapter system is not yet wired into the runtime.
 
 Future versions will add real backends in this order: `noop` (test-only), `claude-cli`, `gemini`, `aider`, `ollama`. Each will land as a separate PR and a separate minor version bump.

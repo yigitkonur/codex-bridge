@@ -21,7 +21,7 @@ A `DispatchResult` carries the bridge-canonical `jobId`, your native `threadId`,
 
 ## What `streamEvents` yields
 
-`NormalizedEvent` instances with one of the canonical tags (see [`EVENT_VOCABULARY.md`](EVENT_VOCABULARY.md)) or an adapter-namespaced tag (`ADAPTER:<name>:<event>`). Don't emit untagged events. Don't reuse canonical tags for adapter-specific semantics; the registry rejects adapters whose `capabilities().reserved_tags` overlap with the canonical set.
+`NormalizedEvent` instances with one of the canonical tags (see [`EVENT_VOCABULARY.md`](EVENT_VOCABULARY.md)) or an adapter-namespaced tag (`ADAPTER:<name>:<event>`). Don't emit untagged events. Don't reuse canonical tags for adapter-specific semantics; use the `[ADAPTER:<name>:<event>]` namespace instead.
 
 ## Error mapping
 

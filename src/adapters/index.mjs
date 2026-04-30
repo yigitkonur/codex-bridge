@@ -2,8 +2,8 @@
 // ./_interface/INTERFACE.md for the prose version, and
 // ./_interface/CAPABILITIES.md for the resolution order.
 
-const REQUIRED_FIELDS = ["name", "displayName", "capabilities", "validateConfig"];
-const REQUIRED_METHODS = ["dispatch", "streamEvents", "getResult", "cancel"];
+const REQUIRED_FIELDS = ["name", "displayName"];
+const REQUIRED_METHODS = ["capabilities", "validateConfig", "dispatch", "streamEvents", "getResult", "cancel"];
 
 // v2.0 ships only codex. Future adapters are added here when their
 // index.mjs is implemented; stub directories under src/adapters/ are
@@ -107,7 +107,13 @@ export async function selectAdapter(options = {}) {
     options.envBackend,
     options.metaBackend,
     options.subagentType
+      ? options.cwdConfig?.adapter_routing?.[options.subagentType]?.backend
+      : undefined,
+    options.subagentType
       ? options.workspaceConfig?.adapter_routing?.[options.subagentType]?.backend
+      : undefined,
+    options.subagentType
+      ? options.userConfig?.adapter_routing?.[options.subagentType]?.backend
       : undefined,
     options.cwdConfig?.default_backend,
     options.workspaceConfig?.default_backend,
@@ -152,4 +158,5 @@ export function getErrorMapper(adapterName) {
 // Test-only helper.
 export function _resetAdapterCache() {
   adapterCache.clear();
+  errorMappers.clear();
 }

@@ -24,7 +24,7 @@ A `BackendAdapter` whose `dispatch` posts to Ollama's local HTTP API (`http://lo
   "output_modalities":            ["text"],
   "billing_model":                "local",
   "auth_strategy":                "none",
-  "transport":                    "https"
+  "transport":                    "http"
 }
 ```
 

@@ -57,7 +57,7 @@ Events that don't map to any canonical tag use the namespace `[ADAPTER:<name>:<e
 - `[ADAPTER:aider:apply-edit]`
 - `[ADAPTER:codex:thread-ready]`
 
-The registry rejects adapters whose `capabilities().reserved_tags` collide with the canonical set above.
+Adapters must not reuse any canonical tag above for custom semantics; use the `[ADAPTER:<name>:<event>]` namespace instead.
 
 Default Monitor filter excludes `HEARTBEAT` and reserves output volume for actionable signals. If you need a higher-fidelity stream for debugging, use `events --follow` directly.
 
