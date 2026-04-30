@@ -57,7 +57,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task \
   --background --write --worktree-auto --json --brief @brief.json
 ```
 
-The PostToolUse(Bash) hook parses the envelope, captures `result.task_id`, and emits an `additionalContext` block with the literal Monitor invocation. **Arm the Monitor on your next turn with that exact payload — do not modify it.**
+The PostToolUse(Bash) hook parses the envelope, captures `result.jobId`, and emits an `additionalContext` block with the literal Monitor invocation. **Arm the Monitor on your next turn with that exact payload — do not modify it.**
 
 ## Monitor
 
@@ -106,7 +106,7 @@ Don't stack N Monitor calls — Monitor is one-job. For N > 1:
 # Launch N background tasks
 for brief in briefs/*.json; do
   node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --write --worktree-auto --json --brief @"$brief" \
-    | jq -r '.result.task_id' >> .tasks.txt
+    | jq -r '.result.jobId' >> .tasks.txt
 done
 
 # Watch all of them with one fan-in view

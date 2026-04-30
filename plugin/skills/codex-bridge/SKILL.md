@@ -94,7 +94,7 @@ Two IDs flow through every task. Use the right one or commands fail:
 - **`task_id`** (`task-mo…` / `review-mo…`) — canonical handle for `status`, `result`, `wait`, `events`, `cancel`, `merge`, `verdict`, `iterate`.
 - **`threadId`** (UUID v7 `019d…`) — required by `send` and `steer`. Also accepted by jobId-side commands as a convenience.
 
-**Don't pattern-match `[codex] Thread ready (019d…)` from stderr** — that's a threadId, not a task_id. The `--json` envelope (`result.task_id`, `result.threadId`, `result.eventsPath`, `result.monitor.tool_hint`) is the only canonical source.
+**Don't pattern-match `[codex] Thread ready (019d…)` from stderr** — that's a threadId, not a task_id. The `--json` envelope (`result.jobId`, `result.threadId`, `result.eventsPath`, `result.monitor.tool_hint`) is the only canonical source — `result.jobId` is the canonical task handle.
 
 ## Worktrees and merges
 

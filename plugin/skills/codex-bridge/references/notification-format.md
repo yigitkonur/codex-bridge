@@ -17,4 +17,4 @@ Default Monitor invocation is `--exclude HEARTBEAT` (not `--filter X,Y,Z`). Reas
 
 ## Don't pattern-match stderr
 
-The `[codex] Thread ready (019d…)` progress line in stderr is a UUID — it's a `threadId`, not a `task_id`. Pattern-matching it and using it as a job handle is the single most common derailment. The `--json` envelope's `result.task_id` is canonical; the rendered footer's `Job:` field is the same value.
+The `[codex] Thread ready (019d…)` progress line in stderr is a UUID — it's a `threadId`, not a `task_id`. Pattern-matching it and using it as a job handle is the single most common derailment. The `--json` envelope's `result.jobId` is canonical; the rendered footer's `Job:` field is the same value.
