@@ -543,6 +543,12 @@ test("plugin Stop hook honors CODEX_BRIDGE_HOOK_DISABLE kill switch", () => {
   // kill switch is set, the hook must short-circuit before spawning the
   // bridge — otherwise an operator with a broken bridge has no escape
   // hatch other than deleting the project lock file.
+  //
+  // When the lock IS present, the disable still wins (fail-open by
+  // design), but the hook MUST emit a stderr diagnostic so that a
+  // leaked dotfile export of CODEX_BRIDGE_HOOK_DISABLE doesn't silently
+  // bypass an active gate. The diagnostic surfaces the override in the
+  // session log without changing the allow/block decision.
   const failingBridge = `
 import process from "node:process";
 process.stderr.write("kill-switch test should never spawn the bridge");
@@ -557,10 +563,54 @@ process.exit(99);
       });
       assert.equal(result.status, 0, `expected clean exit when disabled via "${value}" but got ${result.status}`);
       assert.equal(result.stdout, "", `expected no decision JSON when disabled via "${value}"`);
-      assert.equal(result.stderr, "", `expected no stderr when disabled via "${value}"`);
+      // Bridge must never have been spawned (the failingBridge would
+      // have written its own stderr line if it had).
+      assert.doesNotMatch(
+        result.stderr,
+        /kill-switch test should never spawn the bridge/,
+        `expected the bridge to never spawn when disabled via "${value}"`
+      );
+      // When the kill switch suppresses an active lock, the diagnostic
+      // names the lock path and points at the env var so an operator
+      // can see the override in their session log.
+      assert.match(
+        result.stderr,
+        /CODEX_BRIDGE_HOOK_DISABLE is set/,
+        `expected the kill-switch override diagnostic when disabled via "${value}"`
+      );
+      assert.match(
+        result.stderr,
+        /\.codex-bridge-stop-review-gate\.lock/,
+        `expected the diagnostic to name the lock path when disabled via "${value}"`
+      );
     } finally {
       fs.rmSync(harness.tempRoot, { recursive: true, force: true });
     }
+  }
+});
+
+test("plugin Stop hook short-circuits silently when kill switch is set and no lock is present", () => {
+  // Companion to the active-lock case above. When no project lock
+  // exists, the gate would be inactive anyway, so the kill switch must
+  // not waste stderr on a meaningless diagnostic — silent return
+  // matches the disabled-default path users see every session.
+  const failingBridge = `
+import process from "node:process";
+process.stderr.write("kill-switch test should never spawn the bridge");
+process.exit(99);
+`;
+  const harness = makeStopGateHarness(failingBridge);
+  // Remove the lock that makeStopGateHarness creates by default.
+  fs.rmSync(path.join(harness.workspace, ".codex-bridge-stop-review-gate.lock"), { force: true });
+  try {
+    const result = runStopGateHarness(harness, {
+      env: { CODEX_BRIDGE_HOOK_DISABLE: "stop-gate" }
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  } finally {
+    fs.rmSync(harness.tempRoot, { recursive: true, force: true });
   }
 });
 
@@ -580,6 +630,24 @@ test("plugin Stop hook enforces SIGKILL-based timeout for the long-running task 
     stopHook,
     /timeoutMs:\s*STOP_REVIEW_TIMEOUT_MS,\s*killSignal:\s*"SIGKILL"/
   );
+});
+
+test("plugin Stop hook pushes a turn-level timeout into the bridge so the broker stops the upstream Codex turn", () => {
+  // The SIGKILL-on-timeout path only kills the bridge child. The
+  // bridge's app-server broker is shared across invocations
+  // (src/lib/broker-lifecycle.mjs), so when SIGKILL fires the broker
+  // can keep its upstream `appClient.request` running with no consumer
+  // for the notifications. Passing --turn-default-ms inside the bridge
+  // command makes Codex cancel the turn cleanly before the spawnSync
+  // watchdog escalates. The inner turn timeout must therefore be
+  // strictly less than the outer spawnSync timeout (which is itself
+  // strictly less than the hooks.json ceiling).
+  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  assert.match(stopHook, /STOP_REVIEW_TURN_TIMEOUT_MS/);
+  assert.match(stopHook, /"--turn-default-ms"/);
+  const turnMatch = stopHook.match(/STOP_REVIEW_TURN_TIMEOUT_MS\s*=\s*\(STOP_REVIEW_TIMEOUT_MINUTES\s*-\s*(\d+)\)\s*\*\s*60\s*\*\s*1000/);
+  assert.ok(turnMatch, "Stop hook must define STOP_REVIEW_TURN_TIMEOUT_MS in terms of STOP_REVIEW_TIMEOUT_MINUTES");
+  assert.ok(Number(turnMatch[1]) >= 1, "the turn timeout must leave at least 60s of cleanup margin under the spawnSync timeout");
 });
 
 test("plugin Stop hook ships the unified plugin-hook error trail", () => {

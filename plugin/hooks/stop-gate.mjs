@@ -11,11 +11,28 @@ import { fileURLToPath } from "node:url";
 const HOOK_NAME = "stop-gate";
 const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
-// hooks.json gives the Stop hook 15 minutes. Keep the inner Codex turn
-// shorter so this process has time to emit a blocking decision before Claude
-// Code kills the hook command.
+// hooks.json gives the Stop hook 15 minutes. Three nested timeout layers
+// share that ceiling, each shorter than its parent so the inner one fires
+// first and the outer ones serve as escalation safety nets:
+//
+//   900_000 ms  hooks.json Stop[].timeout (Claude Code reaps the hook)
+//      ↓ -60 s
+//   840_000 ms  STOP_REVIEW_TIMEOUT_MS (spawnSync timeout + SIGKILL escalation)
+//      ↓ -60 s
+//   780_000 ms  STOP_REVIEW_TURN_TIMEOUT_MS (--turn-default-ms passed to bridge)
+//
+// The inner --turn-default-ms is what actually stops Codex's app-server
+// turn cleanly. Without it, when the spawnSync watchdog SIGKILLs the
+// bridge child, the shared detached broker (src/lib/broker-lifecycle.mjs)
+// keeps its `appClient.request` running upstream — the hook reports
+// "timed out" but Codex is still doing the review, and the next session's
+// status probe sees the broker as idle while a turn is silently active.
+// Pushing the watchdog inside the bridge ensures the turn is cancelled
+// before the hook escalates to a hard kill of the bridge child. Each 60 s
+// gap absorbs cleanup latency at its layer.
 const STOP_REVIEW_TIMEOUT_MINUTES = 14;
 const STOP_REVIEW_TIMEOUT_MS = STOP_REVIEW_TIMEOUT_MINUTES * 60 * 1000;
+const STOP_REVIEW_TURN_TIMEOUT_MS = (STOP_REVIEW_TIMEOUT_MINUTES - 1) * 60 * 1000;
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -336,37 +353,50 @@ function maybeMigrateLegacyGate(cwd, input, activation) {
     if (migrated.active) return migrated;
   }
 
-  // Defensive fallback: legacy intent is recorded, no suppression applies,
-  // and the bridge still didn't surface the lock. The most likely cause is
-  // that the bridge's own lock write failed silently
-  // (src/codex-bridge.mjs:798-823 swallows the throw). We retry the write
-  // here so the user isn't stuck with an opt-in gate that silently turns
-  // itself off after upgrade. This costs nothing on the hot path because
-  // hasLegacyStopReviewGateIntent is the only way control reaches this
-  // block, and the vast majority of workspaces never carried the legacy
-  // flag in the first place.
-  try {
-    fs.mkdirSync(path.dirname(activation.lockPath), { recursive: true });
-    const payload = {
-      enabledAt: new Date().toISOString(),
-      enabledBy: "codex-bridge-stop-hook-legacy-migration"
-    };
-    fs.writeFileSync(activation.lockPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  } catch {
-    // Lock-write failure is non-fatal: the next setup --json call will
-    // surface the gate as inactive and the hook returns inert. The user
-    // can rerun `codex-bridge setup --enable-review-gate` to retry.
-    return activation;
-  }
-
-  return reviewGateActivation(cwd);
+  // No hook-side fallback writer. The bridge's readStopReviewGate is the
+  // single source of truth for migrating legacy `config.stopReviewGate:
+  // true` to the lock file (src/codex-bridge.mjs:790-823). Letting the
+  // hook also write the lock independently created a TOCTOU race against
+  // a concurrent `setup --disable-review-gate`: the cheap state.json
+  // probe could observe legacy intent, the user could disable the gate
+  // (clearing both state and the lock), the bridge probe would correctly
+  // report `reviewGateLockExists:false / reviewGateEnabled:false`, and
+  // the hook's manual write would resurrect the lock the user just
+  // deleted. If the bridge's own migration write throws (rare, e.g.
+  // EACCES on the project root), the gate stays disabled until the user
+  // reruns `codex-bridge setup --enable-review-gate`; that is the
+  // correct fail-safe outcome over silently re-enabling a gate the user
+  // may have deliberately turned off.
+  return activation;
 }
 
 function main() {
-  // Respect the unified plugin-hook kill switch before reading stdin or
-  // touching state. If the bridge is broken in a way that makes the hook
-  // throw early, the user needs a way out without editing the lock file.
-  if (isDisabled()) return;
+  // The plugin-hook kill switch (CODEX_BRIDGE_HOOK_DISABLE) is honored
+  // before any bridge spawn so an operator with a broken bridge has an
+  // escape hatch without editing the lock file. But silently failing
+  // open on inherited env (a leaked dotfile export, a parent-shell
+  // override) on a workspace where the gate is actually active would
+  // bypass the security promise the lock makes. Cheap fix: read the
+  // lock state first; when the kill switch suppresses an *active* gate,
+  // emit a stderr diagnostic so the user sees the override in their
+  // session log. The gate still fails open (Claude Code interprets no
+  // stdout decision as "allow") — the diagnostic just makes the
+  // disable visible.
+  const disabled = isDisabled();
+  if (disabled) {
+    let lockSnapshot;
+    try {
+      lockSnapshot = reviewGateActivation(process.cwd());
+    } catch {
+      lockSnapshot = null;
+    }
+    if (lockSnapshot?.active) {
+      stderrLine(
+        `Codex Bridge stop-time review gate lock is present (${lockSnapshot.lockPath}), but CODEX_BRIDGE_HOOK_DISABLE is set — the gate is being skipped for this session. Unset CODEX_BRIDGE_HOOK_DISABLE (or remove "stop-gate"/"all" from it) to re-enable.`
+      );
+    }
+    return;
+  }
   const input = readHookInput();
   if (input.stop_hook_active === true) {
     return;
@@ -457,7 +487,18 @@ function main() {
     review = runBridge(
       cwd,
       input,
-      ["task", "--json", "--mode", "default", "--read-only", "--no-pipeline", "--prompt-file", promptFile],
+      [
+        "task",
+        "--json",
+        "--mode",
+        "default",
+        "--read-only",
+        "--no-pipeline",
+        "--turn-default-ms",
+        String(STOP_REVIEW_TURN_TIMEOUT_MS),
+        "--prompt-file",
+        promptFile
+      ],
       { timeoutMs: STOP_REVIEW_TIMEOUT_MS, killSignal: "SIGKILL" }
     );
   } finally {
