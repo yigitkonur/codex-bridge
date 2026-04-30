@@ -29,6 +29,24 @@ function pluginManifestPath(relativePath) {
   return `plugin/${relativePath.slice(2)}`;
 }
 
+function collectPluginRootReferences(value) {
+  const references = [];
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\s]+)/g)) {
+      references.push(match[1]);
+    }
+  } else if (Array.isArray(value)) {
+    for (const entry of value) {
+      references.push(...collectPluginRootReferences(entry));
+    }
+  } else if (value && typeof value === "object") {
+    for (const entry of Object.values(value)) {
+      references.push(...collectPluginRootReferences(entry));
+    }
+  }
+  return references;
+}
+
 const expectedCommands = [
   "adversarial-review.md",
   "auth-status.md",
@@ -97,6 +115,28 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
   assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.commands)), expectedCommands);
   assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.agents)), ["codex-bridge-runner.md"]);
   assert.ok(exists(pluginManifestPath(manifest.hooks)), `${manifest.hooks} must exist`);
+
+  const authoredHooks = readJson("hooks/hooks.json");
+  const packagedHooks = readJson(pluginManifestPath(manifest.hooks));
+  assert.deepEqual(packagedHooks, authoredHooks);
+  assert.deepEqual(Object.keys(packagedHooks.hooks).sort(), ["SessionEnd", "SessionStart", "Stop"]);
+
+  const hookScriptRefs = collectPluginRootReferences(packagedHooks)
+    .filter((reference) => reference.startsWith("hooks/"))
+    .sort();
+  assert.deepEqual(hookScriptRefs, [
+    "hooks/session-lifecycle-hook.mjs",
+    "hooks/session-lifecycle-hook.mjs",
+    "hooks/stop-review-gate-hook.mjs"
+  ]);
+
+  for (const hookScriptRef of new Set(hookScriptRefs)) {
+    const hookScriptPath = `plugin/${hookScriptRef}`;
+    assert.ok(exists(hookScriptPath), `${hookScriptRef} must exist in packaged plugin hooks`);
+    const hookScript = readText(hookScriptPath);
+    assert.match(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "scripts", "codex-bridge\.mjs"\)/);
+    assert.doesNotMatch(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "skill", "scripts", "codex-bridge\.mjs"\)/);
+  }
 
   for (const command of expectedCommands) {
     const body = readText(path.join(pluginManifestPath(manifest.commands), command));

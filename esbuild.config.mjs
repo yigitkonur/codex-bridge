@@ -63,10 +63,15 @@ function copyDirectory(srcDir, destDir, transform) {
 }
 
 function toPluginRuntimePath(content) {
-  return content.replaceAll(
-    "${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge.mjs",
-    "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs",
-  );
+  return content
+    .replaceAll(
+      "${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge.mjs",
+      "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs",
+    )
+    .replaceAll(
+      'path.resolve(SCRIPT_DIR, "..", "skill", "scripts", "codex-bridge.mjs")',
+      'path.resolve(SCRIPT_DIR, "..", "scripts", "codex-bridge.mjs")',
+    );
 }
 
 for (const target of targets) {
@@ -106,6 +111,7 @@ for (const target of targets) {
 
     copyDirectory("commands", "plugin/commands", toPluginRuntimePath);
     copyDirectory("agents", "plugin/agents", toPluginRuntimePath);
+    copyDirectory("hooks", "plugin/hooks", toPluginRuntimePath);
   }
 
   console.log(`Build complete: ${target.label} -> ${target.cliOut}`);

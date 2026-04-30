@@ -42,7 +42,7 @@ jobs:
           # plugin/ bundle (canonical v2.0+ install) ship as committed artifacts —
           # no build step runs on the end-user's machine. Any diff here means a
           # contributor forgot to run `npm run build` before committing.
-          GENERATED_PATHS="skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates plugin/scripts plugin/prompts plugin/schemas plugin/templates plugin/config.yaml plugin/commands plugin/agents"
+          GENERATED_PATHS="skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates plugin/scripts plugin/prompts plugin/schemas plugin/templates plugin/config.yaml plugin/commands plugin/agents plugin/hooks"
           if [ -n "$(git status --porcelain -- $GENERATED_PATHS)" ]; then
             echo "::error::committed bundle is stale. run 'npm run build' and commit the changes."
             git status --short -- $GENERATED_PATHS
@@ -70,12 +70,20 @@ jobs:
             plugin/commands/task.md \
             plugin/commands/review.md \
             plugin/commands/adversarial-review.md \
-            plugin/agents/codex-bridge-runner.md; do
+            plugin/agents/codex-bridge-runner.md \
+            plugin/hooks/hooks.json \
+            plugin/hooks/session-lifecycle-hook.mjs \
+            plugin/hooks/stop-review-gate-hook.mjs; do
             test -s "$f" || { echo "missing or empty: $f"; exit 1; }
           done
 
-          if grep -R '\${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge\.mjs' plugin/commands plugin/agents; then
+          if grep -R '\${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge\.mjs' plugin/commands plugin/agents plugin/hooks; then
             echo "::error::plugin command surfaces must call plugin/scripts/codex-bridge.mjs"
+            exit 1
+          fi
+
+          if grep -R 'path.resolve(SCRIPT_DIR, "\.\.", "skill", "scripts", "codex-bridge\.mjs")' plugin/hooks; then
+            echo "::error::plugin hooks must call plugin/scripts/codex-bridge.mjs"
             exit 1
           fi
 
