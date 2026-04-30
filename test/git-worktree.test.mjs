@@ -250,6 +250,19 @@ test("createSubagentWorktree honors a custom worktreeRoot", () => {
     });
     assert.equal(result.path, path.join(altRoot, "task-alt"));
     assert.ok(fs.existsSync(result.path));
+
+    // pruneWorktreeOnCancel must remove a worktree under a custom
+    // worktreeRoot too — earlier the prune always derived the default
+    // worktreeRoot and would silently leave non-default worktrees behind.
+    const pruneResult = pruneWorktreeOnCancel({
+      cwd: repo,
+      taskId: "task-alt",
+      branch: result.branch,
+      worktreeRoot: altRoot,
+    });
+    assert.equal(pruneResult.pruned, true);
+    assert.equal(pruneResult.branchDeleted, true);
+    assert.equal(fs.existsSync(result.path), false);
   } finally {
     fs.rmSync(altRoot, { recursive: true, force: true });
     cleanup(repo);

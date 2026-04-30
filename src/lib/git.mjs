@@ -527,8 +527,15 @@ export function createSubagentWorktree({
 
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
+  const currentBranch = getCurrentBranch(cwd);
+  // getCurrentBranch returns "HEAD" when detached (never empty), so the
+  // ?? chain previously skipped detectDefaultBranch entirely. Treat
+  // detached HEAD explicitly so the default-branch fallback can fire.
   const resolvedBaseRef =
-    baseRef ?? getCurrentBranch(cwd) ?? detectDefaultBranch(cwd) ?? "HEAD";
+    baseRef ??
+    (currentBranch !== "HEAD" ? currentBranch : null) ??
+    detectDefaultBranch(cwd) ??
+    "HEAD";
   const baseSha = runGit(repoRoot, [
     "rev-parse",
     "--verify",
@@ -591,18 +598,51 @@ export function createSubagentWorktree({
   }
 }
 
-// pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef })
+// pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path })
 // Removes the worktree (force) and deletes the branch. Used by `cancel`
 // and by the merge gate after a successful ff-merge. Idempotent — calling
 // against an already-pruned worktree is a no-op.
-export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef }) {
+//
+// `worktreeRoot` and `path` are optional and let the caller target a
+// worktree that was created with a non-default `worktreeRoot`. If both are
+// omitted, the registered worktree path is recovered from
+// `git worktree list --porcelain` by branch (preferred) or by the default
+// `<repoRoot>/../.codex-bridge-worktrees/<taskId>` layout as a fallback.
+export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
   assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
-  const root = defaultWorktreeRoot(repoRoot);
-  const wtPath = path.join(root, taskId);
 
-  if (fs.existsSync(wtPath)) {
+  // Resolve the worktree path. Priority:
+  //   1. caller-supplied explicit `path`
+  //   2. caller-supplied `worktreeRoot` joined with `taskId`
+  //   3. discovered via `git worktree list --porcelain` matched by branch
+  //   4. default `<repoRoot>/../.codex-bridge-worktrees/<taskId>` layout
+  let wtPath = null;
+  if (typeof explicitPath === "string" && explicitPath.length > 0) {
+    wtPath = explicitPath;
+  } else if (typeof worktreeRoot === "string" && worktreeRoot.length > 0) {
+    wtPath = path.join(worktreeRoot, taskId);
+  } else if (branch) {
+    const registered = listSubagentWorktrees(repoRoot).find((w) => w.branch === branch);
+    if (registered) {
+      wtPath = registered.path;
+    }
+  }
+  if (!wtPath) {
+    wtPath = path.join(defaultWorktreeRoot(repoRoot), taskId);
+  }
+
+  // `git worktree remove` refuses to operate on the main working tree.
+  // In the branch-only fallback path, the subagent branch lives inside
+  // repoRoot itself, so any discovered/explicit path that resolves to
+  // the main tree must be skipped — the branch-delete step below still
+  // runs, which is what the caller actually wants.
+  const wtPathResolved = path.resolve(wtPath);
+  const repoRootResolved = path.resolve(repoRoot);
+  const isMainWorktree = wtPathResolved === repoRootResolved;
+
+  if (!isMainWorktree && fs.existsSync(wtPath)) {
     runGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
     if (fs.existsSync(wtPath)) {
       throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
