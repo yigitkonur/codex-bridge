@@ -178,3 +178,39 @@ test("working-tree review empty check includes untracked files", () => {
   assert.match(workingTreeCheck, /untrackedCheck\.stdout\.trim\(\) === ""/);
   assert.ok(workingTreeCheck.indexOf("untrackedCheck") < workingTreeCheck.indexOf("throw new CliError"));
 });
+
+test("version json exposes backend adapter capability contract", () => {
+  const version = bridge.match(/async function handleVersion[\s\S]*?emitSuccess\("version"/)?.[0] ?? "";
+  assert.match(bridge, /"backend-adapter"/);
+  assert.match(version, /active_backend:\s*codexAdapter\.name/);
+  assert.match(version, /adapter_capabilities:\s*codexAdapter\.capabilities\(\)/);
+});
+
+test("background task writes job record before spawning worker", () => {
+  const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
+  const writeIdx = enqueue.indexOf("writeJobFile(job.workspaceRoot, job.id, queuedRecord)");
+  const spawnIdx = enqueue.indexOf("spawnDetachedTaskWorker(cwd, job.id, logFile)");
+  assert.ok(writeIdx >= 0, "queued job record must be written");
+  assert.ok(spawnIdx >= 0, "worker spawn must remain in enqueueBackgroundTask");
+  assert.ok(writeIdx < spawnIdx, "job record must be persisted before worker spawn");
+  assert.match(enqueue, /status:\s*"failed"/);
+  assert.match(enqueue, /errorMessage/);
+});
+
+test("resume-last task prompt avoids undefined template output", () => {
+  const runBridgeTask = bridge.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
+  assert.match(runBridgeTask, /const taskPrompt = request\.resumeLast && !String\(request\.prompt \?\? ""\)\.trim\(\)/);
+  assert.match(runBridgeTask, /DEFAULT_CONTINUE_PROMPT/);
+  assert.doesNotMatch(runBridgeTask, /\$\{metaSkillsPrefix\}\$\{request\.prompt\}/);
+});
+
+test("workspace-dirty recovery emits incomplete before generic error handling", () => {
+  const errorBranch = bridge.match(/if \(result\.exitStatus !== 0 && result\.error\) \{[\s\S]*?setPhase\("error"/)?.[0] ?? "";
+  const workspaceDirtyIdx = errorBranch.indexOf('codexErrorInfo?.code === "SandboxError"');
+  const errorEventIdx = errorBranch.indexOf("formatErrorEvent(session");
+  assert.ok(workspaceDirtyIdx >= 0, "workspace-dirty recovery branch must exist");
+  assert.ok(errorEventIdx >= 0, "generic error terminal branch must exist");
+  assert.ok(workspaceDirtyIdx < errorEventIdx, "sandbox recovery must run before generic ERROR terminal emission");
+  assert.match(errorBranch, /formatIncompleteEvent\(session/);
+  assert.match(errorBranch, /markTerminalEmitted\(\);\s*return \{ \.\.\.result, session, exitStatus: 0, error: null \};/);
+});

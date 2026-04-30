@@ -11337,6 +11337,27 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           command: `git -C ${cwdArg} add -A && git -C ${cwdArg} commit -m "<subject>"`,
           description: "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
         }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
+<<<<<<< HEAD
+=======
+        let dirtyDiff;
+        try {
+          dirtyDiff = captureGitDiff(request.cwd, session);
+        } catch {
+          dirtyDiff = { diffStat: `${touchedFiles.length} touched files`, diffPath: "" };
+        }
+        logEvent(session, formatIncompleteEvent(session, {
+          diffStat: dirtyDiff.diffStat,
+          diffPath: dirtyDiff.diffPath,
+          verdict: "workspace-dirty",
+          findingCount: touchedFiles.length,
+          missingItems: [
+            "Codex produced workspace changes, but the sandbox blocked the final commit. Commit the generated diff outside the sandbox."
+          ],
+          scriptPath: SCRIPT_PATH,
+          jobId: request.jobId ?? null,
+          cwd: request.cwd
+        }));
+>>>>>>> 06f738d (review(stage 3): address existing PR comments)
         markTerminalEmitted();
         return { ...result, session, exitStatus: 0, error: null };
       }
