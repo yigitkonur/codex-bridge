@@ -98,12 +98,24 @@ function main() {
     const bundle = resolveBundlePath();
     if (bundle) {
       const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+      // Shape the child env explicitly so the prune targets the correct
+      // state directory and session, mirroring the legacy
+      // hooks/session-lifecycle-hook.mjs sessionEnv() behavior. Prefer
+      // CODEX_BRIDGE_PLUGIN_DATA but fall back to CLAUDE_PLUGIN_DATA when
+      // SessionStart's $CLAUDE_ENV_FILE write happened to fail silently.
+      const childEnv = { ...process.env };
+      const pluginData =
+        process.env.CODEX_BRIDGE_PLUGIN_DATA ?? process.env.CLAUDE_PLUGIN_DATA;
+      if (pluginData) childEnv.CODEX_BRIDGE_PLUGIN_DATA = String(pluginData);
+      const sessionId =
+        input.session_id ?? process.env.CODEX_COMPANION_SESSION_ID;
+      if (sessionId) childEnv.CODEX_COMPANION_SESSION_ID = String(sessionId);
       const result = spawnSync(
         process.execPath,
         [bundle, "status", "--prune-orphans", "--json"],
         {
           cwd,
-          env: process.env,
+          env: childEnv,
           encoding: "utf8",
           timeout: PRUNE_TIMEOUT_MS,
           stdio: ["ignore", "ignore", "pipe"],
