@@ -18,7 +18,7 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 | `fs.mjs` | Small filesystem helpers and stdin/text sniffing |
 | `git.mjs` | Review target resolution and review-context collection |
 | `job-control.mjs` | Job lookup/enrichment/status/result/cancel resolution |
-| `official-plugin.mjs` *(preview — `feat/plugin-surfaces`)* | Official OpenAI Codex Claude plugin detection. Not present on this branch. |
+| `official-plugin.mjs` | Official OpenAI Codex Claude plugin detection |
 | `pending-requests.mjs` | Disk IPC for `requestUserInput` and `respond` |
 | `process.mjs` | Process execution, availability checks, process-tree termination |
 | `prompts.mjs` | Prompt template load/interpolation |
@@ -269,21 +269,29 @@ failure.
 
 ## Broker Lifecycle
 
+<<<<<<< HEAD
 `broker-lifecycle.mjs` starts `src/adapters/codex/broker.mjs` as a detached Node
 process (via `resolveBrokerScriptPath()` which probes both bundled and source
 locations), stores `broker.json` in the workspace state dir, waits for readiness,
 and tears down stale endpoints. `broker-endpoint.mjs` supports `unix:` and
 `pipe:` endpoints.
+=======
+`broker-lifecycle.mjs` starts the resolved broker script as a detached Node
+process, stores `broker.json` in the workspace state dir, waits for readiness,
+and tears down stale endpoints. Source mode resolves to
+`src/adapters/codex/broker.mjs`; bundled mode resolves to either
+`skill/app-server-broker.mjs` or `plugin/scripts/app-server-broker.mjs`.
+`broker-endpoint.mjs` supports `unix:` and `pipe:` endpoints.
+>>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 
 `BROKER_BUSY_RPC_CODE` is `-32001`. Preserve the `turn/interrupt` exception in
 the broker so a sibling client can cancel an active stream.
 
 ## Plugin Detection And Updates
 
-`official-plugin.mjs` *(preview — lands with sibling branch
-`feat/plugin-surfaces`; not present on this branch)* detects the official
-OpenAI Codex Claude plugin by parsing `claude plugin list --json`. Status
-values are `active`, `absent`, and `unknown`.
+`official-plugin.mjs` detects the official OpenAI Codex Claude plugin by
+parsing `claude plugin list --json`. Status values are `active`, `absent`, and
+`unknown`.
 
 `update-check.mjs` uses `fetch` against
 `https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest`, caches
@@ -292,9 +300,7 @@ are rate-limited with the same cache file.
 
 ## Tests To Remember
 
-The test suite ships with `feat/runtime-improvements`; on this branch alone
-`package.json` declares only `build` and `dev`, so `npm test` is not yet
-runnable. Once that stack lands, these are the regression anchors:
+The regression anchors are:
 
 - `test/app-server-client.test.mjs` pins server-request rejection/resolution and
   transport-exit behavior.
@@ -312,6 +318,6 @@ runnable. Once that stack lands, these are the regression anchors:
 - `test/state.test.mjs` pins concurrent state writes, locked reaping,
   corruption handling, and plugin-data precedence.
 
-Once the test suite is wired, run `npm test` for any change in this folder and
-`npm run build` first when the change affects bundled output. Until then,
-verify behaviour by re-running the CLI against an authenticated Codex install.
+Run `npm test` for any change in this folder and `npm run build` first when the
+change affects bundled output. For runtime behavior changes, also verify by
+re-running the CLI against an authenticated Codex install when possible.

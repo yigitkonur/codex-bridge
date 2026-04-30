@@ -1,0 +1,89 @@
+codex_bridge:
+  # Collaboration mode: "plan" (default) or "default"
+  # "plan" — Codex plans first, Claude approves, then executes
+  # "default" — Codex executes directly (may ask questions if allow_questions: true)
+  #
+  # Override on a single run with `codex-bridge task --mode <plan|default> …`.
+  # Background launches preserve the override in the stored job record.
+  mode: "plan"
+
+  # Default model (inherits from Codex config if not set here)
+  # model: "gpt-5.4"
+
+  # Execution reasoning effort: none | minimal | low | medium | high | xhigh
+  # Plan mode always uses xhigh regardless of this setting. Shipped default
+  # is xhigh (changed in 1.3.0) — live delegations on non-trivial work
+  # consistently benefited from xhigh; callers who want a cheaper turn can
+  # set this to high or lower, or pass --effort high at the CLI.
+  effort: "xhigh"
+
+  # Run automatic review after task completion
+  auto_review: true
+
+  # Prompt sent after task + review to check completeness
+  # Set to empty string to disable completion check
+  post_task_prompt: |
+    Review your own work critically:
+    1. Is this task 100% complete?
+    2. Are there any edge cases you missed?
+    3. Did you run all relevant tests?
+    List any unfinished items.
+
+  # Allow Codex to ask questions during execution (Default mode only)
+  # In Plan mode, questions are always enabled
+  allow_questions: true
+
+  # When true, prepend a strong orchestrator directive telling Codex not to
+  # invoke any internal planning / ceremony / meta-skill chain before
+  # execution (framework-agnostic — covers any skill chain that produces
+  # spec or plan scaffolding under `docs/`, `plans/`, `specs/` or similar
+  # paths before touching the deliverable). Codex's default skill chains
+  # can burn many minutes producing such artifacts when an orchestrator is
+  # already driving the plan/execute loop. Advisory: Codex may still invoke
+  # them, but the directive measurably reduces the rate. Users who run
+  # without an orchestrator should set this to false.
+  skip_meta_skills: true
+
+  # Watch repeated same-family command failures (osascript, open -a, display
+  # dialog, computer-use/*, AppleScript) and emit a [WARNING] event after N=3
+  # consecutive failures. Gives an orchestrator tailing via Monitor a chance
+  # to cancel/steer before Codex burns token budget iterating over headless-
+  # environment probes. Set false to disable.
+  command_failure_circuit_breaker: true
+
+  # Sandbox policy. Shipped default is "danger-full-access" so Codex can
+  # commit its own work without the `workspace-write` sandbox blocking
+  # `.git/` writes. This matches `codex --dangerously-bypass-approvals-and-
+  # sandbox`.
+  #
+  # Values:
+  #   danger-full-access  — no sandbox, no permission blocker (SHIPPED DEFAULT)
+  #   workspace-write     — write inside cwd only, `.git/` blocked
+  #   read-only           — no writes at all
+  #
+  # Opt into a stricter profile by uncommenting one of the two lines below.
+  # The setting applies to task/send turns and the auto-pipeline fix stage.
+  # The completion-check stage stays read-only regardless.
+  sandbox_policy: "danger-full-access"
+  # sandbox_policy: "workspace-write"
+  # sandbox_policy: "read-only"
+
+  # Session log directory
+  session_dir: "~/.codex-bridge/sessions"
+
+  # Footer appended to every prompt — instructs Codex to use requestUserInput tool
+  # for questions instead of asking via plain text messages
+  prompt_footer: >
+    When you need to ask a question to user, always use the request_user_input
+    tool with distinct options to help the user navigate choices. Never ask
+    questions as plain text messages.
+
+  # Timeout budgets (all in milliseconds). Override per-invocation via the
+  # matching --*-ms CLI flag on `task` / `send`; uncomment below to change
+  # the persistent default.
+  # idle_timeout_ms: 300000       # No-event watchdog — max gap between app-server notifications (5 min)
+  # turn_plan_ms: 1800000         # Per-turn ceiling for plan turns (30 min)
+  # turn_default_ms: 1800000      # Per-turn ceiling for execute turns (30 min)
+  # pipeline_stage_ms: 300000     # Auto-pipeline per-stage cap — review / fix / check (5 min)
+  # pipeline_total_ms: 900000     # Auto-pipeline total cap across all stages (15 min)
+  # question_answer_ms: 300000    # requestUserInput wait before rejecting unanswered request (5 min)

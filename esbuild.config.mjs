@@ -40,6 +40,10 @@ const staticAssets = [
   ["src/templates/plan-enforcement.md", "templates/plan-enforcement.md"],
 ];
 
+const pluginOnlyAssets = [
+  ["skill/config.yaml", "config.yaml"],
+];
+
 function copyFile(src, dest, transform = (value) => value) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, transform(fs.readFileSync(src, "utf8")));
@@ -96,6 +100,10 @@ for (const target of targets) {
   }
 
   if (target.assetsRoot === "plugin") {
+    for (const [src, suffix] of pluginOnlyAssets) {
+      copyFile(src, `${target.assetsRoot}/${suffix}`);
+    }
+
     copyDirectory("commands", "plugin/commands", toPluginRuntimePath);
     copyDirectory("agents", "plugin/agents", toPluginRuntimePath);
   }

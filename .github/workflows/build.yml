@@ -29,7 +29,7 @@ jobs:
       - name: install
         run: npm ci
 
-      - name: build skill bundle
+      - name: build skill and plugin bundles
         run: npm run build
 
       - name: test
@@ -42,7 +42,7 @@ jobs:
           # plugin/ bundle (canonical v2.0+ install) ship as committed artifacts —
           # no build step runs on the end-user's machine. Any diff here means a
           # contributor forgot to run `npm run build` before committing.
-          GENERATED_PATHS="skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates plugin/scripts plugin/prompts plugin/schemas plugin/templates plugin/commands plugin/agents"
+          GENERATED_PATHS="skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates plugin/scripts plugin/prompts plugin/schemas plugin/templates plugin/config.yaml plugin/commands plugin/agents"
           if [ -n "$(git status --porcelain -- $GENERATED_PATHS)" ]; then
             echo "::error::committed bundle is stale. run 'npm run build' and commit the changes."
             git status --short -- $GENERATED_PATHS
@@ -65,6 +65,7 @@ jobs:
             plugin/schemas/review-output.schema.json \
             plugin/templates/execute-instructions.md \
             plugin/templates/plan-enforcement.md \
+            plugin/config.yaml \
             plugin/skills/codex-bridge/SKILL.md \
             plugin/commands/task.md \
             plugin/commands/review.md \

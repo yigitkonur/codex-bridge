@@ -6,51 +6,50 @@ older docs without re-checking the files that implement the behavior.
 
 ## Current Reality
 
-`codex-bridge` is a Node 22+ ESM package that ships a Claude Code skill for
-delegating work to OpenAI Codex through the Codex app-server. A Claude plugin
-surface (`commands/`, `agents/`, `hooks/`, and a bumped
-`.claude-plugin/plugin.json`) is added by the sibling `feat/plugin-surfaces`
-branch and is **not present on this branch alone** — the rest of this file
-calls those out as "preview" where they appear.
+`codex-bridge` is a Node 22+ ESM package that ships a legacy Claude Code skill
+layout and a canonical Claude Code plugin layout for delegating work to OpenAI
+Codex through the Codex app-server. The root plugin surfaces live in
+`commands/`, `agents/`, `hooks/`, and `.claude-plugin/plugin.json`; the build
+also emits the packaged plugin layout under `plugin/`.
 
 The package version is read from `package.json` by `src/codex-bridge.mjs`.
-On this branch, `package.json` and `skill/SKILL.md` declare `1.5.0` while
-`.claude-plugin/plugin.json` still declares `1.2.3`; the version-sync fix
-and `test/plugin-surfaces.test.mjs` enforcement land with
-`feat/plugin-surfaces`.
+Keep root `.claude-plugin/plugin.json`, `package.json`, and `skill/SKILL.md`
+aligned unless a migration deliberately version-stamps the packaged
+`plugin/.claude-plugin/plugin.json` differently.
 
-Runtime source lives under `src/`. The build emits the installable skill bundle
-under `skill/`:
+Runtime source lives under `src/`. The build emits installable artifacts under
+both `skill/` and `plugin/`:
 
 - `src/codex-bridge.mjs` -> `skill/scripts/codex-bridge.mjs`
+<<<<<<< HEAD
 - `src/adapters/codex/broker.mjs` -> `skill/app-server-broker.mjs`
+=======
+- `src/codex-bridge.mjs` -> `plugin/scripts/codex-bridge.mjs`
+- `src/adapters/codex/broker.mjs` -> `skill/app-server-broker.mjs`
+- `src/adapters/codex/broker.mjs` -> `plugin/scripts/app-server-broker.mjs`
+>>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 - `src/prompts/*`, `src/schemas/*`, and `src/templates/*` -> matching
-  generated files under `skill/`
-
-Once `feat/plugin-surfaces` lands, the Claude plugin surfaces will be authored
-directly in `commands/`, `agents/`, `hooks/`, and `.claude-plugin/plugin.json`.
-They are not generated.
+  generated files under both layouts
+- `commands/` and `agents/` -> generated plugin copies under `plugin/`
+- `skill/config.yaml` -> `plugin/config.yaml`
 
 ## Commands
 
-Use the package scripts as the authoritative command list. Commands marked
-"preview" land with a sibling branch and are not runnable on this branch alone
-— check `package.json` `scripts` to confirm what is actually wired up before
-relying on them.
+Use the package scripts as the authoritative command list. Check
+`package.json` `scripts` to confirm what is actually wired up before relying on
+older docs.
 
 | Purpose | Command | Source | Status on this branch |
 |---|---|---|---|
-| Build bundled skill outputs | `npm run build` | `package.json`, `esbuild.config.mjs` | shipped |
-| Run tests | `npm test` (= `node --test test/*.test.mjs`) | added by `feat/runtime-improvements` | preview — `package.json` here defines only `build` and `dev`; `npm test` exits with `Missing script: "test"` until that stack lands |
+| Build bundled skill/plugin outputs | `npm run build` | `package.json`, `esbuild.config.mjs` | shipped |
+| Run tests | `npm test` (= `node --test test/*.test.mjs`) | `package.json` | shipped |
 | Run the unbundled CLI | `npm run dev` | `node src/codex-bridge.mjs` | shipped |
 | Print CLI help | `node src/codex-bridge.mjs --help` | `src/codex-bridge.mjs` | shipped |
 | Check local runtime | `node src/codex-bridge.mjs setup --json` | requires Codex CLI for full readiness | shipped |
 
-Once the `feat/runtime-improvements` stack lands, `test/*.test.mjs` will be the
-runnable suite. Do not treat absent working-tree directories such as
-`gherkin-tests-v2/` or `unexpected-bridge-observations/` as active required
-workflow unless they are restored in the tree and backed by package scripts or
-tests.
+Do not treat absent working-tree directories such as `gherkin-tests-v2/` or
+`unexpected-bridge-observations/` as active required workflow unless they are
+restored in the tree and backed by package scripts or tests.
 
 ## Runtime Requirements
 
@@ -70,26 +69,40 @@ tests.
 |---|---|
 | `src/codex-bridge.mjs` | Main CLI dispatcher, command metadata, task/review orchestration, stop-gate setup, update/version/config/status handlers |
 | `src/adapters/codex/broker.mjs` | Standalone shared app-server socket broker spawned by broker lifecycle code |
+<<<<<<< HEAD
 | `src/lib/` | App-server client, Codex turn capture, state, session logs, config, git/review context, errors, rendering, update checks |
+=======
+| `src/adapters/codex/` | Codex adapter runtime: protocol client, turn/review capture, pipeline defaults, and broker |
+| `src/lib/` | Shared broker lifecycle, state/jobs, config, git/review context, errors, rendering, update checks, and process helpers |
+>>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 | `src/prompts/` | Authored adversarial review prompt source |
 | `src/schemas/` | Authored JSON schema for adversarial review output |
 | `src/templates/` | Authored developer-instruction templates for plan/default modes |
 | `skill/` | Installable skill bundle: some files authored, some generated by `npm run build` |
-| `commands/` *(preview — `feat/plugin-surfaces`)* | Claude Code slash-command markdown files |
-| `agents/` *(preview — `feat/plugin-surfaces`)* | Claude Code runner subagent definition |
-| `hooks/` *(preview — `feat/plugin-surfaces`)* | Claude Code hook config and hook scripts |
-| `test/` *(preview — `feat/runtime-improvements`)* | Node built-in test suite |
+| `plugin/` | Packaged Claude Code plugin layout: generated runtime/assets plus plugin-local metadata and hooks |
+| `commands/` | Authored Claude Code slash-command markdown files copied into `plugin/commands/` |
+| `agents/` | Authored Claude Code runner subagent definition copied into `plugin/agents/` |
+| `hooks/` | Claude Code hook config and hook scripts |
+| `test/` | Node built-in test suite |
 | `.github/workflows/` | Build and release workflows |
 
 ## Build And Generated Files
 
+<<<<<<< HEAD
 After any change to `src/codex-bridge.mjs`, `src/adapters/codex/broker.mjs`,
 `src/lib/**`, `src/prompts/**`, `src/schemas/**`, or `src/templates/**`, run
 `npm run build` and include the generated skill output diff.
+=======
+After any change to `src/codex-bridge.mjs`, `src/adapters/codex/**`,
+`src/lib/**`, `src/prompts/**`, `src/schemas/**`, `src/templates/**`,
+`commands/**`, `agents/**`, or `skill/config.yaml`, run `npm run build` and
+include the generated output diff.
+>>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 
 `esbuild.config.mjs` is the source of truth for generated outputs. Add new
-bundled static assets to its `copies` array and load them through the source vs.
-bundle root detection in `src/codex-bridge.mjs` (`ROOT_DIR`).
+bundled static assets to `staticAssets` or a layout-specific asset list and
+load them through the source vs. bundle root detection in
+`src/codex-bridge.mjs` (`ROOT_DIR`).
 
 Do not hand-edit generated runtime files under:
 
@@ -98,9 +111,16 @@ Do not hand-edit generated runtime files under:
 - `skill/prompts/`
 - `skill/schemas/`
 - `skill/templates/`
+- `plugin/scripts/`
+- `plugin/prompts/`
+- `plugin/schemas/`
+- `plugin/templates/`
+- `plugin/commands/`
+- `plugin/agents/`
+- `plugin/config.yaml`
 
-The build workflow runs `npm run build` and fails if those generated paths drift
-from a fresh build. The release workflow rebuilds and packages `skill/`, then
+The build workflow runs `npm run build` and fails if generated paths drift from
+a fresh build. The release workflow rebuilds and packages `skill/`, then
 removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
 
 ## Core Invariants
@@ -114,29 +134,23 @@ removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
   `src/adapters/codex/protocol.d.ts`. Do not invent aliases.
 - Plan mode always injects reasoning effort `xhigh` through
   `buildCollaborationMode`, regardless of configured execute effort.
-- Config precedence is: `DEFAULT_CONFIG` < skill `config.yaml` < workspace-root
-  `config.yaml` < cwd `config.yaml`.
+- Config precedence is: `DEFAULT_CONFIG` < install-root `config.yaml`
+  (`skill/` or `plugin/`) < workspace-root `config.yaml` < cwd
+  `config.yaml`.
 - The shipped default config is plan mode, model `gpt-5.4`, effort `xhigh`,
   `auto_review: true`, `sandbox_policy: "danger-full-access"`, and
   `skip_meta_skills: true`.
 - Workspace state keys off the canonical workspace root in `src/lib/state.mjs`;
   command execution and Codex process cwd stay tied to the requested cwd.
-- Plugin state root is read from `CLAUDE_PLUGIN_DATA` (the only env var
-  consulted by `src/lib/state.mjs:9`) and falls back to
-  `os.tmpdir()/codex-companion` when unset.
+- Plugin state root prefers `CODEX_BRIDGE_PLUGIN_DATA`, falls back to
+  `CLAUDE_PLUGIN_DATA`, and then falls back to `os.tmpdir()/codex-companion`.
 - Session `.events` and `.ndjson` writes are append-only synchronous writes in
   `src/lib/session-log.mjs`. Do not introduce competing async writers.
-- The Stop review gate is project-scoped. On this branch alone,
-  `setup --enable-review-gate` only sets `stopReviewGate: true` in the
-  workspace state via `setConfig` (`src/codex-bridge.mjs:743`) and prints a
-  next-step hint; there is no git-root `.codex-bridge-stop-review-gate.lock`
-  file, no official-OpenAI-Codex-plugin suppression check, and no
-  `reviewGateSuppressedByOfficialPlugin` / `officialOpenAICodexPluginStatus`
-  fields in `setup --json`. The lock-file activation, official-plugin
-  detection, and Stop hook itself land with the sibling `feat/plugin-surfaces`
-  branch — once that stack ships, `setup --enable-review-gate` will also
-  create the lock at the git root only when the official plugin is absent and
-  the hook will suppress itself otherwise.
+- The Stop review gate is project-scoped. `setup --enable-review-gate` creates
+  `.codex-bridge-stop-review-gate.lock` at the workspace git root only when the
+  official OpenAI Codex plugin is absent; `setup --json` reports the lock path,
+  lock existence, official-plugin status, and whether the gate is suppressed.
+  The Stop hook also checks both the lock and workspace state before blocking.
 - Update checks use the public GitHub releases API anonymously. Normal hot-path
   invocations can trigger a rate-limited detached `npx skills@latest add ...`
   auto-apply unless disabled with `CODEX_BRIDGE_NO_UPDATE_CHECK=1`; `update
@@ -146,16 +160,17 @@ removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
 
 - New CLI subcommand: update `COMMANDS`, add a handler, wire
   `SUBCOMMAND_DISPATCH`, extend plugin command coverage if user-facing, update
-  skill references, and add/adjust `test/*.test.mjs` (post-`feat/runtime-improvements`).
-- New config key: add `DEFAULT_CONFIG`, merge/render behavior, `skill/config.yaml`
-  comments, user reference docs, and tests.
+  skill references, and add/adjust `test/*.test.mjs`.
+- New config key: add `DEFAULT_CONFIG`, merge/render behavior,
+  `skill/config.yaml` comments, generated `plugin/config.yaml`, user reference
+  docs, and tests.
 - New event tag: add/adjust formatter in `src/lib/session-log.mjs`, update event
   filtering/terminal behavior if needed, update skill notification references,
   and test the observable contract.
 - New review-output field: update `src/schemas/review-output.schema.json`,
   `src/prompts/adversarial-review.md`, render code, and tests together.
-- Plugin surface change *(post-`feat/plugin-surfaces`)*: edit `commands/`,
-  `agents/`, `hooks/`, or `.claude-plugin/plugin.json` directly and run
+- Plugin surface change: edit `commands/`, `agents/`, `hooks/`, or
+  `.claude-plugin/plugin.json` directly, then run `npm run build` and
   `npm test`.
 - Release change: keep `package.json`, `.claude-plugin/plugin.json`, and
   `skill/SKILL.md` metadata aligned; update `CHANGELOG.md`; run build and tests
@@ -163,16 +178,7 @@ removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
 
 ## Verification
 
-On this branch in isolation, `npm test` is not yet wired (`package.json`
-declares only `build` and `dev`); the test suite arrives with
-`feat/runtime-improvements`. Until that lands:
-
-- Docs-only AGENTS changes: re-read the cited source against the new wording;
-  there is no automated test gate.
-- Source or bundled asset changes: run `npm run build` and confirm the
-  generated `skill/` outputs match the source change.
-
-Once `feat/runtime-improvements` lands, the standard checks become:
+The standard checks are:
 
 ```bash
 npm run build

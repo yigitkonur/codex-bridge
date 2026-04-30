@@ -87,6 +87,8 @@ test("Claude plugin exposes command coverage for bridge orchestration", () => {
 test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
   const manifest = readJson("plugin/.claude-plugin/plugin.json");
 
+  assert.equal(readText("plugin/config.yaml"), readText("skill/config.yaml"));
+
   for (const skillPath of manifest.skills) {
     const resolvedSkillPath = pluginManifestPath(skillPath);
     assert.ok(exists(`${resolvedSkillPath}/SKILL.md`), `${skillPath} must contain SKILL.md`);

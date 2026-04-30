@@ -1824,8 +1824,11 @@ async function isBrokerEndpointReady(endpoint) {
 function resolveBrokerScriptPath() {
   const candidates = [
     new URL("./app-server-broker.mjs", import.meta.url),
+    // plugin/scripts sibling
     new URL("../app-server-broker.mjs", import.meta.url),
+    // legacy skill/ parent
     new URL("../adapters/codex/broker.mjs", import.meta.url)
+    // source mode
   ];
   for (const url of candidates) {
     const p = fileURLToPath(url);

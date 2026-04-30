@@ -5,6 +5,7 @@ import fs3 from "node:fs";
 import net3 from "node:net";
 import path4 from "node:path";
 import process6 from "node:process";
+import { pathToFileURL } from "node:url";
 
 // src/lib/cli-errors.mjs
 var ExitCode = Object.freeze({
@@ -519,8 +520,11 @@ async function isBrokerEndpointReady(endpoint) {
 function resolveBrokerScriptPath() {
   const candidates = [
     new URL("./app-server-broker.mjs", import.meta.url),
+    // plugin/scripts sibling
     new URL("../app-server-broker.mjs", import.meta.url),
+    // legacy skill/ parent
     new URL("../adapters/codex/broker.mjs", import.meta.url)
+    // source mode
   ];
   for (const url of candidates) {
     const p = fileURLToPath(url);
@@ -1496,7 +1500,7 @@ var invokedDirectly = (() => {
     return false;
   }
   try {
-    const entryUrl = new URL(`file://${process6.argv[1]}`).href;
+    const entryUrl = pathToFileURL(process6.argv[1]).href;
     return entryUrl === import.meta.url;
   } catch {
     return false;
