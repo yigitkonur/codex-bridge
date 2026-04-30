@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,10 @@ const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_SCRIPT = path.resolve(SCRIPT_DIR, "..", "scripts", "codex-bridge.mjs");
+const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
+const CLAUDE_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
+const STATE_FILE_NAME = "state.json";
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -65,6 +69,69 @@ function reviewGateActivation(cwd) {
   }
 
   return { active: false, lockPath };
+}
+
+function resolveStateFilePath(cwd) {
+  const workspaceRoot = resolveProjectRoot(cwd);
+  let canonicalWorkspaceRoot = workspaceRoot;
+  try {
+    canonicalWorkspaceRoot = fs.realpathSync.native(workspaceRoot);
+  } catch {
+    canonicalWorkspaceRoot = workspaceRoot;
+  }
+
+  const slugSource = path.basename(workspaceRoot) || "workspace";
+  const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[CLAUDE_PLUGIN_DATA_ENV];
+  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+  return path.join(stateRoot, `${slug}-${hash}`, STATE_FILE_NAME);
+}
+
+function hasLegacyStopReviewGateIntent(cwd) {
+  const stateFile = resolveStateFilePath(cwd);
+  if (!fs.existsSync(stateFile)) return false;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    return parsed?.config?.stopReviewGate === true;
+  } catch {
+    return false;
+  }
+}
+
+function maybeMigrateLegacyGate(cwd, input, activation) {
+  if (activation.active) return activation;
+  if (!hasLegacyStopReviewGateIntent(cwd)) return activation;
+
+  const setup = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });
+  const setupPayload = parseJson(setup.stdout);
+  const result = setupPayload?.result;
+  if (!setupPayload?.ok || !result) return activation;
+  if (result.reviewGateSuppressedByOfficialPlugin === true || result.reviewGateLockIgnored === true) {
+    return activation;
+  }
+  if (result.reviewGateEnabled !== true && result.reviewGateLockExists !== true) {
+    return activation;
+  }
+
+  const migrated = reviewGateActivation(cwd);
+  if (migrated.active) return migrated;
+
+  try {
+    fs.writeFileSync(
+      activation.lockPath,
+      [
+        "# Codex Bridge stop-time review gate",
+        "# Presence of this file enables the Claude Code Stop hook for this project.",
+        "# Migrated from legacy state.json config.stopReviewGate=true.",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+  } catch {
+    return activation;
+  }
+  return reviewGateActivation(cwd);
 }
 
 function runningJobNote(cwd, input) {
@@ -167,7 +234,8 @@ function main() {
 
   const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const runningNote = runningJobNote(cwd, input);
-  const activation = reviewGateActivation(cwd);
+  let activation = reviewGateActivation(cwd);
+  activation = maybeMigrateLegacyGate(cwd, input, activation);
 
   if (!activation.active) {
     stderrLine(runningNote);

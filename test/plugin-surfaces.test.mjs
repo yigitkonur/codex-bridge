@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
+const rootPath = fileURLToPath(root);
 
 function readText(relativePath) {
   return fs.readFileSync(new URL(relativePath, root), "utf8");
@@ -197,6 +200,9 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(stopHook, /Run a stop-gate review of the previous Claude turn\./);
   assert.match(stopHook, /\.codex-bridge-stop-review-gate\.lock/);
   assert.match(stopHook, /if \(!activation\.active\)/);
+  assert.match(stopHook, /maybeMigrateLegacyGate/);
+  assert.match(stopHook, /config\?\.stopReviewGate === true/);
+  assert.match(stopHook, /CODEX_BRIDGE_PLUGIN_DATA/);
   assert.doesNotMatch(stopHook, /CODEX_BRIDGE_STOP_REVIEW_GATE/);
   assert.match(stopHook, /decision: "block"/);
   assert.match(stopHook, /"scripts", "codex-bridge\.mjs"/);
@@ -252,4 +258,35 @@ test("runner subagent remains a thin forwarding wrapper", () => {
   assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
   assert.match(runner, /Do not inspect the repository/);
   assert.match(runner, /Return the stdout of the bridge command exactly as-is/);
+});
+
+test("canonical plugin manifest paths resolve inside the plugin package", () => {
+  const manifest = readJson("plugin/.claude-plugin/plugin.json");
+
+  for (const skillPath of manifest.skills ?? []) {
+    assert.equal(
+      pathExists(path.join("plugin", skillPath, "SKILL.md")),
+      true,
+      `missing plugin skill referenced by manifest: ${skillPath}`
+    );
+  }
+  assert.equal(pathExists(path.join("plugin", manifest.commands)), true);
+  assert.equal(pathExists(path.join("plugin", manifest.agents)), true);
+  assert.equal(pathExists(path.join("plugin", manifest.hooks)), true);
+  assert.equal(pathExists("plugin/config.yaml"), true);
+
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("plugin/scripts/codex-bridge.mjs", root)), "config", "show", "--json"],
+    {
+      cwd: rootPath,
+      env: { ...process.env, CODEX_BRIDGE_NO_UPDATE_CHECK: "1" },
+      encoding: "utf8"
+    }
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.result.sources.skill_config_exists, true);
+  assert.match(payload.result.sources.skill_config_path, /plugin[/\\]config\.yaml$/);
 });
