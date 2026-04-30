@@ -721,48 +721,85 @@ export function mergeSubagentBranch({
   const repoRoot = getRepoRoot(cwd);
 
   // Refresh base ref from remote so we merge against the latest tip.
-  // Best-effort: if there's no `origin` remote, skip the fetch.
-  tryRunGit(repoRoot, ["fetch", "origin", baseRef]);
+  // Best-effort with a hard timeout: a hung remote must not stall the
+  // merge gate forever. tryRunGit silently no-ops if `origin` is missing
+  // or the network is unreachable.
+  try {
+    runGit(repoRoot, ["fetch", "--no-tags", "origin", baseRef], {
+      swallowStderr: true,
+      timeout: 30_000,
+    });
+  } catch {
+    // best-effort; fall through to the local check
+  }
 
   // Switch to base ref. Refuse if working tree is dirty.
   const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
   if (dirty && dirty.trim().length > 0) {
-    throw new Error(
+    const err = new Error(
       `repo is dirty; commit or stash before merging. Status: ${dirty.trim()}`,
     );
+    err.kind = "precondition";
+    throw err;
   }
 
-  const expectedSha = String(expectedBranchSha).trim();
+  const expectedSha = String(expectedBranchSha).trim().toLowerCase();
   const taskWorktreePath = worktreePath ?? path.join(defaultWorktreeRoot(repoRoot), taskId);
   if (taskWorktreePath && fs.existsSync(taskWorktreePath) && path.resolve(taskWorktreePath) !== repoRoot) {
     const taskDirty = tryRunGit(taskWorktreePath, ["status", "--porcelain", "--untracked-files=all"]);
     if (taskDirty && taskDirty.trim().length > 0) {
-      throw new Error(
+      const err = new Error(
         `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.trim()}`,
       );
+      err.kind = "precondition";
+      throw err;
     }
   }
 
   // Verify the branch is reachable.
-  const branchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch])?.trim();
+  const branchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch])?.trim().toLowerCase();
   if (!branchSha) {
-    throw new Error(`branch ${branch} does not exist`);
+    const err = new Error(`branch ${branch} does not exist`);
+    err.kind = "precondition";
+    throw err;
   }
   if (branchSha !== expectedSha) {
-    throw new Error(
+    const err = new Error(
       `branch ${branch} is at ${branchSha}, but approved verdict reviewed ${expectedSha}; rerun review before merging`,
     );
+    err.kind = "sha_drift";
+    throw err;
   }
 
   runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
 
-  // ff-only merge.
+  // Fast-forward the local base to its remote-tracking tip if reachable.
+  // `git fetch origin <ref>` only updates `refs/remotes/origin/<ref>`; the
+  // local branch can still be stale and would silently merge onto an old
+  // SHA. Best-effort ff-only: if local has diverged from origin, surface
+  // it as a precondition rather than merging onto stale state.
+  const remoteTip = tryRunGit(repoRoot, ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}`])?.trim();
+  if (remoteTip) {
+    try {
+      runGit(repoRoot, ["merge", "--ff-only", `refs/remotes/origin/${baseRef}`], { swallowStderr: true });
+    } catch {
+      const err = new Error(
+        `local ${baseRef} has diverged from origin/${baseRef}; reconcile before merging`,
+      );
+      err.kind = "precondition";
+      throw err;
+    }
+  }
+
+  // ff-only merge of the subagent branch into the (now-fresh) base.
   try {
     runGit(repoRoot, ["merge", "--ff-only", branch], { swallowStderr: true });
   } catch (err) {
-    throw new Error(
+    const wrapped = new Error(
       `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`,
     );
+    wrapped.kind = "conflict";
+    throw wrapped;
   }
 
   const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true })

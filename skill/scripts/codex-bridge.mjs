@@ -1546,39 +1546,67 @@ function mergeSubagentBranch({
   }
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
-  tryRunGit(repoRoot, ["fetch", "origin", baseRef]);
+  try {
+    runGit(repoRoot, ["fetch", "--no-tags", "origin", baseRef], {
+      swallowStderr: true,
+      timeout: 3e4
+    });
+  } catch {
+  }
   const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
   if (dirty && dirty.trim().length > 0) {
-    throw new Error(
+    const err = new Error(
       `repo is dirty; commit or stash before merging. Status: ${dirty.trim()}`
     );
+    err.kind = "precondition";
+    throw err;
   }
-  const expectedSha = String(expectedBranchSha).trim();
+  const expectedSha = String(expectedBranchSha).trim().toLowerCase();
   const taskWorktreePath = worktreePath ?? path3.join(defaultWorktreeRoot(repoRoot), taskId);
   if (taskWorktreePath && fs3.existsSync(taskWorktreePath) && path3.resolve(taskWorktreePath) !== repoRoot) {
     const taskDirty = tryRunGit(taskWorktreePath, ["status", "--porcelain", "--untracked-files=all"]);
     if (taskDirty && taskDirty.trim().length > 0) {
-      throw new Error(
+      const err = new Error(
         `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.trim()}`
       );
+      err.kind = "precondition";
+      throw err;
     }
   }
-  const branchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch])?.trim();
+  const branchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch])?.trim().toLowerCase();
   if (!branchSha) {
-    throw new Error(`branch ${branch} does not exist`);
+    const err = new Error(`branch ${branch} does not exist`);
+    err.kind = "precondition";
+    throw err;
   }
   if (branchSha !== expectedSha) {
-    throw new Error(
+    const err = new Error(
       `branch ${branch} is at ${branchSha}, but approved verdict reviewed ${expectedSha}; rerun review before merging`
     );
+    err.kind = "sha_drift";
+    throw err;
   }
   runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
+  const remoteTip = tryRunGit(repoRoot, ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}`])?.trim();
+  if (remoteTip) {
+    try {
+      runGit(repoRoot, ["merge", "--ff-only", `refs/remotes/origin/${baseRef}`], { swallowStderr: true });
+    } catch {
+      const err = new Error(
+        `local ${baseRef} has diverged from origin/${baseRef}; reconcile before merging`
+      );
+      err.kind = "precondition";
+      throw err;
+    }
+  }
   try {
     runGit(repoRoot, ["merge", "--ff-only", branch], { swallowStderr: true });
   } catch (err) {
-    throw new Error(
+    const wrapped = new Error(
       `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`
     );
+    wrapped.kind = "conflict";
+    throw wrapped;
   }
   const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true }).toString().trim();
   pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
@@ -12000,8 +12028,8 @@ function readReviewedBranchHeadSha(verdict) {
   ];
   for (const candidate of candidates) {
     if (typeof candidate !== "string") continue;
-    const normalized = candidate.trim();
-    if (/^[a-f0-9]{40}$/i.test(normalized)) {
+    const normalized = candidate.trim().toLowerCase();
+    if (/^[a-f0-9]{40}$/.test(normalized)) {
       return normalized;
     }
   }
@@ -12069,9 +12097,28 @@ async function handleMerge(argv) {
       runTests: !options["no-tests"]
     });
   } catch (err) {
+    const kind = err?.kind;
+    if (kind === "conflict") {
+      throw new CliError(
+        `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
+        { code: "MERGE_CONFLICT", class: "conflict" }
+      );
+    }
+    if (kind === "sha_drift") {
+      throw new CliError(
+        `merge refused: ${err.message ?? err}`,
+        { code: "MERGE_SHA_DRIFT", class: "conflict" }
+      );
+    }
+    if (kind === "precondition") {
+      throw new CliError(
+        `merge precondition failed: ${err.message ?? err}`,
+        { code: "MERGE_PRECONDITION", class: "usage" }
+      );
+    }
     throw new CliError(
-      `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
-      { code: "MERGE_CONFLICT", class: "conflict" }
+      `merge failed: ${err.message ?? err}`,
+      { code: "MERGE_INTERNAL", class: "internal" }
     );
   }
   const payload = {

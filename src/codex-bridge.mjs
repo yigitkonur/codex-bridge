@@ -4647,8 +4647,8 @@ function readReviewedBranchHeadSha(verdict) {
   ];
   for (const candidate of candidates) {
     if (typeof candidate !== "string") continue;
-    const normalized = candidate.trim();
-    if (/^[a-f0-9]{40}$/i.test(normalized)) {
+    const normalized = candidate.trim().toLowerCase();
+    if (/^[a-f0-9]{40}$/.test(normalized)) {
       return normalized;
     }
   }
@@ -4728,9 +4728,28 @@ async function handleMerge(argv) {
       runTests: !options["no-tests"],
     });
   } catch (err) {
+    const kind = err?.kind;
+    if (kind === "conflict") {
+      throw new CliError(
+        `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
+        { code: "MERGE_CONFLICT", class: "conflict" },
+      );
+    }
+    if (kind === "sha_drift") {
+      throw new CliError(
+        `merge refused: ${err.message ?? err}`,
+        { code: "MERGE_SHA_DRIFT", class: "conflict" },
+      );
+    }
+    if (kind === "precondition") {
+      throw new CliError(
+        `merge precondition failed: ${err.message ?? err}`,
+        { code: "MERGE_PRECONDITION", class: "usage" },
+      );
+    }
     throw new CliError(
-      `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
-      { code: "MERGE_CONFLICT", class: "conflict" },
+      `merge failed: ${err.message ?? err}`,
+      { code: "MERGE_INTERNAL", class: "internal" },
     );
   }
 
