@@ -919,3 +919,115 @@ test("auto-pipeline source pins per-turn watchdog at the fix-stage call site", (
   assert.match(checkSlice, /turnTimeoutMs\s*:/);
   assert.match(checkSlice, /idleTimeoutMs\s*:/);
 });
+
+test("auto-pipeline clamps stage timeout to remaining total budget", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const reviewCalls = [];
+    const stageMs = 5_000;
+    const totalMs = 200;
+    const startedAt = Date.now();
+
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-total-budget",
+      cwd: root,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub([]),
+      runAppServerReview: async (cwd, opts) => {
+        reviewCalls.push({ cwd, opts: { ...opts } });
+        return new Promise(() => {});
+      },
+      jobId: "job-total-budget",
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+    });
+
+    assert.equal(result.complete, false);
+    assert.deepEqual(result.completedStages, ["diff"]);
+    assert.match(result.error, /Auto-pipeline exceeded/);
+    assert.ok(
+      Date.now() - startedAt < 1_500,
+      "pipeline should stop on total budget instead of waiting for the full stage timeout"
+    );
+    assert.equal(reviewCalls.length, 1);
+    assert.equal(reviewCalls[0].opts.turnTimeoutMs, 0);
+    assert.equal(reviewCalls[0].opts.idleTimeoutMs, 0);
+
+    const events = fs.readFileSync(session.eventsPath, "utf8");
+    assert.match(events, /\[ERROR\].*ClientTimeout/s);
+    assert.match(events, /failing_stage: pipeline-total/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-pipeline surfaces fix-stage nonzero status as fix failure", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const turnCalls = [];
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-fix-failure",
+      cwd: root,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "Confirm completion in JSON.",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: async (cwd, opts) => {
+        turnCalls.push({ cwd, opts: { ...opts } });
+        return {
+          status: 1,
+          threadId: opts.resumeThreadId ?? "thread-fix-failure",
+          turnId: "fix-turn",
+          finalMessage: "",
+          reasoningSummary: "",
+          turn: { id: "fix-turn", status: "failed" },
+          error: { message: "auth denied", code: "Unauthorized" },
+          stderr: "",
+          fileChanges: [],
+          touchedFiles: [],
+        };
+      },
+      runAppServerReview: async () => ({
+        status: 0,
+        threadId: "review-thread",
+        sourceThreadId: "review-thread",
+        turnId: "review-turn",
+        reviewText: [
+          "- [P1] Fix auth failure - src/example.mjs:12",
+          "  Recommendation: handle the auth error."
+        ].join("\n"),
+        reasoningSummary: "",
+        turn: { id: "review-turn", status: "completed" },
+        error: null,
+        stderr: "",
+      }),
+      jobId: "job-fix-failure",
+      stageTimeoutMs: 5_000,
+      totalTimeoutMs: 20_000,
+    });
+
+    assert.equal(result.complete, false);
+    assert.deepEqual(result.completedStages, ["diff", "review"]);
+    assert.match(result.error, /auto-fix failed \(status 1: auth denied\)/);
+    assert.equal(turnCalls.length, 1, "completion check must not run after a fix-stage failure");
+
+    const events = fs.readFileSync(session.eventsPath, "utf8");
+    assert.match(events, /\[ERROR\].*Unauthorized/s);
+    assert.match(events, /failing_stage: fix/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

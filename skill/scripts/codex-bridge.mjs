@@ -225,6 +225,16 @@ function classifyError(err) {
       exitCode: CLASS_TO_EXIT[err.class] ?? ExitCode.CRASH
     };
   }
+  if (err?.code === "BACKEND_INCAPABLE" || err?.name === "AdapterError") {
+    return {
+      class: "validation",
+      code: "BACKEND_INCAPABLE",
+      message: err.message ?? String(err),
+      retryable: false,
+      details: err?.details,
+      exitCode: ExitCode.VALIDATION
+    };
+  }
   const codexInfo = normalizeCodexErrorInfo(err?.codexErrorInfo ?? err?.codex_error_info ?? null);
   if (codexInfo && CODEX_ERROR_INFO[codexInfo.code]) {
     const entry = CODEX_ERROR_INFO[codexInfo.code];
@@ -712,6 +722,172 @@ function splitRawArgumentString(raw) {
     tokens.push(current);
   }
   return tokens;
+}
+
+// src/adapters/codex/index.mjs
+var NOT_IMPLEMENTED = (verb) => () => {
+  const err = new Error(
+    `codex adapter '${verb}' not implemented yet (lands in T2-T5; bridge currently calls src/adapters/codex/codex.mjs directly)`
+  );
+  err.code = "NOT_IMPLEMENTED";
+  throw err;
+};
+var adapter = {
+  name: "codex",
+  displayName: "OpenAI Codex",
+  capabilities() {
+    return Object.freeze({
+      supports_plan_mode: true,
+      supports_questions: false,
+      supports_streaming: true,
+      supports_resume: false,
+      supports_steering: false,
+      supports_background: true,
+      supports_auto_pipeline: true,
+      supports_adversarial_review: true,
+      supports_worktree: true,
+      supports_artifact_registry: true,
+      input_modalities: ["text"],
+      output_modalities: ["text", "diff", "structured"],
+      max_prompt_chars: 512e3,
+      billing_model: "subscription",
+      auth_strategy: "oauth-cli",
+      transport: "json-rpc-unix-socket"
+    });
+  },
+  validateConfig(_config) {
+    return { valid: true, errors: [] };
+  },
+  dispatch: NOT_IMPLEMENTED("dispatch"),
+  streamEvents: NOT_IMPLEMENTED("streamEvents"),
+  getResult: NOT_IMPLEMENTED("getResult"),
+  cancel: NOT_IMPLEMENTED("cancel")
+};
+var codex_default = adapter;
+
+// src/adapters/index.mjs
+var REQUIRED_FIELDS = ["name", "displayName"];
+var REQUIRED_METHODS = ["capabilities", "validateConfig", "dispatch", "streamEvents", "getResult", "cancel"];
+var OPTIONAL_CAPABILITY_METHODS = Object.freeze({
+  supports_questions: "respond",
+  supports_resume: "resume",
+  supports_steering: "steer"
+});
+var ADAPTER_LOADERS = {
+  codex: () => codex_default
+};
+var KNOWN_ADAPTERS = Object.keys(ADAPTER_LOADERS);
+var adapterCache = /* @__PURE__ */ new Map();
+var AdapterError = class extends CliError {
+  constructor(code, message, details) {
+    super(message, {
+      class: "validation",
+      code,
+      retryable: false,
+      details
+    });
+    this.name = "AdapterError";
+  }
+};
+function validateAdapter(adapter2, name) {
+  if (!adapter2 || typeof adapter2 !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Adapter '${name}' default export is not an object`
+    );
+  }
+  for (const field of REQUIRED_FIELDS) {
+    if (!Object.hasOwn(adapter2, field)) {
+      throw new AdapterError(
+        "BACKEND_INCAPABLE",
+        `Adapter '${name}' missing required field: ${field}`
+      );
+    }
+  }
+  for (const method of REQUIRED_METHODS) {
+    if (typeof adapter2[method] !== "function") {
+      throw new AdapterError(
+        "BACKEND_INCAPABLE",
+        `Adapter '${name}' missing required method: ${method}`
+      );
+    }
+  }
+  if (adapter2.name !== name) {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Adapter at '${name}/index.mjs' declares name='${adapter2.name}', expected '${name}'`
+    );
+  }
+  const capabilities = adapter2.capabilities();
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Adapter '${name}' capabilities() must return an object`
+    );
+  }
+  for (const [capability, method] of Object.entries(OPTIONAL_CAPABILITY_METHODS)) {
+    if (capabilities[capability] === true && typeof adapter2[method] !== "function") {
+      throw new AdapterError(
+        "BACKEND_INCAPABLE",
+        `Adapter '${name}' declares ${capability}=true but is missing optional method: ${method}`,
+        { backend: name, capability, method }
+      );
+    }
+  }
+}
+async function loadAdapter(name) {
+  if (!KNOWN_ADAPTERS.includes(name)) {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Unknown backend '${name}'. Known: ${KNOWN_ADAPTERS.join(", ")}`
+    );
+  }
+  const cached2 = adapterCache.get(name);
+  if (cached2) return cached2;
+  const adapter2 = ADAPTER_LOADERS[name]();
+  validateAdapter(adapter2, name);
+  adapterCache.set(name, adapter2);
+  return adapter2;
+}
+async function selectAdapter(options = {}) {
+  if (options.cwdConfig && typeof options.cwdConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: cwdConfig must be an object"
+    );
+  }
+  if (options.workspaceConfig && typeof options.workspaceConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: workspaceConfig must be an object"
+    );
+  }
+  if (options.userConfig && typeof options.userConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: userConfig must be an object"
+    );
+  }
+  const candidates = [
+    options.backend,
+    options.envBackend,
+    options.metaBackend,
+    options.subagentType ? options.cwdConfig?.adapter_routing?.[options.subagentType]?.backend : void 0,
+    options.subagentType ? options.workspaceConfig?.adapter_routing?.[options.subagentType]?.backend : void 0,
+    options.subagentType ? options.userConfig?.adapter_routing?.[options.subagentType]?.backend : void 0,
+    options.cwdConfig?.default_backend,
+    options.workspaceConfig?.default_backend,
+    options.userConfig?.default_backend,
+    options.defaultBackend ?? "codex"
+  ];
+  const name = candidates.find((c) => typeof c === "string" && c.length > 0);
+  if (!name) {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "No backend resolved (all layers empty)"
+    );
+  }
+  return loadAdapter(name);
 }
 
 // src/lib/thread-id.mjs
@@ -7360,23 +7536,27 @@ var DEFAULT_CONFIG = {
   question_answer_ms: 3e5,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
-function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
-  const readYaml = (p) => {
-    try {
-      const raw = fs8.readFileSync(p, "utf8");
-      const doc = jsYaml.load(raw) ?? {};
-      const bridge = doc.codex_bridge ?? doc;
-      return typeof bridge === "object" && bridge !== null ? bridge : {};
-    } catch {
-      return {};
-    }
-  };
+function readConfigFile(filePath) {
+  try {
+    const raw = fs8.readFileSync(filePath, "utf8");
+    const doc = jsYaml.load(raw) ?? {};
+    const bridge = doc.codex_bridge ?? doc;
+    return typeof bridge === "object" && bridge !== null ? bridge : {};
+  } catch {
+    return {};
+  }
+}
+function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
   const skillConfigPath = skillDir ? path6.join(skillDir, "config.yaml") : path6.join(os3.homedir(), ".codex-bridge", "config.yaml");
-  const skillLayer = readYaml(skillConfigPath);
   const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path6.join(workspaceRoot, "config.yaml") : null;
-  const workspaceLayer = workspaceConfigPath && fs8.existsSync(workspaceConfigPath) ? readYaml(workspaceConfigPath) : {};
   const overrideConfigPath = overrideDir ? path6.join(overrideDir, "config.yaml") : null;
-  const overrideLayer = overrideConfigPath && fs8.existsSync(overrideConfigPath) ? readYaml(overrideConfigPath) : {};
+  return { skillConfigPath, workspaceConfigPath, overrideConfigPath };
+}
+function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
+  const { skillConfigPath, workspaceConfigPath, overrideConfigPath } = configPaths(skillDir, overrideDir, workspaceRoot);
+  const skillLayer = readConfigFile(skillConfigPath);
+  const workspaceLayer = workspaceConfigPath && fs8.existsSync(workspaceConfigPath) ? readConfigFile(workspaceConfigPath) : {};
+  const overrideLayer = overrideConfigPath && fs8.existsSync(overrideConfigPath) ? readConfigFile(overrideConfigPath) : {};
   return {
     ...DEFAULT_CONFIG,
     ...skillLayer,
@@ -7385,9 +7565,7 @@ function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
   };
 }
 function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
-  const skillConfigPath = skillDir ? path6.join(skillDir, "config.yaml") : path6.join(os3.homedir(), ".codex-bridge", "config.yaml");
-  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path6.join(workspaceRoot, "config.yaml") : null;
-  const overrideConfigPath = overrideDir ? path6.join(overrideDir, "config.yaml") : null;
+  const { skillConfigPath, workspaceConfigPath, overrideConfigPath } = configPaths(skillDir, overrideDir, workspaceRoot);
   return {
     skillConfigPath,
     skillConfigExists: fs8.existsSync(skillConfigPath),
@@ -7395,6 +7573,14 @@ function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null
     workspaceConfigExists: workspaceConfigPath ? fs8.existsSync(workspaceConfigPath) : false,
     overrideConfigPath,
     overrideConfigExists: overrideConfigPath ? fs8.existsSync(overrideConfigPath) : false
+  };
+}
+function resolveConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
+  const sources = resolveConfigSources(skillDir, overrideDir, workspaceRoot);
+  return {
+    skillConfig: sources.skillConfigExists ? readConfigFile(sources.skillConfigPath) : {},
+    workspaceConfig: sources.workspaceConfigExists ? readConfigFile(sources.workspaceConfigPath) : {},
+    cwdConfig: sources.overrideConfigExists ? readConfigFile(sources.overrideConfigPath) : {}
   };
 }
 function resolveEffort(config, options = {}) {
@@ -9345,9 +9531,9 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge setup --json"]
   },
   version: {
-    synopsis: "version [--check-update] [--json]",
-    summary: "Print bridge version, schema version, Node version, Codex version, capability list, and cached update status. `--check-update` forces a fresh GitHub round-trip.",
-    examples: ["codex-bridge version --json", "codex-bridge version --check-update --json"]
+    synopsis: "version [--backend <name>] [--check-update] [--json]",
+    summary: "Print bridge version, schema version, Node version, Codex version, active backend, capability list, and cached update status. `--check-update` forces a fresh GitHub round-trip.",
+    examples: ["codex-bridge version --json", "codex-bridge version --backend codex --json", "codex-bridge version --check-update --json"]
   },
   update: {
     synopsis: "update [--force] [--apply|--yes] [--json]",
@@ -9697,15 +9883,26 @@ var BRIDGE_CAPABILITIES = Object.freeze([
   "per-subcommand-help",
   "machine-readable-help",
   "workspace-config-override",
-  "update-check"
+  "update-check",
+  "backend-adapter"
 ]);
 async function handleVersion(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
+    valueOptions: ["cwd", "backend"],
     booleanOptions: ["json", "check-update"]
   });
   const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const configLayers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+  const adapter2 = await selectAdapter({
+    backend: options.backend,
+    envBackend: process8.env.CODEX_BRIDGE_BACKEND,
+    workspaceConfig: configLayers.workspaceConfig,
+    cwdConfig: configLayers.cwdConfig,
+    userConfig: configLayers.skillConfig,
+    defaultBackend: "codex"
+  });
   const codex = getCodexAvailability(cwd);
   const update = await checkForUpdate({
     currentVersion: BRIDGE_VERSION,
@@ -9720,6 +9917,8 @@ async function handleVersion(argv) {
       detail: codex.detail ?? null
     },
     capabilities: [...BRIDGE_CAPABILITIES],
+    active_backend: adapter2.name,
+    adapter_capabilities: adapter2.capabilities(),
     update: {
       latest_version: update.latestVersion ?? null,
       has_update: Boolean(update.hasUpdate),
@@ -9733,6 +9932,7 @@ async function handleVersion(argv) {
     `codex-bridge ${payload.version} (schema ${payload.schema_version})`,
     `  node:  ${payload.node_version}`,
     `  codex: ${codex.available ? codex.detail ?? "available" : "not installed"}`,
+    `  backend: ${payload.active_backend}`,
     `  caps:  ${payload.capabilities.join(", ")}`,
     updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
   ].join("\n") + "\n";
@@ -11293,6 +11493,24 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           command: `git -C ${cwdArg} add -A && git -C ${cwdArg} commit -m "<subject>"`,
           description: "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
         }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
+        let dirtyDiff;
+        try {
+          dirtyDiff = captureGitDiff(request.cwd, session);
+        } catch {
+          dirtyDiff = { diffStat: `${touchedFiles.length} touched files`, diffPath: "" };
+        }
+        logEvent(session, formatIncompleteEvent(session, {
+          diffStat: dirtyDiff.diffStat,
+          diffPath: dirtyDiff.diffPath,
+          verdict: "workspace-dirty",
+          findingCount: touchedFiles.length,
+          missingItems: [
+            "Codex produced workspace changes, but the sandbox blocked the final commit. Commit the generated diff outside the sandbox."
+          ],
+          scriptPath: SCRIPT_PATH,
+          jobId: request.jobId ?? null,
+          cwd: request.cwd
+        }));
         markTerminalEmitted();
         return { ...result, session, exitStatus: 0, error: null };
       }

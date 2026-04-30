@@ -394,15 +394,18 @@ codex-bridge setup [--json] [--enable-review-gate | --disable-review-gate]
 
 ## version
 
-Bridge + Codex + Node version, schema version, capability list, and cached update status. Use to pin agent behavior to a known build.
+Bridge + Codex + Node version, schema version, capability list, active backend, adapter capability map, and cached update status. Use to pin agent behavior to a known build.
 
 ```
-codex-bridge version [--check-update] [--json]
+codex-bridge version [--backend <name>] [--check-update] [--json]
 ```
 
 | Flag | Description |
 |------|-------------|
+| `--backend <name>` | Resolve the version capability envelope against this backend instead of env/config defaults. Unknown backends fail with `BACKEND_INCAPABLE`. |
 | `--check-update` | Force a fresh GitHub round-trip for the update probe (bypasses the cached result used on plain `version`). |
+
+`--json` includes `result.capabilities` (including `backend-adapter`), `result.active_backend`, and `result.adapter_capabilities`. Backend resolution honors `--backend`, `CODEX_BRIDGE_BACKEND`, cwd `config.yaml`, workspace-root `config.yaml`, then the skill/user config. Consumers should use the adapter capability booleans to decide whether backend-specific features such as auto-pipeline, review, or server-side questions are available.
 
 ## update
 

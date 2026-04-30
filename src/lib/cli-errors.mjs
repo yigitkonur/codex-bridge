@@ -222,6 +222,17 @@ export function classifyError(err) {
     };
   }
 
+  if (err?.code === "BACKEND_INCAPABLE" || err?.name === "AdapterError") {
+    return {
+      class: "validation",
+      code: "BACKEND_INCAPABLE",
+      message: err.message ?? String(err),
+      retryable: false,
+      details: err?.details,
+      exitCode: ExitCode.VALIDATION
+    };
+  }
+
   // Codex turn errors carry `codexErrorInfo` / `codex_error_info` on the thrown error.
   const codexInfo = normalizeCodexErrorInfo(err?.codexErrorInfo ?? err?.codex_error_info ?? null);
   if (codexInfo && CODEX_ERROR_INFO[codexInfo.code]) {

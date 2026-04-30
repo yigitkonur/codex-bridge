@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+import { selectAdapter } from "./adapters/index.mjs";
 import {
   CliError,
   emitError,
@@ -100,6 +101,7 @@ import {
   buildSandboxPolicy,
   COMPLETION_CHECK_SCHEMA,
   DEFAULT_CONFIG,
+  resolveConfigLayers,
   resolveConfigSources
 } from "./lib/config.mjs";
 import {
@@ -616,9 +618,9 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge setup --json"]
   },
   version: {
-    synopsis: "version [--check-update] [--json]",
-    summary: "Print bridge version, schema version, Node version, Codex version, capability list, and cached update status. `--check-update` forces a fresh GitHub round-trip.",
-    examples: ["codex-bridge version --json", "codex-bridge version --check-update --json"]
+    synopsis: "version [--backend <name>] [--check-update] [--json]",
+    summary: "Print bridge version, schema version, Node version, Codex version, active backend, capability list, and cached update status. `--check-update` forces a fresh GitHub round-trip.",
+    examples: ["codex-bridge version --json", "codex-bridge version --backend codex --json", "codex-bridge version --check-update --json"]
   },
   update: {
     synopsis: "update [--force] [--apply|--yes] [--json]",
@@ -1043,17 +1045,28 @@ const BRIDGE_CAPABILITIES = Object.freeze([
   "per-subcommand-help",
   "machine-readable-help",
   "workspace-config-override",
-  "update-check"
+  "update-check",
+  "backend-adapter"
 ]);
 
 async function handleVersion(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
+    valueOptions: ["cwd", "backend"],
     booleanOptions: ["json", "check-update"]
   });
 
   const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const configLayers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+  const adapter = await selectAdapter({
+    backend: options.backend,
+    envBackend: process.env.CODEX_BRIDGE_BACKEND,
+    workspaceConfig: configLayers.workspaceConfig,
+    cwdConfig: configLayers.cwdConfig,
+    userConfig: configLayers.skillConfig,
+    defaultBackend: "codex",
+  });
   const codex = getCodexAvailability(cwd);
 
   // `version --check-update` forces a fresh GitHub round-trip; the bare
@@ -1072,6 +1085,8 @@ async function handleVersion(argv) {
       detail: codex.detail ?? null
     },
     capabilities: [...BRIDGE_CAPABILITIES],
+    active_backend: adapter.name,
+    adapter_capabilities: adapter.capabilities(),
     update: {
       latest_version: update.latestVersion ?? null,
       has_update: Boolean(update.hasUpdate),
@@ -1086,6 +1101,7 @@ async function handleVersion(argv) {
     `codex-bridge ${payload.version} (schema ${payload.schema_version})`,
     `  node:  ${payload.node_version}`,
     `  codex: ${codex.available ? (codex.detail ?? "available") : "not installed"}`,
+    `  backend: ${payload.active_backend}`,
     `  caps:  ${payload.capabilities.join(", ")}`,
     updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
   ].join("\n") + "\n";
@@ -3168,6 +3184,24 @@ async function runBridgeTask(request) {
         description:
           "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
       }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
+      let dirtyDiff;
+      try {
+        dirtyDiff = captureGitDiff(request.cwd, session);
+      } catch {
+        dirtyDiff = { diffStat: `${touchedFiles.length} touched files`, diffPath: "" };
+      }
+      logEvent(session, formatIncompleteEvent(session, {
+        diffStat: dirtyDiff.diffStat,
+        diffPath: dirtyDiff.diffPath,
+        verdict: "workspace-dirty",
+        findingCount: touchedFiles.length,
+        missingItems: [
+          "Codex produced workspace changes, but the sandbox blocked the final commit. Commit the generated diff outside the sandbox."
+        ],
+        scriptPath: SCRIPT_PATH,
+        jobId: request.jobId ?? null,
+        cwd: request.cwd,
+      }));
       markTerminalEmitted();
       return { ...result, session, exitStatus: 0, error: null };
     }

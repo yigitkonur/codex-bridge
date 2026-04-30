@@ -409,6 +409,8 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs update --force
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs update --apply
 ```
 
+`version --json` reports the bridge capability list plus the active backend (`active_backend`) and its declared `adapter_capabilities`; prefer those fields over prose assumptions when choosing backend-dependent flows. It resolves the backend through `--backend`, `CODEX_BRIDGE_BACKEND`, cwd config, workspace config, then skill/user config.
+
 When a command fails, **read `$?` first**. Exit 4 means re-auth; exit 7 means retry with backoff (check `error.code` — `ClientTimeout` branches by `origin:` per [references/error-recovery.md](references/error-recovery.md#clienttimeout)); exit 2/6 means fix the invocation before anything else.
 
 ### Claude Code on macOS — Xcode `build.db` I/O errors
