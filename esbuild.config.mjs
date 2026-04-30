@@ -11,7 +11,9 @@ import path from "node:path";
 //
 // Within skill/, the broker bundles to skill/app-server-broker.mjs (one level
 // up from skill/scripts/codex-bridge.mjs). Within plugin/, the broker
-// bundles next to the main CLI at plugin/scripts/app-server-broker.mjs.
+// bundles next to the main CLI at plugin/scripts/app-server-broker.mjs, and
+// the plugin command/agent surfaces are copied under the paths declared by
+// plugin/.claude-plugin/plugin.json.
 // src/lib/broker-lifecycle.mjs::resolveBrokerScriptPath() probes both
 // layouts (plus the source-mode location) so the bundled CLI resolves the
 // broker correctly regardless of distribution shape.
@@ -37,6 +39,31 @@ const staticAssets = [
   ["src/templates/execute-instructions.md", "templates/execute-instructions.md"],
   ["src/templates/plan-enforcement.md", "templates/plan-enforcement.md"],
 ];
+
+function copyFile(src, dest, transform = (value) => value) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, transform(fs.readFileSync(src, "utf8")));
+}
+
+function copyDirectory(srcDir, destDir, transform) {
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirectory(src, dest, transform);
+    } else if (entry.isFile()) {
+      copyFile(src, dest, transform);
+    }
+  }
+}
+
+function toPluginRuntimePath(content) {
+  return content.replaceAll(
+    "${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge.mjs",
+    "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs",
+  );
+}
 
 for (const target of targets) {
   await build({
@@ -65,8 +92,12 @@ for (const target of targets) {
 
   for (const [src, suffix] of staticAssets) {
     const dest = `${target.assetsRoot}/${suffix}`;
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest);
+    copyFile(src, dest);
+  }
+
+  if (target.assetsRoot === "plugin") {
+    copyDirectory("commands", "plugin/commands", toPluginRuntimePath);
+    copyDirectory("agents", "plugin/agents", toPluginRuntimePath);
   }
 
   console.log(`Build complete: ${target.label} -> ${target.cliOut}`);

@@ -20,6 +20,36 @@ function listMarkdownFiles(relativeDir) {
     .sort();
 }
 
+function exists(relativePath) {
+  return fs.existsSync(new URL(relativePath, root));
+}
+
+function pluginManifestPath(relativePath) {
+  assert.match(relativePath, /^\.\//);
+  return `plugin/${relativePath.slice(2)}`;
+}
+
+const expectedCommands = [
+  "adversarial-review.md",
+  "auth-status.md",
+  "await-artifact.md",
+  "cancel.md",
+  "config.md",
+  "events.md",
+  "respond.md",
+  "result.md",
+  "review.md",
+  "send.md",
+  "setup.md",
+  "status.md",
+  "steer.md",
+  "summary.md",
+  "task.md",
+  "update.md",
+  "version.md",
+  "wait.md"
+];
+
 test("Claude plugin manifest version matches package and skill metadata", () => {
   const manifest = readJson(".claude-plugin/plugin.json");
   const pkg = readJson("package.json");
@@ -45,27 +75,6 @@ test("marketplace keeps the v2 scaffold on a noncanonical alpha channel", () => 
 });
 
 test("Claude plugin exposes command coverage for bridge orchestration", () => {
-  const expectedCommands = [
-    "adversarial-review.md",
-    "auth-status.md",
-    "await-artifact.md",
-    "cancel.md",
-    "config.md",
-    "events.md",
-    "respond.md",
-    "result.md",
-    "review.md",
-    "send.md",
-    "setup.md",
-    "status.md",
-    "steer.md",
-    "summary.md",
-    "task.md",
-    "update.md",
-    "version.md",
-    "wait.md"
-  ];
-
   assert.deepEqual(listMarkdownFiles("commands/"), expectedCommands);
 
   for (const command of expectedCommands) {
@@ -73,6 +82,30 @@ test("Claude plugin exposes command coverage for bridge orchestration", () => {
     assert.match(body, /CLAUDE_PLUGIN_ROOT/);
     assert.match(body, /skill\/scripts\/codex-bridge\.mjs|codex-bridge-runner/);
   }
+});
+
+test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
+  const manifest = readJson("plugin/.claude-plugin/plugin.json");
+
+  for (const skillPath of manifest.skills) {
+    const resolvedSkillPath = pluginManifestPath(skillPath);
+    assert.ok(exists(`${resolvedSkillPath}/SKILL.md`), `${skillPath} must contain SKILL.md`);
+  }
+
+  assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.commands)), expectedCommands);
+  assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.agents)), ["codex-bridge-runner.md"]);
+  assert.ok(exists(pluginManifestPath(manifest.hooks)), `${manifest.hooks} must exist`);
+
+  for (const command of expectedCommands) {
+    const body = readText(path.join(pluginManifestPath(manifest.commands), command));
+    assert.match(body, /CLAUDE_PLUGIN_ROOT/);
+    assert.doesNotMatch(body, /CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs/);
+    assert.match(body, /scripts\/codex-bridge\.mjs|codex-bridge-runner/);
+  }
+
+  const runner = readText("plugin/agents/codex-bridge-runner.md");
+  assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
+  assert.doesNotMatch(runner, /\$\{CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs/);
 });
 
 test("task command routes substantial work through the runner subagent and Monitor", () => {

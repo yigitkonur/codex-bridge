@@ -42,11 +42,11 @@ jobs:
           # plugin/ bundle (canonical v2.0+ install) ship as committed artifacts —
           # no build step runs on the end-user's machine. Any diff here means a
           # contributor forgot to run `npm run build` before committing.
-          if ! git diff --quiet --exit-code -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates \
-                                               plugin/scripts plugin/prompts plugin/schemas plugin/templates; then
+          GENERATED_PATHS="skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates plugin/scripts plugin/prompts plugin/schemas plugin/templates plugin/commands plugin/agents"
+          if [ -n "$(git status --porcelain -- $GENERATED_PATHS)" ]; then
             echo "::error::committed bundle is stale. run 'npm run build' and commit the changes."
-            git --no-pager diff --stat -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates \
-                                          plugin/scripts plugin/prompts plugin/schemas plugin/templates
+            git status --short -- $GENERATED_PATHS
+            git --no-pager diff --stat -- $GENERATED_PATHS
             exit 1
           fi
 
@@ -64,9 +64,19 @@ jobs:
             plugin/prompts/adversarial-review.md \
             plugin/schemas/review-output.schema.json \
             plugin/templates/execute-instructions.md \
-            plugin/templates/plan-enforcement.md; do
+            plugin/templates/plan-enforcement.md \
+            plugin/skills/codex-bridge/SKILL.md \
+            plugin/commands/task.md \
+            plugin/commands/review.md \
+            plugin/commands/adversarial-review.md \
+            plugin/agents/codex-bridge-runner.md; do
             test -s "$f" || { echo "missing or empty: $f"; exit 1; }
           done
+
+          if grep -R '\${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge\.mjs' plugin/commands plugin/agents; then
+            echo "::error::plugin command surfaces must call plugin/scripts/codex-bridge.mjs"
+            exit 1
+          fi
 
       # Sanity probes run against BOTH bundle layouts so a future divergence
       # between skill/ and plugin/ entry points is caught at build time. Today
