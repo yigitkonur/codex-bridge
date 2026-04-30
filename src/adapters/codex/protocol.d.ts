@@ -4,7 +4,7 @@ import type {
   InitializeParams,
   InitializeResponse,
   ServerNotification
-} from "../../.generated/app-server-types/index.js";
+} from "../../../.generated/app-server-types/index.js";
 import type {
   ReviewStartParams,
   ReviewStartResponse,
@@ -25,7 +25,7 @@ import type {
   TurnStartParams,
   TurnStartResponse,
   UserInput
-} from "../../.generated/app-server-types/v2/index.js";
+} from "../../../.generated/app-server-types/v2/index.js";
 
 export type {
   ClientInfo,

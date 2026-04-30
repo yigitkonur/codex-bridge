@@ -741,7 +741,7 @@ function readStdinIfPiped() {
   return fs.readFileSync(0, "utf8");
 }
 
-// src/lib/app-server.mjs
+// src/adapters/codex/protocol.mjs
 import net2 from "node:net";
 import process6 from "node:process";
 import { spawn as spawn2 } from "node:child_process";
@@ -1888,6 +1888,48 @@ async function isBrokerEndpointReady(endpoint) {
     return false;
   }
 }
+function isSourceBrokerLifecycleUrl(moduleUrl) {
+  try {
+    const modulePath = fileURLToPath(moduleUrl);
+    return path5.basename(modulePath) === "broker-lifecycle.mjs" && path5.basename(path5.dirname(modulePath)) === "lib" && path5.basename(path5.dirname(path5.dirname(modulePath))) === "src";
+  } catch {
+    return false;
+  }
+}
+function readBrokerLogTail(logFile, maxChars = 4e3) {
+  try {
+    const log = fs5.readFileSync(logFile, "utf8").trim();
+    if (!log) {
+      return "";
+    }
+    return log.length > maxChars ? log.slice(-maxChars) : log;
+  } catch {
+    return "";
+  }
+}
+function createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs }) {
+  const logTail = readBrokerLogTail(logFile);
+  const detail = logTail ? ` Broker log:
+${logTail}` : " No broker log output was captured.";
+  const error = new Error(
+    `Codex app-server broker failed to start within ${timeoutMs}ms at ${endpoint} using ${scriptPath}.${detail}`
+  );
+  error.code = "BROKER_START_FAILED";
+  return error;
+}
+function resolveBrokerScriptPath({ moduleUrl = import.meta.url, existsSync = fs5.existsSync } = {}) {
+  const bundledBroker = new URL("../app-server-broker.mjs", moduleUrl);
+  const sourceBroker = new URL("../adapters/codex/broker.mjs", moduleUrl);
+  const candidates = isSourceBrokerLifecycleUrl(moduleUrl) ? [sourceBroker, bundledBroker] : [bundledBroker, sourceBroker];
+  for (const url of candidates) {
+    const p = fileURLToPath(url);
+    if (existsSync(p)) return p;
+  }
+  throw new Error(
+    `Could not locate broker script. Tried:
+  ${candidates.map((url) => fileURLToPath(url)).join("\n  ")}`
+  );
+}
 async function ensureBrokerSession(cwd, options = {}) {
   const existing = loadBrokerSession(cwd);
   if (existing && await isBrokerEndpointReady(existing.endpoint)) {
@@ -1909,7 +1951,8 @@ async function ensureBrokerSession(cwd, options = {}) {
   const endpoint = endpointFactory(sessionDir, options.platform);
   const pidFile = path5.join(sessionDir, "broker.pid");
   const logFile = path5.join(sessionDir, "broker.log");
-  const scriptPath = options.scriptPath ?? fileURLToPath(new URL("../app-server-broker.mjs", import.meta.url));
+  const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
+  const timeoutMs = options.timeoutMs ?? 2e3;
   const child = spawnBrokerProcess({
     scriptPath,
     cwd,
@@ -1918,8 +1961,9 @@ async function ensureBrokerSession(cwd, options = {}) {
     logFile,
     env: options.env ?? process5.env
   });
-  const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2e3);
+  const ready = await waitForBrokerEndpoint(endpoint, timeoutMs);
   if (!ready) {
+    const startFailure = createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs });
     teardownBrokerSession({
       endpoint,
       pidFile,
@@ -1928,7 +1972,7 @@ async function ensureBrokerSession(cwd, options = {}) {
       pid: child.pid ?? null,
       killProcess: options.killProcess ?? terminateProcessTree
     });
-    return null;
+    throw startFailure;
   }
   const session = {
     endpoint,
@@ -1971,7 +2015,7 @@ function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir =
   }
 }
 
-// src/lib/app-server.mjs
+// src/adapters/codex/protocol.mjs
 var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 var BROKER_BUSY_RPC_CODE = -32001;
 var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
@@ -2087,9 +2131,9 @@ var AppServerClientBase = class {
   /**
    * @template {AppServerMethod} M
    * @param {M} method
-   * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+   * @param {import("./protocol").AppServerRequestParams<M>} params
    * @param {{ signal?: AbortSignal }} [options]
-   * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
+   * @returns {Promise<import("./protocol").AppServerResponse<M>>}
    */
   request(method, params, options = {}) {
     if (this.closed) {

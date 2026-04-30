@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { __testHooks__ } from "../src/app-server-broker.mjs";
-import { AppServerClientBase } from "../src/lib/app-server.mjs";
+import { __testHooks__ } from "../src/adapters/codex/broker.mjs";
+import { AppServerClientBase } from "../src/adapters/codex/protocol.mjs";
 
 const {
   beginStreamTracking,

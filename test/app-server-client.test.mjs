@@ -5,9 +5,11 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
-import { AppServerClientBase, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "../src/lib/app-server.mjs";
+import { AppServerClientBase, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "../src/adapters/codex/protocol.mjs";
 import { createBrokerEndpoint } from "../src/lib/broker-endpoint.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../src/lib/broker-lifecycle.mjs";
+
+const appServerSource = fs.readFileSync(new URL("../src/adapters/codex/protocol.mjs", import.meta.url), "utf8");
 
 function restoreEnv(name, previousValue) {
   if (previousValue == null) {

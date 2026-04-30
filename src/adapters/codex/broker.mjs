@@ -5,9 +5,9 @@ import net from "node:net";
 import path from "node:path";
 import process from "node:process";
 
-import { parseArgs } from "./lib/args.mjs";
-import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
-import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { parseArgs } from "../../lib/args.mjs";
+import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./protocol.mjs";
+import { parseBrokerEndpoint } from "../../lib/broker-endpoint.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
@@ -275,7 +275,7 @@ function cleanupDisconnectedSocket(socket, activeRequestSocket, streamTracker, p
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (subcommand !== "serve") {
-    throw new Error("Usage: node scripts/app-server-broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>]");
+    throw new Error("Usage: node src/adapters/codex/broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>]");
   }
 
   const { options } = parseArgs(argv, {

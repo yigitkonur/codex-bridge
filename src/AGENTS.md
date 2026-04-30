@@ -8,7 +8,7 @@ This folder contains the authored runtime source. Build outputs live under
 | Path | Role |
 |---|---|
 | `codex-bridge.mjs` | Main CLI entry point and orchestration layer |
-| `app-server-broker.mjs` | Standalone shared Codex app-server broker process |
+| `adapters/codex/broker.mjs` | Standalone shared Codex app-server broker process |
 | `lib/` | Reusable client, state, config, git, session-log, render, update, and error modules |
 | `prompts/` | Authored prompt source copied to `skill/prompts/` |
 | `schemas/` | Authored JSON schema source copied to `skill/schemas/` |
@@ -83,7 +83,7 @@ it so foreground and background runs produce the same session artifacts.
 
 ## Broker Entry
 
-`app-server-broker.mjs` serves one shared Codex app-server connection. It:
+`adapters/codex/broker.mjs` serves one shared Codex app-server connection. It:
 
 - Accepts `serve --endpoint <value> [--cwd <path>] [--pid-file <path>]`.
 - Handles newline-delimited JSON messages.
@@ -91,12 +91,15 @@ it so foreground and background runs produce the same session artifacts.
   `thread/compact/start`.
 - Allows `turn/interrupt` from a different socket during an active stream.
 - Routes server-side notifications to the active downstream client via
-  `appClient.setNotificationHandler(routeNotification)`. The current broker
-  does **not** forward server-initiated *requests* (e.g. `requestUserInput`)
-  to a downstream client and has no `pendingServerRequests` map; for
-  broker-mediated runs, server requests are handled by the upstream
-  `CodexAppServerClient`'s default behavior. Wire the forwarding logic before
-  documenting it as supported.
+  `appClient.setNotificationHandler(routeNotification)`.
+- Routes server-initiated requests through
+  `appClient.setServerRequestHandler(routeServerRequest)`. `routeServerRequest`
+  selects the active downstream request or stream socket, records the upstream
+  request in `pendingServerRequests`, forwards `{ id, method, params }` to that
+  socket, and later routes the downstream `{ id, result|error }` back through
+  `resolveServerRequest` or `rejectServerRequest`. If no active downstream
+  client exists, the downstream socket closes before answering, or the forward
+  write fails, the broker rejects the upstream request with a JSON-RPC error.
 - Removes unix sockets and pid files on shutdown.
 
 Once `feat/runtime-improvements` lands, any broker change needs `npm test`;
