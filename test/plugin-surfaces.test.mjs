@@ -591,6 +591,31 @@ test("plugin Stop hook ships the unified plugin-hook error trail", () => {
   assert.match(stopHook, /\.codex-bridge["'],\s*["']hook-errors/);
   assert.match(stopHook, /function logHookError/);
   assert.match(stopHook, /CODEX_BRIDGE_HOOK_DISABLE/);
+  // Top-level catch must exit 0 for parity with sibling plugin hooks.
+  // Failing closed on a hook crash would hold the session hostage; the
+  // diagnostic is captured via the hook-errors log + stderr instead.
+  assert.match(stopHook, /process\.exit\(0\);/);
+});
+
+test("plugin/hooks/hooks.json wires Stop with the bundled stop-gate.mjs and a 900s timeout", () => {
+  // Surface test for the plugin-layout hooks manifest (companion to the
+  // legacy hooks/hooks.json guard in "Claude plugin wires lifecycle hooks
+  // through the bundled bridge CLI"). Locks in the Stop entry's structure
+  // so a refactor that drops the entry, renames the script, or changes
+  // the timeout floor surfaces in CI rather than at session-stop time.
+  const hooksConfig = readJson("plugin/hooks/hooks.json");
+  assert.ok(Array.isArray(hooksConfig.hooks?.Stop), "plugin/hooks/hooks.json must declare a Stop array");
+  assert.equal(hooksConfig.hooks.Stop.length, 1);
+  const stopMatcher = hooksConfig.hooks.Stop[0];
+  assert.ok(Array.isArray(stopMatcher.hooks) && stopMatcher.hooks.length === 1);
+  const stopEntry = stopMatcher.hooks[0];
+  assert.equal(stopEntry.type, "command");
+  assert.match(stopEntry.command, /\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/stop-gate\.mjs/);
+  // 900s gives the hook 60s of margin under the inner 14-minute Codex
+  // turn timeout; see the "leaves timeout margin" test for the lower
+  // bound. We assert the upper bound here so anyone bumping the inner
+  // timeout above 14 minutes is forced to reconcile both.
+  assert.equal(stopEntry.timeout, 900);
 });
 
 test("setup owns project-scoped review gate lock creation", () => {

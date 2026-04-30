@@ -499,5 +499,15 @@ try {
   // session-start.mjs:35-43, user-prompt-submit.mjs:40-48).
   logHookError(error);
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
 }
+// Always exit 0, matching every other plugin hook (session-start.mjs:213,
+// session-end.mjs, user-prompt-submit.mjs:166, subagent-stop.mjs:159).
+// Rationale: Claude Code interprets a Stop hook crash as "allow" only if
+// stdout did not contain a blocking decision; emitting a non-zero exit
+// code is unnecessary and would only complicate downstream tooling that
+// classifies hook outcomes by exit status. The deliberate choice NOT to
+// emitBlock("hook crashed") here is a security stance: failing open is
+// the right posture for a stop-gate whose own runtime is broken — a
+// crashed hook should never hold the session hostage. Operators get the
+// diagnostic via the hook-errors log and stderr trail.
+process.exit(0);
