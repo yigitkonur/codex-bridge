@@ -15,11 +15,7 @@ import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
-<<<<<<< HEAD
-import { selectAdapter } from "./adapters/index.mjs";
-=======
-import { resolveAdapterForRuntime } from "./adapters/index.mjs";
->>>>>>> 1e991d7 (review(stage 4): apply adversarial-review findings)
+import { resolveAdapterForRuntime, selectAdapter } from "./adapters/index.mjs";
 import {
   CliError,
   emitError,
@@ -1092,19 +1088,7 @@ async function handleVersion(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-<<<<<<< HEAD
-  const configLayers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
-  const adapter = await selectAdapter({
-    backend: options.backend,
-    envBackend: process.env.CODEX_BRIDGE_BACKEND,
-    workspaceConfig: configLayers.workspaceConfig,
-    cwdConfig: configLayers.cwdConfig,
-    userConfig: configLayers.skillConfig,
-    defaultBackend: "codex",
-  });
-=======
-  const adapter = await resolveCommandAdapter({ cwd, workspaceRoot });
->>>>>>> 1e991d7 (review(stage 4): apply adversarial-review findings)
+  const adapter = await resolveCommandAdapter({ cwd, workspaceRoot, backend: options.backend });
   const codex = getCodexAvailability(cwd);
 
   // `version --check-update` forces a fresh GitHub round-trip; the bare
