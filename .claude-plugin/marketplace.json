@@ -1,0 +1,15 @@
+{
+  "name": "codex-bridge",
+  "owner": {
+    "name": "Yigit Konur",
+    "email": "noreply@yigitkonur.com"
+  },
+  "description": "Noncanonical alpha-preview marketplace for codex-bridge v2 plugin scaffolding. Current release users should use the root v1.5 plugin/skill until the v2 surfaces are functional.",
+  "plugins": [
+    {
+      "name": "codex-bridge-v2-alpha",
+      "source": "./plugin",
+      "description": "Noncanonical pre-release scaffold for validating the in-progress v2 plugin subtree"
+    }
+  ]
+}

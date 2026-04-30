@@ -1,0 +1,25 @@
+{
+  "$schema": "https://code.claude.com/schemas/plugin.schema.json",
+  "name": "codex-bridge-v2-alpha",
+  "version": "2.0.0-alpha.0",
+  "description": "Noncanonical pre-release codex-bridge plugin scaffold with a placeholder skill and empty hooks config for incremental plugin surface rollout.",
+  "homepage": "https://github.com/yigitkonur/codex-bridge",
+  "license": "MIT",
+  "author": {
+    "name": "Yigit Konur",
+    "url": "https://github.com/yigitkonur"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "delegation",
+    "worktree",
+    "monitor",
+    "hooks",
+    "agents",
+    "adversarial-review",
+    "iteration"
+  ],
+  "skills": ["./skills/codex-bridge"],
+  "hooks": "./hooks/hooks.json"
+}

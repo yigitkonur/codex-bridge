@@ -1,0 +1,4 @@
+{
+  "description": "Codex-Bridge plugin runtime hooks. Empty during the v2.0.0-alpha scaffolding phase; populated incrementally as the lifecycle (SessionStart/SessionEnd/UserPromptSubmit/SubagentStop/Stop) and tool-use (PreToolUse/PostToolUse) hooks land.",
+  "hooks": {}
+}
