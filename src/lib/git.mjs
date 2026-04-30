@@ -542,6 +542,7 @@ export function createSubagentWorktree({
   // getCurrentBranch returns "HEAD" when detached (never empty), so the
   // ?? chain previously skipped detectDefaultBranch entirely. Treat
   // detached HEAD explicitly so the default-branch fallback can fire.
+  const resolvedBaseRef =
     baseRef ??
     (currentBranch !== "HEAD" ? currentBranch : null) ??
     detectDefaultBranch(cwd) ??
@@ -735,9 +736,9 @@ export function mergeSubagentBranch({
 
   // Switch to base ref. Refuse if working tree is dirty.
   const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
-  if (dirty && dirty.trim().length > 0) {
+  if (dirty.ok && dirty.stdout.trim().length > 0) {
     const err = new Error(
-      `repo is dirty; commit or stash before merging. Status: ${dirty.trim()}`,
+      `repo is dirty; commit or stash before merging. Status: ${dirty.stdout.trim()}`,
     );
     err.kind = "precondition";
     throw err;
@@ -747,9 +748,9 @@ export function mergeSubagentBranch({
   const taskWorktreePath = worktreePath ?? path.join(defaultWorktreeRoot(repoRoot), taskId);
   if (taskWorktreePath && fs.existsSync(taskWorktreePath) && path.resolve(taskWorktreePath) !== repoRoot) {
     const taskDirty = tryRunGit(taskWorktreePath, ["status", "--porcelain", "--untracked-files=all"]);
-    if (taskDirty && taskDirty.trim().length > 0) {
+    if (taskDirty.ok && taskDirty.stdout.trim().length > 0) {
       const err = new Error(
-        `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.trim()}`,
+        `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.stdout.trim()}`,
       );
       err.kind = "precondition";
       throw err;
@@ -757,7 +758,8 @@ export function mergeSubagentBranch({
   }
 
   // Verify the branch is reachable.
-  const branchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch])?.trim().toLowerCase();
+  const branchShaResult = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
+  const branchSha = branchShaResult.ok ? branchShaResult.stdout.trim().toLowerCase() : "";
   if (!branchSha) {
     const err = new Error(`branch ${branch} does not exist`);
     err.kind = "precondition";
@@ -778,7 +780,8 @@ export function mergeSubagentBranch({
   // local branch can still be stale and would silently merge onto an old
   // SHA. Best-effort ff-only: if local has diverged from origin, surface
   // it as a precondition rather than merging onto stale state.
-  const remoteTip = tryRunGit(repoRoot, ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}`])?.trim();
+  const remoteTipResult = tryRunGit(repoRoot, ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}`]);
+  const remoteTip = remoteTipResult.ok ? remoteTipResult.stdout.trim() : null;
   if (remoteTip) {
     try {
       runGit(repoRoot, ["merge", "--ff-only", `refs/remotes/origin/${baseRef}`], { swallowStderr: true });
