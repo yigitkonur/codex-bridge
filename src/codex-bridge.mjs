@@ -592,7 +592,7 @@ const COMMANDS = Object.freeze({
     examples: [
       'codex-bridge adversarial-review "focus on SQL injection risks"',
       "codex-bridge adversarial-review --scope branch --base main",
-      "codex-bridge adversarial-review --brief @brief.json",
+      "codex-bridge adversarial-review --brief @review-brief.json",
       'codex-bridge adversarial-review --concern "Don\'t swallow non-retryable 4xx" --concern "Make timeout configurable"'
     ]
   },
