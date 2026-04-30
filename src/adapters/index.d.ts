@@ -145,7 +145,7 @@ export interface SelectAdapterOptions {
 }
 
 export function loadAdapter(name: string): Promise<BackendAdapter>;
-export function selectAdapter(options: SelectAdapterOptions): Promise<BackendAdapter>;
+export function selectAdapter(options?: SelectAdapterOptions): Promise<BackendAdapter>;
 export function guardCapability(
   adapter: BackendAdapter,
   capability: keyof CapabilitiesObject,
