@@ -248,7 +248,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
     assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.commands)), expectedCommands);
   }
   if (manifest.agents) {
-    assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.agents)), ["codex-bridge-runner.md"]);
+    assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.agents)).sort(), ["codex-bridge-reviewer.md", "codex-bridge-runner.md"].sort());
   }
   assert.ok(exists(pluginManifestPath(manifest.hooks)), `${manifest.hooks} must exist`);
 

@@ -4797,31 +4797,8 @@ async function handleVerdict(argv) {
     throw usageError("verdict requires a task_id positional argument");
   }
 
-<<<<<<< HEAD
   // discard mode: remove only verdict.json so the rest of the registry
   // entry (meta.json, session-log.jsonl, etc.) is preserved for audit.
-=======
-  if (options["payload-stdin"]) {
-    if (options.discard || options.set || options.summary || options.finding || options.reviewer) {
-      throw conflictError(
-        "--payload-stdin cannot be combined with --discard, --set, --summary, --finding, or --reviewer",
-        "VERDICT_PAYLOAD_CONFLICT",
-      );
-    }
-    const payload = readVerdictPayloadFromStdin();
-    writeVerdict(taskId, payload);
-    const stored = readVerdict(taskId);
-    emitSuccess(
-      "verdict",
-      { task_id: taskId, action: "set", verdict: stored },
-      `Verdict for ${taskId}: ${stored.verdict}\n`,
-      { json: options.json, startedAt },
-    );
-    return;
-  }
-
-  // discard mode: remove the registry directory entirely
->>>>>>> 8c735ee (review: address codex findings on PR #54)
   if (options.discard) {
     const target = path.join(jobDir(taskId), "verdict.json");
     let removed = false;
