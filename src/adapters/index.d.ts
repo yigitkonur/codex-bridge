@@ -171,7 +171,9 @@ export function getErrorMapper(
 ): ((error: unknown) => { code: string; class: string; details?: unknown }) | undefined;
 
 export class AdapterError extends Error {
+  class: "validation";
   code: string;
+  retryable: false;
   details?: unknown;
   constructor(code: string, message: string, details?: unknown);
 }

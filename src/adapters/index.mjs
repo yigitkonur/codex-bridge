@@ -3,9 +3,15 @@
 // ./_interface/CAPABILITIES.md for the resolution order.
 
 import codexAdapter from "./codex/index.mjs";
+import { CliError } from "../lib/cli-errors.mjs";
 
 const REQUIRED_FIELDS = ["name", "displayName"];
 const REQUIRED_METHODS = ["capabilities", "validateConfig", "dispatch", "streamEvents", "getResult", "cancel"];
+const OPTIONAL_CAPABILITY_METHODS = Object.freeze({
+  supports_questions: "respond",
+  supports_resume: "resume",
+  supports_steering: "steer",
+});
 
 const ADAPTER_LOADERS = {
   codex: () => codexAdapter,
@@ -19,12 +25,15 @@ const KNOWN_ADAPTERS = Object.keys(ADAPTER_LOADERS);
 const adapterCache = new Map();
 const errorMappers = new Map();
 
-export class AdapterError extends Error {
+export class AdapterError extends CliError {
   constructor(code, message, details) {
-    super(message);
+    super(message, {
+      class: "validation",
+      code,
+      retryable: false,
+      details,
+    });
     this.name = "AdapterError";
-    this.code = code;
-    this.details = details;
   }
 }
 
@@ -56,6 +65,23 @@ function validateAdapter(adapter, name) {
       "BACKEND_INCAPABLE",
       `Adapter at '${name}/index.mjs' declares name='${adapter.name}', expected '${name}'`,
     );
+  }
+
+  const capabilities = adapter.capabilities();
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Adapter '${name}' capabilities() must return an object`,
+    );
+  }
+  for (const [capability, method] of Object.entries(OPTIONAL_CAPABILITY_METHODS)) {
+    if (capabilities[capability] === true && typeof adapter[method] !== "function") {
+      throw new AdapterError(
+        "BACKEND_INCAPABLE",
+        `Adapter '${name}' declares ${capability}=true but is missing optional method: ${method}`,
+        { backend: name, capability, method },
+      );
+    }
   }
 }
 
@@ -162,4 +188,9 @@ export function getErrorMapper(adapterName) {
 export function _resetAdapterCache() {
   adapterCache.clear();
   errorMappers.clear();
+}
+
+// Test-only helper.
+export function _validateAdapterForTest(adapter, name) {
+  validateAdapter(adapter, name);
 }

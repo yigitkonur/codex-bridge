@@ -34,6 +34,8 @@ The runtime enforces boolean `supports_*` flags in [`../index.mjs::guardCapabili
 
 Hooks and SKILL.md branch on capabilities via the version envelope and per-job `meta.json`, never via prose-only assumptions.
 
+At adapter load time, any optional lifecycle flag set to `true` must have the matching callable method on the adapter object: `supports_questions` -> `respond`, `supports_resume` -> `resume`, and `supports_steering` -> `steer`. Under-declare the flag until the method exists.
+
 ## Adapter resolution order
 
 `selectAdapter(options)` walks these layers; highest precedence wins. The first non-empty string-typed value is the resolved backend.

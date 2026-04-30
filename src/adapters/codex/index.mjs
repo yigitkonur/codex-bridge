@@ -25,10 +25,10 @@ const adapter = {
   capabilities() {
     return Object.freeze({
       supports_plan_mode:           true,
-      supports_questions:           true,
+      supports_questions:           false,
       supports_streaming:           true,
-      supports_resume:              true,
-      supports_steering:            true,
+      supports_resume:              false,
+      supports_steering:            false,
       supports_background:          true,
       supports_auto_pipeline:       true,
       supports_adversarial_review:  true,

@@ -13,7 +13,7 @@ Every `src/adapters/<name>/index.mjs` must `export default` an object that satis
 - **Identity**: `name`, `displayName`, `capabilities()`, `validateConfig(config)`
 - **Lifecycle (required)**: `dispatch(prompt, options)`, `streamEvents(jobId, signal)`, `getResult(jobId)`, `cancel(jobId)`
 
-Optional methods are gated by capability flags. Don't expose `respond` if your `capabilities().supports_questions` is `false`; the bridge will refuse to call it (`guardCapability` throws `BACKEND_INCAPABLE`).
+Optional methods are gated by capability flags. Don't expose `respond` if your `capabilities().supports_questions` is `false`; the bridge will refuse to call it (`guardCapability` throws `BACKEND_INCAPABLE`). Conversely, do not set optional lifecycle capabilities to `true` until the matching method is callable: `supports_questions` requires `respond`, `supports_resume` requires `resume`, and `supports_steering` requires `steer`.
 
 ## What `dispatch` returns
 
@@ -43,6 +43,7 @@ Hooks and SKILL.md branch on capabilities — never on prose-only assumptions. I
 - Required own fields present (`name`, `displayName`)
 - Required methods are functions (`capabilities`, `validateConfig`, `dispatch`, `streamEvents`, `getResult`, `cancel`)
 - `adapter.name === name` (matches the directory)
+- Optional lifecycle capabilities set to `true` have matching callable methods (`respond`, `resume`, `steer`)
 
 Validation failures throw `AdapterError` with code `BACKEND_INCAPABLE`.
 
