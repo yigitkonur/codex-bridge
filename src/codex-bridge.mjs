@@ -3546,18 +3546,34 @@ async function handleTask(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
 
   // --brief @path.json | <inline-json> loads + validates the structured
-  // brief (T16) and projects it into the prompt as a rendered markdown
-  // block. The verbatim brief.json + brief.md are persisted in the
-  // artifact registry alongside meta.json (T15) so the original intent
-  // is recoverable even if the prompt template later changes.
+  // brief (T16) and persists it verbatim (brief.json + brief.md) into
+  // the per-task registry directory alongside meta.json. Persisting the
+  // brief is the v2 mechanism by which the original intent is recovered
+  // by review / iterate even if the prompt template later changes.
+  //
+  // Both --brief and --intercepted-from currently require --worktree-auto
+  // because the registry directory is only created when a worktree is
+  // dispatched (T15 wiring). Passing them without --worktree-auto would
+  // silently discard the value, so we fail loudly instead. (Folding the
+  // brief into the prompt itself is a follow-up; for now codex sees the
+  // raw positional prompt and the brief is recovered from disk by the
+  // reviewer.)
   let brief = null;
   let briefHash = null;
+  if (options.brief || options["intercepted-from"]) {
+    if (!options["worktree-auto"]) {
+      throw conflictError(
+        "--brief and --intercepted-from require --worktree-auto (the registry slot that stores brief.json / intercepted_from is created by the worktree path).",
+        "BRIEF_REQUIRES_WORKTREE_AUTO",
+      );
+    }
+  }
   if (options.brief) {
     const result = loadBrief(options.brief);
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
-        exitClass: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
       });
     }
     brief = result.brief;

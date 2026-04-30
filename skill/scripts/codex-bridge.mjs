@@ -16759,12 +16759,20 @@ async function handleTask(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   let brief = null;
   let briefHash2 = null;
+  if (options.brief || options["intercepted-from"]) {
+    if (!options["worktree-auto"]) {
+      throw conflictError(
+        "--brief and --intercepted-from require --worktree-auto (the registry slot that stores brief.json / intercepted_from is created by the worktree path).",
+        "BRIEF_REQUIRES_WORKTREE_AUTO"
+      );
+    }
+  }
   if (options.brief) {
     const result = loadBrief(options.brief);
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
-        exitClass: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
       });
     }
     brief = result.brief;
