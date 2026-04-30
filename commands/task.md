@@ -1,6 +1,6 @@
 ---
 description: Delegate implementation, debugging, or follow-up work to Codex Bridge with Monitor-ready events
-argument-hint: "[--background|--wait] [--write] [--mode plan|default] [--resume|--resume-last|--fresh] [--model <model|spark>] [--effort <low|medium|high|xhigh>] [task prompt]"
+argument-hint: "[--background|--wait] [--backend <name>] [--write] [--mode plan|default] [--resume|--resume-last|--fresh] [--model <model|spark>] [--effort <low|medium|high|xhigh>] [task prompt]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent, Monitor
 ---
 

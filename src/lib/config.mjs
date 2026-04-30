@@ -134,7 +134,7 @@ function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
 //
 // `overrideDir` is typically the caller's cwd. If `workspaceRoot` is
 // provided and differs, its config.yaml gets layered in before cwd.
-export function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
+export function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
   const { skillConfigPath, workspaceConfigPath, overrideConfigPath } =
     configPaths(skillDir, overrideDir, workspaceRoot);
   const skillLayer = readConfigFile(skillConfigPath);
@@ -152,30 +152,41 @@ export function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
       ? readConfigFile(overrideConfigPath)
       : {};
 
-  return {
+  const mergedConfig = {
     ...DEFAULT_CONFIG,
     ...skillLayer,
     ...workspaceLayer,
     ...overrideLayer,
   };
+
+  return {
+    defaults: DEFAULT_CONFIG,
+    skillConfig: skillLayer,
+    workspaceConfig: workspaceLayer,
+    cwdConfig: overrideLayer,
+    mergedConfig,
+    sources: {
+      skillConfigPath,
+      skillConfigExists: fs.existsSync(skillConfigPath),
+      workspaceConfigPath,
+      workspaceConfigExists:
+        workspaceConfigPath ? fs.existsSync(workspaceConfigPath) : false,
+      overrideConfigPath,
+      overrideConfigExists:
+        overrideConfigPath ? fs.existsSync(overrideConfigPath) : false,
+    },
+  };
+}
+
+export function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
+  return loadConfigLayers(skillDir, overrideDir, workspaceRoot).mergedConfig;
 }
 
 // Helper so callers can answer "where did the active config come from?".
 // Used by `config show`, `setup --json`, `version --json` so users can
 // discover the exact file they need to edit. Reports all four layers.
 export function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
-  const { skillConfigPath, workspaceConfigPath, overrideConfigPath } =
-    configPaths(skillDir, overrideDir, workspaceRoot);
-  return {
-    skillConfigPath,
-    skillConfigExists: fs.existsSync(skillConfigPath),
-    workspaceConfigPath,
-    workspaceConfigExists:
-      workspaceConfigPath ? fs.existsSync(workspaceConfigPath) : false,
-    overrideConfigPath,
-    overrideConfigExists:
-      overrideConfigPath ? fs.existsSync(overrideConfigPath) : false,
-  };
+  return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
 }
 
 export function resolveConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
