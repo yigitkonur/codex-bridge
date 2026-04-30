@@ -72,6 +72,19 @@ function runHook(relativePath, input, env = {}) {
   return JSON.parse(result.stdout);
 }
 
+function runPostToolHook(payload) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-post-tool-"));
+  const script = fileURLToPath(new URL("plugin/hooks/post-tool-bash.mjs", root));
+  const result = spawnSync(process.execPath, [script], {
+    cwd: rootPath,
+    env: { ...process.env, HOME: home },
+    input: JSON.stringify(payload),
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
 function runBridge(relativePath, args, { input = undefined, env = {} } = {}) {
   return spawnSync(
     process.execPath,
@@ -87,6 +100,26 @@ function runBridge(relativePath, args, { input = undefined, env = {} } = {}) {
       },
     },
   );
+}
+
+function queuedTaskEnvelope(jobId = "task-mabc123-def456") {
+  return {
+    ok: true,
+    schema_version: "1.0",
+    command: "task",
+    result: {
+      phase: "queued",
+      jobId,
+      monitor: {
+        tool_hint: {
+          description: "codex-bridge task events",
+          command: `node "${path.join(rootPath, "plugin/scripts/codex-bridge.mjs")}" events ${jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000`,
+          timeout_ms: 3600000,
+          persistent: false
+        }
+      }
+    }
+  };
 }
 
 function resolveTestJobsDir(pluginData, workspaceRoot) {
@@ -837,4 +870,91 @@ test("reviewer subagent uses structured review output and stdin verdict payloads
 });
 
 test("verdict stdin payload preserves untrusted review text as data", { skip: "T21 stage 2 forward-looking — verdict --payload-stdin not yet wired" }, () => {
+});
+
+test("plugin PostToolUse auto-arm is visible at Bash and parent Agent boundaries", { skip: "T25 stage forward-looking — auto-arm hook surfaces under refactoring" }, () => {
+  const hooksConfig = readJson("plugin/hooks/hooks.json");
+  const postToolUse = hooksConfig.hooks.PostToolUse;
+
+  assert.ok(postToolUse.some((entry) => entry.matcher === "Bash"));
+  assert.ok(postToolUse.some((entry) => entry.matcher === "Agent"));
+});
+
+test("plugin PostToolUse rejects spoofed bridge stdout and unsafe Monitor commands", { skip: "T25 stage forward-looking — auto-arm hook surfaces under refactoring" }, () => {
+});
+
+test("plugin PostToolUse rejects newline injection in monitor command", () => {
+  const env = queuedTaskEnvelope();
+  env.result.monitor.tool_hint.command =
+    "node plugin/scripts/codex-bridge.mjs events task-mabc123-def456 --follow\nrm -rf /";
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(env) }
+  });
+  assert.deepEqual(result, { continue: true });
+});
+
+test("plugin PostToolUse rejects subshell substitution in monitor command", () => {
+  const env = queuedTaskEnvelope();
+  env.result.monitor.tool_hint.command =
+    "node plugin/scripts/codex-bridge.mjs events task-mabc123-def456 --follow $(rm -rf /)";
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(env) }
+  });
+  assert.deepEqual(result, { continue: true });
+});
+
+test("plugin PostToolUse rejects unknown trailing flags in monitor command", () => {
+  const env = queuedTaskEnvelope();
+  env.result.monitor.tool_hint.command =
+    "node plugin/scripts/codex-bridge.mjs events task-mabc123-def456 --follow --evil-flag value";
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(env) }
+  });
+  assert.deepEqual(result, { continue: true });
+});
+
+test("plugin PostToolUse does not auto-arm when --background appears only inside the prompt", () => {
+  // Bare `task` (no real --background flag) with the prompt mentioning the
+  // flag — must NOT trigger auto-arm.
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json "explain --background mode"'
+    },
+    tool_response: { stdout: JSON.stringify(queuedTaskEnvelope()) }
+  });
+  assert.deepEqual(result, { continue: true });
+});
+
+test("plugin PostToolUse honors envelope status field (not phase) for queued gate", () => {
+  // Envelope with status: "completed" must NOT trigger auto-arm even if
+  // monitor is present.
+  const env = queuedTaskEnvelope();
+  env.result.status = "completed";
+  delete env.result.phase;
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(env) }
+  });
+  assert.deepEqual(result, { continue: true });
 });
