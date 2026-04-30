@@ -1897,7 +1897,10 @@ function resolveBrokerScriptPath() {
     const p = fileURLToPath(url);
     if (fs5.existsSync(p)) return p;
   }
-  return fileURLToPath(candidates[0]);
+  throw new Error(
+    `Could not locate broker script. Tried:
+  ${candidates.map((url) => fileURLToPath(url)).join("\n  ")}`
+  );
 }
 async function ensureBrokerSession(cwd, options = {}) {
   const existing = loadBrokerSession(cwd);

@@ -525,7 +525,10 @@ function resolveBrokerScriptPath() {
     const p = fileURLToPath(url);
     if (fs2.existsSync(p)) return p;
   }
-  return fileURLToPath(candidates[0]);
+  throw new Error(
+    `Could not locate broker script. Tried:
+  ${candidates.map((url) => fileURLToPath(url)).join("\n  ")}`
+  );
 }
 async function ensureBrokerSession(cwd, options = {}) {
   const existing = loadBrokerSession(cwd);
@@ -1220,7 +1223,7 @@ function safeResolveServerRequest(message, result) {
 async function main() {
   const [subcommand, ...argv] = process6.argv.slice(2);
   if (subcommand !== "serve") {
-    throw new Error("Usage: node scripts/app-server-broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>]");
+    throw new Error("Usage: node src/adapters/codex/broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>]");
   }
   const { options } = parseArgs(argv, {
     valueOptions: ["cwd", "pid-file", "endpoint"]
