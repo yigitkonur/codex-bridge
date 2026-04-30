@@ -12372,7 +12372,8 @@ async function handleIterate(argv) {
 async function handleVerdict(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["set", "summary", "finding", "reviewer", "cwd"],
+    valueOptions: ["set", "summary", "reviewer", "cwd"],
+    repeatableValueOptions: ["finding"],
     booleanOptions: ["json", "discard"]
   });
   const taskId = positionals[0];
@@ -12403,7 +12404,7 @@ async function handleVerdict(argv) {
     const payload = {
       verdict,
       summary: options.summary ?? null,
-      findings: options.finding ? [options.finding] : [],
+      findings: Array.isArray(options.finding) ? options.finding : options.finding ? [options.finding] : [],
       reviewer: options.reviewer ?? null
     };
     writeVerdict(taskId, payload);
