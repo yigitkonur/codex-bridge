@@ -1,4 +1,4 @@
 {
-  "description": "Codex-Bridge plugin runtime hooks. Populated incrementally: SessionStart/SessionEnd/UserPromptSubmit/SubagentStop/Stop in T11-T14, the high-impact PreToolUse(Agent)/PreToolUse(Bash)/PostToolUse(Bash) hooks in T23-T25. Empty during T7 scaffolding.",
+  "description": "Codex-Bridge plugin runtime hooks. Empty during the v2.0.0-alpha scaffolding phase; populated incrementally as the lifecycle (SessionStart/SessionEnd/UserPromptSubmit/SubagentStop/Stop) and tool-use (PreToolUse/PostToolUse) hooks land.",
   "hooks": {}
 }

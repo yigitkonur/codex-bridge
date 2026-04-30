@@ -1,11 +1,12 @@
 ---
 name: codex-bridge
 description: >-
-  Pre-release stub for the codex-bridge skill. Slim final content lands in T27 of
-  the v2.0.0 redesign. Until then this file exists so the plugin manifest's
-  `skills: ["./skills/codex-bridge"]` declaration resolves to a real surface
-  and the plugin is installable in isolation.
-version: 2.0.0-alpha.0
+  DO NOT INVOKE — pre-release placeholder. The real codex-bridge skill content
+  lands in T27 of the v2.0.0 redesign. Until then this file exists only so the
+  plugin manifest's `skills: ["./skills/codex-bridge"]` declaration resolves to
+  a tracked surface and the plugin is installable in isolation. Until T27 ships,
+  use the legacy v1.5.0 skill at `./skill/SKILL.md` for real codex-bridge work.
+version: "2.0.0-alpha.0"
 ---
 
 # codex-bridge (pre-release)
