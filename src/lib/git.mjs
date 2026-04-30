@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync as childExecFileSync } from "node:child_process";
 
 import { CliError } from "./cli-errors.mjs";
 import { isProbablyText } from "./fs.mjs";
@@ -458,8 +459,17 @@ export function collectReviewContext(cwd, target, options = {}) {
 // caller can downgrade gracefully — the worktree is a safety isolation,
 // not a hard prerequisite for the workflow.
 
-function runGit(cwd, args, options = {}) {
-  return gitChecked(cwd, args, options).stdout;
+function runGit(cwd, args, opts = {}) {
+  if (!Array.isArray(args)) {
+    throw new TypeError("runGit: args must be an array of git arguments (no shell strings)");
+  }
+  const { swallowStderr, ...rest } = opts;
+  return childExecFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", swallowStderr ? "pipe" : "inherit"],
+    ...rest,
+  });
 }
 
 function tryRunGit(cwd, args, options = {}) {
@@ -542,7 +552,7 @@ export function createSubagentWorktree({
     "--verify",
     "--end-of-options",
     `${resolvedBaseRef}^{commit}`,
-  ]).trim();
+  ], { swallowStderr: true }).trim();
   const branch = buildBranchName({ taskId, backend, branchPrefix });
   assertSafeBranchName(repoRoot, branch, "createSubagentWorktree");
   const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
@@ -559,7 +569,9 @@ export function createSubagentWorktree({
   // Try the worktree path first.
   try {
     fs.mkdirSync(root, { recursive: true });
-    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha]);
+    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha], {
+      swallowStderr: true,
+    });
     return {
       isolation_mode: "worktree",
       path: wtPath,
@@ -585,7 +597,7 @@ export function createSubagentWorktree({
     const previousRef = currentCheckoutRef(repoRoot);
     // Branch-only fallback: stay in cwd, create the branch in place.
     try {
-      runGit(repoRoot, ["checkout", "-b", branch, baseSha]);
+      runGit(repoRoot, ["checkout", "-b", branch, baseSha], { swallowStderr: true });
     } catch (innerErr) {
       throw new Error(
         `createSubagentWorktree: worktree fallback also failed: ${innerErr.message ?? innerErr}`,
@@ -673,6 +685,140 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
     }
   }
   return { pruned: !fs.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
+}
+
+// mergeSubagentBranch({ cwd, taskId, branch, baseRef, expectedBranchSha, worktreePath, runTests })
+// Fast-forward merge of a subagent branch into its base ref. Throws on
+// conflict / non-ff history / missing branch. On success returns
+// { strategy: "ff", commit_sha, base_ref, branch, tests_passed }.
+//
+// Design:
+// - Always git-fetch the base ref first so a stale local base doesn't
+//   silently merge against an old SHA.
+// - --ff-only: refuses to create merge commits. If the branch isn't a
+//   linear descendant of base, the merge fails and the user reruns
+//   /codex-bridge:iterate (which rebases the branch onto fresh base).
+// - runTests is honored when meta.json carries an acceptance_criteria
+//   tests_command — a follow-up will read that and execute it after
+//   the merge but before pushing. v1 just records null.
+// - On success, prunes the worktree (the branch lives on in main from
+//   here; the worktree is no longer needed).
+export function mergeSubagentBranch({
+  cwd,
+  taskId,
+  branch,
+  baseRef = "main",
+  expectedBranchSha,
+  worktreePath,
+  runTests = true,
+}) {
+  if (!taskId) throw new Error("mergeSubagentBranch: taskId is required");
+  if (!branch) throw new Error("mergeSubagentBranch: branch is required");
+  if (!expectedBranchSha) {
+    throw new Error("mergeSubagentBranch: expectedBranchSha is required");
+  }
+
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+
+  // Refresh base ref from remote so we merge against the latest tip.
+  // Best-effort with a hard timeout: a hung remote must not stall the
+  // merge gate forever. tryRunGit silently no-ops if `origin` is missing
+  // or the network is unreachable.
+  try {
+    runGit(repoRoot, ["fetch", "--no-tags", "origin", baseRef], {
+      swallowStderr: true,
+      timeout: 30_000,
+    });
+  } catch {
+    // best-effort; fall through to the local check
+  }
+
+  // Switch to base ref. Refuse if working tree is dirty.
+  const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
+  if (dirty.ok && dirty.stdout.trim().length > 0) {
+    const err = new Error(
+      `repo is dirty; commit or stash before merging. Status: ${dirty.stdout.trim()}`,
+    );
+    err.kind = "precondition";
+    throw err;
+  }
+
+  const expectedSha = String(expectedBranchSha).trim().toLowerCase();
+  const taskWorktreePath = worktreePath ?? path.join(defaultWorktreeRoot(repoRoot), taskId);
+  if (taskWorktreePath && fs.existsSync(taskWorktreePath) && path.resolve(taskWorktreePath) !== repoRoot) {
+    const taskDirty = tryRunGit(taskWorktreePath, ["status", "--porcelain", "--untracked-files=all"]);
+    if (taskDirty.ok && taskDirty.stdout.trim().length > 0) {
+      const err = new Error(
+        `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.stdout.trim()}`,
+      );
+      err.kind = "precondition";
+      throw err;
+    }
+  }
+
+  // Verify the branch is reachable.
+  const branchShaResult = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
+  const branchSha = branchShaResult.ok ? branchShaResult.stdout.trim().toLowerCase() : "";
+  if (!branchSha) {
+    const err = new Error(`branch ${branch} does not exist`);
+    err.kind = "precondition";
+    throw err;
+  }
+  if (branchSha !== expectedSha) {
+    const err = new Error(
+      `branch ${branch} is at ${branchSha}, but approved verdict reviewed ${expectedSha}; rerun review before merging`,
+    );
+    err.kind = "sha_drift";
+    throw err;
+  }
+
+  runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
+
+  // Fast-forward the local base to its remote-tracking tip if reachable.
+  // `git fetch origin <ref>` only updates `refs/remotes/origin/<ref>`; the
+  // local branch can still be stale and would silently merge onto an old
+  // SHA. Best-effort ff-only: if local has diverged from origin, surface
+  // it as a precondition rather than merging onto stale state.
+  const remoteTipResult = tryRunGit(repoRoot, ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}`]);
+  const remoteTip = remoteTipResult.ok ? remoteTipResult.stdout.trim() : null;
+  if (remoteTip) {
+    try {
+      runGit(repoRoot, ["merge", "--ff-only", `refs/remotes/origin/${baseRef}`], { swallowStderr: true });
+    } catch {
+      const err = new Error(
+        `local ${baseRef} has diverged from origin/${baseRef}; reconcile before merging`,
+      );
+      err.kind = "precondition";
+      throw err;
+    }
+  }
+
+  // ff-only merge of the subagent branch into the (now-fresh) base.
+  try {
+    runGit(repoRoot, ["merge", "--ff-only", branch], { swallowStderr: true });
+  } catch (err) {
+    const wrapped = new Error(
+      `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`,
+    );
+    wrapped.kind = "conflict";
+    throw wrapped;
+  }
+
+  const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true })
+    .toString()
+    .trim();
+
+  // Clean up the worktree — the branch lives on in base from here.
+  pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
+
+  return {
+    strategy: "ff",
+    commit_sha: commitSha,
+    base_ref: baseRef,
+    branch,
+    tests_passed: runTests ? null : false, // null = not yet measured; false = skipped
+  };
 }
 
 // listSubagentWorktrees(cwd) -> [{ path, branch, head, locked }]

@@ -4105,6 +4105,7 @@ function detectOfficialOpenAICodexPlugin(options = {}) {
 // src/lib/git.mjs
 import fs4 from "node:fs";
 import path4 from "node:path";
+import { execFileSync as childExecFileSync } from "node:child_process";
 
 // src/lib/prompts.mjs
 import fs3 from "node:fs";
@@ -4534,8 +4535,17 @@ function collectReviewContext(cwd, target, options = {}) {
     ...details
   };
 }
-function runGit(cwd, args, options = {}) {
-  return gitChecked(cwd, args, options).stdout;
+function runGit(cwd, args, opts = {}) {
+  if (!Array.isArray(args)) {
+    throw new TypeError("runGit: args must be an array of git arguments (no shell strings)");
+  }
+  const { swallowStderr, ...rest } = opts;
+  return childExecFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", swallowStderr ? "pipe" : "inherit"],
+    ...rest
+  });
 }
 function tryRunGit(cwd, args, options = {}) {
   const result = git(cwd, args, options);
@@ -4597,7 +4607,7 @@ function createSubagentWorktree({
     "--verify",
     "--end-of-options",
     `${resolvedBaseRef}^{commit}`
-  ]).trim();
+  ], { swallowStderr: true }).trim();
   const branch = buildBranchName({ taskId, backend, branchPrefix });
   assertSafeBranchName(repoRoot, branch, "createSubagentWorktree");
   const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
@@ -4610,7 +4620,9 @@ function createSubagentWorktree({
   }
   try {
     fs4.mkdirSync(root, { recursive: true });
-    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha]);
+    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha], {
+      swallowStderr: true
+    });
     return {
       isolation_mode: "worktree",
       path: wtPath,
@@ -4633,7 +4645,7 @@ function createSubagentWorktree({
     }
     const previousRef = currentCheckoutRef(repoRoot);
     try {
-      runGit(repoRoot, ["checkout", "-b", branch, baseSha]);
+      runGit(repoRoot, ["checkout", "-b", branch, baseSha], { swallowStderr: true });
     } catch (innerErr) {
       throw new Error(
         `createSubagentWorktree: worktree fallback also failed: ${innerErr.message ?? innerErr}`
@@ -4650,6 +4662,168 @@ function createSubagentWorktree({
       fallback_reason: err.message ?? String(err)
     };
   }
+}
+function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
+  assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  let wtPath = null;
+  if (typeof explicitPath === "string" && explicitPath.length > 0) {
+    wtPath = explicitPath;
+  } else if (typeof worktreeRoot === "string" && worktreeRoot.length > 0) {
+    wtPath = path4.join(worktreeRoot, taskId);
+  } else if (branch) {
+    const registered = listSubagentWorktrees(repoRoot).find((w) => w.branch === branch);
+    if (registered) {
+      wtPath = registered.path;
+    }
+  }
+  if (!wtPath) {
+    wtPath = path4.join(defaultWorktreeRoot(repoRoot), taskId);
+  }
+  const wtPathResolved = path4.resolve(wtPath);
+  const repoRootResolved = path4.resolve(repoRoot);
+  const isMainWorktree = wtPathResolved === repoRootResolved;
+  if (!isMainWorktree && fs4.existsSync(wtPath)) {
+    runGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    if (fs4.existsSync(wtPath)) {
+      throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
+    }
+  }
+  if (branch) {
+    assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
+    if (branchExists(repoRoot, branch)) {
+      if (getCurrentBranch(repoRoot) === branch) {
+        if (!previousRef) {
+          throw new Error(
+            `pruneWorktreeOnCancel: cannot delete checked-out branch without previousRef: ${branch}`
+          );
+        }
+        runGit(repoRoot, ["checkout", previousRef]);
+      }
+      runGit(repoRoot, ["branch", "-D", branch]);
+      if (branchExists(repoRoot, branch)) {
+        throw new Error(`pruneWorktreeOnCancel: branch still exists after delete: ${branch}`);
+      }
+    }
+  }
+  return { pruned: !fs4.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
+}
+function mergeSubagentBranch({
+  cwd,
+  taskId,
+  branch,
+  baseRef = "main",
+  expectedBranchSha,
+  worktreePath,
+  runTests = true
+}) {
+  if (!taskId) throw new Error("mergeSubagentBranch: taskId is required");
+  if (!branch) throw new Error("mergeSubagentBranch: branch is required");
+  if (!expectedBranchSha) {
+    throw new Error("mergeSubagentBranch: expectedBranchSha is required");
+  }
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  try {
+    runGit(repoRoot, ["fetch", "--no-tags", "origin", baseRef], {
+      swallowStderr: true,
+      timeout: 3e4
+    });
+  } catch {
+  }
+  const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
+  if (dirty.ok && dirty.stdout.trim().length > 0) {
+    const err = new Error(
+      `repo is dirty; commit or stash before merging. Status: ${dirty.stdout.trim()}`
+    );
+    err.kind = "precondition";
+    throw err;
+  }
+  const expectedSha = String(expectedBranchSha).trim().toLowerCase();
+  const taskWorktreePath = worktreePath ?? path4.join(defaultWorktreeRoot(repoRoot), taskId);
+  if (taskWorktreePath && fs4.existsSync(taskWorktreePath) && path4.resolve(taskWorktreePath) !== repoRoot) {
+    const taskDirty = tryRunGit(taskWorktreePath, ["status", "--porcelain", "--untracked-files=all"]);
+    if (taskDirty.ok && taskDirty.stdout.trim().length > 0) {
+      const err = new Error(
+        `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.stdout.trim()}`
+      );
+      err.kind = "precondition";
+      throw err;
+    }
+  }
+  const branchShaResult = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
+  const branchSha = branchShaResult.ok ? branchShaResult.stdout.trim().toLowerCase() : "";
+  if (!branchSha) {
+    const err = new Error(`branch ${branch} does not exist`);
+    err.kind = "precondition";
+    throw err;
+  }
+  if (branchSha !== expectedSha) {
+    const err = new Error(
+      `branch ${branch} is at ${branchSha}, but approved verdict reviewed ${expectedSha}; rerun review before merging`
+    );
+    err.kind = "sha_drift";
+    throw err;
+  }
+  runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
+  const remoteTipResult = tryRunGit(repoRoot, ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}`]);
+  const remoteTip = remoteTipResult.ok ? remoteTipResult.stdout.trim() : null;
+  if (remoteTip) {
+    try {
+      runGit(repoRoot, ["merge", "--ff-only", `refs/remotes/origin/${baseRef}`], { swallowStderr: true });
+    } catch {
+      const err = new Error(
+        `local ${baseRef} has diverged from origin/${baseRef}; reconcile before merging`
+      );
+      err.kind = "precondition";
+      throw err;
+    }
+  }
+  try {
+    runGit(repoRoot, ["merge", "--ff-only", branch], { swallowStderr: true });
+  } catch (err) {
+    const wrapped = new Error(
+      `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`
+    );
+    wrapped.kind = "conflict";
+    throw wrapped;
+  }
+  const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true }).toString().trim();
+  pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
+  return {
+    strategy: "ff",
+    commit_sha: commitSha,
+    base_ref: baseRef,
+    branch,
+    tests_passed: runTests ? null : false
+    // null = not yet measured; false = skipped
+  };
+}
+function listSubagentWorktrees(cwd) {
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  const out = tryRunGit(repoRoot, ["worktree", "list", "--porcelain"]);
+  if (!out.ok) return [];
+  const entries = [];
+  let current = null;
+  for (const line of out.stdout.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      if (current) entries.push(current);
+      current = { path: line.slice("worktree ".length), branch: null, head: null, locked: false };
+    } else if (line.startsWith("HEAD ") && current) {
+      current.head = line.slice("HEAD ".length);
+    } else if (line.startsWith("branch ") && current) {
+      const ref = line.slice("branch ".length);
+      current.branch = ref.replace(/^refs\/heads\//, "");
+    } else if (line === "locked" && current) {
+      current.locked = true;
+    }
+  }
+  if (current) entries.push(current);
+  return entries.filter(
+    (e) => e.path.includes(".codex-bridge-worktrees/") || e.branch && e.branch.startsWith("subagent/")
+  );
 }
 
 // src/lib/workspace.mjs
@@ -6853,6 +7027,14 @@ function tmpSuffix() {
   tmpCounter = tmpCounter + 1 >>> 0;
   return `${process.pid}.${Date.now()}.${tmpCounter}`;
 }
+var RegistryReadError = class extends Error {
+  constructor(message, { filePath, cause } = {}) {
+    super(message, { cause });
+    this.name = "RegistryReadError";
+    this.code = "REGISTRY_READ_FAILED";
+    this.filePath = filePath ?? null;
+  }
+};
 function registryRoot() {
   const override = process.env.CODEX_BRIDGE_REGISTRY;
   if (override && override.length > 0) return override;
@@ -6896,6 +7078,36 @@ function writeMeta(taskId, meta) {
 `, "utf8");
   fs7.renameSync(tmp, target);
   return target;
+}
+function readMeta(taskId) {
+  const target = path7.join(jobDir(taskId), "meta.json");
+  return readRegistryJson(target);
+}
+function readRegistryJson(target) {
+  let text;
+  try {
+    text = fs7.readFileSync(target, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    throw new RegistryReadError(`Could not read registry file: ${target}`, {
+      filePath: target,
+      cause: error
+    });
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new RegistryReadError(`Registry file is not valid JSON: ${target}`, {
+      filePath: target,
+      cause: error
+    });
+  }
+}
+function readVerdict(taskId) {
+  const target = path7.join(jobDir(taskId), "verdict.json");
+  return readRegistryJson(target);
 }
 
 // src/lib/job-control.mjs
@@ -9777,6 +9989,14 @@ var COMMANDS = Object.freeze({
     synopsis: "cancel [job-id] [--json]",
     summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
     examples: ["codex-bridge cancel task-abc"]
+  },
+  merge: {
+    synopsis: "merge <task_id> [--no-tests] [--pr] [--json]",
+    summary: "Fast-forward merge an approved worktree task branch back into its recorded base ref.",
+    examples: [
+      "codex-bridge merge task-abc --json",
+      "codex-bridge merge task-abc --no-tests"
+    ]
   },
   "await-artifact": {
     synopsis: "await-artifact <job-id> <path> [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
@@ -12908,6 +13128,121 @@ function resolvePromptInput(options, positionals, cwd) {
   if (text) return text;
   return readStdinIfPiped();
 }
+function readReviewedBranchHeadSha(verdict) {
+  const candidates = [
+    verdict?.branch_head_sha,
+    verdict?.reviewed_branch_head_sha,
+    verdict?.branchHeadSha
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const normalized = candidate.trim().toLowerCase();
+    if (/^[a-f0-9]{40}$/.test(normalized)) {
+      return normalized;
+    }
+  }
+  return null;
+}
+async function handleMerge(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "no-tests", "pr"]
+  });
+  const taskId = positionals[0];
+  if (!taskId) {
+    throw usageError("merge requires a task_id positional argument");
+  }
+  const cwd = resolveCommandCwd(options);
+  const verdict = readVerdict(taskId);
+  if (!verdict) {
+    throw notFoundError(
+      `no verdict found for ${taskId}; run review and record an approved verdict before merging`
+    );
+  }
+  if (verdict.verdict !== "approved") {
+    throw new CliError(
+      `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run review or iterate before approving this task.`,
+      { code: "VERDICT_NOT_APPROVED", class: "conflict" }
+    );
+  }
+  const reviewedBranchHeadSha = readReviewedBranchHeadSha(verdict);
+  if (!reviewedBranchHeadSha) {
+    throw new CliError(
+      `approved verdict for ${taskId} is missing branch_head_sha; rerun review so the approval is bound to the reviewed branch head`,
+      { code: "VERDICT_HEAD_SHA_MISSING", class: "conflict" }
+    );
+  }
+  const meta = readMeta(taskId);
+  if (!meta) {
+    throw notFoundError(
+      `no meta.json found for ${taskId}; the task was not dispatched via --worktree-auto`
+    );
+  }
+  const branch = meta.worktree?.branch;
+  const baseRef = meta.worktree?.base_ref ?? "main";
+  if (!branch) {
+    throw new CliError(
+      `meta.json for ${taskId} missing worktree.branch \u2014 task may not have been dispatched via --worktree-auto`,
+      { code: "MERGE_META_INVALID", class: "internal" }
+    );
+  }
+  if (options.pr) {
+    throw new CliError(
+      "--pr mode not yet implemented; ff-merge into the base ref is the only supported strategy in v2.0. Drop --pr or wait for the follow-up.",
+      { code: "MERGE_PR_NOT_IMPLEMENTED", class: "internal" }
+    );
+  }
+  let mergeResult;
+  try {
+    mergeResult = mergeSubagentBranch({
+      cwd,
+      taskId,
+      branch,
+      baseRef,
+      expectedBranchSha: reviewedBranchHeadSha,
+      worktreePath: meta.worktree?.path,
+      runTests: !options["no-tests"]
+    });
+  } catch (err) {
+    const kind = err?.kind;
+    if (kind === "conflict") {
+      throw new CliError(
+        `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
+        { code: "MERGE_CONFLICT", class: "conflict" }
+      );
+    }
+    if (kind === "sha_drift") {
+      throw new CliError(
+        `merge refused: ${err.message ?? err}`,
+        { code: "MERGE_SHA_DRIFT", class: "conflict" }
+      );
+    }
+    if (kind === "precondition") {
+      throw new CliError(
+        `merge precondition failed: ${err.message ?? err}`,
+        { code: "MERGE_PRECONDITION", class: "usage" }
+      );
+    }
+    throw new CliError(
+      `merge failed: ${err.message ?? err}`,
+      { code: "MERGE_INTERNAL", class: "internal" }
+    );
+  }
+  const payload = {
+    task_id: taskId,
+    merge: mergeResult,
+    verdict: verdict.verdict,
+    reviewed_branch_head_sha: reviewedBranchHeadSha
+  };
+  emitSuccess(
+    "merge",
+    payload,
+    `Merged ${branch} into ${baseRef} (${mergeResult.commit_sha?.slice(0, 8) ?? "?"})
+`,
+    { json: options.json, startedAt }
+  );
+}
 async function handleSend(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: [
@@ -13293,7 +13628,8 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   events: handleEvents,
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel,
-  "await-artifact": handleAwaitArtifact
+  "await-artifact": handleAwaitArtifact,
+  merge: handleMerge
 });
 process9.on("SIGPIPE", () => {
 });
