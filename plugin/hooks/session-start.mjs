@@ -3,9 +3,9 @@
 //
 // On every Claude Code session boot, this hook calls
 // `codex-bridge status --json` and injects a brief summary of running
-// jobs, the most recent verdict, backend capabilities, and suggested
-// next actions into Claude's context as `additionalContext`. The
-// orchestrator boots oriented without having to poll status itself.
+// jobs and the most recent terminal status into Claude's context as
+// `additionalContext`. The orchestrator boots oriented without having
+// to poll status itself.
 //
 // Behavior preservation: also sets CODEX_COMPANION_SESSION_ID and
 // CODEX_BRIDGE_PLUGIN_DATA env vars via $CLAUDE_ENV_FILE so subsequent
@@ -71,11 +71,12 @@ function appendEnvVar(name, value) {
 }
 
 function resolveBundlePath() {
-  // Three install layouts to probe (see broker-lifecycle.mjs for the
-  // canonical version of this logic):
+  // Two install layouts probed under $CLAUDE_PLUGIN_ROOT (which is only
+  // set when running as a Claude Code plugin):
   //   plugin/scripts/codex-bridge.mjs (canonical from v2.0)
   //   skill/scripts/codex-bridge.mjs (legacy)
-  //   src/codex-bridge.mjs (source-mode, dev only)
+  // Source-mode (src/codex-bridge.mjs) intentionally has no CLAUDE_PLUGIN_ROOT
+  // and runs the dispatcher directly; no hook fallback is provided here.
   const root = process.env.CLAUDE_PLUGIN_ROOT;
   if (root) {
     const candidates = [
@@ -89,7 +90,7 @@ function resolveBundlePath() {
   return null;
 }
 
-function fetchStatus(bundlePath, cwd) {
+function fetchStatus(bundlePath, cwd, env) {
   const result = spawnSync(
     process.execPath,
     [bundlePath, "status", "--json"],
@@ -97,7 +98,7 @@ function fetchStatus(bundlePath, cwd) {
       cwd,
       timeout: STATUS_TIMEOUT_MS,
       encoding: "utf8",
-      env: process.env,
+      env,
     },
   );
   if (result.error || result.status !== 0) {
@@ -120,11 +121,14 @@ function formatContext(envelope) {
   if (running.length > 0) {
     lines.push("### Running jobs (this workspace)");
     for (const job of running.slice(0, 5)) {
-      const id = job.jobId ?? job.id ?? "<unknown>";
-      const phase = job.phase ?? "running";
-      const elapsed = job.elapsedMs
-        ? `elapsed=${Math.round(job.elapsedMs / 1000)}s`
-        : "";
+      const id = job.id ?? job.jobId ?? "<unknown>";
+      const phase = job.phase ?? job.status ?? "running";
+      let elapsed = "";
+      if (typeof job.elapsed === "string" && job.elapsed.trim()) {
+        elapsed = `elapsed=${job.elapsed.trim()}`;
+      } else if (typeof job.elapsedMs === "number" && Number.isFinite(job.elapsedMs)) {
+        elapsed = `elapsed=${Math.round(job.elapsedMs / 1000)}s`;
+      }
       lines.push(`- ${id}  phase=${phase}  ${elapsed}`.trim());
     }
     lines.push("");
@@ -132,19 +136,12 @@ function formatContext(envelope) {
 
   const last = r.latestFinished;
   if (last) {
-    const verdict = last.verdict ?? last.phase ?? "completed";
+    const verdict = last.status ?? last.phase ?? "completed";
     lines.push("### Last finished job");
     lines.push(
-      `- ${last.jobId ?? last.id ?? "<unknown>"}  ${verdict}` +
+      `- ${last.id ?? last.jobId ?? "<unknown>"}  ${verdict}` +
         (last.summary ? `  -- ${last.summary}` : ""),
     );
-    lines.push("");
-  }
-
-  const caps = r.capabilities;
-  if (Array.isArray(caps) && caps.length > 0) {
-    lines.push("### Bridge capabilities");
-    lines.push(caps.join(", "));
     lines.push("");
   }
 
@@ -171,15 +168,24 @@ function main() {
   }
 
   // Preserve legacy env-var behavior (matches session-lifecycle-hook.mjs).
+  // Mirror the legacy precedence: CODEX_BRIDGE_PLUGIN_DATA wins over CLAUDE_PLUGIN_DATA.
+  const pluginData =
+    process.env[PLUGIN_DATA_ENV] ?? process.env.CLAUDE_PLUGIN_DATA;
   appendEnvVar(SESSION_ID_ENV, input.session_id);
-  appendEnvVar(PLUGIN_DATA_ENV, process.env.CLAUDE_PLUGIN_DATA);
+  appendEnvVar(PLUGIN_DATA_ENV, pluginData);
 
-  // Best-effort context injection.
+  // Best-effort context injection. Build an explicit env so the spawned
+  // `status --json` sees the resolved session id and plugin data dir
+  // even before the env file is sourced (avoids leaking jobs from other
+  // sessions or reading the wrong state directory).
   let additionalContext = null;
   try {
     const bundle = resolveBundlePath();
     if (bundle) {
-      const env = fetchStatus(bundle, input.cwd ?? process.cwd());
+      const childEnv = { ...process.env };
+      if (input.session_id) childEnv[SESSION_ID_ENV] = String(input.session_id);
+      if (pluginData) childEnv[PLUGIN_DATA_ENV] = String(pluginData);
+      const env = fetchStatus(bundle, input.cwd ?? process.cwd(), childEnv);
       if (env) additionalContext = formatContext(env);
     }
   } catch (err) {
