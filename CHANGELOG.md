@@ -9,6 +9,97 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+### Added — v2.0.0 plugin redesign (Phases 0–4)
+
+Structural rewrite from user-level skill to hook-driven Claude Code plugin.
+22,061 → 3,626 words of teaching surface (-84%); 3 → 7 hooks; new artifact
+registry + brief schema + staged iterate helper. Migration notes in
+[`MIGRATION.md`](MIGRATION.md).
+
+- Adapter abstraction at `src/adapters/` — codex-only in v2.0; future backends
+  (gemini, aider, claude-cli, ollama) are mechanical additions. Capabilities
+  surface at `version --json::result.adapter_capabilities` and per-job
+  `meta.json::capabilities`.
+- Plugin scaffolding at `plugin/` (manifest v2.0.0, marketplace shim, commands,
+  agents, hooks, skills, schemas, prompts, scripts).
+- Hook surface (7): SessionStart (status injection), SessionEnd (broker shutdown
+  + orphan prune), UserPromptSubmit (resume detection + rewake delivery),
+  SubagentStop (terminal tag surfacing), Stop (review gate + verdict sweep),
+  PreToolUse(Agent) (selective Explore-class intercept), PreToolUse(Bash)
+  (auto-reject task --write without --worktree-auto), PostToolUse(Bash)
+  (Monitor auto-arm via result.monitor.tool_hint).
+- Brief schema (`plugin/schemas/brief.schema.json`): structured task input with
+  `goal`, `worker_assignment`, `specific_concerns`, `acceptance_criteria`,
+  `parent_task_id`, `iteration_max`, `trust_budget_override`. Brief preserved
+  verbatim at `<jobs>/<task_id>/brief.json`.
+- `--brief @<path>.json` accepted by `task` and `adversarial-review`.
+  `brief.specific_concerns` flows verbatim into the adversarial-review prompt's
+  new `{{OPUS_CONCERNS}}` placeholder.
+- Repeatable `--concern <text>` flag for ad-hoc orchestrator concerns;
+  parseArgs grows `repeatableValueOptions` config option.
+- Worktree-per-dispatch isolation: write-mode tasks land in
+  `<repo>/../.codex-bridge-worktrees/<task_id>` on `subagent/codex/<task_id>`
+  branch with captured base SHA. Branch-only fallback when worktree creation
+  fails (returned as `result.isolation_mode: "branch-only"`).
+- Per-task artifact registry at `~/.codex-bridge/jobs/<task_id>/`:
+  `meta.json`, `brief.json`, `brief.md`, `events.jsonl`, `diff.patch`,
+  `review.json`, `verdict.json`, `lock`. POSIX flock prevents concurrent
+  writers (`TASK_DIR_LOCKED`).
+- New CLI subcommands: `merge` (gated; refuses if verdict ≠ approved; fast-
+  forward only), `verdict` (read/write/discard), `verdicts --pending`
+  (used by Stop gate), `iterate` (staged helper that returns `next_action`
+  for the manual task → review → verdict workflow).
+- New slash commands: `/codex-bridge:merge`, `/codex-bridge:verdict`,
+  `/codex-bridge:iterate`. All existing `/codex-bridge:*` commands keep their
+  signatures; `/codex-bridge:adversarial-review` adds `--brief` + `--concern`.
+- New agent: `codex-bridge:codex-bridge-reviewer` (writes verdict, stays out of
+  the parent transcript).
+- Adversarial-review prompt borrows OpenAI's
+  `<role>/<operating_stance>/<attack_surface>/<finding_bar>/<calibration_rules>/<grounding_rules>/<final_check>`
+  skeleton with the new `<orchestrator_concerns>` block carrying
+  `{{OPUS_CONCERNS}}`.
+- Config resolution layers built-in defaults, installed-root `config.yaml`,
+  workspace-root `config.yaml`, then cwd `config.yaml`. New keys:
+  `default_backend`, `trust_budget`, `worktree_default`, `monitor_verbosity`,
+  `event_log_retention_days`, `adapter_routing`.
+- New error codes: `BRIEF_FILE_NOT_FOUND`, `BRIEF_INVALID_JSON`,
+  `BRIEF_SCHEMA_VIOLATION`, `BRIEF_PARENT_NOT_FOUND`,
+  `BRIEF_BACKEND_UNAVAILABLE`, `BACKEND_INCAPABLE`, `TASK_DIR_LOCKED`,
+  `VERDICT_NOT_APPROVED`, `WORKTREE_CREATE_FAILED`,
+  `WORKTREE_READ_ONLY_CONFLICT`, `REVIEW_BRIEF_UNSUPPORTED`,
+  `REVIEW_CONCERN_UNSUPPORTED`.
+- Kill switches: `CODEX_BRIDGE_HOOK_DISABLE=<comma-list>|all`,
+  `CODEX_BRIDGE_DISABLE_WORKTREE_AUTO=1`, `--no-hooks` global flag.
+- Skill slim: SKILL.md 9,964 → 980 words. References:
+  `error-recovery.md` 7,822 → 661, `orchestration-flows.md` 5,115 → 544,
+  `notification-format.md` 4,865 → 231, `monitor-patterns.md` 3,062 → 223.
+  New: `brief-composition.md` (renamed from `prompt-writing.md`), `AGENTS.md`
+  (re-bloat prevention rules). Deleted: `command-reference.md`,
+  `config-reference.md`, `ndjson-guide.md` (owned by runtime help and JSON
+  output).
+- CI lint (`test/skill-word-budget.test.mjs`): SKILL.md ≤ 1,500 words; each
+  `references/*.md` ≤ 800 words. Banned files stay deleted.
+
+### Changed — v2.0.0
+
+- Envelope `schema_version` remains `1.0` while new `result.*` fields are
+  additive:
+  `task_id`, `task_dir`, `worktree`, `isolation_mode`, `provenance`,
+  `iteration_chain`, `active_backend`, `adapter_capabilities`. The
+  `--legacy-envelope` flag is accepted for compatibility but does not select a
+  separate schema version yet.
+- `BRIDGE_CAPABILITIES` gains `backend-adapter`, `brief-schema`,
+  `artifact-registry`, `iteration-chain`.
+- esbuild emits both `skill/` (legacy, deprecated in Phase 4) and `plugin/`
+  (canonical from v2.0.0); broker bundle path probed across both layouts.
+
+### Removed — v2.0.0
+
+- `~/.agents/skills/codex-bridge/` legacy skill install (Phase 4; overlap
+  window in Phase 3 keeps both).
+- `references/command-reference.md`, `references/config-reference.md`,
+  `references/ndjson-guide.md` (owned by runtime).
+
 > **Note on cross-branch entries.** Items marked *(preview — `<sibling-branch>`)* describe work that lands with a sibling branch on the post-v1.5.0 stack and is **not** present on this docs branch alone. They are recorded here so the changelog reflects the whole stack, but a release cut from this branch in isolation would not include them. Items without a preview marker land with this branch.
 
 ### Added

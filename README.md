@@ -1,6 +1,6 @@
 # codex-bridge
 
-A [Claude Code](https://code.claude.com/) skill that hands coding work off to **OpenAI Codex** and tails it back through the Monitor tool. Claude stays in orchestration; Codex does the heavy lift. The bridge is a single bundled Node.js CLI that speaks JSON-RPC to the Codex app-server, writes append-only event + ndjson logs, and returns a uniform JSON envelope agents can switch on.
+A [Claude Code](https://code.claude.com/) plugin that delegates substantial coding work to **OpenAI Codex** through a hook-driven runtime. Claude orchestrates; Codex executes. Hooks intercept native `Agent` spawns, auto-arm Monitor on background dispatches, isolate write-mode tasks in per-task git worktrees, and surface running-job state into context — so the orchestrator rarely has to teach itself how to drive the bridge.
 
 <p align="center">
   <a href="https://github.com/yigitkonur/codex-bridge/actions/workflows/build.yml"><img alt="build" src="https://github.com/yigitkonur/codex-bridge/actions/workflows/build.yml/badge.svg"></a>
@@ -9,345 +9,160 @@ A [Claude Code](https://code.claude.com/) skill that hands coding work off to **
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-brightgreen">
 </p>
 
----
-
-## tl;dr — install on a new machine in 3 commands
+## install
 
 ```bash
-# 1. install Codex and sign in (opens a browser)
+# 1. install Codex and sign in
 npm i -g @openai/codex && codex login
 
-# 2. install the skill into Claude Code (user-scope, works for every project)
-npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y
+# 2. install the plugin
+/plugin install codex-bridge@yigitkonur
 
-# 3. verify the install
-node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs setup --json | jq .result.ready
+# 3. verify
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" setup --json | jq '.result.ready'
 ```
 
-If `setup` reports `true`, you're done. Fire up Claude Code in any repo and ask it to "run this by Codex" — the skill takes over from there.
+If `setup` reports `true`, you're done. Open Claude Code in any repo and ask it to "have Codex…" — the plugin takes over.
 
-If you don't have Node, `jq`, or `npm`, jump to the [guided bootstrap](#guided-bootstrap-zero-to-working) below.
+Migrating from the v1.x skill at `~/.agents/skills/codex-bridge/`? See [MIGRATION.md](MIGRATION.md).
 
-## staying up to date
+## what's different from a typical Codex skill
+
+The v1.x version of codex-bridge was a 22K-word user-level skill that taught Claude how to drive the bridge by reading prose. v2.0 turns most of that teaching into runtime enforcement:
+
+- **PreToolUse(Agent)** intercepts Explore-class subagent spawns and reroutes them through codex-bridge for cheap-fast read-heavy work. Plan and general-purpose subagents pass through unchanged.
+- **PreToolUse(Bash)** auto-rejects `task --write` invocations that omit `--worktree-auto`. Worktree isolation is the canonical contract for write-mode work; check `result.isolation_mode` because branch-only fallback, explicit `--cwd`, or user opt-out can still run in the requested checkout.
+- **PostToolUse(Bash)** parses the `--json` envelope and emits the literal Monitor invocation as `additionalContext` — Claude arms it on the next turn without you having to teach the rule.
+- **SessionStart** injects running-job status into context so every session boots oriented.
+- **Stop** blocks if any approved-but-unmerged verdict is pending, with one-line resolution hints.
+
+The skill is now ~3,600 words instead of 22,000. The runtime owns the wiring; SKILL.md owns the judgment.
+
+## three-line examples
 
 ```bash
-# ask "is there a newer version?" — cached 24h, cheap
-node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs update
+# delegate substantial work, isolated in a worktree, with concerns flowing into review
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --write --worktree-auto --json --brief @brief.json "Read brief.json and implement its worker_assignment."
 
-# same answer, JSON-shaped for scripting
-node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs update --json | jq '.result.has_update'
+# adversarial review using the brief's specific_concerns as {{OPUS_CONCERNS}}
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --scope branch --base main --brief @brief.json
 
-# force a fresh GitHub API probe (bypasses cache)
-node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs update --force
+# staged loop helper: returns next_action for manual task -> review -> verdict
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" iterate <task_id> --max 3 --brief @brief.json
 ```
 
-A one-line notice also prints to stdout on any non-`--json` invocation when a newer release is known locally. Opt out via `CODEX_BRIDGE_NO_UPDATE_CHECK=1`.
+The slash-command equivalents (`/codex-bridge:task`, `/codex-bridge:adversarial-review`, `/codex-bridge:iterate`) are preferred — the hooks fire on the underlying Bash invocations.
 
-When `update` says a new version is available, re-run the `skills@latest add …` command from step 2 above — `skills` is idempotent and will replace the installed bundle in place. No uninstall step.
+## verdict and merge
 
-## seeing what config is in effect
+Write-mode work doesn't auto-land. Each task produces a worktree at `<repo>/../.codex-bridge-worktrees/<task_id>` on a `subagent/codex/<task_id>` branch. Convert review findings into a verdict, then merge:
 
-If a setting isn't doing what you expect, `config show` prints every source the bridge consults and flags keys that differ from built-in defaults:
+```
+/codex-bridge:verdict <task_id> --set approved --summary "Tests green; concerns dismissed."
+/codex-bridge:merge <task_id>             # gated; refuses if verdict ≠ approved
+```
+
+The Stop hook blocks session exit while approved-but-unmerged verdicts exist. `/codex-bridge:verdict <task_id> --discard` is the explicit "do nothing with this" sink.
+
+## brief schema
+
+The brief is the canonical channel for non-trivial dispatch. It's a small JSON object that travels from dispatch through review:
+
+```json
+{
+  "goal": "Add retry/backoff to the upstream fetcher",
+  "worker_assignment": "Implement exponential backoff with jitter, max 3 attempts; preserve the public API; cover with a unit test.",
+  "specific_concerns": [
+    "Don't swallow non-retryable 4xx upstream errors",
+    "Make the timeout configurable via the existing Config object"
+  ],
+  "acceptance_criteria": ["npm test passes", "diff under 200 lines"]
+}
+```
+
+`specific_concerns` flows verbatim into the adversarial-review prompt's `{{OPUS_CONCERNS}}` slot — the orchestrator's privileged channel for review focus. The full schema is at [`plugin/schemas/brief.schema.json`](plugin/schemas/brief.schema.json); composition guidance is in [`plugin/skills/codex-bridge/references/brief-composition.md`](plugin/skills/codex-bridge/references/brief-composition.md).
+
+## per-backend support
+
+v2.0 ships only the codex backend. The adapter abstraction at `src/adapters/` is in place so future backends are mechanical additions:
+
+| backend | status | mode |
+|---|---|---|
+| `codex` | ready | OAuth via `codex login`; full capability set |
+| `gemini` | placeholder README | future |
+| `aider` | placeholder README | future |
+| `claude-cli` | placeholder README | future |
+| `ollama` | placeholder README | future |
+
+Capabilities are exposed at `version --json::result.adapter_capabilities`. Don't hard-code "codex behavior" in slash commands — branch on declared capabilities.
+
+## kill switches
+
+Every hook reads `CODEX_BRIDGE_HOOK_DISABLE` first. Set it to a comma-separated list of hook names (`pre-tool-agent,pre-tool-bash,post-tool-bash,session-start,session-end,user-prompt-submit,subagent-stop,stop-gate`) or `all` to bypass.
 
 ```bash
-node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs config show
+# triage: skip the Agent intercept this session only
+CODEX_BRIDGE_HOOK_DISABLE=pre-tool-agent claude
+
+# emergency: skip every hook
+CODEX_BRIDGE_HOOK_DISABLE=all claude
 ```
 
-Config resolves across four layers (lowest → highest precedence):
+`--no-hooks` on the CLI bypasses every hook-driven behavior even when the orchestrator dispatches.
 
-1. built-in defaults (`src/lib/config.mjs::DEFAULT_CONFIG`)
-2. `~/.claude/skills/codex-bridge/config.yaml` (ships with the skill)
-3. `$(git rev-parse --show-toplevel)/config.yaml` (your repo root)
-4. `$(pwd)/config.yaml` (wins last)
+## config
 
-Drop a `config.yaml` at layer 3 or 4 to override per-project without editing your global install.
+Config files resolve from lowest to highest precedence:
 
----
+1. Built-in defaults.
+2. `${CLAUDE_PLUGIN_ROOT}/config.yaml` when present.
+3. `<git-root>/config.yaml`.
+4. `<cwd>/config.yaml`.
 
-## what you get
+CLI flags still override the relevant per-command values. `config show --json` prints the merged config and source paths; use it to debug "why isn't my config taking effect?".
 
-- **delegate → monitor loop** — Claude fires `task`, tails the events stream, and acts on `[PLAN]` / `[QUESTION]` / `[DONE]` / `[ERROR]` / `[INCOMPLETE]` tags. Zero custom glue code.
-- **uniform JSON envelope** — every `--json` call returns `{ok, schema_version, command, result, meta}` on success and `{ok:false, error:{class, code, retryable, suggestion}}` on failure. `error.class` maps 1:1 to exit code. Agents branch on `$?` before parsing.
-- **ready-to-paste monitor hint** — every `task` launch payload includes `result.monitor.tool_hint` shaped exactly for Claude Code's Monitor tool (`{description, command, timeout_ms, persistent}`).
-- **first-class blocking + streaming** — `wait <id>` blocks on the next terminal tag; `events <id> --follow --filter DONE,ERROR,PLAN,QUESTION` streams with prefix-aware filters.
-- **auto-pipeline** — optional silent review + completion check after every execute turn. Findings feed a fix turn; completion check renders to `[DONE]` or `[INCOMPLETE]` with structured missing-items.
-- **interactive question flow** — Codex can ask via `requestUserInput`; the bridge emits `[QUESTION]` with a prebuilt `respond …` command carrying the exact request-id.
-- **plan-mode guardrails** — first turn defaults to `readonly` sandbox; `task --mode default` bypasses the plan turn when you want execution directly. `config.yaml` is the session-wide default.
-- **append-only session artifacts** — per-thread `.events` (Monitor), `.ndjson` (jq), `.diff` (git diff), `.plan.md`, `.review.json`. ndjson records turn params, item completions, questions, steers, errors, pipeline stages.
-- **typed error taxonomy** — Codex's `codexErrorInfo` mapped to stable `error.code` values: `INVALID_THREAD_ID`, `REVIEW_EMPTY_DIFF`, `WAIT_TIMEOUT`, `UNKNOWN_SUBCOMMAND`, `CONTEXT_WINDOW_EXCEEDED`, and the rest.
-- **structured review output** — `adversarial-review` returns findings conforming to a shipped JSON schema; pair with `review` for Codex's native pass.
-- **mid-turn steering + resume** — `steer <tid> <turn-id> "…"` sends guidance to a live turn; `task --resume-last` picks up the session's latest resumable thread.
-- **self-healing state** — `bridge status --prune-orphans` reaps orphaned "running" jobs via a dead-pid probe. Crashed workers don't wedge your state file.
-- **no telemetry. no sidecar manifest.** Everything lives in `SKILL.md` frontmatter + the single bundled CLI.
-- **update check built in** — `bridge update` against the GitHub Releases API, 24 h cache, silent stdout notice on every launch, opt-out via env.
+## artifact registry
 
----
+Each task gets a directory at `~/.codex-bridge/jobs/<task_id>/`:
 
-## guided bootstrap (zero to working)
-
-Safe to run on a clean macOS or Linux machine. Each step has a one-line verification.
-
-### 1. Install Node.js 22 or newer
-
-**macOS (Homebrew):**
-```bash
-brew install node@22 && brew link --overwrite --force node@22
+```
+meta.json        # backend, started_at, base_sha, worktree, parent_task_id, capabilities
+brief.json       # verbatim brief (or null if free-text)
+brief.md         # human-readable rendering
+events.jsonl     # NormalizedEvent stream (Monitor reads this)
+diff.patch       # worktree state snapshot
+review.json      # reviewer's structured output
+verdict.json     # post-review decision
+lock             # POSIX flock; held while worker alive
 ```
 
-**Linux / macOS (nvm, recommended if you juggle Node versions):**
-```bash
-curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-# restart your shell, then:
-nvm install 22 && nvm use 22 && nvm alias default 22
-```
+Cleanup automation is staged; until it lands, inspect `status --json` and remove terminal job directories manually when you no longer need their artifacts.
 
-**Verify:**
-```bash
-node --version   # expect v22.x.x or newer
-npm --version
-```
-
-### 2. Install the Codex CLI and sign in
+## status, events, wait
 
 ```bash
-npm i -g @openai/codex
-codex login      # opens your browser — sign in with your OpenAI account
+# fan-in view of all tracked jobs (live)
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" status --watch --interval 10s
+
+# tail one job's events with smart defaults (excludes HEARTBEAT, 30-min timeout)
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" events <task_id> --follow
+
+# block until terminal
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" wait <task_id> --timeout-ms 1800000 --json
 ```
 
-**Verify:**
-```bash
-codex --version
-codex auth status   # expect: logged in
-```
-
-### 3. Install `codex-bridge` as a Claude Code skill
-
-```bash
-npx -y skills add yigitkonur/codex-bridge -a claude-code -g -y
-```
-
-What the flags mean:
-- `-a claude-code` → target Claude Code specifically (skips the interactive "which agent?" prompt).
-- `-g` → global install to `~/.claude/skills/codex-bridge/` (available in every project). Drop this flag to install into `./.claude/skills/` in the current project instead.
-- `-y` → skip confirmation prompts.
-
-**Verify:**
-```bash
-node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs setup --json \
-  | jq '.result | {ready, node, codex, auth}'
-```
-
-You should see `ready: true` and non-null strings for `node`, `codex`, `auth`. If any field is missing, `setup` tells you what to fix — no guessing.
-
-### 4. Use it from Claude Code
-
-Open any repo in Claude Code and try:
-
-> "Have Codex add a dark-mode toggle to the settings page and review it before you hand it back."
-
-Claude auto-activates the skill (no `@` mention needed — the SKILL.md description lists the trigger keywords: "ask Codex", "run this by Codex", "adversarial review", etc.). You'll see the task launch, `[PLAN]` come back for approval, then `[DONE]` or `[QUESTION]` events stream via the Monitor tool.
-
----
-
-## other install paths
-
-Pick whichever matches your workflow. The `skills` CLI path above is the easiest; these are for people who want something specific.
-
-### alternate agents (Cursor, Codex-as-client, OpenCode, etc.)
-
-The [`skills` CLI](https://skills.sh/docs/cli) supports 40+ agents — swap the `-a` target:
-
-```bash
-npx -y skills add yigitkonur/codex-bridge -a cursor  -g -y
-npx -y skills add yigitkonur/codex-bridge -a codex   -g -y
-npx -y skills add yigitkonur/codex-bridge -a opencode -g -y
-```
-
-### release tarball (air-gapped / CI / no npx)
-
-```bash
-SKILLS=~/.claude/skills
-VERSION=v1.0.0
-mkdir -p "$SKILLS"
-curl -fsSL "https://github.com/yigitkonur/codex-bridge/releases/download/${VERSION}/codex-bridge-${VERSION}.tar.gz" \
-  | tar -xz -C "$SKILLS"
-```
-
-Each release ships `.tar.gz`, `.zip`, and `SHA256SUMS`.
-
-### clone and hack on it
-
-```bash
-git clone https://github.com/yigitkonur/codex-bridge
-cd codex-bridge
-npm ci
-npm run build
-ln -s "$(pwd)/skill" ~/.claude/skills/codex-bridge   # or use a project-scope symlink
-```
-
-Edit `src/`, re-run `npm run build`, commit the regenerated bundle alongside your source changes (CI enforces this — see [contributing](#contributing)).
-
----
-
-## how it shows up in Claude Code
-
-Once installed, Claude Code reads `skill/SKILL.md` front matter (`name: codex-bridge`). The description field lists every trigger Claude should route to this skill — "ask Codex", "run this by Codex", "adversarial review", background Codex jobs, tailing terminal events, etc. Claude activates it automatically; you don't invoke it by name.
-
-> **Preview — lands with the `feat/plugin-surfaces` stack.** The plugin-mode surfaces described in the rest of this section (`commands/`, `agents/`, `hooks/`, the bumped `.claude-plugin/plugin.json`, the runner subagent, and the stop-review-gate hook) are added by the sibling `feat/plugin-surfaces` branch and are not present on this branch's working tree alone. The text below describes the post-merge behavior. On this branch in isolation, only the skill (`skill/SKILL.md`) is shipped; `.claude-plugin/plugin.json` still declares only `skills`.
-
-Once the plugin-surfaces stack lands, installing `codex-bridge` as a Claude Code plugin will also expose native slash commands under `/codex-bridge:*`, a thin `codex-bridge:codex-bridge-runner` subagent, and lifecycle hooks. `/codex-bridge:task` will provide fresh-context delegation with Monitor-ready output; `/codex-bridge:status`, `/codex-bridge:events`, `/codex-bridge:wait`, and `/codex-bridge:result` will observe or retrieve jobs without guessing file paths.
-
-### project-scoped stop review gate (preview — `feat/plugin-surfaces`)
-
-Plugin mode will also support an optional stop-time review gate modeled after the official OpenAI Codex plugin: when Claude Code is about to stop, the hook asks Codex for a first-line `ALLOW:` or `BLOCK:` judgment over the just-finished Claude response. A `BLOCK:` result prevents the stop and surfaces the reason.
-
-If the official OpenAI Codex plugin is enabled in Claude Code, `codex-bridge` will not enable its own stop review gate. The official plugin owns that behavior; `codex-bridge` will remain available for its namespaced `/codex-bridge:*` orchestration commands.
-
-The gate is designed to be project-scoped and visible in git. Once the stack ships, enable it for the current repository with:
-
-```bash
-/codex-bridge:setup --enable-review-gate
-```
-
-That will create `.codex-bridge-stop-review-gate.lock` at the git root. Remove it with:
-
-```bash
-/codex-bridge:setup --disable-review-gate
-```
-
-Without that lock file, the Stop hook will exit without running Codex, even though the plugin hook is installed. This keeps the review gate auditable per project instead of silently enabling it from global state or an environment variable.
-
-If a stale `.codex-bridge-stop-review-gate.lock` exists while the official OpenAI plugin is enabled, the lock will be ignored. `/codex-bridge:setup --json` will report `officialOpenAICodexPluginStatus`, `reviewGateSuppressedByOfficialPlugin`, and `reviewGateLockIgnored` so the reason is machine-readable.
-
-Full user-facing docs live at [`skill/SKILL.md`](skill/SKILL.md). Topical references:
-
-| file | read when |
-|---|---|
-| [command-reference.md](skill/references/command-reference.md) | every subcommand, flag, exit code, envelope shape |
-| [monitor-patterns.md](skill/references/monitor-patterns.md) | monitor presets, `events --follow` vs `wait` vs raw `tail -f` |
-| [notification-format.md](skill/references/notification-format.md) | exact `[DONE]` / `[ERROR]` / `[PLAN]` / `[QUESTION]` / `[PIPELINE:*]` shapes |
-| [ndjson-guide.md](skill/references/ndjson-guide.md) | ndjson writer vocab + jq recipes |
-| [orchestration-flows.md](skill/references/orchestration-flows.md) | end-to-end flow diagrams |
-| [error-recovery.md](skill/references/error-recovery.md) | `codexErrorInfo` → exit code, recovery strategies |
-| [config-reference.md](skill/references/config-reference.md) | yaml keys, defaults, precedence |
-| [prompt-writing.md](skill/references/prompt-writing.md) | writing prompts Codex will actually execute well |
-
----
-
-## quick usage from the shell
-
-```bash
-SKILL=~/.claude/skills/codex-bridge
-BRIDGE="node $SKILL/scripts/codex-bridge.mjs"
-
-# sync, self-sufficient — envelope carries phase + next_action
-$BRIDGE task --json "fix the auth bug in src/auth.ts" \
-  | jq '.result.phase, .result.next_action.command'
-
-# async launch + tail via the built-in events subcommand
-LAUNCH=$($BRIDGE task --background --write --json "add a cancel button to the todo list")
-JOB=$(echo "$LAUNCH" | jq -r .result.jobId)
-
-# paste this straight into the Monitor tool — it's pre-built in the payload
-echo "$LAUNCH" | jq -r .result.monitor.command
-
-# or block
-$BRIDGE wait "$JOB" --timeout-ms 600000 --json
-```
-
----
-
-## troubleshooting
-
-| symptom | fix |
-|---|---|
-| `setup --json` shows `codex: null` | `npm i -g @openai/codex` — the global Codex CLI isn't on `$PATH`. |
-| `setup --json` shows `auth: null` | `codex login` — sign in via the browser flow. |
-| `node --version` below 22 | Upgrade Node (see [step 1](#1-install-nodejs-22-or-newer)). |
-| `npx skills add` errors with "no skills found" | You're on an old cached `skills` CLI — re-run with `npx -y skills@latest add …`. |
-| Claude Code doesn't auto-activate the skill | Open `~/.claude/skills/codex-bridge/SKILL.md` and confirm the front-matter parses (valid YAML, `name: codex-bridge`). If you edited it, revert to the shipped version. |
-| Skill installed to the wrong agent | `npx skills remove codex-bridge -a <wrong-agent> -g`, then re-run the add command with `-a claude-code`. |
-| Permission denied writing to `~/.claude/skills/` | Use project scope instead: drop `-g` and run from inside your project directory. |
-| `ERROR_CODE: CONTEXT_WINDOW_EXCEEDED` mid-task | Break the task into smaller prompts or increase the Codex reasoning budget via `config.yaml` (`effort: medium` trades depth for headroom). |
-
-For anything else, check [`skill/references/error-recovery.md`](skill/references/error-recovery.md) — it maps every Codex error variant to a recovery strategy.
-
----
-
-## repo layout
-
-```
-codex-bridge/
-├── .claude-plugin/plugin.json      manifest: declares ./skill for skills.sh + Claude plugin discovery
-├── src/                            authored source (ESM, Node 22+)
-│   ├── codex-bridge.mjs            CLI entry + per-subcommand handlers
-│   ├── adapters/codex/             Codex runtime, protocol/client, broker
-│   ├── lib/                        state, broker lifecycle, session log, auto-pipeline, …
-│   ├── prompts/                    adversarial-review prompt (copied into skill/)
-│   ├── schemas/                    review-output.schema.json (copied into skill/)
-│   └── templates/                  execute-instructions.md, plan-enforcement.md (copied into skill/)
-│
-├── skill/                          the shipped skill bundle (what `npx skills add` fetches)
-│   ├── SKILL.md                    user-facing skill doc + front matter (hand-edited)
-│   ├── config.yaml                 default config (hand-edited)
-│   ├── references/                 hand-edited reference docs
-│   ├── scripts/codex-bridge.mjs    ← committed build output (CI enforces freshness)
-│   ├── app-server-broker.mjs       ← committed build output
-│   └── prompts/ schemas/ templates/  ← committed build outputs
-│
-├── .github/workflows/              ci: build.yml (drift check on pr/push), release.yml (on tag)
-├── gherkin-tests-v2/**/*.md        behavioral specs (contract docs — not runnable)
-├── unexpected-bridge-observations/ session-anchored skill-quality notes
-└── docs/superpowers/plans/         implementation plans
-```
-
----
-
-## ci / release
-
-- Every push to `main` and every PR runs the bundle + a **drift check**: CI rebuilds from source and fails if `skill/scripts/*`, `skill/app-server-broker.mjs`, `skill/prompts/*`, `skill/schemas/*`, or `skill/templates/*` don't match. Contributors must `npm run build` and commit the diff. See [`.github/workflows/build.yml`](.github/workflows/build.yml).
-- Pushing a `vX.Y.Z` tag stages the skill under a `codex-bridge/` directory (per [agentskills.io](https://agentskills.io/specification) — install-dir name must match the `name` frontmatter), packages `.tar.gz` + `.zip` + `SHA256SUMS`, and attaches everything to the GitHub release. See [`.github/workflows/release.yml`](.github/workflows/release.yml).
-
-Users never need to run `npm run build` unless they're hacking on the source.
-
----
-
-## spec conformance
-
-Targets the [agentskills.io spec](https://agentskills.io/specification) and the [skills.sh / vercel-labs skills](https://skills.sh) CLI contract.
-
-- `SKILL.md` front matter: `name`, `description`, `compatibility`, `license`, `allowed-tools`, `metadata` — all in spec; description imperative, under 1024 chars, trigger-keyword-dense per the optimizing-descriptions guide.
-- Body: under 500 lines, reference files one level deep, cross-linked from `SKILL.md`.
-- Script: shipped as a single `node` entry under `scripts/` inside the skill; non-interactive, `--help` on every subcommand, meaningful exit codes (0/1/2/3/4/5/6/7/8), stdout for data, stderr for progress.
-- Discovery: installable at `~/.claude/skills/codex-bridge/` (Claude Code) or any of the 40+ other targets the `skills` CLI supports.
-- Plugin manifest (`.claude-plugin/plugin.json`) declares `./skill` so skills.sh discovers the bundle from the repo root.
-- No sidecar manifest beyond that. All skill metadata lives in `SKILL.md` front matter.
-
----
-
-## contributing
-
-Read [`AGENTS.md`](AGENTS.md) (symlinked as `CLAUDE.md`) before touching source. Per-folder `AGENTS.md` files scope the conventions: `src/lib/AGENTS.md` locks in protocol invariants against the Codex app-server spec; `skill/AGENTS.md` says which files under `skill/` are authored vs generated; `gherkin-tests-v2/AGENTS.md` is the contract for behavioral specs (including the canonical `bridge()` shell-function rule that all specs must follow).
-
-**One rule worth repeating:** after any change under `src/`, run `npm run build` and commit the regenerated bundle (`skill/scripts/*`, `skill/app-server-broker.mjs`, `skill/prompts/*`, `skill/schemas/*`, `skill/templates/*`) in the same commit. CI's drift check will reject PRs with stale bundles.
-
-Every behavior-visible change also belongs in [`CHANGELOG.md`](CHANGELOG.md) — bullets go under `## [Unreleased]` during development and get promoted to a dated `## [X.Y.Z]` section at release time. Full instructions (categories, voice, version-bump rules, release procedure) live at the bottom of `CHANGELOG.md`.
-
-### Releasing
-
-```sh
-# 1. Bump version in package.json and BRIDGE_VERSION in src/codex-bridge.mjs
-# 2. Rename the `## [Unreleased]` heading in CHANGELOG.md to `## [X.Y.Z] — YYYY-MM-DD`
-#    and add a fresh empty [Unreleased] section above it
-git commit -am "chore(release): vX.Y.Z"
-git tag vX.Y.Z
-git push origin main vX.Y.Z
-```
-
-Pushing the tag fires `.github/workflows/release.yml`, which builds the bundle, packages `.tar.gz` + `.zip` + `SHA256SUMS`, and attaches everything to the GitHub release. Users who installed via `npx skills add` will see the new version on their next `bridge version` or `bridge update` call.
-
----
+Runtime docs are emitted by `version --json`, `config show --json`, and `<sub> --help`. Don't trust prose for things the runtime can tell you directly.
+
+## links
+
+- [SKILL.md (judgment-only)](plugin/skills/codex-bridge/SKILL.md)
+- [MIGRATION.md (v1.x → v2.0)](MIGRATION.md)
+- [CHANGELOG.md](CHANGELOG.md)
+- [Brief composition](plugin/skills/codex-bridge/references/brief-composition.md)
+- [Error recovery decision tree](plugin/skills/codex-bridge/references/error-recovery.md)
+- [Re-bloat prevention rules](plugin/skills/codex-bridge/references/AGENTS.md)
+- [Adapter contract](src/adapters/README.md)
 
 ## license
 
-MIT © Yigit Konur
+MIT.
