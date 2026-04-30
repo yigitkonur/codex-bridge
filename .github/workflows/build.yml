@@ -68,44 +68,66 @@ jobs:
             test -s "$f" || { echo "missing or empty: $f"; exit 1; }
           done
 
+      # Sanity probes run against BOTH bundle layouts so a future divergence
+      # between skill/ and plugin/ entry points is caught at build time. Today
+      # the two bundles are byte-identical, but the dual-output build introduced
+      # in T8 means either bundle is a real shipping artifact and either could
+      # regress independently.
+
       - name: sanity — help --json parses
         run: |
-          node skill/scripts/codex-bridge.mjs help --json > /tmp/help.json
-          node -e "const j = require('/tmp/help.json'); if (!j.ok || !Array.isArray(j.result.commands) || j.result.commands.length < 10) { console.error('help envelope failed sanity'); process.exit(1); }"
+          for bundle in skill/scripts/codex-bridge.mjs plugin/scripts/codex-bridge.mjs; do
+            echo "::group::help --json ($bundle)"
+            node "$bundle" help --json > /tmp/help.json
+            node -e "const j = require('/tmp/help.json'); if (!j.ok || !Array.isArray(j.result.commands) || j.result.commands.length < 10) { console.error('help envelope failed sanity for $bundle'); process.exit(1); }"
+            echo "::endgroup::"
+          done
 
       - name: sanity — version --json parses
         run: |
           # `version` spawns the codex binary to query its version; codex isn't
           # installed on CI, so accept either a valid envelope or a non-zero
           # exit with a known error code (auth/dependency_failed).
-          set +e
-          OUT=$(node skill/scripts/codex-bridge.mjs version --json 2>&1)
-          STATUS=$?
-          set -e
-          echo "$OUT"
-          if [ $STATUS -eq 0 ]; then
-            node -e "const j = $OUT; if (!j.ok || j.result.schema_version !== '1.0') process.exit(1);"
-          else
-            # CI without codex installed → exit 7 is acceptable
-            if [ $STATUS -ne 7 ] && [ $STATUS -ne 3 ] && [ $STATUS -ne 4 ]; then
-              echo "unexpected exit status $STATUS"; exit 1
+          for bundle in skill/scripts/codex-bridge.mjs plugin/scripts/codex-bridge.mjs; do
+            echo "::group::version --json ($bundle)"
+            set +e
+            OUT=$(node "$bundle" version --json 2>&1)
+            STATUS=$?
+            set -e
+            echo "$OUT"
+            if [ $STATUS -eq 0 ]; then
+              node -e "const j = $OUT; if (!j.ok || j.result.schema_version !== '1.0') process.exit(1);"
+            else
+              # CI without codex installed → exit 7 is acceptable
+              if [ $STATUS -ne 7 ] && [ $STATUS -ne 3 ] && [ $STATUS -ne 4 ]; then
+                echo "unexpected exit status $STATUS for $bundle"; exit 1
+              fi
             fi
-          fi
+            echo "::endgroup::"
+          done
 
       - name: sanity — unknown subcommand returns envelope
         run: |
-          set +e
-          OUT=$(node skill/scripts/codex-bridge.mjs does-not-exist --json 2>&1)
-          STATUS=$?
-          set -e
-          test "$STATUS" = 2 || { echo "expected exit 2, got $STATUS"; exit 1; }
-          node -e "const j = $OUT; if (j.ok !== false || j.error.code !== 'UNKNOWN_SUBCOMMAND') { console.error(j); process.exit(1); }"
+          for bundle in skill/scripts/codex-bridge.mjs plugin/scripts/codex-bridge.mjs; do
+            echo "::group::unknown subcommand ($bundle)"
+            set +e
+            OUT=$(node "$bundle" does-not-exist --json 2>&1)
+            STATUS=$?
+            set -e
+            test "$STATUS" = 2 || { echo "expected exit 2 for $bundle, got $STATUS"; exit 1; }
+            node -e "const j = $OUT; if (j.ok !== false || j.error.code !== 'UNKNOWN_SUBCOMMAND') { console.error(j); process.exit(1); }"
+            echo "::endgroup::"
+          done
 
       - name: sanity — invalid thread-id rejected
         run: |
-          set +e
-          OUT=$(node skill/scripts/codex-bridge.mjs send thr_abc 'hi' --json 2>&1)
-          STATUS=$?
-          set -e
-          test "$STATUS" = 6 || { echo "expected exit 6, got $STATUS"; exit 1; }
-          node -e "const j = $OUT; if (j.error.code !== 'INVALID_THREAD_ID') { console.error(j); process.exit(1); }"
+          for bundle in skill/scripts/codex-bridge.mjs plugin/scripts/codex-bridge.mjs; do
+            echo "::group::invalid thread-id ($bundle)"
+            set +e
+            OUT=$(node "$bundle" send thr_abc 'hi' --json 2>&1)
+            STATUS=$?
+            set -e
+            test "$STATUS" = 6 || { echo "expected exit 6 for $bundle, got $STATUS"; exit 1; }
+            node -e "const j = $OUT; if (j.error.code !== 'INVALID_THREAD_ID') { console.error(j); process.exit(1); }"
+            echo "::endgroup::"
+          done
