@@ -13,13 +13,14 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
-import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
+import { clearBrokerSession, ensureBrokerSession, loadBrokerSession, waitForBrokerEndpoint } from "./broker-lifecycle.mjs";
 import { terminateProcessTree } from "./process.mjs";
 
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
 export const APP_SERVER_INITIALIZE_TIMEOUT_MS = 10_000;
 export const APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5_000;
+const SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS = 150;
 
 /** @type {ClientInfo} */
 const DEFAULT_CLIENT_INFO = {
@@ -73,6 +74,25 @@ function withTimeout(promise, ms, message) {
 
 function serverRequestError(method) {
   return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
+}
+
+async function loadReadySavedBrokerEndpoint(cwd) {
+  const brokerSession = loadBrokerSession(cwd);
+  if (!brokerSession) {
+    return null;
+  }
+
+  const endpoint = brokerSession.endpoint ?? null;
+  try {
+    if (endpoint && (await waitForBrokerEndpoint(endpoint, SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS))) {
+      return endpoint;
+    }
+  } catch {
+    // Malformed or otherwise unusable saved endpoints should be treated as stale.
+  }
+
+  clearBrokerSession(cwd);
+  return null;
 }
 
 export class AppServerClientBase {
@@ -510,23 +530,49 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
 export class CodexAppServerClient {
   static async connect(cwd, options = {}) {
     let brokerEndpoint = null;
+    let brokerEndpointSource = null;
     if (!options.disableBroker) {
-      brokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process.env[BROKER_ENDPOINT_ENV] ?? null;
+      const explicitBrokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process.env[BROKER_ENDPOINT_ENV] ?? null;
+      if (explicitBrokerEndpoint) {
+        brokerEndpoint = explicitBrokerEndpoint;
+        brokerEndpointSource = "explicit";
+      }
       if (!brokerEndpoint && options.reuseExistingBroker) {
-        brokerEndpoint = loadBrokerSession(cwd)?.endpoint ?? null;
+        brokerEndpoint = await loadReadySavedBrokerEndpoint(cwd);
+        if (brokerEndpoint) {
+          brokerEndpointSource = "saved";
+        }
       }
       if (!brokerEndpoint && !options.reuseExistingBroker) {
         const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
         brokerEndpoint = brokerSession?.endpoint ?? null;
+        if (brokerEndpoint) {
+          brokerEndpointSource = "managed";
+        }
       }
     }
+    const createBrokerClient =
+      options._createBrokerClient ?? ((clientCwd, clientOptions) => new BrokerCodexAppServerClient(clientCwd, clientOptions));
+    const createDirectClient =
+      options._createDirectClient ?? ((clientCwd, clientOptions) => new SpawnedCodexAppServerClient(clientCwd, clientOptions));
     const client = brokerEndpoint
-      ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
-      : new SpawnedCodexAppServerClient(cwd, options);
+      ? createBrokerClient(cwd, { ...options, brokerEndpoint })
+      : createDirectClient(cwd, options);
     try {
       await client.initialize();
     } catch (error) {
       await client.close().catch(() => {});
+      if (brokerEndpointSource === "saved") {
+        clearBrokerSession(cwd);
+        const fallbackClient = createDirectClient(cwd, options);
+        try {
+          await fallbackClient.initialize();
+        } catch (fallbackError) {
+          await fallbackClient.close().catch(() => {});
+          throw fallbackError;
+        }
+        return fallbackClient;
+      }
       throw error;
     }
     return client;

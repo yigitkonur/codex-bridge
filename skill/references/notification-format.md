@@ -160,7 +160,7 @@ Emitted when `command_failure_circuit_breaker: true` (shipped default) detects `
   tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000
 ```
 
-Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter **excludes** `HEARTBEAT` (see `DEFAULT_MONITOR_EXCLUDE` in `src/lib/session-log.mjs`) so pure-liveness pulses don't flood LLM context; pass `--include HEARTBEAT` (or drop the default exclude) explicitly when you *do* want to see the pulse.
+Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter **excludes** `HEARTBEAT` (see `DEFAULT_MONITOR_EXCLUDE` in `src/lib/session-log.mjs`) so pure-liveness pulses don't flood LLM context; omit `--exclude HEARTBEAT` to see every event including the pulse, or pass `--filter HEARTBEAT` for a heartbeat-only view.
 
 Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not alive — the caller can short-circuit their wait and investigate (`kill -0 <pid>` on the heartbeat's `pid`, or `pgrep -f codex-bridge`). The `tail:` line in each block is a ready-to-paste re-attach command so an agent that lost its Monitor session can recover from the most recent events-file line alone.
 

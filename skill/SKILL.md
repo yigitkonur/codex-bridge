@@ -265,7 +265,7 @@ Each `[ERROR]` block carries an `origin:` line. The canonical vocabulary actuall
 | `upstream:invalid-request` (v1.5.0) | Upstream 400 `invalid_request_error` not covered by `response-chain-lost`. | Bridge auto-retries 3× with backoff. On exhaustion: rebuild prompt, relaunch fresh task. |
 | `turn` | Every other turn-level failure. Distinguish by `errorCode`: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget, etc. | See [error-recovery.md](references/error-recovery.md). |
 | `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. Check `failing_stage:` for the stage that actually stalled; the main task may still have succeeded. | `inspect` with `result`, then `rerun-review`. |
-| `bridge:stall` / `bridge:unhandled-exit` | Bridge safety net fired — indicates a bridge bug. | File a report with the jobId + events file. |
+| `bridge` | Bridge safety net fired — indicates a bridge bug. Distinguish `StallDetected` vs `UnhandledExit` by `errorCode`. | File a report with the jobId + events file. |
 
 A pipeline-origin `[ERROR]` can coexist with a `task --json` success envelope whose `result.phase: "incomplete"` and `result.pipeline.error` are set — read the envelope before retrying. The `actions:` block inside each `[ERROR]` is cause-aware and always ends with a `see:` line pointing to the right anchor in [references/error-recovery.md](references/error-recovery.md).
 

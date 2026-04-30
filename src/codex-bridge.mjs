@@ -31,6 +31,7 @@ import {
   normalizeCodexErrorInfo,
   getUpstreamRetryPolicy,
   buildHandoffEnvelope,
+  buildErrorEnvelope,
   extractUpstreamRequestId
 } from "./lib/cli-errors.mjs";
 import { isThreadId } from "./lib/thread-id.mjs";
@@ -205,28 +206,31 @@ function spawnDetachedAutoApply(targetVersion) {
     } catch { /* file doesn't exist yet — fine */ }
 
     const fd = fs.openSync(logFile, "a");
-    const banner = `\n[${new Date().toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})\n`;
-    fs.writeSync(fd, banner);
+    try {
+      const banner = `\n[${new Date().toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})\n`;
+      fs.writeSync(fd, banner);
 
-    const child = spawn(
-      "npx",
-      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
-      {
-        detached: true,
-        stdio: ["ignore", fd, fd],
-        env: process.env,
-      }
-    );
-    // Spawn can still fail asynchronously after the constructor returns
-    // (e.g. ENOENT when npx isn't on PATH). Catch silently; the banner
-    // line in the log is enough forensic trail.
-    child.on("error", () => {
-      try {
-        fs.writeSync(fd, `[${new Date().toISOString()}] spawn failed (npx not on PATH?)\n`);
-      } catch { /* closed */ }
-    });
-    child.unref();
-    try { fs.closeSync(fd); } catch { /* already dup'd into child */ }
+      const child = spawn(
+        "npx",
+        ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+        {
+          detached: true,
+          stdio: ["ignore", fd, fd],
+          env: process.env,
+        }
+      );
+      // Spawn can still fail asynchronously after the constructor returns
+      // (e.g. ENOENT when npx isn't on PATH). The parent closes `fd` after
+      // unref, so reopen by path for the late diagnostic.
+      child.on("error", () => {
+        try {
+          fs.appendFileSync(logFile, `[${new Date().toISOString()}] spawn failed (npx not on PATH?)\n`, "utf8");
+        } catch { /* log unavailable */ }
+      });
+      child.unref();
+    } finally {
+      try { fs.closeSync(fd); } catch { /* already dup'd into child */ }
+    }
   } catch {
     // Best-effort. Any failure here (mkdir, open, spawn constructor)
     // just means this invocation doesn't auto-apply; next one will.
@@ -1165,8 +1169,9 @@ async function handleConfigShow(argv) {
   emitSuccess("config", payload, rendered, { json: options.json, startedAt });
 }
 
-// Force a fresh update check and print a human-readable verdict plus the
-// one-command install recipe. Never mutates the installed skill itself —
+// Check for updates and print a human-readable verdict plus the one-command
+// install recipe. Pass --force to bypass the cache. Never mutates the
+// installed skill itself —
 // updates land via `npx skills …` from the user's shell, not from inside
 // the bridge. This keeps the bridge's blast radius tight (no self-modify)
 // and means a failed update check is always recoverable: try again later.
@@ -1179,7 +1184,7 @@ async function handleUpdate(argv) {
 
   const update = await checkForUpdate({
     currentVersion: BRIDGE_VERSION,
-    force: options.force !== false,
+    force: Boolean(options.force),
   });
 
   const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
@@ -1538,14 +1543,23 @@ async function executeReviewRun(request) {
   });
 
   // Short-circuit: if the resolved target is the working tree and there are
-  // actually no staged or unstaged changes, refuse before spending a Codex turn.
+  // actually no staged, unstaged, or untracked changes, refuse before spending
+  // a Codex turn.
   // Only fires for working-tree targets (explicit --scope working-tree, or
   // --scope auto that fell through to working-tree). Branch-scope reviews can
   // legitimately have empty diffs and should run.
   if (target.mode === "working-tree") {
     const diffCheck = runCommand("git", ["diff", "--quiet"], { cwd: request.cwd });
     const stagedCheck = runCommand("git", ["diff", "--cached", "--quiet"], { cwd: request.cwd });
-    if (diffCheck.status === 0 && stagedCheck.status === 0) {
+    const untrackedCheck = runCommand("git", ["ls-files", "--others", "--exclude-standard"], {
+      cwd: request.cwd
+    });
+    if (
+      diffCheck.status === 0 &&
+      stagedCheck.status === 0 &&
+      untrackedCheck.status === 0 &&
+      untrackedCheck.stdout.trim() === ""
+    ) {
       throw new CliError("No working-tree changes to review.", {
         class: "validation",
         code: "REVIEW_EMPTY_DIFF",
@@ -2004,11 +2018,39 @@ function parseDurationOption(flagName, raw, { defaultMs = null } = {}) {
   return ms;
 }
 
+function persistFailureErrorInPayload(execution, command = null) {
+  if (!execution || execution.exitStatus === 0) {
+    return execution;
+  }
+
+  const errLike = execution.error ?? { message: `Codex turn failed (status ${execution.exitStatus}).` };
+  const partial = errLike?.partial ?? null;
+  const handoff = errLike?.handoff ?? null;
+  const { error } = buildErrorEnvelope(classifyError(errLike), { command, partial, handoff });
+  const payload =
+    execution.payload && typeof execution.payload === "object" && !Array.isArray(execution.payload)
+      ? execution.payload
+      : {};
+
+  return {
+    ...execution,
+    payload: {
+      ...payload,
+      error
+    }
+  };
+}
+
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile
   });
-  const execution = await runTrackedJob(job, () => runner(progress), { logFile });
+  const command = options.command ?? null;
+  const execution = await runTrackedJob(
+    job,
+    async () => persistFailureErrorInPayload(await runner(progress), command),
+    { logFile }
+  );
 
   // V3.2: Map Codex turn-level failures to semantic exit codes. The error object
   // from runAppServerTurn carries `codexErrorInfo` (Unauthorized,
@@ -2019,19 +2061,19 @@ async function runForegroundCommand(job, runner, options = {}) {
 
     if (options.json) {
       // Emit the error envelope on stdout; exit code is set by emitError.
-      emitError(errLike, { json: true, command: options.command ?? null });
+      emitError(errLike, { json: true, command });
     } else {
       // Non-JSON path: render the job output (captures reasoning + diagnostics),
       // then set the mapped exit code via emitError's classifier.
       if (execution.rendered) {
         process.stdout.write(execution.rendered);
       }
-      emitError(errLike, { json: false, command: options.command ?? null });
+      emitError(errLike, { json: false, command });
     }
     return execution;
   }
 
-  emitSuccess(options.command ?? null, execution.payload, execution.rendered, {
+  emitSuccess(command, execution.payload, execution.rendered, {
     json: options.json,
     startedAt: options.startedAt
   });
@@ -2074,17 +2116,67 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-  const child = spawnDetachedTaskWorker(cwd, job.id, logFile);
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
-    pid: child.pid ?? null,
+    pid: null,
     logFile,
     request
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
+
+  // The worker reads this job record during startup; persist it before spawn
+  // so a fast child cannot fail with JOB_NOT_FOUND.
+  let child;
+  try {
+    child = spawnDetachedTaskWorker(cwd, job.id, logFile);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const completedAt = nowIso();
+    const existingRecord = readStoredJob(job.workspaceRoot, job.id) ?? queuedRecord;
+    const failedRecord = {
+      ...existingRecord,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      logFile: existingRecord.logFile ?? logFile,
+      request: existingRecord.request ?? request,
+      completedAt,
+      errorMessage
+    };
+    writeJobFile(job.workspaceRoot, job.id, failedRecord);
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      logFile: failedRecord.logFile,
+      request: failedRecord.request,
+      completedAt,
+      errorMessage
+    });
+    throw error;
+  }
+
+  const spawnedPid = child.pid ?? null;
+  const existingRecord = readStoredJob(job.workspaceRoot, job.id) ?? queuedRecord;
+  if (existingRecord.status === "queued") {
+    const spawnedRecord = {
+      ...existingRecord,
+      pid: spawnedPid,
+      logFile: existingRecord.logFile ?? logFile,
+      request: existingRecord.request ?? request
+    };
+    writeJobFile(job.workspaceRoot, job.id, spawnedRecord);
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      pid: spawnedRecord.pid,
+      logFile: spawnedRecord.logFile,
+      request: spawnedRecord.request
+    });
+  }
 
   // v1.3.0: surface the events directory in every launch payload so callers
   // have a canonical tail-able path even before the threadId-named file
@@ -2200,11 +2292,14 @@ async function runBridgeTask(request) {
         ? `${metaSkillsPreamble} The calling orchestrator is already driving the plan/execute loop; produce a concise inline [PLAN] and stop — the orchestrator approves before execution.\n\n`
         : `${metaSkillsPreamble} The calling orchestrator has already planned this task; your job is to execute it directly.\n\n`)
     : "";
+  const taskPrompt = request.resumeLast && !String(request.prompt ?? "").trim()
+    ? DEFAULT_CONTINUE_PROMPT
+    : (request.prompt ?? "");
 
   // Append prompt footer from config (instructs Codex to use requestUserInput tool)
   const promptWithFooter = config.prompt_footer
-    ? `${metaSkillsPrefix}${request.prompt}\n\n${config.prompt_footer}`
-    : `${metaSkillsPrefix}${request.prompt}`;
+    ? `${metaSkillsPrefix}${taskPrompt}\n\n${config.prompt_footer}`
+    : `${metaSkillsPrefix}${taskPrompt}`;
 
   const activeMode = isPlanMode ? "plan" : "default";
   const developerInstructions = loadDeveloperInstructions(activeMode);
@@ -2532,8 +2627,10 @@ async function runBridgeTask(request) {
   let checkpointTimer = null;
   let checkpointInFlight = false;
   // `terminalEmitted` is flipped by every explicit terminal-tag write
-  // (stall, DONE, ERROR, INCOMPLETE). The finally-backstop reads this flag
-  // instead of scanning the events file — O(1) vs reading a multi-MB log.
+  // (stall, PLAN, DONE, ERROR, INCOMPLETE) and handled non-error exits that
+  // intentionally skip terminal error emission (workspace-dirty). The
+  // finally-backstop reads this flag instead of scanning the events file —
+  // O(1) vs reading a multi-MB log.
   let terminalEmitted = false;
   const markTerminalEmitted = () => { terminalEmitted = true; };
   const checkpointState = {
@@ -3043,19 +3140,6 @@ async function runBridgeTask(request) {
       });
     }
 
-    logEvent(session, formatErrorEvent(session, {
-      errorCode,
-      message: errorMessage,
-      phase: isPlanMode ? "plan" : "execution",
-      origin,
-      scriptPath: SCRIPT_PATH,
-      jobId: request.jobId ?? null,
-      upstreamRequestId,
-      cwd: request.cwd,
-    }));
-    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
-    markTerminalEmitted();
-
     // Attach partial + handoff to the thrown-error surface so
     // `runForegroundCommand`'s `emitError` → `buildErrorEnvelope` can
     // propagate them into the JSON envelope under `error.partial` /
@@ -3084,8 +3168,22 @@ async function runBridgeTask(request) {
         description:
           "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
       }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
+      markTerminalEmitted();
       return { ...result, session, exitStatus: 0, error: null };
     }
+
+    logEvent(session, formatErrorEvent(session, {
+      errorCode,
+      message: errorMessage,
+      phase: isPlanMode ? "plan" : "execution",
+      origin,
+      scriptPath: SCRIPT_PATH,
+      jobId: request.jobId ?? null,
+      upstreamRequestId,
+      cwd: request.cwd,
+    }));
+    logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
+    markTerminalEmitted();
 
     setPhase("error", {
       command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "<revised prompt>"`,
@@ -3107,6 +3205,7 @@ async function runBridgeTask(request) {
       scriptPath: SCRIPT_PATH,
       cwd: request.cwd,
     }));
+    markTerminalEmitted();
     setPhase("plan-pending", {
       command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
       description: "Approve the plan and switch to execution mode. To revise instead, drop --mode and send revision text."
@@ -3216,8 +3315,9 @@ async function runBridgeTask(request) {
     // Backstop uses the in-process `terminalEmitted` flag instead of
     // reading the events file — O(1) vs potentially several MB of heartbeat
     // + checkpoint history on long runs. Every terminal-tag write site
-    // (turn error, no-pipeline done, auto-pipeline done/incomplete/error,
-    // stall-detector emission) calls `markTerminalEmitted()`. Anything that
+    // (turn error, plan-pending, no-pipeline done, auto-pipeline done/incomplete/error,
+    // stall-detector emission), plus handled non-error terminal exits such
+    // as workspace-dirty, calls `markTerminalEmitted()`. Anything that
     // reaches the `finally` without flipping the flag is, by definition, an
     // un-instrumented exit path — the synthesized `UnhandledExit` marker
     // tells the caller exactly which run and serves as a standing request
@@ -3448,7 +3548,7 @@ async function handleTaskWorker(argv) {
       workspaceRoot,
       logFile
     },
-    () =>
+    async () =>
       // Go through `runBridgeTask` (not `executeTaskRun` directly) so the
       // detached worker builds the same session-logging hooks, prompt
       // decorations (`skip_meta_skills`, `prompt_footer`), sandbox-policy
@@ -3458,10 +3558,13 @@ async function handleTaskWorker(argv) {
       // session artifacts (`.events`, `.ndjson`, `.diff`) — breaking every
       // `wait` / `events --follow` caller. See `gherkin-tests-v2/
       // 07-orchestration/08-background-path-produces-session-files.md`.
-      runBridgeTask({
-        ...request,
-        onProgress: progress
-      }),
+      persistFailureErrorInPayload(
+        await runBridgeTask({
+          ...request,
+          onProgress: progress
+        }),
+        "task"
+      ),
     { logFile }
   );
 }
@@ -4042,6 +4145,9 @@ async function handleEvents(argv) {
   };
   const filter = parseTagList(options.filter);
   const exclude = parseTagList(options.exclude);
+  const writeEventLine = (line) => {
+    if (!options.json) process.stdout.write(line + "\n");
+  };
   const tagOf = (line) => {
     // Match any leading bracketed tag. Character class is deliberately broad
     // (anything but a closing bracket) so future tag names — including
@@ -4091,7 +4197,7 @@ async function handleEvents(argv) {
     initial = fs.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
-      if (passes(line)) process.stdout.write(line + "\n");
+      if (passes(line)) writeEventLine(line);
       if (TERMINAL.test(line)) alreadyTerminal = true;
     }
   }
@@ -4162,7 +4268,7 @@ async function handleEvents(argv) {
       for (let i = 0; i < lines.length - 1; i++) {
         const line = lines[i];
         if (!line) continue;
-        if (passes(line)) process.stdout.write(line + "\n");
+        if (passes(line)) writeEventLine(line);
         if (TERMINAL.test(line)) {
           terminalTag = TERMINAL.exec(line)[1];
           terminalLine = line;

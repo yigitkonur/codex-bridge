@@ -92,6 +92,31 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(stopHook, /skill", "scripts", "codex-bridge\.mjs"/);
 });
 
+test("stop review hook re-reads activation after legacy setup migration", () => {
+  const stopHook = readText("hooks/stop-review-gate-hook.mjs");
+  const setupProbe = stopHook.indexOf('const probe = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });');
+  const activationAfterProbe = stopHook.indexOf("const activationAfterProbe = reviewGateActivation(cwd);");
+  const activeReturn = stopHook.indexOf("if (activationAfterProbe.active) return activationAfterProbe;");
+  const configReturn = stopHook.indexOf("if (result.stopReviewGateConfig !== true) return activationAfterProbe;");
+  const observedLockReturn = stopHook.indexOf("if (result.reviewGateLockExists === true) return activationAfterProbe;");
+  const staleObservedLockReturn = stopHook.indexOf("if (result.reviewGateLockExists === true) return activation;");
+  const migrationCall = stopHook.indexOf("activation = maybeMigrateLegacyGate(cwd, input, activation);");
+  const inactiveReturn = stopHook.indexOf("if (!activation.active)", migrationCall);
+
+  assert.notEqual(setupProbe, -1);
+  assert.notEqual(activationAfterProbe, -1);
+  assert.notEqual(activeReturn, -1);
+  assert.notEqual(configReturn, -1);
+  assert.notEqual(observedLockReturn, -1);
+  assert.equal(staleObservedLockReturn, -1);
+  assert.ok(setupProbe < activationAfterProbe);
+  assert.ok(activationAfterProbe < activeReturn);
+  assert.ok(activeReturn < configReturn);
+  assert.ok(configReturn < observedLockReturn);
+  assert.notEqual(migrationCall, -1);
+  assert.ok(migrationCall < inactiveReturn);
+});
+
 test("setup owns project-scoped review gate lock creation", () => {
   const bridge = readText("src/codex-bridge.mjs");
   const setupCommand = readText("commands/setup.md");

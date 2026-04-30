@@ -223,10 +223,19 @@ export function loadState(cwd) {
   }
 }
 
+function isActiveJob(job) {
+  return job?.status === "queued" || job?.status === "running";
+}
+
+function sortJobsNewestFirst(jobs) {
+  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
+
 function pruneJobs(jobs) {
-  return [...jobs]
-    .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
-    .slice(0, MAX_JOBS);
+  const sortedJobs = sortJobsNewestFirst(jobs);
+  const activeJobs = sortedJobs.filter(isActiveJob);
+  const terminalJobs = sortedJobs.filter((job) => !isActiveJob(job)).slice(0, MAX_JOBS);
+  return sortJobsNewestFirst([...activeJobs, ...terminalJobs]);
 }
 
 function removeFileIfExists(filePath) {

@@ -528,32 +528,10 @@ function looksLikeFlagBearingArg(arg) {
   return trimmed.startsWith("-");
 }
 
-// True iff a collapsed prompt-accepting argv element ends with a flag-shaped
-// token outside any quoted span. This catches the `task "fix --mode nope
-// --json"` shape where the user's slash-command tail packs prompt prose AND
-// real top-level flags into one shell-quoted blob: `normalizeArgv` re-splits
-// it (single-element → `splitRawArgumentString`), the handler sees `--json`
-// as a real flag, so the error-channel scanner must too — otherwise an error
-// from that handler emits as plain text instead of the JSON envelope.
-//
-// We use the LAST tokenized token as the discriminator: if it's flag-shaped,
-// the element is a hybrid prompt+flags invocation (case 3, ALL tokens fair
-// game); otherwise it's pure prose with `--help` / `--json` incidentally
-// embedded (case 2: `"write docs for --help output"` → last token `output`,
-// not flag-shaped, so don't false-positive).
-function trailingFlagShapedToken(arg) {
-  if (typeof arg !== "string") return false;
-  if (!/\s/.test(arg)) return false;
-  let last = null;
-  for (const token of tokenizeOutsideQuotes(arg)) last = token;
-  if (typeof last !== "string") return false;
-  return last !== "--" && last.startsWith("-");
-}
-
-// Subcommands whose final positional arg is a free-text PROMPT (or focus
-// blob) the user authors. For these, the LAST argv element — when it isn't
-// flag-shaped — must NOT be scanned: it's prose, and any embedded
-// `--json` / `--help` substring is incidental.
+// Subcommands whose positionals include free-text PROMPT (or focus) content
+// the user authors. For these, non-flag argv elements must NOT be scanned:
+// they're prose, and any embedded `--json` / `--help` substring is
+// incidental.
 //
 // All OTHER known subcommands take only ids/flags as positionals; for those,
 // every argv element after the subcommand is fair game (including a
@@ -591,19 +569,52 @@ const NON_PROMPT_SUBCOMMANDS = new Set([
   "help"
 ]);
 
+function outsideQuoteTokens(arg) {
+  return Array.from(tokenizeOutsideQuotes(arg));
+}
+
+function collapsedTrailingFlagToken(arg) {
+  if (typeof arg !== "string" || !/\s/.test(arg) || /["']/.test(arg)) return [];
+  const tokens = outsideQuoteTokens(arg);
+  if (tokens.length < 2 || tokens.includes("--")) return [];
+  const last = tokens[tokens.length - 1];
+  if (!last.startsWith("-")) return [];
+  const earlierFlag = tokens.slice(0, -1).some((token) => token.startsWith("-"));
+  return earlierFlag ? [last] : [];
+}
+
+function promptCommandFlagBearingSlice(rest) {
+  const scanned = [];
+  for (const arg of rest) {
+    if (looksLikeFlagBearingArg(arg)) {
+      scanned.push(arg);
+      continue;
+    }
+    if (!/["']/.test(arg)) {
+      const suffix = collapsedTrailingFlagToken(arg);
+      if (suffix.length > 0) {
+        scanned.push(suffix.join(" "));
+      }
+      continue;
+    }
+    const tokens = outsideQuoteTokens(arg);
+    if (tokens.length > 0) {
+      scanned.push(tokens.join(" "));
+    }
+  }
+  return scanned;
+}
+
 // Pick the slice of argv elements whose contents are *flag-bearing* given
 // argv[0] is the subcommand. Three cases:
 //
-//   1. PROMPT-ACCEPTING subcommand → scan every argv element AFTER the
-//      subcommand EXCEPT the trailing positional, but ONLY if that trailing
-//      positional isn't itself flag-shaped (because then it's a real flag,
-//      not a prompt) AND isn't a collapsed prompt+flags blob whose last
-//      tokenized token is flag-shaped (`task "fix --mode nope --json"` —
-//      `normalizeArgv` re-splits this and the handler sees the trailing flag,
-//      so the error channel must too).
+//   1. PROMPT-ACCEPTING subcommand → scan only flag-shaped argv elements,
+//      option tokens outside quoted prompt spans, and conservative collapsed
+//      trailing flags. Free-text prompt positionals stay opaque even when
+//      options follow them.
 //        ["task", "--json", "write docs"]        → ["--json"]
-//        ["task", "write docs", "--json"]        → ["write docs", "--json"]
-//        ["task", "fix --mode nope --json"]      → ["fix --mode nope --json"]
+//        ["task", "write docs", "--json"]        → ["--json"]
+//        ["task", "\"fix --help\" --json"]       → ["--json"]
 //        ["task", "write docs for --help out"]   → []
 //
 //   2. KNOWN NON-PROMPT subcommand → scan every argv element after the
@@ -617,13 +628,7 @@ function flagBearingSlice(argv) {
   if (!Array.isArray(argv) || argv.length === 0) return [];
   const head = argv[0];
   if (PROMPT_ACCEPTING_SUBCOMMANDS.has(head)) {
-    const rest = argv.slice(1);
-    if (rest.length === 0) return rest;
-    const last = rest[rest.length - 1];
-    if (looksLikeFlagBearingArg(last) || trailingFlagShapedToken(last)) {
-      return rest;
-    }
-    return rest.slice(0, -1);
+    return promptCommandFlagBearingSlice(argv.slice(1));
   }
   if (NON_PROMPT_SUBCOMMANDS.has(head)) return argv.slice(1);
   return argv;

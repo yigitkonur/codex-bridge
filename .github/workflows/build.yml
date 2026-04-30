@@ -32,6 +32,10 @@ jobs:
       - name: build skill bundle
         run: npm run build
 
+      - name: test
+        run: npm test
+        timeout-minutes: 2
+
       - name: verify committed bundle matches fresh build
         run: |
           # The skill bundle ships via `npx skills add yigitkonur/codex-bridge`,
@@ -39,8 +43,10 @@ jobs:
           # user's machine. So every main-branch commit must carry an up-to-date
           # bundle. Any diff here means the contributor forgot to commit their
           # `npm run build` output.
-          if ! git diff --quiet --exit-code -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates; then
+          BUNDLE_STATUS=$(git status --porcelain -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates)
+          if [ -n "$BUNDLE_STATUS" ]; then
             echo "::error::committed skill bundle is stale. run 'npm run build' and commit the changes."
+            echo "$BUNDLE_STATUS"
             git --no-pager diff --stat -- skill/scripts skill/app-server-broker.mjs skill/prompts skill/schemas skill/templates
             exit 1
           fi

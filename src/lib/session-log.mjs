@@ -3,6 +3,8 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 
+const MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
+
 export function resolveSessionDir(configDir) {
   const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os.homedir());
   fs.mkdirSync(dir, { recursive: true });
@@ -148,15 +150,118 @@ export function diffGitSnapshot(cwd, snapshot) {
 export function captureGitDiff(cwd, session) {
   const numstatResult = spawnSync("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 10000 });
   const fullResult = spawnSync("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 10000 });
+  const untrackedFiles = getUntrackedFileStats(cwd);
 
-  const diffContent = fullResult.stdout || "";
+  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles);
   const diffPath = writeDiff(session, diffContent);
 
   const numstatOutput = numstatResult.stdout || "";
-  const files = parseGitNumstat(numstatOutput);
+  const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
   const summary = summarizeNumstat(files);
 
   return { diffStat: summary, files: files.map(formatFileStat), diffPath };
+}
+
+function getUntrackedFileStats(cwd) {
+  try {
+    const result = spawnSync(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      { cwd, encoding: "utf8", timeout: 10000 }
+    );
+    if (result.status !== 0 || !result.stdout) {
+      return [];
+    }
+    return result.stdout
+      .split("\0")
+      .filter(Boolean)
+      .map((fileName) => buildUntrackedFileStat(cwd, fileName))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function buildUntrackedFileStat(cwd, fileName) {
+  const absolutePath = resolveInsideCwd(cwd, fileName);
+  if (!absolutePath) {
+    return null;
+  }
+
+  let sizeBytes = null;
+  let adds = 0;
+  try {
+    const stat = fs.lstatSync(absolutePath);
+    sizeBytes = stat.size;
+    if (stat.isFile() && stat.size <= MAX_UNTRACKED_STAT_BYTES) {
+      const content = fs.readFileSync(absolutePath);
+      if (!looksBinary(content)) {
+        adds = countTextLines(content);
+      }
+    }
+  } catch {
+    // Best-effort metadata only; still surface the untracked path.
+  }
+
+  return {
+    fileName: displayGitPath(fileName),
+    adds,
+    dels: 0,
+    status: "A",
+    untracked: true,
+    sizeBytes,
+  };
+}
+
+function resolveInsideCwd(cwd, fileName) {
+  const root = path.resolve(cwd);
+  const absolutePath = path.resolve(root, fileName);
+  if (absolutePath !== root && !absolutePath.startsWith(root + path.sep)) {
+    return null;
+  }
+  return absolutePath;
+}
+
+function looksBinary(content) {
+  return content.subarray(0, Math.min(content.length, 8000)).includes(0);
+}
+
+function countTextLines(content) {
+  if (content.length === 0) {
+    return 0;
+  }
+  const text = content.toString("utf8");
+  const newlineCount = text.split("\n").length - 1;
+  return text.endsWith("\n") ? newlineCount : newlineCount + 1;
+}
+
+function displayGitPath(fileName) {
+  return fileName.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
+}
+
+function appendUntrackedDiffMarkers(diffContent, untrackedFiles) {
+  if (untrackedFiles.length === 0) {
+    return diffContent;
+  }
+  const marker = formatUntrackedDiffMarkers(untrackedFiles);
+  if (!diffContent) {
+    return marker;
+  }
+  return `${diffContent}${diffContent.endsWith("\n") ? "" : "\n"}${marker}`;
+}
+
+function formatUntrackedDiffMarkers(untrackedFiles) {
+  const lines = ["# Untracked files omitted from git diff HEAD:"];
+  for (const file of untrackedFiles) {
+    const size = Number.isFinite(file.sizeBytes) ? `, ${file.sizeBytes} bytes` : "";
+    lines.push(`diff --git a/${file.fileName} b/${file.fileName}`);
+    lines.push("new file mode 100644");
+    lines.push("--- /dev/null");
+    lines.push(`+++ b/${file.fileName}`);
+    lines.push("@@ untracked file @@");
+    lines.push(`+<untracked file: ${file.fileName}${size}; content omitted from session diff>`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function parseGitNumstat(output) {
@@ -173,8 +278,11 @@ function parseGitNumstat(output) {
   return files;
 }
 
-function formatFileStat({ fileName, adds, dels }) {
+function formatFileStat({ fileName, adds, dels, status = null }) {
   const prefix = fileName.includes("=>") ? "R" : "M";
+  if (status) {
+    return `${status} ${fileName} (+${adds} -${dels})`;
+  }
   return `${prefix} ${fileName} (+${adds} -${dels})`;
 }
 
@@ -198,7 +306,7 @@ function formatCwdFlag(cwd) {
 }
 
 function commandPrefix(scriptPath, subcommand, cwd = null) {
-  return `node ${scriptPath} ${subcommand}${formatCwdFlag(cwd)}`;
+  return `node ${shellQuote(scriptPath)} ${subcommand}${formatCwdFlag(cwd)}`;
 }
 
 function resultActionLine(scriptPath, jobId, indent = "    detail: ", cwd = null) {
@@ -513,7 +621,7 @@ export function formatQuestionEvent(session, { requestId, questions, scriptPath,
     lines.push("respond:");
     if (q.options && q.options.length > 0) {
       for (const opt of q.options) {
-        lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "${opt.label}"`);
+        lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer ${shellQuote(opt.label)}`);
       }
     } else {
       lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "<answer>"`);

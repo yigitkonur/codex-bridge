@@ -233,10 +233,20 @@ function matchJobReference(jobs, reference, predicate = () => true) {
   });
 }
 
+function isResultTerminalJob(job) {
+  return (
+    job.status === "completed" ||
+    job.status === "failed" ||
+    job.status === "cancelled" ||
+    job.status === "orphaned"
+  );
+}
+
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
+  const allJobs = listJobs(workspaceRoot);
+  const jobs = sortJobsNewestFirst(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
 
@@ -316,7 +326,7 @@ export function resolveResultJob(cwd, reference) {
   const selected = matchJobReference(
     jobs,
     reference,
-    (job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled"
+    isResultTerminalJob
   );
 
   if (selected) {

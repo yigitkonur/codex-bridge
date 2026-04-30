@@ -450,14 +450,6 @@ function looksLikeFlagBearingArg(arg) {
   const trimmed = arg.trimStart();
   return trimmed.startsWith("-");
 }
-function trailingFlagShapedToken(arg) {
-  if (typeof arg !== "string") return false;
-  if (!/\s/.test(arg)) return false;
-  let last = null;
-  for (const token of tokenizeOutsideQuotes(arg)) last = token;
-  if (typeof last !== "string") return false;
-  return last !== "--" && last.startsWith("-");
-}
 var PROMPT_ACCEPTING_SUBCOMMANDS = /* @__PURE__ */ new Set([
   "task",
   "send",
@@ -482,17 +474,44 @@ var NON_PROMPT_SUBCOMMANDS = /* @__PURE__ */ new Set([
   "task-resume-candidate",
   "help"
 ]);
+function outsideQuoteTokens(arg) {
+  return Array.from(tokenizeOutsideQuotes(arg));
+}
+function collapsedTrailingFlagToken(arg) {
+  if (typeof arg !== "string" || !/\s/.test(arg) || /["']/.test(arg)) return [];
+  const tokens = outsideQuoteTokens(arg);
+  if (tokens.length < 2 || tokens.includes("--")) return [];
+  const last = tokens[tokens.length - 1];
+  if (!last.startsWith("-")) return [];
+  const earlierFlag = tokens.slice(0, -1).some((token) => token.startsWith("-"));
+  return earlierFlag ? [last] : [];
+}
+function promptCommandFlagBearingSlice(rest) {
+  const scanned = [];
+  for (const arg of rest) {
+    if (looksLikeFlagBearingArg(arg)) {
+      scanned.push(arg);
+      continue;
+    }
+    if (!/["']/.test(arg)) {
+      const suffix = collapsedTrailingFlagToken(arg);
+      if (suffix.length > 0) {
+        scanned.push(suffix.join(" "));
+      }
+      continue;
+    }
+    const tokens = outsideQuoteTokens(arg);
+    if (tokens.length > 0) {
+      scanned.push(tokens.join(" "));
+    }
+  }
+  return scanned;
+}
 function flagBearingSlice(argv) {
   if (!Array.isArray(argv) || argv.length === 0) return [];
   const head = argv[0];
   if (PROMPT_ACCEPTING_SUBCOMMANDS.has(head)) {
-    const rest = argv.slice(1);
-    if (rest.length === 0) return rest;
-    const last = rest[rest.length - 1];
-    if (looksLikeFlagBearingArg(last) || trailingFlagShapedToken(last)) {
-      return rest;
-    }
-    return rest.slice(0, -1);
+    return promptCommandFlagBearingSlice(argv.slice(1));
   }
   if (NON_PROMPT_SUBCOMMANDS.has(head)) return argv.slice(1);
   return argv;
@@ -581,7 +600,10 @@ function parseArgs(argv, config = {}) {
       continue;
     }
     if (token.startsWith("--")) {
-      const [rawKey, inlineValue] = token.slice(2).split("=", 2);
+      const rawOption = token.slice(2);
+      const equalsIndex = rawOption.indexOf("=");
+      const rawKey = equalsIndex === -1 ? rawOption : rawOption.slice(0, equalsIndex);
+      const inlineValue = equalsIndex === -1 ? void 0 : rawOption.slice(equalsIndex + 1);
       const key2 = aliasMap[rawKey] ?? rawKey;
       if (booleanOptions.has(key2)) {
         options[key2] = inlineValue === void 0 ? true : inlineValue !== "false";
@@ -768,145 +790,23 @@ import process5 from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-// src/lib/state.mjs
-import { createHash } from "node:crypto";
-import fs4 from "node:fs";
-import os from "node:os";
-import path4 from "node:path";
-
-// src/lib/official-plugin.mjs
-import { spawnSync } from "node:child_process";
-var OFFICIAL_PLUGIN_STATUS = Object.freeze({
-  ACTIVE: "active",
-  ABSENT: "absent",
-  UNKNOWN: "unknown"
-});
-var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
-function stringValue(value) {
-  return typeof value === "string" ? value : "";
-}
-function normalizePathLike(value) {
-  return stringValue(value).replace(/\\/g, "/").toLowerCase();
-}
-function pluginEntryEnabled(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  if ("enabled" in entry) return Boolean(entry.enabled);
-  if ("disabled" in entry) return !entry.disabled;
-  return true;
-}
-function summarizePluginEntry(entry) {
-  if (!entry || typeof entry !== "object") return null;
-  return {
-    id: entry.id ?? null,
-    name: entry.name ?? null,
-    version: entry.version ?? null,
-    scope: entry.scope ?? null,
-    installPath: entry.installPath ?? entry.path ?? null,
-    enabled: pluginEntryEnabled(entry)
-  };
-}
-function isOfficialOpenAICodexPluginEntry(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  const id = stringValue(entry.id).toLowerCase();
-  const name = stringValue(entry.name).toLowerCase();
-  const source = stringValue(entry.source).toLowerCase();
-  const installPath = normalizePathLike(entry.installPath ?? entry.path);
-  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
-  if (id === "codex@openai-codex") return true;
-  if (id === "codex" && authorName === "openai") return true;
-  if (name === "codex" && authorName === "openai") return true;
-  if (source.includes("openai/codex-plugin-cc")) return true;
-  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
-  if (installPath.includes("/openai-codex/codex/")) return true;
-  if (installPath.endsWith("/openai-codex/codex")) return true;
-  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
-  return false;
-}
-function detectOfficialOpenAICodexPluginFromEntries(entries) {
-  if (!Array.isArray(entries)) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: "Claude plugin list output was not an array.",
-      plugin: null
-    };
-  }
-  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
-  if (plugin) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
-      detail: "Official OpenAI Codex plugin is enabled.",
-      plugin: summarizePluginEntry(plugin)
-    };
-  }
-  return {
-    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
-    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
-    plugin: null
-  };
-}
-function extractPluginEntries(parsed) {
-  if (Array.isArray(parsed)) return parsed;
-  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
-  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
-  return null;
-}
-function detectOfficialOpenAICodexPluginUncached(options = {}) {
-  const spawn4 = options.spawnSync ?? spawnSync;
-  const result = spawn4("claude", ["plugin", "list", "--json"], {
-    cwd: options.cwd ?? process.cwd(),
-    env: options.env ?? process.env,
-    encoding: "utf8",
-    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
-  });
-  if (result.error) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
-      plugin: null
-    };
-  }
-  if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || "").trim();
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
-      plugin: null
-    };
-  }
-  try {
-    const parsed = JSON.parse(result.stdout);
-    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
-  } catch (error) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
-      plugin: null
-    };
-  }
-}
-var DEFAULT_DETECT_CACHE_MS = 3e4;
-var cached = null;
-var cachedAt = 0;
-function detectOfficialOpenAICodexPlugin(options = {}) {
-  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
-  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
-    return cached;
-  }
-  const result = detectOfficialOpenAICodexPluginUncached(options);
-  cached = result;
-  cachedAt = Date.now();
-  return result;
-}
-
-// src/lib/git.mjs
-import fs3 from "node:fs";
-import path3 from "node:path";
-
 // src/lib/process.mjs
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import process4 from "node:process";
+var DEFAULT_RUN_COMMAND_TIMEOUT_MS = 1e4;
+function resolveRunCommandTimeout(timeout) {
+  if (timeout == null) {
+    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  }
+  const parsed = Number(timeout);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  }
+  return Math.max(1, Math.floor(parsed));
+}
 function runCommand(command, args = [], options = {}) {
-  const result = spawnSync2(command, args, {
+  const spawnSyncImpl = options.spawnSync ?? spawnSync;
+  const result = spawnSyncImpl(command, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
@@ -914,6 +814,7 @@ function runCommand(command, args = [], options = {}) {
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
     shell: process4.platform === "win32" ? process4.env.SHELL || true : false,
+    timeout: resolveRunCommandTimeout(options.timeout),
     windowsHide: true
   });
   const normalizedStatus = result.status != null ? result.status : result.signal ? 128 : 1;
@@ -1026,6 +927,140 @@ function formatCommandFailure(result) {
   return parts.join(": ");
 }
 
+// src/lib/state.mjs
+import { createHash } from "node:crypto";
+import fs4 from "node:fs";
+import os from "node:os";
+import path4 from "node:path";
+
+// src/lib/official-plugin.mjs
+import { spawnSync as spawnSync2 } from "node:child_process";
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
+function stringValue(value) {
+  return typeof value === "string" ? value : "";
+}
+function normalizePathLike(value) {
+  return stringValue(value).replace(/\\/g, "/").toLowerCase();
+}
+function pluginEntryEnabled(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if ("enabled" in entry) return Boolean(entry.enabled);
+  if ("disabled" in entry) return !entry.disabled;
+  return true;
+}
+function summarizePluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: entry.id ?? null,
+    name: entry.name ?? null,
+    version: entry.version ?? null,
+    scope: entry.scope ?? null,
+    installPath: entry.installPath ?? entry.path ?? null,
+    enabled: pluginEntryEnabled(entry)
+  };
+}
+function isOfficialOpenAICodexPluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const id = stringValue(entry.id).toLowerCase();
+  const name = stringValue(entry.name).toLowerCase();
+  const source = stringValue(entry.source).toLowerCase();
+  const installPath = normalizePathLike(entry.installPath ?? entry.path);
+  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
+  if (id === "codex@openai-codex") return true;
+  if (id === "codex" && authorName === "openai") return true;
+  if (name === "codex" && authorName === "openai") return true;
+  if (source.includes("openai/codex-plugin-cc")) return true;
+  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
+  if (installPath.includes("/openai-codex/codex/")) return true;
+  if (installPath.endsWith("/openai-codex/codex")) return true;
+  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
+  return false;
+}
+function detectOfficialOpenAICodexPluginFromEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: "Claude plugin list output was not an array.",
+      plugin: null
+    };
+  }
+  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
+  if (plugin) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
+      detail: "Official OpenAI Codex plugin is enabled.",
+      plugin: summarizePluginEntry(plugin)
+    };
+  }
+  return {
+    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
+    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
+    plugin: null
+  };
+}
+function extractPluginEntries(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
+  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
+  return null;
+}
+function detectOfficialOpenAICodexPluginUncached(options = {}) {
+  const spawn4 = options.spawnSync ?? spawnSync2;
+  const result = spawn4("claude", ["plugin", "list", "--json"], {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
+  });
+  if (result.error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
+      plugin: null
+    };
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
+      plugin: null
+    };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
+  } catch (error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
+      plugin: null
+    };
+  }
+}
+var DEFAULT_DETECT_CACHE_MS = 3e4;
+var cached = null;
+var cachedAt = 0;
+function detectOfficialOpenAICodexPlugin(options = {}) {
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
+  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
+    return cached;
+  }
+  const result = detectOfficialOpenAICodexPluginUncached(options);
+  cached = result;
+  cachedAt = Date.now();
+  return result;
+}
+
+// src/lib/git.mjs
+import fs3 from "node:fs";
+import path3 from "node:path";
+
 // src/lib/prompts.mjs
 import fs2 from "node:fs";
 import path2 from "node:path";
@@ -1064,6 +1099,7 @@ function sanitizePromptValue(value) {
 var MAX_UNTRACKED_BYTES = 24 * 1024;
 var DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+var REGULAR_FILE_READ_FLAGS = fs3.constants.O_RDONLY | (fs3.constants.O_NOFOLLOW ?? 0) | (fs3.constants.O_NONBLOCK ?? 0);
 function git(cwd, args, options = {}) {
   return runCommand("git", args, { cwd, ...options });
 }
@@ -1251,29 +1287,92 @@ function resolveReviewTarget(cwd, options = {}) {
 function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
+function realpathSync(filePath) {
+  return fs3.realpathSync.native ? fs3.realpathSync.native(filePath) : fs3.realpathSync(filePath);
+}
+function isPathInside(parentPath, candidatePath) {
+  const relative = path3.relative(parentPath, candidatePath);
+  return relative === "" || !relative.startsWith("..") && !path3.isAbsolute(relative);
+}
+function readFileDescriptor(fd, size) {
+  const buffer = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const bytesRead = fs3.readSync(fd, buffer, offset, buffer.length - offset, offset);
+    if (bytesRead === 0) {
+      break;
+    }
+    offset += bytesRead;
+  }
+  return buffer.subarray(0, offset);
+}
 function formatUntrackedFile(cwd, relativePath) {
-  const absolutePath = path3.join(cwd, relativePath);
+  let repoRoot;
+  try {
+    repoRoot = realpathSync(cwd);
+  } catch {
+    return `### ${relativePath}
+(skipped: repository root is unreadable)`;
+  }
+  const absolutePath = path3.resolve(repoRoot, relativePath);
+  if (!isPathInside(repoRoot, absolutePath)) {
+    return `### ${relativePath}
+(skipped: path resolves outside repository)`;
+  }
   let stat;
   try {
-    stat = fs3.statSync(absolutePath);
+    stat = fs3.lstatSync(absolutePath);
   } catch {
     return `### ${relativePath}
 (skipped: broken symlink or unreadable file)`;
+  }
+  if (stat.isSymbolicLink()) {
+    return `### ${relativePath}
+(skipped: symlink)`;
   }
   if (stat.isDirectory()) {
     return `### ${relativePath}
 (skipped: directory)`;
   }
-  if (stat.size > MAX_UNTRACKED_BYTES) {
+  if (!stat.isFile()) {
     return `### ${relativePath}
-(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+(skipped: non-regular file)`;
   }
-  let buffer;
+  let resolvedPath;
   try {
-    buffer = fs3.readFileSync(absolutePath);
+    resolvedPath = realpathSync(absolutePath);
   } catch {
     return `### ${relativePath}
 (skipped: broken symlink or unreadable file)`;
+  }
+  if (!isPathInside(repoRoot, resolvedPath)) {
+    return `### ${relativePath}
+(skipped: path resolves outside repository)`;
+  }
+  let fd;
+  let buffer;
+  try {
+    fd = fs3.openSync(resolvedPath, REGULAR_FILE_READ_FLAGS);
+    const readStat = fs3.fstatSync(fd);
+    if (!readStat.isFile()) {
+      return `### ${relativePath}
+(skipped: non-regular file)`;
+    }
+    if (readStat.size > MAX_UNTRACKED_BYTES) {
+      return `### ${relativePath}
+(skipped: ${readStat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    }
+    buffer = readFileDescriptor(fd, readStat.size);
+  } catch {
+    return `### ${relativePath}
+(skipped: broken symlink or unreadable file)`;
+  } finally {
+    if (fd !== void 0) {
+      try {
+        fs3.closeSync(fd);
+      } catch {
+      }
+    }
   }
   if (!isProbablyText(buffer)) {
     return `### ${relativePath}
@@ -1299,7 +1398,7 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
   } else {
     const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
     const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    const untrackedBody = state.untracked.join("\n");
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
@@ -1571,8 +1670,17 @@ function loadState(cwd) {
     return defaultState();
   }
 }
+function isActiveJob(job) {
+  return job?.status === "queued" || job?.status === "running";
+}
+function sortJobsNewestFirst(jobs) {
+  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
 function pruneJobs(jobs) {
-  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))).slice(0, MAX_JOBS);
+  const sortedJobs = sortJobsNewestFirst(jobs);
+  const activeJobs = sortedJobs.filter(isActiveJob);
+  const terminalJobs = sortedJobs.filter((job) => !isActiveJob(job)).slice(0, MAX_JOBS);
+  return sortJobsNewestFirst([...activeJobs, ...terminalJobs]);
 }
 function removeFileIfExists(filePath) {
   if (filePath && fs4.existsSync(filePath)) {
@@ -1818,7 +1926,7 @@ async function ensureBrokerSession(cwd, options = {}) {
       logFile,
       sessionDir,
       pid: child.pid ?? null,
-      killProcess: options.killProcess ?? null
+      killProcess: options.killProcess ?? terminateProcessTree
     });
     return null;
   }
@@ -1868,6 +1976,7 @@ var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 var BROKER_BUSY_RPC_CODE = -32001;
 var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
 var APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5e3;
+var SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS = 150;
 var DEFAULT_CLIENT_INFO = {
   title: "Codex Bridge",
   name: "codex_bridge",
@@ -1915,6 +2024,21 @@ function withTimeout(promise, ms, message) {
 }
 function serverRequestError(method) {
   return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
+}
+async function loadReadySavedBrokerEndpoint(cwd) {
+  const brokerSession = loadBrokerSession(cwd);
+  if (!brokerSession) {
+    return null;
+  }
+  const endpoint = brokerSession.endpoint ?? null;
+  try {
+    if (endpoint && await waitForBrokerEndpoint(endpoint, SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS)) {
+      return endpoint;
+    }
+  } catch {
+  }
+  clearBrokerSession(cwd);
+  return null;
 }
 var AppServerClientBase = class {
   constructor(cwd, options = {}) {
@@ -2279,22 +2403,47 @@ var BrokerCodexAppServerClient = class extends AppServerClientBase {
 var CodexAppServerClient = class {
   static async connect(cwd, options = {}) {
     let brokerEndpoint = null;
+    let brokerEndpointSource = null;
     if (!options.disableBroker) {
-      brokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process6.env[BROKER_ENDPOINT_ENV] ?? null;
+      const explicitBrokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process6.env[BROKER_ENDPOINT_ENV] ?? null;
+      if (explicitBrokerEndpoint) {
+        brokerEndpoint = explicitBrokerEndpoint;
+        brokerEndpointSource = "explicit";
+      }
       if (!brokerEndpoint && options.reuseExistingBroker) {
-        brokerEndpoint = loadBrokerSession(cwd)?.endpoint ?? null;
+        brokerEndpoint = await loadReadySavedBrokerEndpoint(cwd);
+        if (brokerEndpoint) {
+          brokerEndpointSource = "saved";
+        }
       }
       if (!brokerEndpoint && !options.reuseExistingBroker) {
         const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
         brokerEndpoint = brokerSession?.endpoint ?? null;
+        if (brokerEndpoint) {
+          brokerEndpointSource = "managed";
+        }
       }
     }
-    const client = brokerEndpoint ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint }) : new SpawnedCodexAppServerClient(cwd, options);
+    const createBrokerClient = options._createBrokerClient ?? ((clientCwd, clientOptions) => new BrokerCodexAppServerClient(clientCwd, clientOptions));
+    const createDirectClient = options._createDirectClient ?? ((clientCwd, clientOptions) => new SpawnedCodexAppServerClient(clientCwd, clientOptions));
+    const client = brokerEndpoint ? createBrokerClient(cwd, { ...options, brokerEndpoint }) : createDirectClient(cwd, options);
     try {
       await client.initialize();
     } catch (error) {
       await client.close().catch(() => {
       });
+      if (brokerEndpointSource === "saved") {
+        clearBrokerSession(cwd);
+        const fallbackClient = createDirectClient(cwd, options);
+        try {
+          await fallbackClient.initialize();
+        } catch (fallbackError) {
+          await fallbackClient.close().catch(() => {
+          });
+          throw fallbackError;
+        }
+        return fallbackClient;
+      }
       throw error;
     }
     return client;
@@ -3680,7 +3829,7 @@ async function runTrackedJob(job, runner, options = {}) {
 // src/lib/job-control.mjs
 var DEFAULT_MAX_STATUS_JOBS = 8;
 var DEFAULT_MAX_PROGRESS_LINES = 4;
-function sortJobsNewestFirst(jobs) {
+function sortJobsNewestFirst2(jobs) {
   return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
 }
 function getCurrentSessionId(options = {}) {
@@ -3850,10 +3999,14 @@ function matchJobReference(jobs, reference, predicate = () => true) {
     suggestion: "Run `status` to list known jobs."
   });
 }
+function isResultTerminalJob(job) {
+  return job.status === "completed" || job.status === "failed" || job.status === "cancelled" || job.status === "orphaned";
+}
 function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
+  const allJobs = listJobs(workspaceRoot);
+  const jobs = sortJobsNewestFirst2(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
   const running = jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => enrichJob(job, { maxProgressLines }));
@@ -3872,7 +4025,7 @@ function buildStatusSnapshot(cwd, options = {}) {
 }
 function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
     throw new CliError(`No job found for "${reference}".`, {
@@ -3889,7 +4042,7 @@ function buildSingleJobSnapshot(cwd, reference, options = {}) {
 }
 function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+  const jobs = sortJobsNewestFirst2(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
   if (reference) {
     const activeMatch = jobs.find(
       (job) => (job.status === "queued" || job.status === "running") && (job.id === reference || job.id.startsWith(reference) || job.threadId === reference)
@@ -3906,7 +4059,7 @@ function resolveResultJob(cwd, reference) {
   const selected = matchJobReference(
     jobs,
     reference,
-    (job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled"
+    isResultTerminalJob
   );
   if (selected) {
     return { workspaceRoot, job: selected };
@@ -3927,7 +4080,7 @@ function resolveResultJob(cwd, reference) {
 }
 function resolveCancelableJob(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
   if (reference) {
     const selected = matchJobReference(activeJobs, reference);
@@ -7259,6 +7412,7 @@ import fs9 from "node:fs";
 import path7 from "node:path";
 import os4 from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
+var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
 function resolveSessionDir(configDir) {
   const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os4.homedir());
   fs9.mkdirSync(dir, { recursive: true });
@@ -7377,12 +7531,101 @@ function diffGitSnapshot(cwd, snapshot) {
 function captureGitDiff(cwd, session) {
   const numstatResult = spawnSync3("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
   const fullResult = spawnSync3("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
-  const diffContent = fullResult.stdout || "";
+  const untrackedFiles = getUntrackedFileStats(cwd);
+  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles);
   const diffPath = writeDiff(session, diffContent);
   const numstatOutput = numstatResult.stdout || "";
-  const files = parseGitNumstat(numstatOutput);
+  const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
   const summary = summarizeNumstat(files);
   return { diffStat: summary, files: files.map(formatFileStat), diffPath };
+}
+function getUntrackedFileStats(cwd) {
+  try {
+    const result = spawnSync3(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      { cwd, encoding: "utf8", timeout: 1e4 }
+    );
+    if (result.status !== 0 || !result.stdout) {
+      return [];
+    }
+    return result.stdout.split("\0").filter(Boolean).map((fileName) => buildUntrackedFileStat(cwd, fileName)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+function buildUntrackedFileStat(cwd, fileName) {
+  const absolutePath = resolveInsideCwd(cwd, fileName);
+  if (!absolutePath) {
+    return null;
+  }
+  let sizeBytes = null;
+  let adds = 0;
+  try {
+    const stat = fs9.lstatSync(absolutePath);
+    sizeBytes = stat.size;
+    if (stat.isFile() && stat.size <= MAX_UNTRACKED_STAT_BYTES) {
+      const content = fs9.readFileSync(absolutePath);
+      if (!looksBinary(content)) {
+        adds = countTextLines(content);
+      }
+    }
+  } catch {
+  }
+  return {
+    fileName: displayGitPath(fileName),
+    adds,
+    dels: 0,
+    status: "A",
+    untracked: true,
+    sizeBytes
+  };
+}
+function resolveInsideCwd(cwd, fileName) {
+  const root = path7.resolve(cwd);
+  const absolutePath = path7.resolve(root, fileName);
+  if (absolutePath !== root && !absolutePath.startsWith(root + path7.sep)) {
+    return null;
+  }
+  return absolutePath;
+}
+function looksBinary(content) {
+  return content.subarray(0, Math.min(content.length, 8e3)).includes(0);
+}
+function countTextLines(content) {
+  if (content.length === 0) {
+    return 0;
+  }
+  const text = content.toString("utf8");
+  const newlineCount = text.split("\n").length - 1;
+  return text.endsWith("\n") ? newlineCount : newlineCount + 1;
+}
+function displayGitPath(fileName) {
+  return fileName.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
+}
+function appendUntrackedDiffMarkers(diffContent, untrackedFiles) {
+  if (untrackedFiles.length === 0) {
+    return diffContent;
+  }
+  const marker = formatUntrackedDiffMarkers(untrackedFiles);
+  if (!diffContent) {
+    return marker;
+  }
+  return `${diffContent}${diffContent.endsWith("\n") ? "" : "\n"}${marker}`;
+}
+function formatUntrackedDiffMarkers(untrackedFiles) {
+  const lines = ["# Untracked files omitted from git diff HEAD:"];
+  for (const file of untrackedFiles) {
+    const size = Number.isFinite(file.sizeBytes) ? `, ${file.sizeBytes} bytes` : "";
+    lines.push(`diff --git a/${file.fileName} b/${file.fileName}`);
+    lines.push("new file mode 100644");
+    lines.push("--- /dev/null");
+    lines.push(`+++ b/${file.fileName}`);
+    lines.push("@@ untracked file @@");
+    lines.push(`+<untracked file: ${file.fileName}${size}; content omitted from session diff>`);
+  }
+  return `${lines.join("\n")}
+`;
 }
 function parseGitNumstat(output) {
   const files = [];
@@ -7397,8 +7640,11 @@ function parseGitNumstat(output) {
   }
   return files;
 }
-function formatFileStat({ fileName, adds, dels }) {
+function formatFileStat({ fileName, adds, dels, status = null }) {
   const prefix = fileName.includes("=>") ? "R" : "M";
+  if (status) {
+    return `${status} ${fileName} (+${adds} -${dels})`;
+  }
   return `${prefix} ${fileName} (+${adds} -${dels})`;
 }
 function summarizeNumstat(files) {
@@ -7413,7 +7659,7 @@ function formatCwdFlag(cwd) {
   return cwd ? ` --cwd ${shellQuote(cwd)}` : "";
 }
 function commandPrefix(scriptPath, subcommand, cwd = null) {
-  return `node ${scriptPath} ${subcommand}${formatCwdFlag(cwd)}`;
+  return `node ${shellQuote(scriptPath)} ${subcommand}${formatCwdFlag(cwd)}`;
 }
 function resultActionLine(scriptPath, jobId, indent = "    detail: ", cwd = null) {
   return jobId ? `${indent}${commandPrefix(scriptPath, "result", cwd)} ${jobId}` : `${indent}${commandPrefix(scriptPath, "result", cwd)}    # rerun with the specific job id from status`;
@@ -7663,7 +7909,7 @@ function formatQuestionEvent(session, { requestId, questions, scriptPath, cwd = 
     lines.push("respond:");
     if (q.options && q.options.length > 0) {
       for (const opt of q.options) {
-        lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "${opt.label}"`);
+        lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer ${shellQuote(opt.label)}`);
       }
     } else {
       lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "<answer>"`);
@@ -7914,14 +8160,29 @@ async function runAutoPipeline(options) {
   } = options;
   const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
   const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
-  const stageTurnMs = Math.max(0, stageMs - 500);
   const completedStages = [];
   const startTime = Date.now();
   const executeInstructions = loadExecuteInstructions(rootDir);
+  const remainingPipelineMs = () => totalMs - (Date.now() - startTime);
   const checkPipelineTimeout = () => {
-    if (Date.now() - startTime > totalMs) {
+    if (remainingPipelineMs() <= 0) {
       throw new PipelineTimeoutError(completedStages, totalMs);
     }
+  };
+  const buildStageDeadline = () => {
+    const remainingMs = remainingPipelineMs();
+    if (remainingMs <= 0) {
+      throw new PipelineTimeoutError(completedStages, totalMs);
+    }
+    const timeoutMs = Math.min(stageMs, remainingMs);
+    const totalLimited = remainingMs < stageMs;
+    return {
+      timeoutMs,
+      // Keep the inner watchdog from preempting the pipeline-total timer with
+      // a stage-timeout result when the remaining total budget is the limiter.
+      turnTimeoutMs: totalLimited ? 0 : Math.max(0, timeoutMs - 500),
+      timeoutErrorFactory: totalLimited ? () => new PipelineTimeoutError(completedStages, totalMs) : null
+    };
   };
   let fixFilesTouched = [];
   try {
@@ -7934,19 +8195,22 @@ async function runAutoPipeline(options) {
     let reviewVerdict = "approve";
     let reviewFindings = [];
     let reviewFindingCount = 0;
+    let unstructuredReviewAttention = false;
     if (config.auto_review) {
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "review" });
       try {
+        const reviewDeadline = buildStageDeadline();
         const reviewResult = await withTimeout2(
           runAppServerReview2(cwd, {
             target: { type: "uncommittedChanges" },
             model: config.model,
-            turnTimeoutMs: stageTurnMs,
-            idleTimeoutMs: stageTurnMs
+            turnTimeoutMs: reviewDeadline.turnTimeoutMs,
+            idleTimeoutMs: reviewDeadline.turnTimeoutMs
           }),
-          stageMs,
-          "auto-review"
+          reviewDeadline.timeoutMs,
+          "auto-review",
+          reviewDeadline.timeoutErrorFactory
         );
         if (reviewResult.status !== 0) {
           const innerError = reviewResult.error ?? null;
@@ -7954,7 +8218,7 @@ async function runAutoPipeline(options) {
           const isTimeout = innerError?.code === "TurnTimeout" || /Turn timed out after \d+ms\./.test(innerMessage) || /No events received for \d+s/.test(innerMessage);
           const detail = innerMessage ? `: ${innerMessage}` : "";
           if (isTimeout) {
-            const reviewError = new TimeoutError("auto-review", stageTurnMs);
+            const reviewError = new TimeoutError("auto-review", reviewDeadline.turnTimeoutMs);
             reviewError.message = `auto-review did not complete cleanly (status ${reviewResult.status}${detail}).`;
             throw reviewError;
           }
@@ -7972,6 +8236,7 @@ async function runAutoPipeline(options) {
           reviewVerdict = parsed.verdict;
           reviewFindings = parsed.findings;
           reviewFindingCount = reviewFindings.length;
+          unstructuredReviewAttention = reviewVerdict !== "approve" && reviewFindingCount === 0;
         }
         logEvent(session, formatPipelineEvent(session, {
           stage: "review",
@@ -7982,29 +8247,67 @@ async function runAutoPipeline(options) {
           logEvent(session, formatPipelineEvent(session, { stage: "fix" }));
           logNdjson(session, "PIPELINE_STAGE", null, { stage: "fix", findingCount: reviewFindings.length });
           const diffBeforeFix = captureGitDiff(cwd, session);
-          const filesBeforeFix = new Set(diffBeforeFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]));
+          const diffContentBeforeFix = readCapturedDiffContent(diffBeforeFix);
           const fixPrompt = buildFixPrompt(reviewFindings);
-          await withTimeout2(
-            runAppServerTurn2(cwd, {
-              resumeThreadId: threadId,
-              prompt: fixPrompt,
-              model: config.model,
-              effort: "high",
-              collaborationMode: buildCollaborationMode("default", config, {
-                developerInstructions: executeInstructions
+          let fixResult;
+          let fixDeadline;
+          try {
+            fixDeadline = buildStageDeadline();
+            fixResult = await withTimeout2(
+              runAppServerTurn2(cwd, {
+                resumeThreadId: threadId,
+                prompt: fixPrompt,
+                model: config.model,
+                effort: "high",
+                collaborationMode: buildCollaborationMode("default", config, {
+                  developerInstructions: executeInstructions
+                }),
+                sandboxPolicy: buildSandboxPolicy("default", config),
+                turnTimeoutMs: fixDeadline.turnTimeoutMs,
+                idleTimeoutMs: fixDeadline.turnTimeoutMs
               }),
-              sandboxPolicy: buildSandboxPolicy("default", config),
-              turnTimeoutMs: stageTurnMs,
-              idleTimeoutMs: stageTurnMs
-            }),
-            stageMs,
-            "auto-fix"
-          );
+              fixDeadline.timeoutMs,
+              "auto-fix",
+              fixDeadline.timeoutErrorFactory
+            );
+          } catch (error) {
+            if (error instanceof TimeoutError) {
+              throw error;
+            }
+            const detail = error instanceof Error ? error.message : String(error);
+            throw new PipelineStageError(
+              "fix",
+              `auto-fix failed before producing a result${detail ? `: ${detail}` : ""}.`,
+              error instanceof Error ? error : null
+            );
+          }
+          const fixStatus = fixResult?.status;
+          if (fixStatus !== 0) {
+            const innerError = fixResult?.error ?? null;
+            const innerMessage = innerError?.message ?? "";
+            const isTimeout = innerError?.code === "TurnTimeout" || /Turn timed out after \d+ms\./.test(innerMessage) || /No events received for \d+s/.test(innerMessage);
+            const detail = innerMessage ? `: ${innerMessage}` : "";
+            if (isTimeout) {
+              const fixError = new TimeoutError("auto-fix", fixDeadline.turnTimeoutMs);
+              fixError.message = `auto-fix did not complete cleanly (status ${fixStatus}${detail}).`;
+              throw fixError;
+            }
+            throw new PipelineStageError(
+              "fix",
+              `auto-fix failed (status ${fixStatus}${detail}).`,
+              innerError
+            );
+          }
           completedStages.push("fix");
           checkPipelineTimeout();
           const diffAfterFix = captureGitDiff(cwd, session);
-          const filesAfterFix = diffAfterFix.files.map((f) => f.replace(/^[A-Z] /, "").split(" ")[0]);
-          fixFilesTouched = filesAfterFix.filter((f) => !filesBeforeFix.has(f));
+          const diffContentAfterFix = readCapturedDiffContent(diffAfterFix);
+          fixFilesTouched = collectStageTouchedFiles(
+            diffBeforeFix,
+            diffContentBeforeFix,
+            diffAfterFix,
+            diffContentAfterFix
+          );
           logEvent(session, formatPipelineEvent(session, {
             stage: "fix",
             suffix: "done",
@@ -8013,6 +8316,9 @@ async function runAutoPipeline(options) {
         }
       } catch (error) {
         if (error instanceof TimeoutError) {
+          throw error;
+        }
+        if (error instanceof PipelineStageError) {
           throw error;
         }
         logNdjson(session, "PIPELINE_ERROR", null, { stage: "review", error: error.message });
@@ -8029,6 +8335,7 @@ async function runAutoPipeline(options) {
       logEvent(session, formatPipelineEvent(session, { stage: "check" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "check" });
       try {
+        const checkDeadline = buildStageDeadline();
         const checkResult = await withTimeout2(
           runAppServerTurn2(cwd, {
             resumeThreadId: threadId,
@@ -8040,11 +8347,12 @@ async function runAutoPipeline(options) {
             }),
             sandboxPolicy: { type: "readOnly" },
             outputSchema: COMPLETION_CHECK_SCHEMA,
-            turnTimeoutMs: stageTurnMs,
-            idleTimeoutMs: stageTurnMs
+            turnTimeoutMs: checkDeadline.turnTimeoutMs,
+            idleTimeoutMs: checkDeadline.turnTimeoutMs
           }),
-          stageMs,
-          "completion-check"
+          checkDeadline.timeoutMs,
+          "completion-check",
+          checkDeadline.timeoutErrorFactory
         );
         completedStages.push("check");
         if (checkResult.status !== 0) {
@@ -8081,17 +8389,37 @@ async function runAutoPipeline(options) {
         if (error instanceof TimeoutError) {
           throw error;
         }
-        logNdjson(session, "PIPELINE_ERROR", null, { stage: "check", error: error.message });
+        const message = error instanceof Error ? error.message : String(error);
+        const detail = message || "check failed";
+        completionResult = {
+          complete: false,
+          missing_items: [
+            `Completion check failed before producing a result: ${detail}`
+          ],
+          summary: "completion-check failed"
+        };
+        logNdjson(session, "PIPELINE_ERROR", null, { stage: "check", error: detail });
         logEvent(session, formatPipelineEvent(session, {
           stage: "check",
           suffix: "failed",
-          detail: error.message ?? "check failed"
+          detail
         }));
         completedStages.push("check-failed");
       }
     }
+    if (unstructuredReviewAttention) {
+      const missingItem = "Native review reported needs-attention but did not include parseable file/line findings, so auto-fix could not run.";
+      const existingMissingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
+      completionResult = {
+        complete: false,
+        missing_items: existingMissingItems.includes(missingItem) ? existingMissingItems : [...existingMissingItems, missingItem],
+        summary: completionResult.complete ? "native review needs attention" : typeof completionResult.summary === "string" ? completionResult.summary : "native review needs attention"
+      };
+    }
     const finalDiff = captureGitDiff(cwd, session);
     const duration = Math.round((Date.now() - startTime) / 1e3);
+    const missingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
+    const completionSummary = typeof completionResult.summary === "string" ? completionResult.summary : null;
     if (completionResult.complete) {
       logEvent(session, formatDoneEvent(session, {
         duration,
@@ -8109,7 +8437,7 @@ async function runAutoPipeline(options) {
         diffPath: finalDiff.diffPath,
         verdict: reviewVerdict,
         findingCount: reviewFindingCount,
-        missingItems: completionResult.missing_items || [],
+        missingItems,
         scriptPath,
         jobId,
         cwd
@@ -8119,6 +8447,8 @@ async function runAutoPipeline(options) {
       completedStages,
       duration,
       complete: completionResult.complete,
+      missingItems,
+      completionSummary,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
@@ -8130,6 +8460,8 @@ async function runAutoPipeline(options) {
       completedStages,
       duration,
       diff: finalDiff,
+      missingItems,
+      completionSummary,
       touchedFiles: fixFilesTouched
     };
   } catch (error) {
@@ -8188,12 +8520,149 @@ function buildFixPrompt(findings) {
   }
   return lines.join("\n");
 }
+function readCapturedDiffContent(diff) {
+  if (!diff?.diffPath) {
+    return "";
+  }
+  try {
+    return fs11.readFileSync(diff.diffPath, "utf8");
+  } catch {
+    return "";
+  }
+}
+function collectStageTouchedFiles(diffBefore, diffContentBefore, diffAfter, diffContentAfter) {
+  const beforeStats = mapFormattedDiffFiles(diffBefore?.files ?? []);
+  const afterStats = mapFormattedDiffFiles(diffAfter?.files ?? []);
+  const beforeBlocks = splitDiffBlocksByPath(diffContentBefore);
+  const afterBlocks = splitDiffBlocksByPath(diffContentAfter);
+  const orderedFiles = uniqueStrings([
+    ...afterStats.keys(),
+    ...beforeStats.keys(),
+    ...afterBlocks.keys(),
+    ...beforeBlocks.keys()
+  ]);
+  return orderedFiles.filter((file) => {
+    const beforeSignal = beforeBlocks.get(file) ?? beforeStats.get(file) ?? null;
+    const afterSignal = afterBlocks.get(file) ?? afterStats.get(file) ?? null;
+    return beforeSignal !== afterSignal;
+  });
+}
+function mapFormattedDiffFiles(files) {
+  const map2 = /* @__PURE__ */ new Map();
+  for (const file of files) {
+    const parsed = parseFormattedDiffFile(file);
+    if (parsed) {
+      map2.set(parsed.path, parsed.stat);
+    }
+  }
+  return map2;
+}
+function parseFormattedDiffFile(file) {
+  const match = String(file).match(/^[A-Z]\s+(.+?)\s+\(\+[\d-]+\s+-[\d-]+\)$/);
+  if (!match) {
+    return null;
+  }
+  return { path: match[1], stat: file };
+}
+function splitDiffBlocksByPath(diffContent) {
+  const blocks = /* @__PURE__ */ new Map();
+  let currentPath = null;
+  let currentLines = [];
+  const flush = () => {
+    if (currentPath) {
+      blocks.set(currentPath, currentLines.join("\n"));
+    }
+  };
+  for (const line of String(diffContent ?? "").split("\n")) {
+    const nextPath = parseDiffGitHeader(line);
+    if (nextPath) {
+      flush();
+      currentPath = nextPath;
+      currentLines = [line];
+    } else if (currentPath) {
+      currentLines.push(line);
+    }
+  }
+  flush();
+  return blocks;
+}
+function parseDiffGitHeader(line) {
+  const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+  if (!match) {
+    return null;
+  }
+  return match[2];
+}
+function uniqueStrings(values) {
+  const seen = /* @__PURE__ */ new Set();
+  const unique = [];
+  for (const value of values) {
+    if (typeof value !== "string" || value.length === 0 || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique;
+}
 function parseReviewText(reviewText) {
+  const findings = parseNativeReviewFindings(reviewText);
+  if (findings.length > 0) {
+    return { verdict: "needs-attention", findings };
+  }
   const lower = reviewText.toLowerCase();
-  const hasIssues = lower.includes("needs-attention") || lower.includes("finding") || lower.includes("issue");
+  const reviewTextWithoutNoIssuePhrases = lower.replace(/\bno\s+(?:actionable\s+)?(?:issues?|findings?|problems?|concerns?)\b/g, "").replace(/\b(?:issues?|findings?|problems?|concerns?):\s*(?:none|n\/a)\b/g, "");
+  const explicitAttention = lower.includes("needs-attention") || /\bneeds attention\b/.test(lower) || /\brequires attention\b/.test(lower);
+  const hasIssues = explicitAttention || /\b(?:findings?|issues?|problems?|concerns?|regressions?)\b/.test(reviewTextWithoutNoIssuePhrases);
   return {
     verdict: hasIssues ? "needs-attention" : "approve",
     findings: []
+  };
+}
+function parseNativeReviewFindings(reviewText) {
+  const lines = reviewText.split(/\r?\n/);
+  const findings = [];
+  let current = null;
+  const flush = () => {
+    if (!current) return;
+    const recommendation = current.body.map((line) => line.trim()).filter(Boolean).join("\n");
+    findings.push({
+      severity: current.severity,
+      title: current.title,
+      file: current.file,
+      line_start: current.lineStart,
+      line_end: current.lineEnd,
+      recommendation
+    });
+    current = null;
+  };
+  for (const line of lines) {
+    const header = parseNativeFindingHeader(line);
+    if (header) {
+      flush();
+      current = { ...header, body: [] };
+      continue;
+    }
+    if (current && (/^(?:\s{2,}|\t+)\S/.test(line) || line.trim() === "")) {
+      current.body.push(line);
+    }
+  }
+  flush();
+  return findings;
+}
+function parseNativeFindingHeader(line) {
+  const match = line.match(/^\s*[-*]\s+\[(P\d+)\]\s+(.+?)\s+(?:\u2014|\u2013|--|-)\s+(.+?):(\d+)(?:-(\d+))?\s*$/i);
+  if (!match) return null;
+  const lineStart = Number.parseInt(match[4], 10);
+  if (!Number.isInteger(lineStart) || lineStart < 1) return null;
+  const parsedLineEnd = match[5] ? Number.parseInt(match[5], 10) : lineStart;
+  const lineEnd = Number.isInteger(parsedLineEnd) && parsedLineEnd >= lineStart ? parsedLineEnd : lineStart;
+  return {
+    severity: match[1].toUpperCase(),
+    title: match[2].trim(),
+    file: match[3].trim(),
+    lineStart,
+    lineEnd
   };
 }
 function mapStageLabel(label) {
@@ -8231,10 +8700,10 @@ var PipelineTimeoutError = class extends TimeoutError {
     this.completedStages = completedStages;
   }
 };
-function withTimeout2(promise, timeoutMs, label) {
+function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new TimeoutError(label, timeoutMs));
+      reject(typeof timeoutErrorFactory === "function" ? timeoutErrorFactory() : new TimeoutError(label, timeoutMs));
     }, timeoutMs);
     if (timer.unref) timer.unref();
     promise.then(
@@ -8269,8 +8738,6 @@ function readCache() {
     const raw = fs12.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
-    if (typeof parsed.checkedAt !== "number") return null;
-    if (typeof parsed.latestVersion !== "string") return null;
     return parsed;
   } catch {
     return null;
@@ -8281,23 +8748,97 @@ function writeCache(entry) {
     const p = cachePath();
     fs12.mkdirSync(path10.dirname(p), { recursive: true });
     fs12.writeFileSync(p, JSON.stringify(entry, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function hasReleaseCache(cache) {
+  return cache && typeof cache.checkedAt === "number" && typeof cache.latestVersion === "string";
+}
+function cacheLockPath() {
+  return `${cachePath()}.lock`;
+}
+function removeStaleLock(lockPath, staleMs) {
+  try {
+    const stat = fs12.statSync(lockPath);
+    if (Date.now() - stat.mtimeMs <= staleMs) return false;
+    fs12.unlinkSync(lockPath);
+    return true;
+  } catch (err) {
+    return err?.code === "ENOENT";
+  }
+}
+function acquireCacheLock(staleMs) {
+  const lockPath = cacheLockPath();
+  try {
+    fs12.mkdirSync(path10.dirname(lockPath), { recursive: true });
+  } catch {
+    return null;
+  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs12.openSync(lockPath, "wx");
+      try {
+        fs12.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+      } catch {
+      }
+      return { fd, lockPath };
+    } catch (err) {
+      if (err?.code !== "EEXIST") return null;
+      if (!removeStaleLock(lockPath, staleMs)) return null;
+    }
+  }
+  return null;
+}
+function releaseCacheLock(lock) {
+  try {
+    fs12.closeSync(lock.fd);
+  } catch {
+  }
+  try {
+    fs12.unlinkSync(lock.lockPath);
   } catch {
   }
 }
+function hasRecentApplyAttempt(cache, now, windowMs) {
+  return cache && typeof cache.lastApplyAttempt === "number" && now - cache.lastApplyAttempt <= windowMs;
+}
+function writeApplyAttemptMarker(targetVersion, attemptedAt, existing = readCache()) {
+  const next = {
+    ...existing ?? {},
+    lastApplyAttempt: attemptedAt
+  };
+  if (typeof targetVersion === "string") {
+    next.lastApplyTargetVersion = targetVersion;
+  }
+  return writeCache(next);
+}
+function claimApplyAttempt(targetVersion, windowMs = APPLY_ATTEMPT_WINDOW_MS) {
+  const lock = acquireCacheLock(Math.max(windowMs, 6e4));
+  if (!lock) return false;
+  try {
+    const cache = readCache();
+    const now = Date.now();
+    if (hasRecentApplyAttempt(cache, now, windowMs)) return false;
+    return writeApplyAttemptMarker(targetVersion, now, cache);
+  } catch {
+    return false;
+  } finally {
+    releaseCacheLock(lock);
+  }
+}
 function shouldAttemptApply(windowMs = APPLY_ATTEMPT_WINDOW_MS) {
-  const cache = readCache();
-  if (!cache || !cache.lastApplyAttempt) return true;
-  return Date.now() - cache.lastApplyAttempt > windowMs;
+  return claimApplyAttempt(void 0, windowMs);
 }
 function markApplyAttempted(targetVersion) {
+  const lock = acquireCacheLock(APPLY_ATTEMPT_WINDOW_MS);
+  if (!lock) return;
   try {
-    const existing = readCache() ?? {};
-    writeCache({
-      ...existing,
-      lastApplyAttempt: Date.now(),
-      lastApplyTargetVersion: targetVersion
-    });
+    writeApplyAttemptMarker(targetVersion, Date.now());
   } catch {
+  } finally {
+    releaseCacheLock(lock);
   }
 }
 function parseVersion(s) {
@@ -8351,8 +8892,9 @@ async function checkForUpdate({
   fetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS
 } = {}) {
   const cache = readCache();
+  const hasCachedRelease = hasReleaseCache(cache);
   const now = Date.now();
-  if (!force && cache && now - cache.checkedAt < cacheTtlMs) {
+  if (!force && hasCachedRelease && now - cache.checkedAt < cacheTtlMs) {
     return {
       skipped: false,
       cached: true,
@@ -8366,18 +8908,25 @@ async function checkForUpdate({
   if (!fetchResult.ok) {
     return {
       skipped: true,
-      reason: cache ? "fetch-failed-using-stale" : "fetch-failed-no-cache",
+      reason: hasCachedRelease ? "fetch-failed-using-stale" : "fetch-failed-no-cache",
       fetchReason: fetchResult.reason,
       fetchStatus: fetchResult.status ?? null,
       currentVersion,
-      ...cache && {
+      ...hasCachedRelease && {
         latestVersion: cache.latestVersion,
         hasUpdate: compareVersions(currentVersion, cache.latestVersion) < 0,
         cacheAgeMs: now - cache.checkedAt
       }
     };
   }
-  writeCache({ checkedAt: now, latestVersion: fetchResult.tag });
+  const applyMarkers = {};
+  if (cache && Object.prototype.hasOwnProperty.call(cache, "lastApplyAttempt")) {
+    applyMarkers.lastApplyAttempt = cache.lastApplyAttempt;
+  }
+  if (cache && Object.prototype.hasOwnProperty.call(cache, "lastApplyTargetVersion")) {
+    applyMarkers.lastApplyTargetVersion = cache.lastApplyTargetVersion;
+  }
+  writeCache({ checkedAt: now, latestVersion: fetchResult.tag, ...applyMarkers });
   return {
     skipped: false,
     cached: false,
@@ -8420,30 +8969,33 @@ function spawnDetachedAutoApply(targetVersion) {
     } catch {
     }
     const fd = fs13.openSync(logFile, "a");
-    const banner = `
+    try {
+      const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-    fs13.writeSync(fd, banner);
-    const child = spawn3(
-      "npx",
-      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
-      {
-        detached: true,
-        stdio: ["ignore", fd, fd],
-        env: process8.env
-      }
-    );
-    child.on("error", () => {
+      fs13.writeSync(fd, banner);
+      const child = spawn3(
+        "npx",
+        ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+        {
+          detached: true,
+          stdio: ["ignore", fd, fd],
+          env: process8.env
+        }
+      );
+      child.on("error", () => {
+        try {
+          fs13.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+`, "utf8");
+        } catch {
+        }
+      });
+      child.unref();
+    } finally {
       try {
-        fs13.writeSync(fd, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
-`);
+        fs13.closeSync(fd);
       } catch {
       }
-    });
-    child.unref();
-    try {
-      fs13.closeSync(fd);
-    } catch {
     }
   } catch {
   }
@@ -9213,7 +9765,7 @@ async function handleUpdate(argv) {
   });
   const update = await checkForUpdate({
     currentVersion: BRIDGE_VERSION,
-    force: options.force !== false
+    force: Boolean(options.force)
   });
   const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
   const wantApply = Boolean(options.apply || options.yes);
@@ -9453,7 +10005,7 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
 async function resolveLatestTrackedTaskThread(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const sessionId = getCurrentClaudeSessionId();
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.id !== options.excludeJobId);
+  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot)).filter((job) => job.id !== options.excludeJobId);
   const visibleJobs = filterJobsForCurrentClaudeSession(jobs);
   const activeTask = visibleJobs.find((job) => job.jobClass === "task" && (job.status === "queued" || job.status === "running"));
   if (activeTask) {
@@ -9514,7 +10066,10 @@ async function executeReviewRun(request) {
   if (target.mode === "working-tree") {
     const diffCheck = runCommand("git", ["diff", "--quiet"], { cwd: request.cwd });
     const stagedCheck = runCommand("git", ["diff", "--cached", "--quiet"], { cwd: request.cwd });
-    if (diffCheck.status === 0 && stagedCheck.status === 0) {
+    const untrackedCheck = runCommand("git", ["ls-files", "--others", "--exclude-standard"], {
+      cwd: request.cwd
+    });
+    if (diffCheck.status === 0 && stagedCheck.status === 0 && untrackedCheck.status === 0 && untrackedCheck.stdout.trim() === "") {
       throw new CliError("No working-tree changes to review.", {
         class: "validation",
         code: "REVIEW_EMPTY_DIFF",
@@ -9911,24 +10466,46 @@ function parseDurationOption(flagName, raw, { defaultMs = null } = {}) {
   }
   return ms;
 }
+function persistFailureErrorInPayload(execution, command = null) {
+  if (!execution || execution.exitStatus === 0) {
+    return execution;
+  }
+  const errLike = execution.error ?? { message: `Codex turn failed (status ${execution.exitStatus}).` };
+  const partial = errLike?.partial ?? null;
+  const handoff = errLike?.handoff ?? null;
+  const { error } = buildErrorEnvelope(classifyError(errLike), { command, partial, handoff });
+  const payload = execution.payload && typeof execution.payload === "object" && !Array.isArray(execution.payload) ? execution.payload : {};
+  return {
+    ...execution,
+    payload: {
+      ...payload,
+      error
+    }
+  };
+}
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile
   });
-  const execution = await runTrackedJob(job, () => runner(progress), { logFile });
+  const command = options.command ?? null;
+  const execution = await runTrackedJob(
+    job,
+    async () => persistFailureErrorInPayload(await runner(progress), command),
+    { logFile }
+  );
   if (execution.exitStatus !== 0) {
     const errLike = execution.error ?? { message: `Codex turn failed (status ${execution.exitStatus}).` };
     if (options.json) {
-      emitError(errLike, { json: true, command: options.command ?? null });
+      emitError(errLike, { json: true, command });
     } else {
       if (execution.rendered) {
         process8.stdout.write(execution.rendered);
       }
-      emitError(errLike, { json: false, command: options.command ?? null });
+      emitError(errLike, { json: false, command });
     }
     return execution;
   }
-  emitSuccess(options.command ?? null, execution.payload, execution.rendered, {
+  emitSuccess(command, execution.payload, execution.rendered, {
     json: options.json,
     startedAt: options.startedAt
   });
@@ -9964,17 +10541,63 @@ function spawnDetachedTaskWorker(cwd, jobId, logFile = null) {
 function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
-  const child = spawnDetachedTaskWorker(cwd, job.id, logFile);
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
-    pid: child.pid ?? null,
+    pid: null,
     logFile,
     request
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
+  let child;
+  try {
+    child = spawnDetachedTaskWorker(cwd, job.id, logFile);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const completedAt = nowIso2();
+    const existingRecord2 = readStoredJob(job.workspaceRoot, job.id) ?? queuedRecord;
+    const failedRecord = {
+      ...existingRecord2,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      logFile: existingRecord2.logFile ?? logFile,
+      request: existingRecord2.request ?? request,
+      completedAt,
+      errorMessage
+    };
+    writeJobFile(job.workspaceRoot, job.id, failedRecord);
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      logFile: failedRecord.logFile,
+      request: failedRecord.request,
+      completedAt,
+      errorMessage
+    });
+    throw error;
+  }
+  const spawnedPid = child.pid ?? null;
+  const existingRecord = readStoredJob(job.workspaceRoot, job.id) ?? queuedRecord;
+  if (existingRecord.status === "queued") {
+    const spawnedRecord = {
+      ...existingRecord,
+      pid: spawnedPid,
+      logFile: existingRecord.logFile ?? logFile,
+      request: existingRecord.request ?? request
+    };
+    writeJobFile(job.workspaceRoot, job.id, spawnedRecord);
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      pid: spawnedRecord.pid,
+      logFile: spawnedRecord.logFile,
+      request: spawnedRecord.request
+    });
+  }
   const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir);
   return {
     payload: {
@@ -10053,9 +10676,10 @@ async function runBridgeTask(request) {
 ` : `${metaSkillsPreamble} The calling orchestrator has already planned this task; your job is to execute it directly.
 
 ` : "";
-  const promptWithFooter = config.prompt_footer ? `${metaSkillsPrefix}${request.prompt}
+  const taskPrompt = request.resumeLast && !String(request.prompt ?? "").trim() ? DEFAULT_CONTINUE_PROMPT : request.prompt ?? "";
+  const promptWithFooter = config.prompt_footer ? `${metaSkillsPrefix}${taskPrompt}
 
-${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
+${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const activeMode = isPlanMode ? "plan" : "default";
   const developerInstructions = loadDeveloperInstructions(activeMode);
   const CIRCUIT_BREAKER_THRESHOLD = 3;
@@ -10615,6 +11239,19 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
           upstreamRequestId
         });
       }
+      if (result.error && typeof result.error === "object") {
+        if (partialForEnvelope) result.error.partial = partialForEnvelope;
+        if (handoffForEnvelope) result.error.handoff = handoffForEnvelope;
+      }
+      if (codexErrorInfo?.code === "SandboxError" && touchedFiles.length > 0) {
+        const cwdArg = JSON.stringify(request.cwd);
+        setPhase("workspace-dirty", {
+          command: `git -C ${cwdArg} add -A && git -C ${cwdArg} commit -m "<subject>"`,
+          description: "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
+        }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
+        markTerminalEmitted();
+        return { ...result, session, exitStatus: 0, error: null };
+      }
       logEvent(session, formatErrorEvent(session, {
         errorCode,
         message: errorMessage,
@@ -10627,18 +11264,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
       }));
       logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
       markTerminalEmitted();
-      if (result.error && typeof result.error === "object") {
-        if (partialForEnvelope) result.error.partial = partialForEnvelope;
-        if (handoffForEnvelope) result.error.handoff = handoffForEnvelope;
-      }
-      if (codexErrorInfo?.code === "SandboxError" && touchedFiles.length > 0) {
-        const cwdArg = JSON.stringify(request.cwd);
-        setPhase("workspace-dirty", {
-          command: `git -C ${cwdArg} add -A && git -C ${cwdArg} commit -m "<subject>"`,
-          description: "Codex produced a diff but the sandbox blocked the commit. Commit on Codex's behalf, or re-run with config.sandbox_policy: danger-full-access."
-        }, { errorCode, touchedFiles, monitor, sandboxError: errorMessage });
-        return { ...result, session, exitStatus: 0, error: null };
-      }
       setPhase("error", {
         command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "<revised prompt>"`,
         description: "Retry with an adjusted prompt, or cancel and start fresh."
@@ -10656,6 +11281,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${request.prompt}`;
         scriptPath: SCRIPT_PATH,
         cwd: request.cwd
       }));
+      markTerminalEmitted();
       setPhase("plan-pending", {
         command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
         description: "Approve the plan and switch to execution mode. To revise instead, drop --mode and send revision text."
@@ -10911,7 +11537,7 @@ async function handleTaskWorker(argv) {
       workspaceRoot,
       logFile
     },
-    () => (
+    async () => (
       // Go through `runBridgeTask` (not `executeTaskRun` directly) so the
       // detached worker builds the same session-logging hooks, prompt
       // decorations (`skip_meta_skills`, `prompt_footer`), sandbox-policy
@@ -10921,10 +11547,13 @@ async function handleTaskWorker(argv) {
       // session artifacts (`.events`, `.ndjson`, `.diff`) — breaking every
       // `wait` / `events --follow` caller. See `gherkin-tests-v2/
       // 07-orchestration/08-background-path-produces-session-files.md`.
-      runBridgeTask({
-        ...request,
-        onProgress: progress
-      })
+      persistFailureErrorInPayload(
+        await runBridgeTask({
+          ...request,
+          onProgress: progress
+        }),
+        "task"
+      )
     ),
     { logFile }
   );
@@ -11413,6 +12042,9 @@ async function handleEvents(argv) {
   };
   const filter = parseTagList(options.filter);
   const exclude = parseTagList(options.exclude);
+  const writeEventLine = (line) => {
+    if (!options.json) process8.stdout.write(line + "\n");
+  };
   const tagOf = (line) => {
     const m = /^\[([^\]]+)\]/.exec(line);
     return m ? m[1].split(":")[0].toUpperCase() : null;
@@ -11437,7 +12069,7 @@ async function handleEvents(argv) {
     initial = fs13.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
-      if (passes(line)) process8.stdout.write(line + "\n");
+      if (passes(line)) writeEventLine(line);
       if (TERMINAL.test(line)) alreadyTerminal = true;
     }
   }
@@ -11492,7 +12124,7 @@ async function handleEvents(argv) {
       for (let i = 0; i < lines.length - 1; i++) {
         const line = lines[i];
         if (!line) continue;
-        if (passes(line)) process8.stdout.write(line + "\n");
+        if (passes(line)) writeEventLine(line);
         if (TERMINAL.test(line)) {
           terminalTag = TERMINAL.exec(line)[1];
           terminalLine = line;
@@ -11575,7 +12207,7 @@ function handleTaskResumeCandidate(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const sessionId = getCurrentClaudeSessionId();
-  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst(listJobs(workspaceRoot)));
+  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst2(listJobs(workspaceRoot)));
   const candidate = findLatestResumableTaskJob(jobs);
   const payload = {
     available: Boolean(candidate),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyError, normalizeCodexErrorInfo, ExitCode } from "../src/lib/cli-errors.mjs";
+import { classifyError, normalizeCodexErrorInfo, ExitCode, detectHelpFlag, detectJsonFlag } from "../src/lib/cli-errors.mjs";
 
 test("normalizes camelCase codexErrorInfo strings", () => {
   assert.deepEqual(normalizeCodexErrorInfo("sandboxError"), {
@@ -115,4 +115,59 @@ test("ETIMEDOUT in message without err.code still hits UPSTREAM_STREAM_DISCONNEC
   assert.equal(classified.code, "UPSTREAM_STREAM_DISCONNECTED");
   assert.equal(classified.class, "network");
   assert.equal(classified.retryable, true);
+});
+
+test("prompt command flag scans ignore prompt prose before trailing value options", () => {
+  const argv = [
+    "task",
+    "write docs for --help output and --json envelopes",
+    "--cwd",
+    "/repo"
+  ];
+
+  assert.equal(detectHelpFlag(argv), false);
+  assert.equal(detectJsonFlag(argv), false);
+});
+
+test("prompt command flag scans still detect real trailing options after prompt", () => {
+  const argv = [
+    "task",
+    "write docs for --help output",
+    "--cwd",
+    "/repo",
+    "--json"
+  ];
+
+  assert.equal(detectHelpFlag(argv), false);
+  assert.equal(detectJsonFlag(argv), true);
+});
+
+test("prompt command flag scans handle quoted collapsed prompt with trailing option", () => {
+  const argv = [
+    "task",
+    "\"write docs for --help output\" --cwd /repo --json"
+  ];
+
+  assert.equal(detectHelpFlag(argv), false);
+  assert.equal(detectJsonFlag(argv), true);
+
+  const helpArgv = [
+    "task",
+    "\"write docs for --json output\" --help --cwd /repo"
+  ];
+
+  assert.equal(detectHelpFlag(helpArgv), true);
+  assert.equal(detectJsonFlag(helpArgv), false);
+});
+
+test("prompt command flag scans keep collapsed prompt prose out of trailing flag detection", () => {
+  const argv = [
+    "task",
+    "write docs for --help output --json"
+  ];
+
+  assert.equal(detectHelpFlag(argv), false);
+  assert.equal(detectJsonFlag(argv), true);
+
+  assert.equal(detectJsonFlag(["task", "write docs for --json"]), false);
 });

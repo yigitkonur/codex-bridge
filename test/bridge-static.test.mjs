@@ -24,10 +24,11 @@ test("broker handles upstream app-server exit", () => {
   assert.match(broker, /closeDownstreamSockets\(error\)/);
 });
 
-test("broker clears resolved server requests and avoids closed stream ownership", () => {
+test("broker clears resolved server requests and preserves orphaned upstream ownership", () => {
   assert.match(broker, /message\.method === "serverRequest\/resolved"/);
   assert.match(broker, /pendingServerRequests\.delete\(key\)/);
-  assert.match(broker, /responseSent && sockets\.has\(socket\) && !socket\.destroyed/);
+  assert.match(broker, /cleanupDisconnectedSocket\(socket, activeRequestSocket, streamTracker, pendingServerRequests\)/);
+  assert.match(broker, /A downstream socket closing is not upstream settlement/);
   assert.match(broker, /activeRequestToken/);
 });
 
@@ -42,6 +43,19 @@ test("task retry binds same-thread retry to the failed thread id", () => {
   assert.match(bridge, /resumeThreadId: result\.threadId/);
 });
 
+test("resume task chooses default continue prompt before prompt decorators", () => {
+  const task = bridge.match(/async function runBridgeTask[\s\S]*?const activeMode = isPlanMode \? "plan" : "default";/)?.[0] ?? "";
+  const defaultPromptIndex = task.indexOf("const taskPrompt = request.resumeLast && !String(request.prompt ?? \"\").trim()");
+  const footerIndex = task.indexOf("const promptWithFooter = config.prompt_footer");
+  assert.notEqual(defaultPromptIndex, -1);
+  assert.notEqual(footerIndex, -1);
+  assert.ok(defaultPromptIndex < footerIndex);
+  assert.match(task, /\? DEFAULT_CONTINUE_PROMPT\s+: \(request\.prompt \?\? ""\);/);
+  assert.match(task, /\$\{metaSkillsPrefix\}\$\{taskPrompt\}\\n\\n\$\{config\.prompt_footer\}/);
+  assert.match(task, /\$\{metaSkillsPrefix\}\$\{taskPrompt\}/);
+  assert.doesNotMatch(task, /\$\{metaSkillsPrefix\}\$\{request\.prompt\}/);
+});
+
 test("respond and summary resolve cwd before loading config", () => {
   const respond = bridge.match(/async function handleRespond[\s\S]*?async function handleSummary/)?.[0] ?? "";
   const summary = bridge.match(/async function handleSummary[\s\S]*?async function main/)?.[0] ?? "";
@@ -53,6 +67,80 @@ test("send emits plan event instead of terminal done for plan results", () => {
   const send = bridge.match(/async function handleSend[\s\S]*?async function handleSteer/)?.[0] ?? "";
   assert.match(send, /if \(result\.planDetected && result\.planText\)/);
   assert.ok(send.indexOf("formatPlanEvent") < send.indexOf("formatDoneEvent"));
+});
+
+test("task plan-pending path marks terminal emission before returning", () => {
+  const task = bridge.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
+  const planBranch = task.match(
+    /if \(result\.planDetected && result\.planText\) \{[\s\S]*?return \{ \.\.\.result, session, planPath \};/
+  )?.[0] ?? "";
+  assert.match(planBranch, /formatPlanEvent/);
+  assert.match(planBranch, /markTerminalEmitted\(\);/);
+  assert.ok(planBranch.indexOf("formatPlanEvent") < planBranch.indexOf("markTerminalEmitted();"));
+  assert.ok(planBranch.indexOf("markTerminalEmitted();") < planBranch.indexOf("return { ...result, session, planPath };"));
+});
+
+test("sandbox workspace-dirty returns before terminal error emission", () => {
+  const task = bridge.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
+  const errorStart = task.indexOf("if (result.exitStatus !== 0 && result.error) {");
+  const planStart = task.indexOf("// If plan was detected");
+  assert.notEqual(errorStart, -1);
+  assert.notEqual(planStart, -1);
+
+  const errorBranch = task.slice(errorStart, planStart);
+  const workspaceBranch = errorBranch.match(
+    /if \(codexErrorInfo\?\.code === "SandboxError" && touchedFiles\.length > 0\) \{[\s\S]*?return \{ \.\.\.result, session, exitStatus: 0, error: null \};\n\s+\}/
+  )?.[0] ?? "";
+  assert.match(workspaceBranch, /setPhase\("workspace-dirty"/);
+  assert.match(workspaceBranch, /touchedFiles/);
+  assert.match(workspaceBranch, /markTerminalEmitted\(\);/);
+  assert.doesNotMatch(workspaceBranch, /formatErrorEvent|logNdjson\(session, "ERROR"/);
+
+  const workspaceIndex = errorBranch.indexOf('setPhase("workspace-dirty"');
+  const formatErrorIndex = errorBranch.indexOf("formatErrorEvent(session");
+  const logErrorIndex = errorBranch.indexOf('logNdjson(session, "ERROR"');
+  const terminalErrorMarkIndex = errorBranch.indexOf("markTerminalEmitted();", logErrorIndex);
+  assert.notEqual(workspaceIndex, -1);
+  assert.notEqual(formatErrorIndex, -1);
+  assert.notEqual(logErrorIndex, -1);
+  assert.notEqual(terminalErrorMarkIndex, -1);
+  assert.ok(workspaceIndex < formatErrorIndex);
+  assert.ok(workspaceIndex < logErrorIndex);
+  assert.ok(workspaceIndex < terminalErrorMarkIndex);
+});
+
+test("tracked failed task results persist handoff error envelope", () => {
+  assert.match(bridge, /buildErrorEnvelope\(classifyError\(errLike\), \{ command, partial, handoff \}\)/);
+  assert.match(bridge, /payload:\s*\{\s*\.\.\.payload,\s*error\s*\}/);
+
+  const foreground = bridge.match(/async function runForegroundCommand[\s\S]*?function spawnDetachedTaskWorker/)?.[0] ?? "";
+  assert.match(
+    foreground,
+    /async \(\) => persistFailureErrorInPayload\(await runner\(progress\), command\)/
+  );
+
+  const worker = bridge.match(/async function handleTaskWorker[\s\S]*?async function handleStatus/)?.[0] ?? "";
+  assert.match(
+    worker,
+    /persistFailureErrorInPayload\(\s*await runBridgeTask\(\{[\s\S]*?onProgress: progress[\s\S]*?\}\),\s*"task"\s*\)/
+  );
+});
+
+test("background task enqueue persists queued record before spawning worker", () => {
+  const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
+  const writeQueued = enqueue.indexOf("writeJobFile(job.workspaceRoot, job.id, queuedRecord);");
+  const upsertQueued = enqueue.indexOf("upsertJob(job.workspaceRoot, queuedRecord);");
+  const spawnWorker = enqueue.indexOf("spawnDetachedTaskWorker(cwd, job.id, logFile);");
+  assert.notEqual(writeQueued, -1);
+  assert.notEqual(upsertQueued, -1);
+  assert.notEqual(spawnWorker, -1);
+  assert.ok(writeQueued < spawnWorker);
+  assert.ok(upsertQueued < spawnWorker);
+  assert.match(enqueue, /pid: null,\n\s+logFile,\n\s+request/);
+  assert.match(enqueue, /const existingRecord = readStoredJob\(job\.workspaceRoot, job\.id\) \?\? queuedRecord;/);
+  assert.match(enqueue, /if \(existingRecord\.status === "queued"\) \{/);
+  assert.match(enqueue, /pid: spawnedPid/);
+  assert.match(enqueue, /monitor: buildMonitorHint\(\{ eventsPath: null, jobId: job\.id, threadId: null, cwd \}\)/);
 });
 
 test("review sessions emit terminal events", () => {
@@ -76,4 +164,17 @@ test("adapter canonical tag contract includes live auto-pipeline stages", () => 
     assert.match(adapterTypes, new RegExp(`"PIPELINE:${stage}:done"`));
     assert.match(adapterEventVocabulary, new RegExp(`\\b${stage}\\b`));
   }
+});
+
+test("working-tree review empty check includes untracked files", () => {
+  const review = bridge.match(/async function executeReviewRun[\s\S]*?async function executeTaskRun/)?.[0] ?? "";
+  const workingTreeCheck = review.match(
+    /if \(target\.mode === "working-tree"\) \{[\s\S]*?throw new CliError\("No working-tree changes to review\."/,
+  )?.[0] ?? "";
+  assert.match(workingTreeCheck, /git", \["diff", "--quiet"\]/);
+  assert.match(workingTreeCheck, /git", \["diff", "--cached", "--quiet"\]/);
+  assert.match(workingTreeCheck, /git", \["ls-files", "--others", "--exclude-standard"\]/);
+  assert.match(workingTreeCheck, /untrackedCheck\.status === 0/);
+  assert.match(workingTreeCheck, /untrackedCheck\.stdout\.trim\(\) === ""/);
+  assert.ok(workingTreeCheck.indexOf("untrackedCheck") < workingTreeCheck.indexOf("throw new CliError"));
 });

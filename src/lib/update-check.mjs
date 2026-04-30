@@ -51,8 +51,6 @@ function readCache() {
     const raw = fs.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
-    if (typeof parsed.checkedAt !== "number") return null;
-    if (typeof parsed.latestVersion !== "string") return null;
     return parsed;
   } catch {
     return null;
@@ -64,37 +62,138 @@ function writeCache(entry) {
     const p = cachePath();
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(entry, null, 2));
+    return true;
   } catch {
     // Silent — cache write failure must never propagate.
+    return false;
   }
 }
 
-// Rate-limit gate for the hot-path auto-apply. Returns `true` only when
-// there's been no apply attempt (or no cache at all) within the window.
-// The in-flight auto-apply marker is written by `markApplyAttempted`
-// BEFORE the installer spawns so concurrent invocations don't all try to
-// install — the first one wins the slot, the rest no-op.
-export function shouldAttemptApply(windowMs = APPLY_ATTEMPT_WINDOW_MS) {
-  const cache = readCache();
-  if (!cache || !cache.lastApplyAttempt) return true;
-  return Date.now() - cache.lastApplyAttempt > windowMs;
+function hasReleaseCache(cache) {
+  return (
+    cache &&
+    typeof cache.checkedAt === "number" &&
+    typeof cache.latestVersion === "string"
+  );
 }
 
-// Records an apply attempt in the cache file so subsequent invocations
-// within the window won't re-spawn the installer. Preserves existing
-// `checkedAt` / `latestVersion` so the 1 h detection TTL stays intact.
-// Silent on write failure — a lost marker just means we'll re-attempt
-// on the next invocation, not a correctness problem.
-export function markApplyAttempted(targetVersion) {
+function cacheLockPath() {
+  return `${cachePath()}.lock`;
+}
+
+function removeStaleLock(lockPath, staleMs) {
   try {
-    const existing = readCache() ?? {};
-    writeCache({
-      ...existing,
-      lastApplyAttempt: Date.now(),
-      lastApplyTargetVersion: targetVersion,
-    });
+    const stat = fs.statSync(lockPath);
+    if (Date.now() - stat.mtimeMs <= staleMs) return false;
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch (err) {
+    return err?.code === "ENOENT";
+  }
+}
+
+function acquireCacheLock(staleMs) {
+  const lockPath = cacheLockPath();
+  try {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  } catch {
+    return null;
+  }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      try {
+        fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+      } catch {
+        // The exclusive file itself is the lock; metadata is best-effort.
+      }
+      return { fd, lockPath };
+    } catch (err) {
+      if (err?.code !== "EEXIST") return null;
+      if (!removeStaleLock(lockPath, staleMs)) return null;
+    }
+  }
+
+  return null;
+}
+
+function releaseCacheLock(lock) {
+  try {
+    fs.closeSync(lock.fd);
+  } catch {
+    // Best-effort lock cleanup.
+  }
+
+  try {
+    fs.unlinkSync(lock.lockPath);
+  } catch {
+    // Best-effort lock cleanup.
+  }
+}
+
+function hasRecentApplyAttempt(cache, now, windowMs) {
+  return (
+    cache &&
+    typeof cache.lastApplyAttempt === "number" &&
+    now - cache.lastApplyAttempt <= windowMs
+  );
+}
+
+function writeApplyAttemptMarker(targetVersion, attemptedAt, existing = readCache()) {
+  const next = {
+    ...(existing ?? {}),
+    lastApplyAttempt: attemptedAt,
+  };
+
+  if (typeof targetVersion === "string") {
+    next.lastApplyTargetVersion = targetVersion;
+  }
+
+  return writeCache(next);
+}
+
+// Atomically claims the hot-path auto-apply slot. Returns `true` only when
+// there's been no apply attempt within the window and the in-flight marker was
+// written before the caller spawns an installer. The exclusive lock is local to
+// this cache path and keeps concurrent bridge invocations from racing a stale
+// read against a later write.
+export function claimApplyAttempt(targetVersion, windowMs = APPLY_ATTEMPT_WINDOW_MS) {
+  const lock = acquireCacheLock(Math.max(windowMs, 60_000));
+  if (!lock) return false;
+
+  try {
+    const cache = readCache();
+    const now = Date.now();
+    if (hasRecentApplyAttempt(cache, now, windowMs)) return false;
+    return writeApplyAttemptMarker(targetVersion, now, cache);
+  } catch {
+    return false;
+  } finally {
+    releaseCacheLock(lock);
+  }
+}
+
+// Compatibility gate for existing callers. This now claims the slot before
+// returning so the legacy `shouldAttemptApply(); markApplyAttempted(...)`
+// sequence no longer exposes a read/write race.
+export function shouldAttemptApply(windowMs = APPLY_ATTEMPT_WINDOW_MS) {
+  return claimApplyAttempt(undefined, windowMs);
+}
+
+// Records or refreshes apply-attempt metadata in the cache file. Existing
+// callers still use this immediately before spawning so target-version metadata
+// is preserved; the actual slot claim happens in `claimApplyAttempt`.
+export function markApplyAttempted(targetVersion) {
+  const lock = acquireCacheLock(APPLY_ATTEMPT_WINDOW_MS);
+  if (!lock) return;
+
+  try {
+    writeApplyAttemptMarker(targetVersion, Date.now());
   } catch {
     // Silent.
+  } finally {
+    releaseCacheLock(lock);
   }
 }
 
@@ -166,9 +265,10 @@ export async function checkForUpdate({
   fetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
 } = {}) {
   const cache = readCache();
+  const hasCachedRelease = hasReleaseCache(cache);
   const now = Date.now();
 
-  if (!force && cache && now - cache.checkedAt < cacheTtlMs) {
+  if (!force && hasCachedRelease && now - cache.checkedAt < cacheTtlMs) {
     return {
       skipped: false,
       cached: true,
@@ -183,11 +283,11 @@ export async function checkForUpdate({
   if (!fetchResult.ok) {
     return {
       skipped: true,
-      reason: cache ? "fetch-failed-using-stale" : "fetch-failed-no-cache",
+      reason: hasCachedRelease ? "fetch-failed-using-stale" : "fetch-failed-no-cache",
       fetchReason: fetchResult.reason,
       fetchStatus: fetchResult.status ?? null,
       currentVersion,
-      ...(cache && {
+      ...(hasCachedRelease && {
         latestVersion: cache.latestVersion,
         hasUpdate: compareVersions(currentVersion, cache.latestVersion) < 0,
         cacheAgeMs: now - cache.checkedAt,
@@ -195,7 +295,15 @@ export async function checkForUpdate({
     };
   }
 
-  writeCache({ checkedAt: now, latestVersion: fetchResult.tag });
+  const applyMarkers = {};
+  if (cache && Object.prototype.hasOwnProperty.call(cache, "lastApplyAttempt")) {
+    applyMarkers.lastApplyAttempt = cache.lastApplyAttempt;
+  }
+  if (cache && Object.prototype.hasOwnProperty.call(cache, "lastApplyTargetVersion")) {
+    applyMarkers.lastApplyTargetVersion = cache.lastApplyTargetVersion;
+  }
+
+  writeCache({ checkedAt: now, latestVersion: fetchResult.tag, ...applyMarkers });
   return {
     skipped: false,
     cached: false,
