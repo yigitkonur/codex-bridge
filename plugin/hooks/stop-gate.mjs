@@ -8,6 +8,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+const HOOK_NAME = "stop-gate";
 const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 // hooks.json gives the Stop hook 15 minutes. Keep the inner Codex turn
@@ -17,6 +18,34 @@ const STOP_REVIEW_TIMEOUT_MINUTES = 14;
 const STOP_REVIEW_TIMEOUT_MS = STOP_REVIEW_TIMEOUT_MINUTES * 60 * 1000;
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+// Kill switch + structured error trail, matching every other plugin hook
+// (session-start, session-end, user-prompt-submit, subagent-stop). The Stop
+// hook is the highest-blast-radius hook in this set — it can hold a Claude
+// Code session at shutdown for up to 15 minutes — so an emergency disable
+// path is mandatory:
+//   CODEX_BRIDGE_HOOK_DISABLE=stop-gate     → disable just this hook
+//   CODEX_BRIDGE_HOOK_DISABLE=all           → disable every codex-bridge hook
+// When disabled, the hook returns silently (no decision JSON), which Claude
+// Code interprets as "allow" — the safest default if the gate itself is
+// broken or the user is debugging a stuck session.
+function isDisabled() {
+  const list = (process.env.CODEX_BRIDGE_HOOK_DISABLE ?? "")
+    .split(",")
+    .map((entry) => entry.trim());
+  return list.includes(HOOK_NAME) || list.includes("all");
+}
+
+function logHookError(err) {
+  try {
+    const dir = path.join(os.homedir(), ".codex-bridge", "hook-errors");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${Date.now()}-${HOOK_NAME}.log`);
+    fs.writeFileSync(file, `${err?.stack ?? err}\n`);
+  } catch {
+    // Last-resort silent: the hook must never throw out of process.
+  }
+}
 // Probe both install layouts so this hook works whether the user
 // installed via the v2 plugin (plugin/scripts/codex-bridge.mjs) or
 // the legacy skill (skill/scripts/codex-bridge.mjs).
@@ -52,7 +81,19 @@ function runBridge(cwd, input, args, options = {}) {
       ...(input.session_id ? { [SESSION_ID_ENV]: input.session_id } : {})
     },
     encoding: "utf8",
-    timeout: options.timeoutMs ?? 15000
+    timeout: options.timeoutMs ?? 15000,
+    // The Stop hook leaves a 60-second margin under hooks.json's 900s ceiling
+    // (see STOP_REVIEW_TIMEOUT_MINUTES). That margin only protects us if the
+    // bridge process actually exits when its timeout fires. spawnSync's
+    // default killSignal is SIGTERM; the bundled bridge holds open app-server
+    // sockets and detached child workers, so SIGTERM may take a few seconds
+    // to propagate through async cleanup — eating into the 60-second budget
+    // and risking Claude Code reaping the hook before emitBlock writes. The
+    // long-running `task` spawn passes killSignal: 'SIGKILL' explicitly so
+    // the timeout is deterministic and the hook always has time to emit a
+    // decision. Cheap calls (`status --json`, `setup --json`) keep SIGTERM
+    // since they finish in milliseconds and graceful shutdown is preferred.
+    ...(options.killSignal ? { killSignal: options.killSignal } : {})
   });
 }
 
@@ -288,10 +329,22 @@ function maybeMigrateLegacyGate(cwd, input, activation) {
     return activation;
   }
   if (result.reviewGateLockExists === true || result.reviewGateEnabled === true) {
+    // Bridge already migrated the lock during its own readStopReviewGate
+    // (src/codex-bridge.mjs:790-823). Re-read activation from disk so the
+    // hook sees the freshly-minted lock file as authoritative.
     const migrated = reviewGateActivation(cwd);
     if (migrated.active) return migrated;
   }
 
+  // Defensive fallback: legacy intent is recorded, no suppression applies,
+  // and the bridge still didn't surface the lock. The most likely cause is
+  // that the bridge's own lock write failed silently
+  // (src/codex-bridge.mjs:798-823 swallows the throw). We retry the write
+  // here so the user isn't stuck with an opt-in gate that silently turns
+  // itself off after upgrade. This costs nothing on the hot path because
+  // hasLegacyStopReviewGateIntent is the only way control reaches this
+  // block, and the vast majority of workspaces never carried the legacy
+  // flag in the first place.
   try {
     fs.mkdirSync(path.dirname(activation.lockPath), { recursive: true });
     const payload = {
@@ -310,6 +363,10 @@ function maybeMigrateLegacyGate(cwd, input, activation) {
 }
 
 function main() {
+  // Respect the unified plugin-hook kill switch before reading stdin or
+  // touching state. If the bridge is broken in a way that makes the hook
+  // throw early, the user needs a way out without editing the lock file.
+  if (isDisabled()) return;
   const input = readHookInput();
   if (input.stop_hook_active === true) {
     return;
@@ -401,7 +458,7 @@ function main() {
       cwd,
       input,
       ["task", "--json", "--mode", "default", "--read-only", "--no-pipeline", "--prompt-file", promptFile],
-      { timeoutMs: STOP_REVIEW_TIMEOUT_MS }
+      { timeoutMs: STOP_REVIEW_TIMEOUT_MS, killSignal: "SIGKILL" }
     );
   } finally {
     try {
@@ -436,6 +493,11 @@ function main() {
 try {
   main();
 } catch (error) {
+  // Persist a structured error trail under ~/.codex-bridge/hook-errors/ so
+  // operators can diagnose hook crashes after the session ends. Mirrors the
+  // failure-mode contract documented in the sibling plugin/hooks (see
+  // session-start.mjs:35-43, user-prompt-submit.mjs:40-48).
+  logHookError(error);
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 }

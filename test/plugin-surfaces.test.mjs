@@ -139,7 +139,7 @@ function makeStopGateHarness(fakeBridgeSource) {
   };
 }
 
-function runStopGateHarness(harness) {
+function runStopGateHarness(harness, overrides = {}) {
   return spawnSync(process.execPath, [harness.hookPath], {
     cwd: harness.workspace,
     input: JSON.stringify({
@@ -151,7 +151,8 @@ function runStopGateHarness(harness) {
     env: {
       ...process.env,
       CODEX_BRIDGE_PLUGIN_DATA: path.join(harness.tempRoot, "plugin-data"),
-      CLAUDE_PLUGIN_DATA: path.join(harness.tempRoot, "claude-data")
+      CLAUDE_PLUGIN_DATA: path.join(harness.tempRoot, "claude-data"),
+      ...(overrides.env ?? {})
     }
   });
 }
@@ -534,6 +535,62 @@ test("plugin Stop hook migrates legacy gate state with setup's public fields", (
   assert.doesNotMatch(stopHook, /stopReviewGateConfig/);
   assert.match(stopHook, /reviewGateLockExists/);
   assert.match(stopHook, /reviewGateEnabled/);
+});
+
+test("plugin Stop hook honors CODEX_BRIDGE_HOOK_DISABLE kill switch", () => {
+  // The Stop hook is the highest-blast-radius plugin hook (it can stall
+  // session shutdown for up to 15 minutes). When the unified plugin-hook
+  // kill switch is set, the hook must short-circuit before spawning the
+  // bridge — otherwise an operator with a broken bridge has no escape
+  // hatch other than deleting the project lock file.
+  const failingBridge = `
+import process from "node:process";
+process.stderr.write("kill-switch test should never spawn the bridge");
+process.exit(99);
+`;
+
+  for (const value of ["stop-gate", "all", "session-end,stop-gate", "stop-gate,unrelated"]) {
+    const harness = makeStopGateHarness(failingBridge);
+    try {
+      const result = runStopGateHarness(harness, {
+        env: { CODEX_BRIDGE_HOOK_DISABLE: value }
+      });
+      assert.equal(result.status, 0, `expected clean exit when disabled via "${value}" but got ${result.status}`);
+      assert.equal(result.stdout, "", `expected no decision JSON when disabled via "${value}"`);
+      assert.equal(result.stderr, "", `expected no stderr when disabled via "${value}"`);
+    } finally {
+      fs.rmSync(harness.tempRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test("plugin Stop hook enforces SIGKILL-based timeout for the long-running task spawn", () => {
+  // The 60-second margin between hooks.json's 900s ceiling and the
+  // 14-minute internal timeout only protects emitBlock if spawnSync
+  // actually reaps the child when its timeout fires. spawnSync's default
+  // killSignal is SIGTERM, which the bundled bridge may take seconds to
+  // honor while it tears down app-server sockets and detached workers.
+  // The hook escalates to SIGKILL on the long-running `task` invocation
+  // so the timeout is deterministic; the cheap status/setup probes keep
+  // SIGTERM since they finish in milliseconds.
+  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  assert.match(stopHook, /killSignal:\s*"SIGKILL"/);
+  // The task spawn must pass killSignal alongside the timeout.
+  assert.match(
+    stopHook,
+    /timeoutMs:\s*STOP_REVIEW_TIMEOUT_MS,\s*killSignal:\s*"SIGKILL"/
+  );
+});
+
+test("plugin Stop hook ships the unified plugin-hook error trail", () => {
+  // Sibling plugin hooks (session-start, session-end, user-prompt-submit,
+  // subagent-stop) all log unhandled errors to ~/.codex-bridge/hook-errors/
+  // so operators can diagnose hook crashes after the session ends. The
+  // Stop hook joined that contract in T14.
+  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  assert.match(stopHook, /\.codex-bridge["'],\s*["']hook-errors/);
+  assert.match(stopHook, /function logHookError/);
+  assert.match(stopHook, /CODEX_BRIDGE_HOOK_DISABLE/);
 });
 
 test("setup owns project-scoped review gate lock creation", () => {
