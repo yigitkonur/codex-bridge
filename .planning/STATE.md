@@ -9,21 +9,21 @@ Research summary: `.planning/research/SUMMARY.md`
 Codebase maps: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/CONCERNS.md`, `.planning/codebase/CONVENTIONS.md`, `.planning/codebase/INTEGRATIONS.md`, `.planning/codebase/STACK.md`, `.planning/codebase/STRUCTURE.md`, `.planning/codebase/TESTING.md`
 
 **Core value:** Claude Code can hand work to Codex and regain reliable, inspectable control through stable commands, events, artifacts, reviews, and merge gates.
-**Current focus:** Phase 1: Baseline Contracts And Generated Surface
+**Current focus:** Phase 2: Adapter And Delegation Runtime
 
 ## Current Position
 
-Phase: 1 of 6 (Baseline Contracts And Generated Surface)
-Plan: 0 of 3 in current phase
+Phase: 2 of 6 (Adapter And Delegation Runtime)
+Plan: 0 of 4 in current phase
 Status: Ready to discuss or plan
-Last activity: 2026-04-30 - Roadmap and state initialized from existing GSD project, requirements, research, and codebase maps.
+Last activity: 2026-04-30 - Phase 1 completed and review findings fixed. Added static gate, baseline contract checker, JSON envelope probes, generated-surface inventory, and mutating-command coverage map.
 
-Progress: [----------] 0%
+Progress: [##--------] 16%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
+- Total plans completed: 3
 - Average duration: n/a
 - Total execution time: 0.0 hours
 
@@ -31,7 +31,7 @@ Progress: [----------] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 1. Baseline Contracts And Generated Surface | 0/3 | 0.0h | n/a |
+| 1. Baseline Contracts And Generated Surface | 3/3 | 0.0h | n/a |
 | 2. Adapter And Delegation Runtime | 0/4 | 0.0h | n/a |
 | 3. Review Verdict And Iterate Loop | 0/3 | 0.0h | n/a |
 | 4. Plugin And Hook Surface Hardening | 0/3 | 0.0h | n/a |
@@ -39,8 +39,8 @@ Progress: [----------] 0%
 | 6. Release Readiness And Runtime Smoke | 0/3 | 0.0h | n/a |
 
 **Recent Trend:**
-- Last 5 plans: none
-- Trend: n/a
+- Last 5 plans: 01-01, 01-02, 01-03
+- Trend: baseline contracts complete
 
 *Updated after each plan completion.*
 
@@ -53,7 +53,7 @@ Recent decisions affecting current work:
 
 - Initialize as brownfield GSD project using source/tests/package/plugin/hook/CI evidence, not repository Markdown outside `.planning/`.
 - Use coarse six-phase roadmap matching the existing 28 v1 requirement traceability.
-- Start with Phase 1 so downstream planning has a baseline gate, generated-surface map, CLI envelope proof, and coverage map before runtime changes.
+- Phase 1 produced `npm run verify:static`, `scripts/baseline-contracts.mjs`, JSON envelope probes, generated-surface checks, and a mutating-command coverage map before runtime changes.
 
 ### Pending Todos
 
@@ -76,6 +76,6 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-04-30
-Stopped at: Roadmap/state initialization complete; Phase 1 is next.
+Stopped at: Phase 1 complete; Phase 2 is next.
 Resume file: None
-Next recommended command: `$gsd-discuss-phase 1` or `$gsd-plan-phase 1`
+Next recommended command: `$gsd-discuss-phase 2` or `$gsd-plan-phase 2`

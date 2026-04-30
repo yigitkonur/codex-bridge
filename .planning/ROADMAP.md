@@ -20,7 +20,7 @@ Repository Markdown outside `.planning/` is not used as roadmap evidence.
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions, if needed later
 
-- [ ] **Phase 1: Baseline Contracts And Generated Surface** - Maintainers can trust the static gate, generated-output map, JSON envelopes, and baseline coverage contracts.
+- [x] **Phase 1: Baseline Contracts And Generated Surface** - Maintainers can trust the static gate, generated-output map, JSON envelopes, and baseline coverage contracts. Completed 2026-04-30.
 - [ ] **Phase 2: Adapter And Delegation Runtime** - Users can delegate Codex work through backend-aware runtime paths and observe/control foreground and background sessions.
 - [ ] **Phase 3: Review Verdict And Iterate Loop** - Users can run reviews, track verdicts, enforce approved-head merge safety, and execute the closed-loop iterate workflow.
 - [ ] **Phase 4: Plugin And Hook Surface Hardening** - Maintainers can ship a consistent plugin layout with safe, bounded hook behavior.
@@ -41,9 +41,14 @@ Repository Markdown outside `.planning/` is not used as roadmap evidence.
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Static gate and generated-output inventory
-- [ ] 01-02: CLI JSON envelope and setup/config/version probes
-- [ ] 01-03: Mutating-command coverage map and baseline gaps
+- [x] 01-01: Static gate and generated-output inventory
+- [x] 01-02: CLI JSON envelope and setup/config/version probes
+- [x] 01-03: Mutating-command coverage map and baseline gaps
+
+Completion evidence:
+- Implementation commits: `7e1dca9 feat(baseline): add static contract gate`, `9a0e39a fix(baseline): fail closed on contract drift`
+- Phase artifacts: `.planning/phases/01-baseline-contracts-and-generated-surface/`
+- Static gate: `npm run verify:static` passed on 2026-04-30
 
 ### Phase 2: Adapter And Delegation Runtime
 **Goal**: Users can delegate Codex work through backend-aware runtime paths and reliably observe or control foreground and background sessions.
@@ -134,7 +139,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Baseline Contracts And Generated Surface | 0/3 | Not started | - |
+| 1. Baseline Contracts And Generated Surface | 3/3 | Complete | 2026-04-30 |
 | 2. Adapter And Delegation Runtime | 0/4 | Not started | - |
 | 3. Review Verdict And Iterate Loop | 0/3 | Not started | - |
 | 4. Plugin And Hook Surface Hardening | 0/3 | Not started | - |

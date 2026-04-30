@@ -9,10 +9,10 @@ These requirements define the next GSD milestone for an established codebase: ma
 
 ### Baseline Contracts
 
-- [ ] **BASE-01**: Maintainer can run a single documented static gate that rebuilds both install layouts and runs all Node tests.
-- [ ] **BASE-02**: Maintainer can identify all authored source surfaces that require generated `skill/` or `plugin/` output updates.
-- [ ] **BASE-03**: Maintainer can use machine-readable CLI envelopes to inspect help, config, version, status, result, wait, events, setup, and error output.
-- [ ] **BASE-04**: Maintainer can trace every command that mutates workspace, state, registry, or hook behavior to tests that cover its success and failure contracts.
+- [x] **BASE-01**: Maintainer can run a single documented static gate that rebuilds both install layouts and runs all Node tests. Validated in Phase 1 by `npm run verify:static`.
+- [x] **BASE-02**: Maintainer can identify all authored source surfaces that require generated `skill/` or `plugin/` output updates. Validated in Phase 1 by `scripts/baseline-contracts.mjs`.
+- [x] **BASE-03**: Maintainer can use machine-readable CLI envelopes to inspect help, config, version, status, result, wait, events, setup, and error output. Validated in Phase 1 by `test/baseline-contracts.test.mjs`.
+- [x] **BASE-04**: Maintainer can trace every command that mutates workspace, state, registry, or hook behavior to tests that cover its success and failure contracts. Validated in Phase 1 by `mutating_command_coverage`.
 
 ### Adapter Runtime
 
@@ -89,10 +89,10 @@ Deferred until the v1 contracts above are complete.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BASE-01 | Phase 1 | Pending |
-| BASE-02 | Phase 1 | Pending |
-| BASE-03 | Phase 1 | Pending |
-| BASE-04 | Phase 1 | Pending |
+| BASE-01 | Phase 1 | Complete |
+| BASE-02 | Phase 1 | Complete |
+| BASE-03 | Phase 1 | Complete |
+| BASE-04 | Phase 1 | Complete |
 | ADPT-01 | Phase 2 | Pending |
 | ADPT-02 | Phase 2 | Pending |
 | ADPT-03 | Phase 2 | Pending |
