@@ -441,3 +441,259 @@ export function collectReviewContext(cwd, target, options = {}) {
     ...details
   };
 }
+
+// =============================================================================
+// Worktree helpers (Phase 2a / T17)
+// =============================================================================
+//
+// Per plan §3.1, write-mode tasks isolate inside a git worktree under
+// `<repoRoot>/../.codex-bridge-worktrees/<task_id>`. The branch is named
+// `subagent/<backend>/<task_id>` so reviewers can identify the originating
+// task at a glance. The worktree's base SHA is captured at creation time
+// and persisted in the registry's meta.json (T15 wiring) so the diff is
+// reproducible even if the parent branch advances during the worker's run.
+//
+// Failure mode (no disk, not-a-git-repo, etc.) falls back to an in-place
+// branch checkout marked with `isolation_mode: "branch-only"` so the
+// caller can downgrade gracefully — the worktree is a safety isolation,
+// not a hard prerequisite for the workflow.
+
+function runGit(cwd, args, options = {}) {
+  return gitChecked(cwd, args, options).stdout;
+}
+
+function tryRunGit(cwd, args, options = {}) {
+  const result = git(cwd, args, options);
+  if (result.error || result.status !== 0) {
+    return { ok: false, result };
+  }
+  return { ok: true, stdout: result.stdout, result };
+}
+
+function defaultWorktreeRoot(repoRoot) {
+  return path.resolve(repoRoot, "..", ".codex-bridge-worktrees");
+}
+
+function assertSafeTaskId(taskId, caller) {
+  if (!taskId || typeof taskId !== "string") {
+    throw new Error(`${caller}: taskId is required`);
+  }
+  if (taskId === "." || taskId === ".." || !/^[A-Za-z0-9._-]+$/.test(taskId)) {
+    throw new Error(
+      `${caller}: taskId must be a safe path segment: ${JSON.stringify(taskId)}`,
+    );
+  }
+}
+
+function buildBranchName({ taskId, backend, branchPrefix }) {
+  const prefix = branchPrefix ?? "subagent";
+  const back = backend ?? "codex";
+  return `${prefix}/${back}/${taskId}`;
+}
+
+function assertSafeBranchName(cwd, branch, caller) {
+  const result = tryRunGit(cwd, ["check-ref-format", "--branch", branch]);
+  if (!result.ok) {
+    throw new Error(
+      `${caller}: branch name is invalid: ${JSON.stringify(branch)}`,
+    );
+  }
+}
+
+function branchExists(cwd, branch) {
+  return tryRunGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).ok;
+}
+
+function currentCheckoutRef(cwd) {
+  const symbolic = tryRunGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (symbolic.ok) return symbolic.stdout.trim();
+  return runGit(cwd, ["rev-parse", "HEAD"]).trim();
+}
+
+// createSubagentWorktree({ cwd, taskId, backend, baseRef, branchPrefix, worktreeRoot })
+// Returns one of:
+//   { isolation_mode: "worktree", path, branch, base_ref, base_sha, created_at }
+//   { isolation_mode: "branch-only", path: cwd, branch, base_ref, base_sha, created_at }
+//   throws on hard failure (not-a-git-repo, branch already exists outside our control, ...)
+export function createSubagentWorktree({
+  cwd,
+  taskId,
+  backend = "codex",
+  baseRef,
+  branchPrefix = "subagent",
+  worktreeRoot,
+}) {
+  assertSafeTaskId(taskId, "createSubagentWorktree");
+
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  const currentBranch = getCurrentBranch(cwd);
+  // getCurrentBranch returns "HEAD" when detached (never empty), so the
+  // ?? chain previously skipped detectDefaultBranch entirely. Treat
+  // detached HEAD explicitly so the default-branch fallback can fire.
+  const resolvedBaseRef =
+    baseRef ??
+    (currentBranch !== "HEAD" ? currentBranch : null) ??
+    detectDefaultBranch(cwd) ??
+    "HEAD";
+  const baseSha = runGit(repoRoot, [
+    "rev-parse",
+    "--verify",
+    "--end-of-options",
+    `${resolvedBaseRef}^{commit}`,
+  ]).trim();
+  const branch = buildBranchName({ taskId, backend, branchPrefix });
+  assertSafeBranchName(repoRoot, branch, "createSubagentWorktree");
+  const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
+  const wtPath = path.join(root, taskId);
+  const createdAt = new Date().toISOString();
+
+  // Refuse to clobber an existing branch that we didn't create.
+  if (branchExists(repoRoot, branch)) {
+    throw new Error(
+      `createSubagentWorktree: branch ${branch} already exists; remove or rename before retrying`,
+    );
+  }
+
+  // Try the worktree path first.
+  try {
+    fs.mkdirSync(root, { recursive: true });
+    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha]);
+    return {
+      isolation_mode: "worktree",
+      path: wtPath,
+      branch,
+      base_ref: resolvedBaseRef,
+      base_sha: baseSha,
+      created_at: createdAt,
+    };
+  } catch (err) {
+    // Branch-only fallback: stay in cwd, create the branch in place.
+    // Roll back the partial worktree creation so we don't leave a
+    // half-set worktree pointer.
+    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    if (getWorkingTreeState(repoRoot).isDirty) {
+      throw new Error(
+        "createSubagentWorktree: worktree creation failed and branch-only fallback is unsafe with a dirty working tree",
+      );
+    }
+    const previousRef = currentCheckoutRef(repoRoot);
+    try {
+      runGit(repoRoot, ["checkout", "-b", branch, baseSha]);
+    } catch (innerErr) {
+      throw new Error(
+        `createSubagentWorktree: worktree fallback also failed: ${innerErr.message ?? innerErr}`,
+      );
+    }
+    return {
+      isolation_mode: "branch-only",
+      path: cwd,
+      branch,
+      base_ref: resolvedBaseRef,
+      base_sha: baseSha,
+      created_at: createdAt,
+      previous_ref: previousRef,
+      fallback_reason: err.message ?? String(err),
+    };
+  }
+}
+
+// pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path })
+// Removes the worktree (force) and deletes the branch. Used by `cancel`
+// and by the merge gate after a successful ff-merge. Idempotent — calling
+// against an already-pruned worktree is a no-op.
+//
+// `worktreeRoot` and `path` are optional and let the caller target a
+// worktree that was created with a non-default `worktreeRoot`. If both are
+// omitted, the registered worktree path is recovered from
+// `git worktree list --porcelain` by branch (preferred) or by the default
+// `<repoRoot>/../.codex-bridge-worktrees/<taskId>` layout as a fallback.
+export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
+  assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+
+  // Resolve the worktree path. Priority:
+  //   1. caller-supplied explicit `path`
+  //   2. caller-supplied `worktreeRoot` joined with `taskId`
+  //   3. discovered via `git worktree list --porcelain` matched by branch
+  //   4. default `<repoRoot>/../.codex-bridge-worktrees/<taskId>` layout
+  let wtPath = null;
+  if (typeof explicitPath === "string" && explicitPath.length > 0) {
+    wtPath = explicitPath;
+  } else if (typeof worktreeRoot === "string" && worktreeRoot.length > 0) {
+    wtPath = path.join(worktreeRoot, taskId);
+  } else if (branch) {
+    const registered = listSubagentWorktrees(repoRoot).find((w) => w.branch === branch);
+    if (registered) {
+      wtPath = registered.path;
+    }
+  }
+  if (!wtPath) {
+    wtPath = path.join(defaultWorktreeRoot(repoRoot), taskId);
+  }
+
+  // `git worktree remove` refuses to operate on the main working tree.
+  // In the branch-only fallback path, the subagent branch lives inside
+  // repoRoot itself, so any discovered/explicit path that resolves to
+  // the main tree must be skipped — the branch-delete step below still
+  // runs, which is what the caller actually wants.
+  const wtPathResolved = path.resolve(wtPath);
+  const repoRootResolved = path.resolve(repoRoot);
+  const isMainWorktree = wtPathResolved === repoRootResolved;
+
+  if (!isMainWorktree && fs.existsSync(wtPath)) {
+    runGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    if (fs.existsSync(wtPath)) {
+      throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
+    }
+  }
+  if (branch) {
+    assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
+    // -D not -d: branch may have unmerged commits while we're cancelling.
+    if (branchExists(repoRoot, branch)) {
+      if (getCurrentBranch(repoRoot) === branch) {
+        if (!previousRef) {
+          throw new Error(
+            `pruneWorktreeOnCancel: cannot delete checked-out branch without previousRef: ${branch}`,
+          );
+        }
+        runGit(repoRoot, ["checkout", previousRef]);
+      }
+      runGit(repoRoot, ["branch", "-D", branch]);
+      if (branchExists(repoRoot, branch)) {
+        throw new Error(`pruneWorktreeOnCancel: branch still exists after delete: ${branch}`);
+      }
+    }
+  }
+  return { pruned: !fs.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
+}
+
+// listSubagentWorktrees(cwd) -> [{ path, branch, head, locked }]
+// Filtered list of git worktrees that look like ours (path under
+// .codex-bridge-worktrees/, branch matching subagent/...).
+export function listSubagentWorktrees(cwd) {
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  const out = tryRunGit(repoRoot, ["worktree", "list", "--porcelain"]);
+  if (!out.ok) return [];
+  const entries = [];
+  let current = null;
+  for (const line of out.stdout.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      if (current) entries.push(current);
+      current = { path: line.slice("worktree ".length), branch: null, head: null, locked: false };
+    } else if (line.startsWith("HEAD ") && current) {
+      current.head = line.slice("HEAD ".length);
+    } else if (line.startsWith("branch ") && current) {
+      const ref = line.slice("branch ".length);
+      current.branch = ref.replace(/^refs\/heads\//, "");
+    } else if (line === "locked" && current) {
+      current.locked = true;
+    }
+  }
+  if (current) entries.push(current);
+  return entries.filter(
+    (e) => e.path.includes(".codex-bridge-worktrees/") || (e.branch && e.branch.startsWith("subagent/")),
+  );
+}
