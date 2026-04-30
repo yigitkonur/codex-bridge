@@ -4,8 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-import { ensureBrokerSession } from "../src/lib/broker-lifecycle.mjs";
+import { __testHooks__, ensureBrokerSession, loadBrokerSession } from "../src/lib/broker-lifecycle.mjs";
+
+const { resolveBrokerScriptPath } = __testHooks__;
 
 function writeIdleBrokerScript(scriptPath) {
   fs.writeFileSync(
@@ -56,6 +59,32 @@ function restoreEnv(name, previousValue) {
   }
 }
 
+test("source layout prefers relocated adapter broker over obsolete source broker", () => {
+  const moduleUrl = new URL("../src/lib/broker-lifecycle.mjs", import.meta.url);
+  const legacyBroker = fileURLToPath(new URL("../app-server-broker.mjs", moduleUrl));
+  const relocatedBroker = fileURLToPath(new URL("../adapters/codex/broker.mjs", moduleUrl));
+
+  const scriptPath = resolveBrokerScriptPath({
+    moduleUrl,
+    existsSync: (candidate) => candidate === legacyBroker || candidate === relocatedBroker
+  });
+
+  assert.equal(scriptPath, relocatedBroker);
+});
+
+test("bundled layout prefers bundled broker output", () => {
+  const moduleUrl = new URL("../skill/scripts/codex-bridge.mjs", import.meta.url);
+  const bundledBroker = fileURLToPath(new URL("../app-server-broker.mjs", moduleUrl));
+  const sourceLikeBroker = fileURLToPath(new URL("../adapters/codex/broker.mjs", moduleUrl));
+
+  const scriptPath = resolveBrokerScriptPath({
+    moduleUrl,
+    existsSync: (candidate) => candidate === bundledBroker || candidate === sourceLikeBroker
+  });
+
+  assert.equal(scriptPath, bundledBroker);
+});
+
 test(
   "startup timeout uses the default process killer for the spawned broker pid",
   { skip: process.platform === "win32" ? "default killer uses taskkill on Windows" : false },
@@ -78,16 +107,20 @@ test(
     };
 
     try {
-      const session = await ensureBrokerSession(workspace, {
-        scriptPath,
-        timeoutMs: 1,
-        env: {
-          ...process.env,
-          BROKER_TEST_CHILD_PID_FILE: childPidFile
+      await assert.rejects(
+        () => ensureBrokerSession(workspace, {
+          scriptPath,
+          timeoutMs: 1,
+          env: {
+            ...process.env,
+            BROKER_TEST_CHILD_PID_FILE: childPidFile
+          }
+        }),
+        (error) => {
+          assert.equal(error.code, "BROKER_START_FAILED");
+          return true;
         }
-      });
-
-      assert.equal(session, null);
+      );
       childPid = await readPidFile(childPidFile);
       assert.ok(Number.isFinite(childPid) && childPid > 0);
       assert.deepEqual(killCalls, [{ pid: -childPid, signal: "SIGTERM" }]);
@@ -118,19 +151,23 @@ test("startup timeout still uses an injected killProcess", async () => {
   writeIdleBrokerScript(scriptPath);
 
   try {
-    const session = await ensureBrokerSession(workspace, {
-      scriptPath,
-      timeoutMs: 1,
-      killProcess(pid) {
-        killCalls.push(pid);
-      },
-      env: {
-        ...process.env,
-        BROKER_TEST_CHILD_PID_FILE: childPidFile
+    await assert.rejects(
+      () => ensureBrokerSession(workspace, {
+        scriptPath,
+        timeoutMs: 1,
+        killProcess(pid) {
+          killCalls.push(pid);
+        },
+        env: {
+          ...process.env,
+          BROKER_TEST_CHILD_PID_FILE: childPidFile
+        }
+      }),
+      (error) => {
+        assert.equal(error.code, "BROKER_START_FAILED");
+        return true;
       }
-    });
-
-    assert.equal(session, null);
+    );
     childPid = await readPidFile(childPidFile);
     assert.deepEqual(killCalls, [childPid]);
   } finally {
@@ -139,6 +176,53 @@ test("startup timeout still uses an injected killProcess", async () => {
     }
     signalTestBroker(childPid, killImpl);
     restoreEnv("CODEX_BRIDGE_PLUGIN_DATA", previousPluginData);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("broker startup failure is surfaced instead of returning a null session", async () => {
+  const previousBridgePluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-broker-lifecycle-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+  const scriptPath = path.join(root, "never-listens.mjs");
+  fs.writeFileSync(
+    scriptPath,
+    "console.error('broker test process never opened its endpoint');\nsetInterval(() => {}, 1000);\n",
+    "utf8"
+  );
+
+  process.env.CODEX_BRIDGE_PLUGIN_DATA = root;
+  let killAttempted = false;
+  try {
+    await assert.rejects(
+      () => ensureBrokerSession(workspace, {
+        scriptPath,
+        timeoutMs: 150,
+        killProcess: (pid) => {
+          killAttempted = true;
+          try {
+            process.kill(pid, "SIGTERM");
+          } catch {
+            // The process may already have exited.
+          }
+        }
+      }),
+      (error) => {
+        assert.equal(error.code, "BROKER_START_FAILED");
+        assert.match(error.message, /Codex app-server broker failed to start/);
+        assert.match(error.message, new RegExp(scriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        return true;
+      }
+    );
+    assert.equal(killAttempted, true);
+    assert.equal(loadBrokerSession(workspace), null);
+  } finally {
+    if (previousBridgePluginData == null) {
+      delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_BRIDGE_PLUGIN_DATA = previousBridgePluginData;
+    }
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(workspace, { recursive: true, force: true });
   }
