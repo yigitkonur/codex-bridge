@@ -65,6 +65,7 @@ export type CanonicalTag =
   | "CHECKPOINT" | "HEARTBEAT"
   | "PIPELINE:diff" | "PIPELINE:plan" | "PIPELINE:execute" | "PIPELINE:review" | "PIPELINE:fix" | "PIPELINE:check"
   | "PIPELINE:diff:done" | "PIPELINE:plan:done" | "PIPELINE:execute:done" | "PIPELINE:review:done" | "PIPELINE:fix:done" | "PIPELINE:check:done"
+  | "PIPELINE:review:failed" | "PIPELINE:check:failed"
   | "PIPELINE:done" | "PIPELINE:failed"
   | "RETRYING" | "PARTIAL" | "HANDOFF" | "WARNING"
   | "DIRECTIVES";

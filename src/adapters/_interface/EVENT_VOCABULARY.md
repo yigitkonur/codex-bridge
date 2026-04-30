@@ -31,8 +31,10 @@ Single source of truth for the tags adapters emit. SKILL.md and references must 
 |---|---|
 | `[PIPELINE:<stage>]` | Stage entered (`diff`, `plan`, `execute`, `review`, `fix`, `check`) |
 | `[PIPELINE:<stage>:done]` | Stage completed |
+| `[PIPELINE:review:failed]` | Review stage failed (non-timeout); fix stage skipped |
+| `[PIPELINE:check:failed]` | Check stage failed (non-timeout); already halted |
 | `[PIPELINE:done]` | All stages complete |
-| `[PIPELINE:failed]` | A stage failed; pipeline halted |
+| `[PIPELINE:failed]` | A stage failed due to timeout or unrecoverable error; pipeline halted |
 
 ## Recovery (bridge-emitted)
 
