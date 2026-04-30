@@ -182,7 +182,7 @@ export function getErrorMapper(adapterName) {
   return errorMappers.get(adapterName);
 }
 
-// Test-only helper.
+// Test-only helpers.
 export function _resetAdapterCache() {
   adapterCache.clear();
   errorMappers.clear();
@@ -191,4 +191,8 @@ export function _resetAdapterCache() {
 // Test-only helper.
 export function _validateAdapterForTest(adapter, name) {
   validateAdapter(adapter, name);
+}
+
+export function _resetErrorMappers() {
+  errorMappers.clear();
 }

@@ -9,6 +9,7 @@ import {
   getErrorMapper,
   AdapterError,
   _resetAdapterCache,
+  _resetErrorMappers,
 } from "../src/adapters/index.mjs";
 
 test("selectAdapter({backend:'codex'}) resolves the codex adapter", async () => {
@@ -67,6 +68,37 @@ test("envBackend wins over config layers when set", async () => {
   );
 });
 
+test("envBackend wins over metaBackend (layer 2 beats layer 3)", async () => {
+  _resetAdapterCache();
+  await assert.rejects(
+    selectAdapter({
+      envBackend: "env-backend",
+      metaBackend: "meta-backend",
+    }),
+    (err) =>
+      err instanceof AdapterError && err.message.includes("env-backend"),
+  );
+});
+
+test("metaBackend wins over adapter_routing and default_backend layers", async () => {
+  _resetAdapterCache();
+  // metaBackend is layer 3 in CAPABILITIES.md; routing and default_backend
+  // layers (4–7) must not overrule it. Without this assertion a refactor
+  // that demoted metaBackend below routing could pass the rest of the suite.
+  await assert.rejects(
+    selectAdapter({
+      metaBackend: "meta-backend",
+      subagentType: "Explore",
+      cwdConfig: {
+        adapter_routing: { Explore: { backend: "cwd-route" } },
+        default_backend: "cwd-backend",
+      },
+    }),
+    (err) =>
+      err instanceof AdapterError && err.message.includes("meta-backend"),
+  );
+});
+
 test("backend (CLI flag) wins over every other layer", async () => {
   _resetAdapterCache();
   await assert.rejects(
@@ -117,11 +149,17 @@ test("cwd adapter_routing wins over workspace and user routing", async () => {
   );
 });
 
-test("user adapter_routing wins over default backend layers", async () => {
+test("user adapter_routing wins over every default_backend layer", async () => {
   _resetAdapterCache();
+  // All routing layers (cwd/workspace/user) precede every default_backend
+  // layer. With cwd/workspace/user default_backend set but only userConfig
+  // carrying adapter_routing, the user-route value must win — even though
+  // a buggy implementation that put cwd default_backend ahead of user
+  // routing would otherwise resolve "cwd-backend".
   await assert.rejects(
     selectAdapter({
       subagentType: "Explore",
+      cwdConfig: { default_backend: "cwd-backend" },
       workspaceConfig: { default_backend: "workspace-backend" },
       userConfig: {
         adapter_routing: { Explore: { backend: "user-route" } },
@@ -163,17 +201,21 @@ test("guardCapability throws BACKEND_INCAPABLE when the flag is missing or false
 });
 
 test("registerErrorMapper round-trips with getErrorMapper", () => {
+  _resetErrorMappers();
   const mapper = (err) => ({ code: "TEST", class: "test" });
   registerErrorMapper("test-adapter", mapper);
   assert.equal(getErrorMapper("test-adapter"), mapper);
 });
 
 test("registerErrorMapper rejects non-function values", () => {
+  _resetErrorMappers();
   assert.throws(
     () => registerErrorMapper("bad-adapter", "not a function"),
     (err) =>
       err instanceof AdapterError && err.code === "BACKEND_INCAPABLE",
   );
+  // Confirm the rejected value did not get installed.
+  assert.equal(getErrorMapper("bad-adapter"), undefined);
 });
 
 test("AdapterError carries code, message, and details", () => {
