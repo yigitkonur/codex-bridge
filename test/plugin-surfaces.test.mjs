@@ -882,3 +882,79 @@ test("plugin PostToolUse auto-arm is visible at Bash and parent Agent boundaries
 
 test("plugin PostToolUse rejects spoofed bridge stdout and unsafe Monitor commands", { skip: "T25 stage forward-looking — auto-arm hook surfaces under refactoring" }, () => {
 });
+
+test("plugin PostToolUse rejects newline injection in monitor command", () => {
+  const env = queuedTaskEnvelope();
+  env.result.monitor.tool_hint.command =
+    "node plugin/scripts/codex-bridge.mjs events task-mabc123-def456 --follow\nrm -rf /";
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(env) }
+  });
+  assert.deepEqual(result, { continue: true });
+});
+
+test("plugin PostToolUse rejects subshell substitution in monitor command", () => {
+  const env = queuedTaskEnvelope();
+  env.result.monitor.tool_hint.command =
+    "node plugin/scripts/codex-bridge.mjs events task-mabc123-def456 --follow $(rm -rf /)";
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(env) }
+  });
+  assert.deepEqual(result, { continue: true });
+});
+
+test("plugin PostToolUse rejects unknown trailing flags in monitor command", () => {
+  const env = queuedTaskEnvelope();
+  env.result.monitor.tool_hint.command =
+    "node plugin/scripts/codex-bridge.mjs events task-mabc123-def456 --follow --evil-flag value";
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(env) }
+  });
+  assert.deepEqual(result, { continue: true });
+});
+
+test("plugin PostToolUse does not auto-arm when --background appears only inside the prompt", () => {
+  // Bare `task` (no real --background flag) with the prompt mentioning the
+  // flag — must NOT trigger auto-arm.
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json "explain --background mode"'
+    },
+    tool_response: { stdout: JSON.stringify(queuedTaskEnvelope()) }
+  });
+  assert.deepEqual(result, { continue: true });
+});
+
+test("plugin PostToolUse honors envelope status field (not phase) for queued gate", () => {
+  // Envelope with status: "completed" must NOT trigger auto-arm even if
+  // monitor is present.
+  const env = queuedTaskEnvelope();
+  env.result.status = "completed";
+  delete env.result.phase;
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(env) }
+  });
+  assert.deepEqual(result, { continue: true });
+});

@@ -27,6 +27,42 @@ const RUNNER_AGENT_TYPES = new Set([
   "codex-bridge-runner",
 ]);
 const JOB_ID_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
+// Cap the per-(workspace,surface) seen-jobs file so it stays bounded across
+// long-lived sessions. We never need to keep more than the most-recent
+// armed jobIds — the file exists only to suppress duplicate auto-arm on the
+// same envelope being replayed by Claude. Pruning truncates to the most
+// recent SEEN_JOBS_TRIM_TO entries when the file exceeds SEEN_JOBS_MAX.
+const SEEN_JOBS_MAX = 1000;
+const SEEN_JOBS_TRIM_TO = 500;
+// Value-consuming flags accepted by `codex-bridge task`. Used to walk the
+// argv-after-`task` and stop at the first positional (the prompt) so that
+// flags like `--background` mentioned inside the prompt text — even after
+// shell quoting has been stripped — cannot be mistaken for real CLI flags.
+const TASK_VALUE_FLAGS = new Set([
+  "--mode",
+  "--effort",
+  "-m",
+  "--model",
+  "--prompt-file",
+  "--idle-timeout-ms",
+  "--turn-plan-ms",
+  "--turn-default-ms",
+  "--pipeline-stage-timeout-ms",
+  "--pipeline-total-timeout-ms",
+  "--question-timeout-ms",
+  "--intercepted-from",
+  "--cwd",
+]);
+// Allowed flags / value-consuming flags inside the Monitor command after
+// `events <jobId>`. Anything else means the hint was tampered with.
+const MONITOR_BOOLEAN_FLAGS = new Set(["--follow", "--json"]);
+const MONITOR_VALUE_FLAGS = new Set([
+  "--exclude",
+  "--include",
+  "--timeout-ms",
+  "--since",
+  "--max-events",
+]);
 
 function logHookError(err) {
   try {
@@ -78,8 +114,23 @@ function markJobArmed(cwd, surface, jobId) {
   try {
     const f = seenJobsFile(cwd, surface);
     fs.appendFileSync(f, `${jobId}\n`);
+    pruneSeenJobsFile(f);
   } catch (err) {
     logHookError(err);
+  }
+}
+
+// Bound the seen-jobs file so it can't grow without limit across long
+// sessions. Triggered after every append; only does I/O when over cap.
+function pruneSeenJobsFile(file) {
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    const lines = text.split("\n").filter((line) => line.length > 0);
+    if (lines.length <= SEEN_JOBS_MAX) return;
+    const trimmed = lines.slice(-SEEN_JOBS_TRIM_TO).join("\n") + "\n";
+    fs.writeFileSync(file, trimmed);
+  } catch {
+    // Best-effort; file may have just been pruned by a concurrent hook.
   }
 }
 
@@ -168,11 +219,26 @@ function bridgeTaskIndex(tokens) {
 }
 
 function flagEnabled(tokens, startIndex, flag) {
-  for (const token of tokens.slice(startIndex + 1)) {
+  // Walk argv after `task`, recognising value-consuming flags so we can
+  // stop at the first positional (the prompt). Without this stop, a prompt
+  // like "deploy --background" would be tokenised by splitCommandWords
+  // into a single token "deploy --background" — but if the prompt token
+  // happens to *equal* a flag string, the previous loop would falsely
+  // detect it as a real flag. The walk below only inspects tokens that
+  // structurally precede the prompt argument.
+  for (let i = startIndex + 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    // First positional terminates flag scanning.
+    if (!token.startsWith("-")) return false;
     if (token === flag) return true;
     if (token.startsWith(`${flag}=`)) {
       const value = token.slice(flag.length + 1).toLowerCase();
       return value !== "false" && value !== "0";
+    }
+    // Consume the value of a known value-flag without inspecting it as a
+    // boolean flag candidate.
+    if (TASK_VALUE_FLAGS.has(token)) {
+      i += 1;
     }
   }
   return false;
@@ -231,7 +297,12 @@ function parseEnvelope(stdout) {
 }
 
 function hasShellControl(command) {
-  return /[;&|`<>]/.test(command);
+  // Reject any character that could split the command, spawn a subshell,
+  // expand a variable, or comment out trailing safeguards. Newlines and
+  // carriage returns count as POSIX command separators when commands are
+  // executed through a shell, so they MUST be in this set even though
+  // splitCommandWords treats them as whitespace.
+  return /[;&|`<>()$#\r\n]/.test(command);
 }
 
 function isSafeMonitorCommand(command, jobId) {
@@ -246,7 +317,33 @@ function isSafeMonitorCommand(command, jobId) {
   }
   if (eventsIndex === -1) return false;
   if (tokens[eventsIndex + 1] !== jobId) return false;
-  return tokens.slice(eventsIndex + 2).includes("--follow");
+  // Strict allowlist after `events <jobId>`. --follow MUST be present and
+  // every other token must be either a known boolean flag, a known
+  // value-consuming flag (whose value is the immediately-following token),
+  // or the value of such a flag. Unknown flags or stray positionals are
+  // rejected — this is the structural counterpart to hasShellControl: even
+  // if a future regression misses a metacharacter, tampered hints still
+  // can't smuggle extra argv tokens into the Monitor invocation.
+  const trailing = tokens.slice(eventsIndex + 2);
+  if (!trailing.includes("--follow")) return false;
+  for (let i = 0; i < trailing.length; i += 1) {
+    const token = trailing[i];
+    if (MONITOR_BOOLEAN_FLAGS.has(token)) continue;
+    if (MONITOR_VALUE_FLAGS.has(token)) {
+      const value = trailing[i + 1];
+      if (value === undefined || value.startsWith("-")) return false;
+      i += 1;
+      continue;
+    }
+    // Allow `--flag=value` shorthand for known value flags.
+    const eq = token.indexOf("=");
+    if (eq > 2 && token.startsWith("--")) {
+      const flagName = token.slice(0, eq);
+      if (MONITOR_VALUE_FLAGS.has(flagName)) continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 function sanitizeMonitorHint(hint, jobId) {
@@ -269,8 +366,11 @@ function extractMonitorHint(envelope) {
   if (envelope?.ok !== true || envelope?.command !== "task") return null;
   const r = envelope?.result;
   if (!r) return null;
-  const phase = r.phase;
-  if (phase && !["queued", "running"].includes(phase)) return null;
+  // The actual task envelope (enqueueBackgroundTask) emits `status`; older
+  // call sites used `phase`. Accept either so the guard is not silently
+  // inert when the canonical field is present.
+  const state = r.status ?? r.phase;
+  if (state && !["queued", "running"].includes(state)) return null;
   const jobId = r.jobId ?? r.job_id;
   if (!jobId || typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) return null;
   const monitor = r.monitor ?? r.monitor_hint;
