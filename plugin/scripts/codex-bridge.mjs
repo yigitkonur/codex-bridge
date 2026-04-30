@@ -491,6 +491,9 @@ var NON_PROMPT_SUBCOMMANDS = /* @__PURE__ */ new Set([
   "config",
   "auth-status",
   "task-resume-candidate",
+  "merge",
+  "verdict",
+  "verdicts",
   "help"
 ]);
 function outsideQuoteTokens(arg) {
@@ -17318,11 +17321,20 @@ async function handleIterate(argv) {
   if (!Number.isInteger(max) || max < 1 || max > 10) {
     throw usageError(`--max must be an integer between 1 and 10 (got ${JSON.stringify(options.max)})`);
   }
+  const nextActionPrompt = positionals.join(" ");
   const payload = {
     iteration_max: max,
     iterations: [],
     next_action: {
-      command: `node "\${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --worktree-auto --write --json ${JSON.stringify(positionals.join(" "))}`,
+      argv: [
+        "node",
+        "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs",
+        "task",
+        "--worktree-auto",
+        "--write",
+        "--json",
+        nextActionPrompt
+      ],
       description: "iterate orchestration is staged for a follow-up; for now run task \u2192 review \u2192 verdict \u2192 merge manually, or use the codex-bridge-reviewer subagent to collapse review+verdict into one call."
     },
     status: "not-yet-orchestrated"

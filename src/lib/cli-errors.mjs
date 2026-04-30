@@ -579,6 +579,9 @@ const NON_PROMPT_SUBCOMMANDS = new Set([
   "config",
   "auth-status",
   "task-resume-candidate",
+  "merge",
+  "verdict",
+  "verdicts",
   "help"
 ]);
 

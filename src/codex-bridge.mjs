@@ -4710,11 +4710,28 @@ async function handleIterate(argv) {
   //   <repeat with --resume-last>              # if needs-attention
   // The codex-bridge-reviewer agent (plugin/agents/codex-bridge-reviewer.md)
   // collapses review+verdict into one subagent call.
+  //
+  // Emit the next-action as a structured argv array rather than a shell
+  // command string. The prompt can contain `$`, backticks, `!`, and
+  // newlines from review findings; embedding it into a shell-quoted
+  // string would either need precise POSIX-shell escaping or risk
+  // re-evaluation when the consumer copy-pastes. argv is unambiguously
+  // data and the consumer (Claude / a subagent) can rebuild the call
+  // safely.
+  const nextActionPrompt = positionals.join(" ");
   const payload = {
     iteration_max: max,
     iterations: [],
     next_action: {
-      command: `node "\${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --worktree-auto --write --json ${JSON.stringify(positionals.join(" "))}`,
+      argv: [
+        "node",
+        "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs",
+        "task",
+        "--worktree-auto",
+        "--write",
+        "--json",
+        nextActionPrompt,
+      ],
       description:
         "iterate orchestration is staged for a follow-up; for now run task → review → verdict → merge manually, or use the codex-bridge-reviewer subagent to collapse review+verdict into one call.",
     },
