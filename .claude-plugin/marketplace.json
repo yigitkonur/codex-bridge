@@ -4,13 +4,12 @@
     "name": "Yigit Konur",
     "email": "noreply@yigitkonur.com"
   },
-  "description": "Single-plugin marketplace for codex-bridge. Adds /plugin marketplace add github:yigitkonur/codex-bridge as the canonical install path.",
+  "description": "Noncanonical alpha-preview marketplace for codex-bridge v2 plugin scaffolding. Current release users should use the root v1.5 plugin/skill until the v2 surfaces are functional.",
   "plugins": [
     {
-      "name": "codex-bridge",
+      "name": "codex-bridge-v2-alpha",
       "source": "./plugin",
-      "version": "2.0.0-alpha.0",
-      "description": "Hook-driven Codex delegator with worktree isolation and closed-loop iteration"
+      "description": "Noncanonical pre-release scaffold for validating the in-progress v2 plugin subtree"
     }
   ]
 }

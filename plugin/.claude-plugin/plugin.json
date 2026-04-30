@@ -1,8 +1,8 @@
 {
   "$schema": "https://code.claude.com/schemas/plugin.schema.json",
-  "name": "codex-bridge",
+  "name": "codex-bridge-v2-alpha",
   "version": "2.0.0-alpha.0",
-  "description": "Pre-release codex-bridge plugin scaffold with a placeholder skill and empty hooks config for incremental plugin surface rollout.",
+  "description": "Noncanonical pre-release codex-bridge plugin scaffold with a placeholder skill and empty hooks config for incremental plugin surface rollout.",
   "homepage": "https://github.com/yigitkonur/codex-bridge",
   "license": "MIT",
   "author": {

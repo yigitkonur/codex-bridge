@@ -29,6 +29,21 @@ test("Claude plugin manifest version matches package and skill metadata", () => 
   assert.match(skill, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
 });
 
+test("marketplace keeps the v2 scaffold on a noncanonical alpha channel", () => {
+  const marketplace = readJson(".claude-plugin/marketplace.json");
+  const alphaManifest = readJson("plugin/.claude-plugin/plugin.json");
+  const canonicalEntry = marketplace.plugins.find((plugin) => plugin.name === "codex-bridge");
+  const entry = marketplace.plugins.find((plugin) => plugin.name === "codex-bridge-v2-alpha");
+
+  assert.equal(canonicalEntry, undefined);
+  assert.ok(entry);
+  assert.equal(entry.source, "./plugin");
+  assert.equal(entry.version, undefined);
+  assert.equal(alphaManifest.name, entry.name);
+  assert.match(marketplace.description, /noncanonical/i);
+  assert.match(entry.description, /noncanonical|pre-release|scaffold/i);
+});
+
 test("Claude plugin exposes command coverage for bridge orchestration", () => {
   const expectedCommands = [
     "adversarial-review.md",

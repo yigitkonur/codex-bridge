@@ -1,5 +1,5 @@
 ---
-name: codex-bridge
+name: codex-bridge-v2-alpha
 description: >-
   DO NOT INVOKE — pre-release placeholder. The real codex-bridge skill content
   lands in T27 of the v2.0.0 redesign. Until then this file exists only so the

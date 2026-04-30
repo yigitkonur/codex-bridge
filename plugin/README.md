@@ -5,12 +5,13 @@ not the canonical v1.5.0 runtime skill yet. The shipped runtime skill remains at
 `../skill/SKILL.md`, and the root `.claude-plugin/plugin.json` remains the
 v1.5.0 plugin metadata for the current release line.
 
-The plugin manifest in this directory intentionally keeps the plugin name as
-`codex-bridge` because it is the replacement plugin surface for the same
-project, not a second product. Do not load the root plugin surface and this
-pre-release scaffold together in one Claude Code install; the marketplace entry
-at `../.claude-plugin/marketplace.json` points to `./plugin` so an install path
-chooses this scaffold explicitly.
+The plugin manifest in this directory intentionally uses the alpha-channel name
+`codex-bridge-v2-alpha` until the replacement plugin surface is functional. Do
+not load the root plugin surface and this pre-release scaffold together in one
+Claude Code install. The marketplace entry at
+`../.claude-plugin/marketplace.json` is explicitly noncanonical and points to
+this `./plugin` subtree only for local/alpha validation; the working v1.5.0
+runtime remains the release surface.
 
 The `2.0.0-alpha.0` version marks the scaffold as pre-release work for the v2
 plugin redesign. It intentionally differs from the root v1.5.0 metadata until
