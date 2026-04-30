@@ -40,8 +40,8 @@ Hooks and SKILL.md branch on capabilities — never on prose-only assumptions. I
 
 `loadAdapter(name)` enforces:
 - Default export is an object
-- Required fields present (`name`, `displayName`, `capabilities`, `validateConfig`)
-- Required methods are functions (`dispatch`, `streamEvents`, `getResult`, `cancel`)
+- Required own fields present (`name`, `displayName`)
+- Required methods are functions (`capabilities`, `validateConfig`, `dispatch`, `streamEvents`, `getResult`, `cancel`)
 - `adapter.name === name` (matches the directory)
 
 Validation failures throw `AdapterError` with code `BACKEND_INCAPABLE`.

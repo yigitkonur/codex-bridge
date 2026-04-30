@@ -2,13 +2,19 @@
 // ./_interface/INTERFACE.md for the prose version, and
 // ./_interface/CAPABILITIES.md for the resolution order.
 
+import codexAdapter from "./codex/index.mjs";
+
 const REQUIRED_FIELDS = ["name", "displayName"];
 const REQUIRED_METHODS = ["capabilities", "validateConfig", "dispatch", "streamEvents", "getResult", "cancel"];
+
+const ADAPTER_LOADERS = {
+  codex: () => codexAdapter,
+};
 
 // v2.0 ships only codex. Future adapters are added here when their
 // index.mjs is implemented; stub directories under src/adapters/ are
 // documentation, not a promise that loadAdapter will succeed.
-const KNOWN_ADAPTERS = ["codex"];
+const KNOWN_ADAPTERS = Object.keys(ADAPTER_LOADERS);
 
 const adapterCache = new Map();
 const errorMappers = new Map();
@@ -30,7 +36,7 @@ function validateAdapter(adapter, name) {
     );
   }
   for (const field of REQUIRED_FIELDS) {
-    if (!(field in adapter)) {
+    if (!Object.hasOwn(adapter, field)) {
       throw new AdapterError(
         "BACKEND_INCAPABLE",
         `Adapter '${name}' missing required field: ${field}`,
@@ -63,17 +69,7 @@ export async function loadAdapter(name) {
   const cached = adapterCache.get(name);
   if (cached) return cached;
 
-  let mod;
-  try {
-    mod = await import(`./${name}/index.mjs`);
-  } catch (err) {
-    throw new AdapterError(
-      "BACKEND_INCAPABLE",
-      `Adapter '${name}' could not be loaded: ${err.message}`,
-      { cause: err },
-    );
-  }
-  const adapter = mod.default ?? mod;
+  const adapter = ADAPTER_LOADERS[name]();
   validateAdapter(adapter, name);
   adapterCache.set(name, adapter);
   return adapter;
@@ -132,7 +128,14 @@ export async function selectAdapter(options = {}) {
 
 export function guardCapability(adapter, capability) {
   const caps = adapter.capabilities();
-  if (!caps[capability]) {
+  if (!capability.startsWith("supports_") || typeof caps[capability] !== "boolean") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Capability '${capability}' is not a boolean support flag`,
+      { backend: adapter.name, capability },
+    );
+  }
+  if (caps[capability] !== true) {
     throw new AdapterError(
       "BACKEND_INCAPABLE",
       `Backend '${adapter.name}' does not support capability '${capability}'`,

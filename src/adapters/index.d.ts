@@ -112,6 +112,18 @@ export interface CapabilitiesObject {
   [key: string]: unknown;
 }
 
+export type BooleanCapability =
+  | "supports_plan_mode"
+  | "supports_questions"
+  | "supports_streaming"
+  | "supports_resume"
+  | "supports_steering"
+  | "supports_background"
+  | "supports_auto_pipeline"
+  | "supports_adversarial_review"
+  | "supports_worktree"
+  | "supports_artifact_registry";
+
 export interface RenderedBrief {
   promptText: string;
   briefHash: string;
@@ -148,7 +160,7 @@ export function loadAdapter(name: string): Promise<BackendAdapter>;
 export function selectAdapter(options?: SelectAdapterOptions): Promise<BackendAdapter>;
 export function guardCapability(
   adapter: BackendAdapter,
-  capability: keyof CapabilitiesObject,
+  capability: BooleanCapability,
 ): void;
 export function registerErrorMapper(
   adapterName: string,
