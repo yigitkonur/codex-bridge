@@ -942,7 +942,7 @@ function detectOfficialOpenAICodexPlugin(options = {}) {
 // src/lib/git.mjs
 import fs3 from "node:fs";
 import path3 from "node:path";
-import { execSync as childExecSync } from "node:child_process";
+import { execFileSync as childExecFileSync } from "node:child_process";
 
 // src/lib/process.mjs
 import { spawnSync as spawnSync2 } from "node:child_process";
@@ -1433,11 +1433,15 @@ function collectReviewContext(cwd, target, options = {}) {
   };
 }
 function runGit(cwd, args, opts = {}) {
-  return childExecSync(`git ${args}`, {
+  if (!Array.isArray(args)) {
+    throw new TypeError("runGit: args must be an array of git arguments (no shell strings)");
+  }
+  const { swallowStderr, ...rest } = opts;
+  return childExecFileSync("git", args, {
     cwd,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", opts.swallowStderr ? "pipe" : "inherit"],
-    ...opts
+    stdio: ["ignore", "pipe", swallowStderr ? "pipe" : "inherit"],
+    ...rest
   });
 }
 function tryRunGit(cwd, args) {
@@ -1467,14 +1471,14 @@ function createSubagentWorktree({
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
   const resolvedBaseRef = baseRef ?? getCurrentBranch(cwd) ?? detectDefaultBranch(cwd) ?? "HEAD";
-  const baseSha = runGit(repoRoot, `rev-parse ${resolvedBaseRef}`, {
+  const baseSha = runGit(repoRoot, ["rev-parse", resolvedBaseRef], {
     swallowStderr: true
   }).toString().trim();
   const branch = buildBranchName({ taskId, backend, branchPrefix });
   const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
   const wtPath = path3.join(root, taskId);
   const createdAt = (/* @__PURE__ */ new Date()).toISOString();
-  const branchExists = tryRunGit(repoRoot, `rev-parse --verify ${branch}`);
+  const branchExists = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
   if (branchExists !== null) {
     throw new Error(
       `createSubagentWorktree: branch ${branch} already exists; remove or rename before retrying`
@@ -1482,7 +1486,7 @@ function createSubagentWorktree({
   }
   try {
     fs3.mkdirSync(root, { recursive: true });
-    runGit(repoRoot, `worktree add -b ${branch} "${wtPath}" ${baseSha}`, {
+    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha], {
       swallowStderr: true
     });
     return {
@@ -1494,9 +1498,9 @@ function createSubagentWorktree({
       created_at: createdAt
     };
   } catch (err) {
-    tryRunGit(repoRoot, `worktree remove --force "${wtPath}"`);
+    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
     try {
-      runGit(repoRoot, `checkout -b ${branch} ${baseSha}`, { swallowStderr: true });
+      runGit(repoRoot, ["checkout", "-b", branch, baseSha], { swallowStderr: true });
     } catch (innerErr) {
       throw new Error(
         `createSubagentWorktree: worktree fallback also failed: ${innerErr.message ?? innerErr}`
@@ -1519,10 +1523,10 @@ function pruneWorktreeOnCancel({ cwd, taskId, branch }) {
   const root = defaultWorktreeRoot(repoRoot);
   const wtPath = path3.join(root, taskId);
   if (fs3.existsSync(wtPath)) {
-    tryRunGit(repoRoot, `worktree remove --force "${wtPath}"`);
+    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
   }
   if (branch) {
-    tryRunGit(repoRoot, `branch -D ${branch}`);
+    tryRunGit(repoRoot, ["branch", "-D", branch]);
   }
   return { pruned: !fs3.existsSync(wtPath), branchDeleted: !!branch };
 }
@@ -1542,8 +1546,8 @@ function mergeSubagentBranch({
   }
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
-  tryRunGit(repoRoot, `fetch origin ${baseRef}`);
-  const dirty = tryRunGit(repoRoot, "status --porcelain");
+  tryRunGit(repoRoot, ["fetch", "origin", baseRef]);
+  const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
   if (dirty && dirty.trim().length > 0) {
     throw new Error(
       `repo is dirty; commit or stash before merging. Status: ${dirty.trim()}`
@@ -1552,14 +1556,14 @@ function mergeSubagentBranch({
   const expectedSha = String(expectedBranchSha).trim();
   const taskWorktreePath = worktreePath ?? path3.join(defaultWorktreeRoot(repoRoot), taskId);
   if (taskWorktreePath && fs3.existsSync(taskWorktreePath) && path3.resolve(taskWorktreePath) !== repoRoot) {
-    const taskDirty = tryRunGit(taskWorktreePath, "status --porcelain --untracked-files=all");
+    const taskDirty = tryRunGit(taskWorktreePath, ["status", "--porcelain", "--untracked-files=all"]);
     if (taskDirty && taskDirty.trim().length > 0) {
       throw new Error(
         `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.trim()}`
       );
     }
   }
-  const branchSha = tryRunGit(repoRoot, `rev-parse --verify ${branch}`)?.trim();
+  const branchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch])?.trim();
   if (!branchSha) {
     throw new Error(`branch ${branch} does not exist`);
   }
@@ -1568,15 +1572,15 @@ function mergeSubagentBranch({
       `branch ${branch} is at ${branchSha}, but approved verdict reviewed ${expectedSha}; rerun review before merging`
     );
   }
-  runGit(repoRoot, `checkout ${baseRef}`, { swallowStderr: true });
+  runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
   try {
-    runGit(repoRoot, `merge --ff-only ${branch}`, { swallowStderr: true });
+    runGit(repoRoot, ["merge", "--ff-only", branch], { swallowStderr: true });
   } catch (err) {
     throw new Error(
       `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`
     );
   }
-  const commitSha = runGit(repoRoot, "rev-parse HEAD", { swallowStderr: true }).toString().trim();
+  const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true }).toString().trim();
   pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
   return {
     strategy: "ff",
@@ -12023,14 +12027,14 @@ async function handleMerge(argv) {
   if (verdict.verdict !== "approved") {
     throw new CliError(
       `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run review or iterate before approving this task.`,
-      { code: "VERDICT_NOT_APPROVED", exitClass: "conflict" }
+      { code: "VERDICT_NOT_APPROVED", class: "conflict" }
     );
   }
   const reviewedBranchHeadSha = readReviewedBranchHeadSha(verdict);
   if (!reviewedBranchHeadSha) {
     throw new CliError(
       `approved verdict for ${taskId} is missing branch_head_sha; rerun review so the approval is bound to the reviewed branch head`,
-      { code: "VERDICT_HEAD_SHA_MISSING", exitClass: "conflict" }
+      { code: "VERDICT_HEAD_SHA_MISSING", class: "conflict" }
     );
   }
   const meta = readMeta(taskId);
@@ -12044,13 +12048,13 @@ async function handleMerge(argv) {
   if (!branch) {
     throw new CliError(
       `meta.json for ${taskId} missing worktree.branch \u2014 task may not have been dispatched via --worktree-auto`,
-      { code: "MERGE_META_INVALID", exitClass: "internal" }
+      { code: "MERGE_META_INVALID", class: "internal" }
     );
   }
   if (options.pr) {
     throw new CliError(
       "--pr mode not yet implemented; ff-merge into the base ref is the only supported strategy in v2.0. Drop --pr or wait for the follow-up.",
-      { code: "MERGE_PR_NOT_IMPLEMENTED", exitClass: "internal" }
+      { code: "MERGE_PR_NOT_IMPLEMENTED", class: "internal" }
     );
   }
   let mergeResult;
@@ -12067,7 +12071,7 @@ async function handleMerge(argv) {
   } catch (err) {
     throw new CliError(
       `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
-      { code: "MERGE_CONFLICT", exitClass: "conflict" }
+      { code: "MERGE_CONFLICT", class: "conflict" }
     );
   }
   const payload = {

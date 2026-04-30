@@ -4681,14 +4681,14 @@ async function handleMerge(argv) {
   if (verdict.verdict !== "approved") {
     throw new CliError(
       `verdict for ${taskId} is ${verdict.verdict}, not approved; refusing to merge. Re-run review or iterate before approving this task.`,
-      { code: "VERDICT_NOT_APPROVED", exitClass: "conflict" },
+      { code: "VERDICT_NOT_APPROVED", class: "conflict" },
     );
   }
   const reviewedBranchHeadSha = readReviewedBranchHeadSha(verdict);
   if (!reviewedBranchHeadSha) {
     throw new CliError(
       `approved verdict for ${taskId} is missing branch_head_sha; rerun review so the approval is bound to the reviewed branch head`,
-      { code: "VERDICT_HEAD_SHA_MISSING", exitClass: "conflict" },
+      { code: "VERDICT_HEAD_SHA_MISSING", class: "conflict" },
     );
   }
 
@@ -4703,7 +4703,7 @@ async function handleMerge(argv) {
   if (!branch) {
     throw new CliError(
       `meta.json for ${taskId} missing worktree.branch — task may not have been dispatched via --worktree-auto`,
-      { code: "MERGE_META_INVALID", exitClass: "internal" },
+      { code: "MERGE_META_INVALID", class: "internal" },
     );
   }
 
@@ -4712,7 +4712,7 @@ async function handleMerge(argv) {
     // PR body composition from brief + verdict. Track in a follow-up.
     throw new CliError(
       "--pr mode not yet implemented; ff-merge into the base ref is the only supported strategy in v2.0. Drop --pr or wait for the follow-up.",
-      { code: "MERGE_PR_NOT_IMPLEMENTED", exitClass: "internal" },
+      { code: "MERGE_PR_NOT_IMPLEMENTED", class: "internal" },
     );
   }
 
@@ -4730,7 +4730,7 @@ async function handleMerge(argv) {
   } catch (err) {
     throw new CliError(
       `merge failed: ${err.message ?? err}. The worktree was left intact; resolve conflicts manually or rerun /codex-bridge:iterate.`,
-      { code: "MERGE_CONFLICT", exitClass: "conflict" },
+      { code: "MERGE_CONFLICT", class: "conflict" },
     );
   }
 
