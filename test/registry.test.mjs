@@ -55,6 +55,8 @@ test("jobDir builds <root>/<taskId> and rejects bad task IDs", () => {
     assert.throws(() => jobDir("../escape"));
     assert.throws(() => jobDir("with spaces"));
     assert.throws(() => jobDir("path/sep"));
+    assert.throws(() => jobDir("."));
+    assert.throws(() => jobDir(".."));
   });
 });
 
@@ -200,13 +202,21 @@ test("appendEvent line-buffers to events.jsonl with timestamp", () => {
   withTempRegistry(() => {
     appendEvent("task-e", { tag: "DONE", message: "first" });
     appendEvent("task-e", { tag: "ERROR", message: "second" });
+    // Caller-supplied `ts` must NOT override the registry's append-time
+    // stamp — otherwise a misbehaving emitter could backdate forensics.
+    const spoof = "1999-01-01T00:00:00.000Z";
+    appendEvent("task-e", { tag: "SPOOF", ts: spoof });
     const eventsPath = path.join(jobDir("task-e"), "events.jsonl");
     const text = fs.readFileSync(eventsPath, "utf8");
     const lines = text.split("\n").filter(Boolean);
-    assert.equal(lines.length, 2);
+    assert.equal(lines.length, 3);
     const first = JSON.parse(lines[0]);
     assert.equal(first.tag, "DONE");
     assert.match(first.ts, /^\d{4}-\d{2}-\d{2}T/);
+    const third = JSON.parse(lines[2]);
+    assert.equal(third.tag, "SPOOF");
+    assert.notEqual(third.ts, spoof);
+    assert.match(third.ts, /^\d{4}-\d{2}-\d{2}T/);
   });
 });
 

@@ -30,6 +30,15 @@ import path from "node:path";
 
 export const REGISTRY_SCHEMA_VERSION = "1.0";
 
+// Monotonic counter so two writers in the same millisecond/PID don't
+// collide on the same .tmp filename and race each other into ENOENT
+// on the trailing renameSync.
+let tmpCounter = 0;
+function tmpSuffix() {
+  tmpCounter = (tmpCounter + 1) >>> 0;
+  return `${process.pid}.${Date.now()}.${tmpCounter}`;
+}
+
 export class RegistryReadError extends Error {
   constructor(message, { filePath, cause } = {}) {
     super(message, { cause });
@@ -53,6 +62,14 @@ export function jobDir(taskId) {
   if (!/^[A-Za-z0-9._-]+$/.test(taskId)) {
     throw new TypeError(
       `jobDir(taskId): taskId contains invalid characters: ${JSON.stringify(taskId)}`,
+    );
+  }
+  // Reject "." and ".." even though the regex permits them — path.join
+  // would normalize these out of the registry root and let a caller
+  // read/write the parent directory.
+  if (taskId === "." || taskId === "..") {
+    throw new TypeError(
+      `jobDir(taskId): taskId must not be "." or "..": ${JSON.stringify(taskId)}`,
     );
   }
   return path.join(registryRoot(), taskId);
@@ -89,7 +106,7 @@ export function writeMeta(taskId, meta) {
   const target = path.join(dir, "meta.json");
   // Atomic write — temp file then rename. Avoids partial reads if a
   // consumer races us.
-  const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;
+  const tmp = `${target}.tmp.${tmpSuffix()}`;
   fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   fs.renameSync(tmp, target);
   return target;
@@ -134,7 +151,13 @@ export function listTasks() {
   try {
     return fs
       .readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && TASK_ID_PATTERN.test(entry.name))
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          entry.name !== "." &&
+          entry.name !== ".." &&
+          TASK_ID_PATTERN.test(entry.name),
+      )
       .map((entry) => entry.name)
       .sort();
   } catch {
@@ -164,7 +187,7 @@ export function writeVerdict(taskId, verdict) {
     decided_at: new Date().toISOString(),
   };
   const target = path.join(dir, "verdict.json");
-  const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;
+  const tmp = `${target}.tmp.${tmpSuffix()}`;
   fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   fs.renameSync(tmp, target);
   return target;
@@ -186,6 +209,7 @@ export function appendEvent(taskId, event) {
   }
   const dir = ensureJobDir(taskId);
   const target = path.join(dir, "events.jsonl");
-  const enriched = { ts: new Date().toISOString(), ...event };
+  // Spread caller fields first so registry-controlled `ts` always wins.
+  const enriched = { ...event, ts: new Date().toISOString() };
   fs.appendFileSync(target, `${JSON.stringify(enriched)}\n`, "utf8");
 }
