@@ -276,7 +276,7 @@ v1.5.0 surfaces richer origin/partial/handoff fields; branch on `origin:` first,
   ├── origin: upstream:compact-proxy       → narrow prompt; see #compact-proxy-502
   ├── origin: idle                         → raise --idle-timeout-ms; see #idle-timeout
   ├── origin: pipeline:<stage>             → raise --pipeline-stage-timeout-ms (or --no-pipeline)
-                                              (* emitted by auto-pipeline.mjs, not classifyTurnErrorOrigin)
+                                              (* emitted by src/adapters/codex/pipeline.mjs, not classifyTurnErrorOrigin)
   ├── origin: bridge                       → bridge safety net tripped; see #unhandledexit
                                               (* emitted by both the stall detector and the
                                                  finally-backstop in codex-bridge.mjs (NOT by

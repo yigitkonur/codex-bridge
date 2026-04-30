@@ -4,7 +4,7 @@ import test from "node:test";
 
 const bridge = fs.readFileSync(new URL("../src/codex-bridge.mjs", import.meta.url), "utf8");
 const broker = fs.readFileSync(new URL("../src/adapters/codex/broker.mjs", import.meta.url), "utf8");
-const autoPipeline = fs.readFileSync(new URL("../src/lib/auto-pipeline.mjs", import.meta.url), "utf8");
+const autoPipeline = fs.readFileSync(new URL("../src/adapters/codex/pipeline.mjs", import.meta.url), "utf8");
 const adapterTypes = fs.readFileSync(new URL("../src/adapters/index.d.ts", import.meta.url), "utf8");
 const adapterEventVocabulary = fs.readFileSync(
   new URL("../src/adapters/_interface/EVENT_VOCABULARY.md", import.meta.url),

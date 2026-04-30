@@ -11,7 +11,7 @@ This folder contains authored developer-instruction templates copied into
 | `execute-instructions.md` | `loadDeveloperInstructions("default")` in `src/codex-bridge.mjs` and `runAutoPipeline` |
 
 If either file is missing at runtime, the code falls back to short built-in
-strings in `src/codex-bridge.mjs` or `src/lib/auto-pipeline.mjs`.
+strings in `src/codex-bridge.mjs` or `src/adapters/codex/pipeline.mjs`.
 
 ## Plan Template Contract
 
