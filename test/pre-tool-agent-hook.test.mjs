@@ -28,9 +28,15 @@ if (command === "auth-status") {
   process.exit(0);
 }
 if (command === "task") {
+  const promptFileIdx = args.indexOf("--prompt-file");
+  let promptFileContent = null;
+  if (promptFileIdx >= 0 && args[promptFileIdx + 1]) {
+    try { promptFileContent = fs.readFileSync(args[promptFileIdx + 1], "utf8"); } catch {}
+  }
   fs.writeFileSync(process.env.STUB_RECORD_PATH, JSON.stringify({
     cwd: process.cwd(),
-    args
+    args,
+    promptFileContent
   }));
   process.stdout.write(JSON.stringify({
     ok: true,
@@ -92,13 +98,18 @@ test("pre-tool-agent only denies after auth preflight and dispatch succeed", () 
       fs.realpathSync.native(record.cwd),
       fs.realpathSync.native(fixture.workspace),
     );
-    assert.deepEqual(record.args.slice(0, 5), [
+    assert.deepEqual(record.args.slice(0, 7), [
       "--background",
       "--json",
       "--intercepted-from",
       "Explore",
       "--read-only",
+      "--mode",
+      "default",
     ]);
+    assert.equal(record.args[7], "--prompt-file");
+    assert.match(record.args[8] ?? "", /codex-bridge-pre-tool-agent-/);
+    assert.equal(record.promptFileContent, "inspect the diff");
   } finally {
     fs.rmSync(fixture.pluginRoot, { recursive: true, force: true });
     fs.rmSync(fixture.workspace, { recursive: true, force: true });

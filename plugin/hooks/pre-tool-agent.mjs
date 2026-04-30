@@ -27,6 +27,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 const HOOK_NAME = "pre-tool-agent";
 const DISPATCH_TIMEOUT_MS = 8000;
@@ -117,8 +118,27 @@ function preflightCodexBridge(bundle, cwd) {
 
 function dispatchToCodexBridge(bundle, cwd, prompt, subagentType, mode) {
   // Spawn `codex-bridge task --background --json --worktree-auto
-  // --intercepted-from <subagent_type>` with the prompt on argv. The
-  // bridge returns immediately with a jobId + monitor.tool_hint envelope.
+  // --intercepted-from <subagent_type>` with the prompt forwarded via
+  // `--prompt-file`. The bridge returns immediately with a jobId +
+  // monitor.tool_hint envelope.
+  //
+  // The prompt is written to a tempfile (mode 0600) and forwarded via
+  // `--prompt-file` because Unix argv has a hard cap (~256 KiB on macOS,
+  // ~2 MiB on Linux). Agent subagent prompts can embed full instructions,
+  // context and code — passing them as a single spawnSync argv item could
+  // fail with E2BIG before the bridge even runs, silently defeating the
+  // intercept. Bounding by the filesystem instead of argv removes that
+  // failure mode (mirrors plugin/hooks/stop-gate.mjs:346-362).
+  const promptFile = path.join(
+    os.tmpdir(),
+    `codex-bridge-pre-tool-agent-${randomBytes(16).toString("hex")}.prompt.md`,
+  );
+  try {
+    fs.writeFileSync(promptFile, String(prompt ?? ""), { encoding: "utf8", mode: 0o600 });
+  } catch (err) {
+    return { ok: false, parseError: `failed to write prompt tempfile: ${err.message}` };
+  }
+
   const args = [
     bundle,
     "task",
@@ -128,19 +148,31 @@ function dispatchToCodexBridge(bundle, cwd, prompt, subagentType, mode) {
     subagentType,
   ];
   if (mode === "read-only") {
-    args.push("--read-only");
+    // Explore-class subagents are described as "cheap-fast read-heavy
+    // work"; skip the plan stage so the intercepted task runs the same
+    // single-shot shape as a native Explore call.
+    args.push("--read-only", "--mode", "default");
   } else {
     args.push("--write");
     args.push("--worktree-auto");
   }
-  args.push(prompt);
+  args.push("--prompt-file", promptFile);
 
-  const result = spawnSync(process.execPath, args, {
-    cwd,
-    timeout: DISPATCH_TIMEOUT_MS,
-    encoding: "utf8",
-    env: process.env,
-  });
+  let result;
+  try {
+    result = spawnSync(process.execPath, args, {
+      cwd,
+      timeout: DISPATCH_TIMEOUT_MS,
+      encoding: "utf8",
+      env: process.env,
+    });
+  } finally {
+    try {
+      fs.rmSync(promptFile, { force: true });
+    } catch {
+      // Best-effort cleanup; tmpdir entries are reaped by the OS.
+    }
+  }
   if (result.error || result.status !== 0) {
     return { ok: false, stderr: result.stderr, status: result.status };
   }
