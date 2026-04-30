@@ -33,7 +33,7 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 
 ## Protocol And Transport
 
-`app-server.mjs` is the wire client. Preserve these facts:
+`codex.mjs` (via `src/adapters/codex/protocol.mjs`) is the wire client. Preserve these facts:
 
 - Messages are newline-delimited JSON objects. Requests use `{ id, method,
   params }`; notifications use `{ method, params }`; responses use `{ id,
@@ -50,7 +50,7 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 - If the broker is busy or unavailable in selected cases, `withAppServer` falls
   back to a direct client.
 - Server requests without a custom handler use built-in defaults in
-  `AppServerClientBase.handleServerRequest` (`src/lib/app-server.mjs:152-186`):
+  `AppServerClientBase.handleServerRequest` (`src/adapters/codex/protocol.mjs:152-186`):
   `item/tool/requestUserInput` auto-answers with `{ answers: {} }`,
   `item/commandExecution/requestApproval` and
   `item/fileChange/requestApproval` auto-accept (`{ decision: "accept" }`),
@@ -65,7 +65,7 @@ The `.d.ts` method map should include every app-server method live code sends:
 start/steer/interrupt, `account/read`, and `config/read`. Current declarations
 may lag behind live code — as of this writing `turn/steer`, `account/read`, and
 `config/read` are sent on the wire but not yet declared in
-`app-server-protocol.d.ts`. File `app-server generate-ts` regen issues against
+`src/adapters/codex/protocol.d.ts`. File `app-server generate-ts` regen issues against
 the upstream codex-rs spec when adding new methods; keep this map in sync
 before tightening type checking.
 
@@ -270,8 +270,9 @@ failure.
 
 ## Broker Lifecycle
 
-`broker-lifecycle.mjs` starts `src/app-server-broker.mjs` as a detached Node
-process, stores `broker.json` in the workspace state dir, waits for readiness,
+`broker-lifecycle.mjs` starts `src/adapters/codex/broker.mjs` as a detached Node
+process (via `resolveBrokerScriptPath()` which probes both bundled and source
+locations), stores `broker.json` in the workspace state dir, waits for readiness,
 and tears down stale endpoints. `broker-endpoint.mjs` supports `unix:` and
 `pipe:` endpoints.
 

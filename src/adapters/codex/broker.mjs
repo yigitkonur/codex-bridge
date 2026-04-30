@@ -227,7 +227,7 @@ function safeResolveServerRequest(message, result) {
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (subcommand !== "serve") {
-    throw new Error("Usage: node scripts/app-server-broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>]");
+    throw new Error("Usage: node src/adapters/codex/broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>]");
   }
 
   const { options } = parseArgs(argv, {

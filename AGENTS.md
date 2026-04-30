@@ -23,7 +23,7 @@ Runtime source lives under `src/`. The build emits the installable skill bundle
 under `skill/`:
 
 - `src/codex-bridge.mjs` -> `skill/scripts/codex-bridge.mjs`
-- `src/app-server-broker.mjs` -> `skill/app-server-broker.mjs`
+- `src/adapters/codex/broker.mjs` -> `skill/app-server-broker.mjs`
 - `src/prompts/*`, `src/schemas/*`, and `src/templates/*` -> matching
   generated files under `skill/`
 
@@ -69,7 +69,7 @@ tests.
 | Path | Current role |
 |---|---|
 | `src/codex-bridge.mjs` | Main CLI dispatcher, command metadata, task/review orchestration, stop-gate setup, update/version/config/status handlers |
-| `src/app-server-broker.mjs` | Standalone shared app-server socket broker spawned by broker lifecycle code |
+| `src/adapters/codex/broker.mjs` | Standalone shared app-server socket broker spawned by broker lifecycle code |
 | `src/lib/` | App-server client, Codex turn capture, state, session logs, config, git/review context, errors, rendering, update checks |
 | `src/prompts/` | Authored adversarial review prompt source |
 | `src/schemas/` | Authored JSON schema for adversarial review output |
@@ -83,7 +83,7 @@ tests.
 
 ## Build And Generated Files
 
-After any change to `src/codex-bridge.mjs`, `src/app-server-broker.mjs`,
+After any change to `src/codex-bridge.mjs`, `src/adapters/codex/broker.mjs`,
 `src/lib/**`, `src/prompts/**`, `src/schemas/**`, or `src/templates/**`, run
 `npm run build` and include the generated skill output diff.
 
@@ -107,11 +107,11 @@ removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
 
 - Outbound app-server messages are newline-delimited JSON objects with
   `id`, `method`, and `params`; they do not include a `jsonrpc` field.
-- `DEFAULT_CLIENT_INFO.name` in `src/lib/app-server.mjs` is `codex_bridge`.
+- `DEFAULT_CLIENT_INFO.name` in `src/adapters/codex/protocol.mjs` is `codex_bridge`.
   Keep it ASCII and stable unless the app-server contract and tests are changed
   with it.
 - JSON-RPC method names are string literals in code and
-  `src/lib/app-server-protocol.d.ts`. Do not invent aliases.
+  `src/adapters/codex/protocol.d.ts`. Do not invent aliases.
 - Plan mode always injects reasoning effort `xhigh` through
   `buildCollaborationMode`, regardless of configured execute effort.
 - Config precedence is: `DEFAULT_CONFIG` < skill `config.yaml` < workspace-root

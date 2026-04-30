@@ -24,7 +24,7 @@ Do not hand-edit these. Edit the matching source under `src/` and run
 | Generated path | Source |
 |---|---|
 | `scripts/codex-bridge.mjs` | `src/codex-bridge.mjs` bundled by esbuild |
-| `app-server-broker.mjs` | `src/app-server-broker.mjs` bundled by esbuild |
+| `app-server-broker.mjs` | `src/adapters/codex/broker.mjs` bundled by esbuild |
 | `prompts/adversarial-review.md` | `src/prompts/adversarial-review.md` |
 | `schemas/review-output.schema.json` | `src/schemas/review-output.schema.json` |
 | `templates/execute-instructions.md` | `src/templates/execute-instructions.md` |
