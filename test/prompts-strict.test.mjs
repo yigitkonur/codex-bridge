@@ -77,13 +77,17 @@ test("sanitizePromptValue collapses runs of whitespace to a single space", () =>
 // --- A5: REVIEW_KIND removal + placeholder coverage at the call site ---
 
 test("buildAdversarialReviewPrompt does not pass REVIEW_KIND and covers every prompt placeholder", () => {
-  const bridge = fs.readFileSync(new URL("../src/codex-bridge.mjs", import.meta.url), "utf8");
+  const helper = fs.readFileSync(
+    new URL("../src/lib/adversarial-review-prompt.mjs", import.meta.url),
+    "utf8"
+  );
   const prompt = fs.readFileSync(
     new URL("../src/prompts/adversarial-review.md", import.meta.url),
     "utf8"
   );
 
-  const callBlock = bridge.match(/function buildAdversarialReviewPrompt[\s\S]*?\n\}\n/)?.[0] ?? "";
+  const callBlock =
+    helper.match(/export function buildAdversarialReviewPrompt[\s\S]*?\n\}\n/)?.[0] ?? "";
   assert.ok(callBlock.length > 0, "buildAdversarialReviewPrompt definition should be findable");
   assert.doesNotMatch(callBlock, /REVIEW_KIND/);
 

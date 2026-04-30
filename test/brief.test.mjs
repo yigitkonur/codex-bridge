@@ -53,6 +53,40 @@ test("loadBrief accepts a minimal valid brief from @path", () => {
   });
 });
 
+test("loadBrief resolves relative @paths from baseDir instead of launcher cwd", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "brief-base-dir-"));
+  const launcherDir = path.join(root, "launcher");
+  const reviewDir = path.join(root, "review");
+  fs.mkdirSync(launcherDir);
+  fs.mkdirSync(reviewDir);
+  fs.writeFileSync(
+    path.join(launcherDir, "review-brief.json"),
+    JSON.stringify({
+      goal: "launcher brief",
+      worker_assignment: "wrong workspace",
+    }),
+  );
+  fs.writeFileSync(
+    path.join(reviewDir, "review-brief.json"),
+    JSON.stringify({
+      goal: "review cwd brief",
+      worker_assignment: "right workspace",
+    }),
+  );
+
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(launcherDir);
+    const r = loadBrief("@review-brief.json", { baseDir: reviewDir });
+    assert.equal(r.ok, true);
+    assert.equal(r.brief.goal, "review cwd brief");
+    assert.equal(r.source, path.join(reviewDir, "review-brief.json"));
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("loadBrief accepts inline JSON without @ prefix", () => {
   const r = loadBrief(JSON.stringify(minimal()));
   assert.equal(r.ok, true);

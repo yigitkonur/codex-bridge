@@ -19,7 +19,8 @@ Core constraint:
 
 Orchestrator concerns:
 
-- The reviewer prompt has an `{{OPUS_CONCERNS}}` channel reserved for the orchestrator's privileged focus areas — what an Opus driver has been watching from the worker's events that warrants extra adversarial attention.
+- The reviewer prompt has an `{{OPUS_CONCERNS}}` channel for the orchestrator's focused concern labels — what an Opus driver has been watching from the worker's events that warrants extra adversarial attention.
+- Concern contents are rendered as quoted untrusted data labels, not as reviewer instructions.
 - Surface concerns via `--brief @<path>.json` (uses the brief's `specific_concerns` array) and/or repeatable `--concern "<text>"` flags. Both stack; brief items come first, then `--concern` items, de-duped while preserving order.
 - Plain `review` does not honor these flags — it uses Codex's built-in reviewer. Use `adversarial-review` whenever the orchestrator wants to weight the review on specific concerns.
 

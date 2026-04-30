@@ -3940,14 +3940,15 @@ function validateBriefShape(brief) {
 function briefHash(briefText) {
   return `sha256:${createHash2("sha256").update(briefText, "utf8").digest("hex")}`;
 }
-function loadBrief(arg) {
+function loadBrief(arg, options = {}) {
   if (!isString(arg) || arg.length === 0) {
     return fail(ERR.SCHEMA_VIOLATION, "brief argument must be @path or inline JSON");
   }
   let raw;
   let source;
   if (arg.startsWith("@")) {
-    const filePath = path7.resolve(arg.slice(1));
+    const requestedPath = arg.slice(1);
+    const filePath = isString(options?.baseDir) && options.baseDir.length > 0 ? path7.resolve(options.baseDir, requestedPath) : path7.resolve(requestedPath);
     if (!fs7.existsSync(filePath)) {
       return fail(ERR.FILE_NOT_FOUND, `brief file not found: ${filePath}`);
     }
@@ -4013,6 +4014,40 @@ function renderBriefAsMarkdown(brief) {
     lines.push(`Parent task: \`${brief.parent_task_id}\``);
   }
   return lines.join("\n");
+}
+
+// src/lib/adversarial-review-prompt.mjs
+var OPUS_CONCERN_MAX_LEN = 1e3;
+function formatOpusConcerns(concerns) {
+  const list = Array.isArray(concerns) ? concerns.map(
+    (c) => typeof c === "string" ? sanitizePromptValue(c.trim(), { maxLength: OPUS_CONCERN_MAX_LEN }).trim() : ""
+  ).filter((c) => c.length > 0) : [];
+  if (list.length === 0) {
+    return '(No orchestrator-supplied concerns. Run the review with --brief @<path>.json or --concern "..." to surface focus areas.)';
+  }
+  return list.map((c) => `- concern_data: ${JSON.stringify(c)}`).join("\n");
+}
+function buildAdversarialReviewPrompt(rootDir, context, focusText, opusConcerns = []) {
+  const template = loadPromptTemplate(rootDir, "adversarial-review");
+  return interpolateTemplate(
+    template,
+    {
+      TARGET_LABEL: sanitizePromptValue(context.target.label),
+      USER_FOCUS: sanitizePromptValue(focusText) || "No extra focus provided.",
+      REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
+      OPUS_CONCERNS: formatOpusConcerns(opusConcerns),
+      REVIEW_INPUT: context.content
+    },
+    {
+      requiredKeys: /* @__PURE__ */ new Set([
+        "TARGET_LABEL",
+        "USER_FOCUS",
+        "REVIEW_COLLECTION_GUIDANCE",
+        "OPUS_CONCERNS",
+        "REVIEW_INPUT"
+      ])
+    }
+  );
 }
 
 // src/lib/job-control.mjs
@@ -9893,36 +9928,6 @@ function buildMachineReadableHelp() {
     }
   };
 }
-var OPUS_CONCERN_MAX_LEN = 1e3;
-function formatOpusConcerns(concerns) {
-  const list = Array.isArray(concerns) ? concerns.map((c) => typeof c === "string" ? c.trim() : "").filter((c) => c.length > 0) : [];
-  if (list.length === 0) {
-    return '(No orchestrator-supplied concerns. Run the review with --brief @<path>.json or --concern "..." to surface focus areas.)';
-  }
-  return list.map((c) => `- ${sanitizePromptValue(c, { maxLength: OPUS_CONCERN_MAX_LEN })}`).join("\n");
-}
-function buildAdversarialReviewPrompt(context, focusText, opusConcerns = []) {
-  const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
-  return interpolateTemplate(
-    template,
-    {
-      TARGET_LABEL: sanitizePromptValue(context.target.label),
-      USER_FOCUS: sanitizePromptValue(focusText) || "No extra focus provided.",
-      REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
-      OPUS_CONCERNS: formatOpusConcerns(opusConcerns),
-      REVIEW_INPUT: context.content
-    },
-    {
-      requiredKeys: /* @__PURE__ */ new Set([
-        "TARGET_LABEL",
-        "USER_FOCUS",
-        "REVIEW_COLLECTION_GUIDANCE",
-        "OPUS_CONCERNS",
-        "REVIEW_INPUT"
-      ])
-    }
-  );
-}
 function ensureCodexAvailable(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
@@ -10154,7 +10159,7 @@ async function executeReviewRun(request) {
     seen.add(key);
     return true;
   });
-  const prompt = buildAdversarialReviewPrompt(context, focusText, opusConcerns);
+  const prompt = buildAdversarialReviewPrompt(ROOT_DIR, context, focusText, opusConcerns);
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
@@ -10609,7 +10614,7 @@ async function handleReviewCommand(argv, config) {
   });
   let brief = null;
   if (options.brief) {
-    const result = loadBrief(options.brief);
+    const result = loadBrief(options.brief, { baseDir: cwd });
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
@@ -11412,7 +11417,7 @@ async function handleTask(argv) {
   let brief = null;
   let briefHash2 = null;
   if (options.brief) {
-    const result = loadBrief(options.brief);
+    const result = loadBrief(options.brief, { baseDir: cwd });
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,

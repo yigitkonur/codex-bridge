@@ -55,7 +55,7 @@ import { collectReviewContext, createSubagentWorktree, ensureGitRepository, merg
 import { jobDir, listTasks, readMeta, readVerdict, writeMeta, writeVerdict } from "./lib/registry.mjs";
 import { loadBrief, renderBriefAsMarkdown } from "./lib/brief.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
-import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
+import { buildAdversarialReviewPrompt } from "./lib/adversarial-review-prompt.mjs";
 import {
   detectOfficialOpenAICodexPlugin,
   OFFICIAL_PLUGIN_STATUS
@@ -1429,53 +1429,6 @@ function buildMachineReadableHelp() {
   };
 }
 
-// {{OPUS_CONCERNS}} is the orchestrator's privileged channel into the review.
-// It is populated from the brief's `specific_concerns` array (T16 / T26)
-// and/or repeatable `--concern` flags. The block is rendered as a bullet
-// list when concerns exist, or a sentinel string when not, so the prompt
-// always says something honest about whether the orchestrator was watching.
-// User-controlled text (concerns, focusText) is sanitized through
-// sanitizePromptValue to keep `</orchestrator_concerns>` and similar
-// instruction-like wrappers from being injected by user input.
-const OPUS_CONCERN_MAX_LEN = 1000;
-
-function formatOpusConcerns(concerns) {
-  const list = Array.isArray(concerns)
-    ? concerns
-        .map((c) => (typeof c === "string" ? c.trim() : ""))
-        .filter((c) => c.length > 0)
-    : [];
-  if (list.length === 0) {
-    return "(No orchestrator-supplied concerns. Run the review with --brief @<path>.json or --concern \"...\" to surface focus areas.)";
-  }
-  return list
-    .map((c) => `- ${sanitizePromptValue(c, { maxLength: OPUS_CONCERN_MAX_LEN })}`)
-    .join("\n");
-}
-
-function buildAdversarialReviewPrompt(context, focusText, opusConcerns = []) {
-  const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
-  return interpolateTemplate(
-    template,
-    {
-      TARGET_LABEL: sanitizePromptValue(context.target.label),
-      USER_FOCUS: sanitizePromptValue(focusText) || "No extra focus provided.",
-      REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
-      OPUS_CONCERNS: formatOpusConcerns(opusConcerns),
-      REVIEW_INPUT: context.content
-    },
-    {
-      requiredKeys: new Set([
-        "TARGET_LABEL",
-        "USER_FOCUS",
-        "REVIEW_COLLECTION_GUIDANCE",
-        "OPUS_CONCERNS",
-        "REVIEW_INPUT"
-      ])
-    }
-  );
-}
-
 function ensureCodexAvailable(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
@@ -1787,7 +1740,7 @@ async function executeReviewRun(request) {
       seen.add(key);
       return true;
     });
-  const prompt = buildAdversarialReviewPrompt(context, focusText, opusConcerns);
+  const prompt = buildAdversarialReviewPrompt(ROOT_DIR, context, focusText, opusConcerns);
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
@@ -2416,7 +2369,7 @@ async function handleReviewCommand(argv, config) {
   // the flags for native review below if the orchestrator passes them.
   let brief = null;
   if (options.brief) {
-    const result = loadBrief(options.brief);
+    const result = loadBrief(options.brief, { baseDir: cwd });
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
@@ -3690,7 +3643,7 @@ async function handleTask(argv) {
     }
   }
   if (options.brief) {
-    const result = loadBrief(options.brief);
+    const result = loadBrief(options.brief, { baseDir: cwd });
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,

@@ -190,11 +190,12 @@ function briefHash(briefText) {
   return `sha256:${createHash("sha256").update(briefText, "utf8").digest("hex")}`;
 }
 
-// loadBrief(arg) accepts either:
+// loadBrief(arg, { baseDir }) accepts either:
 //   - a string starting with "@" — file path lookup
 //   - a string of inline JSON
+// Relative @paths resolve from baseDir when provided, otherwise process cwd.
 // Returns { ok: true, brief, briefHash, source } or { ok: false, code, message, details? }.
-export function loadBrief(arg) {
+export function loadBrief(arg, options = {}) {
   if (!isString(arg) || arg.length === 0) {
     return fail(ERR.SCHEMA_VIOLATION, "brief argument must be @path or inline JSON");
   }
@@ -202,7 +203,11 @@ export function loadBrief(arg) {
   let raw;
   let source;
   if (arg.startsWith("@")) {
-    const filePath = path.resolve(arg.slice(1));
+    const requestedPath = arg.slice(1);
+    const filePath =
+      isString(options?.baseDir) && options.baseDir.length > 0
+        ? path.resolve(options.baseDir, requestedPath)
+        : path.resolve(requestedPath);
     if (!fs.existsSync(filePath)) {
       return fail(ERR.FILE_NOT_FOUND, `brief file not found: ${filePath}`);
     }

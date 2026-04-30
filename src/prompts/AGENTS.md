@@ -29,20 +29,21 @@ If you add a placeholder, update `buildAdversarialReviewPrompt` at the same
 time. If you remove a placeholder from code, check the prompt for stale
 references.
 
-`{{OPUS_CONCERNS}}` is the orchestrator's privileged channel into the review.
+`{{OPUS_CONCERNS}}` is the orchestrator's focused-concerns channel into the review.
 It is rendered as either:
 
-- a bullet list of trimmed, sanitized concern strings (when --brief
+- a bullet list of trimmed, sanitized, quoted `concern_data` strings (when --brief
   contains a `specific_concerns` array, or one or more --concern flags
   are present), or
 - a sentinel "(No orchestrator-supplied concerns…)" line when no concerns
   are provided.
 
 Concerns from `brief.specific_concerns` precede `--concern` flag values; the
-union is de-duped while preserving insertion order. User-controlled text is
-sanitized through `sanitizePromptValue` for the same reason `USER_FOCUS` is —
-to prevent injection of fake `</orchestrator_concerns>` or other
-instruction-like wrappers from inside concern strings.
+union is de-duped while preserving insertion order. Concern contents are
+untrusted data labels, not instructions. User-controlled text is sanitized
+through `sanitizePromptValue` for the same reason `USER_FOCUS` is — to prevent
+injection of fake `</orchestrator_concerns>` or other instruction-like wrappers
+from inside concern strings.
 
 ## Output Coupling
 
