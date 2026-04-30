@@ -1,8 +1,8 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
-import fs14 from "node:fs";
+import fs15 from "node:fs";
 import os7 from "node:os";
-import path12 from "node:path";
+import path13 from "node:path";
 import process9 from "node:process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -4637,6 +4637,10 @@ function createSubagentWorktree({
     };
   } catch (err) {
     tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    const partialBranchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
+    if (partialBranchSha.ok && partialBranchSha.stdout.trim() === baseSha) {
+      tryRunGit(repoRoot, ["branch", "-D", branch]);
+    }
     if (!allowBranchFallback) {
       throw new Error(
         `createSubagentWorktree: worktree creation failed and branch fallback is disabled: ${err.message ?? err}`
@@ -7060,6 +7064,13 @@ function jobDir(taskId) {
   }
   return path7.join(registryRoot(), taskId);
 }
+function existsTask(taskId) {
+  try {
+    return fs7.existsSync(jobDir(taskId));
+  } catch {
+    return false;
+  }
+}
 function ensureJobDir(taskId) {
   const dir = jobDir(taskId);
   fs7.mkdirSync(dir, { recursive: true });
@@ -7149,11 +7160,221 @@ function writeVerdict(taskId, verdict) {
   return target;
 }
 
+// src/lib/brief.mjs
+import fs8 from "node:fs";
+import path8 from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+var BRIEF_SCHEMA_VERSION = "1.0";
+var VALID_BACKENDS = /* @__PURE__ */ new Set(["codex"]);
+var PARENT_ID_PATTERN = /^(task|review)-[A-Za-z0-9._-]+$/;
+var ERR = {
+  FILE_NOT_FOUND: "BRIEF_FILE_NOT_FOUND",
+  INVALID_JSON: "BRIEF_INVALID_JSON",
+  SCHEMA_VIOLATION: "BRIEF_SCHEMA_VIOLATION",
+  PARENT_NOT_FOUND: "BRIEF_PARENT_NOT_FOUND",
+  BACKEND_UNAVAILABLE: "BRIEF_BACKEND_UNAVAILABLE"
+};
+function fail(code, message, details) {
+  return { ok: false, code, message, details };
+}
+function isString(v) {
+  return typeof v === "string";
+}
+function isInteger2(v) {
+  return Number.isInteger(v);
+}
+function isObject2(v) {
+  return v && typeof v === "object" && !Array.isArray(v);
+}
+function validateStringField(brief, key, opts) {
+  const v = brief[key];
+  if (v === void 0) {
+    if (opts.required) {
+      return `${key} is required`;
+    }
+    return null;
+  }
+  if (!isString(v)) return `${key} must be a string`;
+  if (v.length < (opts.minLength ?? 1)) {
+    return `${key} must be at least ${opts.minLength ?? 1} characters`;
+  }
+  if (v.length > opts.maxLength) {
+    return `${key} must be at most ${opts.maxLength} characters`;
+  }
+  return null;
+}
+function validateStringArray(brief, key, opts) {
+  const v = brief[key];
+  if (v === void 0) return null;
+  if (!Array.isArray(v)) return `${key} must be an array`;
+  if (v.length > opts.maxItems) {
+    return `${key} must have at most ${opts.maxItems} items`;
+  }
+  for (let i = 0; i < v.length; i++) {
+    if (!isString(v[i])) return `${key}[${i}] must be a string`;
+    if (v[i].length < 1) return `${key}[${i}] must be at least 1 character`;
+    if (v[i].length > opts.maxItemLength) {
+      return `${key}[${i}] must be at most ${opts.maxItemLength} characters`;
+    }
+  }
+  return null;
+}
+function validateBriefShape(brief) {
+  if (!isObject2(brief)) return ["brief must be a JSON object"];
+  const errors = [];
+  if (brief.schema_version !== void 0 && brief.schema_version !== BRIEF_SCHEMA_VERSION) {
+    errors.push(
+      `schema_version must be "${BRIEF_SCHEMA_VERSION}" (got ${JSON.stringify(brief.schema_version)})`
+    );
+  }
+  for (const [key, opts] of [
+    ["goal", { required: true, minLength: 1, maxLength: 2e3 }],
+    ["worker_assignment", { required: true, minLength: 1, maxLength: 4e3 }],
+    ["behavior_digest_seed", { required: false, minLength: 0, maxLength: 8e3 }]
+  ]) {
+    const err = validateStringField(brief, key, opts);
+    if (err) errors.push(err);
+  }
+  for (const [key, opts] of [
+    ["specific_concerns", { maxItems: 16, maxItemLength: 1e3 }],
+    ["acceptance_criteria", { maxItems: 16, maxItemLength: 1e3 }]
+  ]) {
+    const err = validateStringArray(brief, key, opts);
+    if (err) errors.push(err);
+  }
+  if (brief.parent_task_id !== void 0) {
+    if (!isString(brief.parent_task_id)) {
+      errors.push("parent_task_id must be a string");
+    } else if (!PARENT_ID_PATTERN.test(brief.parent_task_id)) {
+      errors.push(
+        `parent_task_id must match ${PARENT_ID_PATTERN}: got ${JSON.stringify(brief.parent_task_id)}`
+      );
+    }
+  }
+  if (brief.backend_hint !== void 0) {
+    if (!isString(brief.backend_hint)) {
+      errors.push("backend_hint must be a string");
+    } else if (!VALID_BACKENDS.has(brief.backend_hint)) {
+      errors.push(
+        `backend_hint must be one of ${[...VALID_BACKENDS].join(", ")} (got ${JSON.stringify(brief.backend_hint)})`
+      );
+    }
+  }
+  if (brief.iteration_max !== void 0) {
+    if (!isInteger2(brief.iteration_max)) {
+      errors.push("iteration_max must be an integer");
+    } else if (brief.iteration_max < 1 || brief.iteration_max > 10) {
+      errors.push("iteration_max must be between 1 and 10");
+    }
+  }
+  if (brief.trust_budget_override !== void 0) {
+    const tbo = brief.trust_budget_override;
+    if (!isObject2(tbo)) {
+      errors.push("trust_budget_override must be an object");
+    } else {
+      const allowedTrustBudgetKeys = /* @__PURE__ */ new Set([
+        "auto_merge_max_diff_lines",
+        "auto_merge_max_files",
+        "auto_merge_max_iterations"
+      ]);
+      for (const key of Object.keys(tbo)) {
+        if (!allowedTrustBudgetKeys.has(key)) {
+          errors.push(`unknown trust_budget_override field: ${key}`);
+        }
+      }
+      for (const [key, min] of [
+        ["auto_merge_max_diff_lines", 0],
+        ["auto_merge_max_files", 0],
+        ["auto_merge_max_iterations", 1]
+      ]) {
+        if (tbo[key] !== void 0) {
+          if (!isInteger2(tbo[key])) {
+            errors.push(`trust_budget_override.${key} must be an integer`);
+          } else if (tbo[key] < min) {
+            errors.push(`trust_budget_override.${key} must be >= ${min}`);
+          }
+        }
+      }
+    }
+  }
+  const allowed = /* @__PURE__ */ new Set([
+    "schema_version",
+    "goal",
+    "worker_assignment",
+    "behavior_digest_seed",
+    "specific_concerns",
+    "acceptance_criteria",
+    "parent_task_id",
+    "backend_hint",
+    "iteration_max",
+    "trust_budget_override"
+  ]);
+  for (const key of Object.keys(brief)) {
+    if (!allowed.has(key)) {
+      errors.push(`unknown field: ${key}`);
+    }
+  }
+  return errors;
+}
+function briefHash(briefText) {
+  return `sha256:${createHash2("sha256").update(briefText, "utf8").digest("hex")}`;
+}
+function loadBrief(arg) {
+  if (!isString(arg) || arg.length === 0) {
+    return fail(ERR.SCHEMA_VIOLATION, "brief argument must be @path or inline JSON");
+  }
+  let raw;
+  let source;
+  if (arg.startsWith("@")) {
+    const filePath = path8.resolve(arg.slice(1));
+    if (!fs8.existsSync(filePath)) {
+      return fail(ERR.FILE_NOT_FOUND, `brief file not found: ${filePath}`);
+    }
+    try {
+      raw = fs8.readFileSync(filePath, "utf8");
+      source = filePath;
+    } catch (err) {
+      return fail(ERR.FILE_NOT_FOUND, `cannot read brief file: ${err.message}`);
+    }
+  } else {
+    raw = arg;
+    source = "inline";
+  }
+  let brief;
+  try {
+    brief = JSON.parse(raw);
+  } catch (err) {
+    return fail(ERR.INVALID_JSON, `brief JSON parse failed: ${err.message}`);
+  }
+  const errors = validateBriefShape(brief);
+  if (errors.length > 0) {
+    return fail(ERR.SCHEMA_VIOLATION, `brief failed schema validation`, errors);
+  }
+  if (brief.parent_task_id !== void 0 && !existsTask(brief.parent_task_id)) {
+    return fail(
+      ERR.PARENT_NOT_FOUND,
+      `brief.parent_task_id not found: ${brief.parent_task_id}`
+    );
+  }
+  if (brief.backend_hint !== void 0 && !VALID_BACKENDS.has(brief.backend_hint)) {
+    return fail(
+      ERR.BACKEND_UNAVAILABLE,
+      `brief.backend_hint=${JSON.stringify(brief.backend_hint)} is not installed in v2.0; valid: ${[...VALID_BACKENDS].join(", ")}`
+    );
+  }
+  return {
+    ok: true,
+    brief,
+    briefHash: briefHash(raw),
+    source
+  };
+}
+
 // src/lib/job-control.mjs
-import fs9 from "node:fs";
+import fs10 from "node:fs";
 
 // src/lib/tracked-jobs.mjs
-import fs8 from "node:fs";
+import fs9 from "node:fs";
 import process8 from "node:process";
 var SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 function nowIso2() {
@@ -7186,21 +7407,21 @@ function appendLogLine(logFile, message) {
   if (!logFile || !normalized) {
     return;
   }
-  fs8.appendFileSync(logFile, `[${nowIso2()}] ${normalized}
+  fs9.appendFileSync(logFile, `[${nowIso2()}] ${normalized}
 `, "utf8");
 }
 function appendLogBlock(logFile, title, body) {
   if (!logFile || !body) {
     return;
   }
-  fs8.appendFileSync(logFile, `
+  fs9.appendFileSync(logFile, `
 [${nowIso2()}] ${title}
 ${String(body).trimEnd()}
 `, "utf8");
 }
 function createJobLogFile(workspaceRoot, jobId, title) {
   const logFile = resolveJobLogFile(workspaceRoot, jobId);
-  fs8.writeFileSync(logFile, "", "utf8");
+  fs9.writeFileSync(logFile, "", "utf8");
   if (title) {
     appendLogLine(logFile, `Starting ${title}.`);
   }
@@ -7242,7 +7463,7 @@ function createJobProgressUpdater(workspaceRoot, jobId) {
       return;
     }
     const jobFile = resolveJobFile(workspaceRoot, jobId);
-    if (!fs8.existsSync(jobFile)) {
+    if (!fs9.existsSync(jobFile)) {
       return;
     }
     const storedJob = readJobFile(jobFile);
@@ -7271,7 +7492,7 @@ function createProgressReporter({ stderr = false, logFile = null, onEvent = null
 }
 function readStoredJobOrNull(workspaceRoot, jobId) {
   const jobFile = resolveJobFile(workspaceRoot, jobId);
-  if (!fs8.existsSync(jobFile)) {
+  if (!fs9.existsSync(jobFile)) {
     return null;
   }
   return readJobFile(jobFile);
@@ -7383,10 +7604,10 @@ function isProgressBlockTitle(line) {
   return ["Final output", "Assistant message", "Reasoning summary", "Review output"].includes(line) || /^Subagent .+ message$/.test(line) || /^Subagent .+ reasoning summary$/.test(line);
 }
 function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_LINES) {
-  if (!logFile || !fs9.existsSync(logFile)) {
+  if (!logFile || !fs10.existsSync(logFile)) {
     return [];
   }
-  const lines = fs9.readFileSync(logFile, "utf8").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).filter((line) => line.startsWith("[")).map(stripLogPrefix).filter((line) => line && !isProgressBlockTitle(line));
+  const lines = fs10.readFileSync(logFile, "utf8").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).filter((line) => line.startsWith("[")).map(stripLogPrefix).filter((line) => line && !isProgressBlockTitle(line));
   return lines.slice(-maxLines);
 }
 function formatElapsedDuration(startValue, endValue = null) {
@@ -7476,7 +7697,7 @@ function enrichJob(job, options = {}) {
 }
 function readStoredJob(workspaceRoot, jobId) {
   const jobFile = resolveJobFile(workspaceRoot, jobId);
-  if (!fs9.existsSync(jobFile)) {
+  if (!fs10.existsSync(jobFile)) {
     return null;
   }
   return readJobFile(jobFile);
@@ -8109,28 +8330,28 @@ function renderCancelReport(job) {
 }
 
 // src/lib/session-log.mjs
-import fs10 from "node:fs";
-import path8 from "node:path";
+import fs11 from "node:fs";
+import path9 from "node:path";
 import os5 from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
 function resolveSessionDir(configDir) {
   const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os5.homedir());
-  fs10.mkdirSync(dir, { recursive: true });
+  fs11.mkdirSync(dir, { recursive: true });
   return dir;
 }
 function initSession(sessionDir, threadId) {
-  fs10.mkdirSync(sessionDir, { recursive: true });
-  const ndjsonPath = path8.join(sessionDir, `${threadId}.ndjson`);
-  const eventsPath = path8.join(sessionDir, `${threadId}.events`);
-  fs10.writeFileSync(ndjsonPath, "", { flag: "a" });
-  fs10.writeFileSync(eventsPath, "", { flag: "a" });
+  fs11.mkdirSync(sessionDir, { recursive: true });
+  const ndjsonPath = path9.join(sessionDir, `${threadId}.ndjson`);
+  const eventsPath = path9.join(sessionDir, `${threadId}.events`);
+  fs11.writeFileSync(ndjsonPath, "", { flag: "a" });
+  fs11.writeFileSync(eventsPath, "", { flag: "a" });
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
 function findSession(sessionDir, threadId) {
-  const ndjsonPath = path8.join(sessionDir, `${threadId}.ndjson`);
-  const eventsPath = path8.join(sessionDir, `${threadId}.events`);
-  if (!fs10.existsSync(ndjsonPath)) {
+  const ndjsonPath = path9.join(sessionDir, `${threadId}.ndjson`);
+  const eventsPath = path9.join(sessionDir, `${threadId}.events`);
+  if (!fs11.existsSync(ndjsonPath)) {
     return null;
   }
   return { ndjsonPath, eventsPath, sessionDir, threadId };
@@ -8144,36 +8365,36 @@ function logNdjson(session, tag, method, data) {
     data: data ?? {}
   };
   try {
-    fs10.appendFileSync(session.ndjsonPath, JSON.stringify(entry) + "\n");
+    fs11.appendFileSync(session.ndjsonPath, JSON.stringify(entry) + "\n");
   } catch {
   }
 }
 function logEvent(session, formattedBlock) {
   try {
-    fs10.appendFileSync(session.eventsPath, formattedBlock + "\n");
+    fs11.appendFileSync(session.eventsPath, formattedBlock + "\n");
   } catch {
   }
 }
 function writeDiff(session, diffContent) {
-  const diffPath = path8.join(session.sessionDir, `${session.threadId}.diff`);
+  const diffPath = path9.join(session.sessionDir, `${session.threadId}.diff`);
   try {
-    fs10.writeFileSync(diffPath, diffContent);
+    fs11.writeFileSync(diffPath, diffContent);
   } catch {
   }
   return diffPath;
 }
 function writePlan(session, planText) {
-  const planPath = path8.join(session.sessionDir, `${session.threadId}.plan.md`);
+  const planPath = path9.join(session.sessionDir, `${session.threadId}.plan.md`);
   try {
-    fs10.writeFileSync(planPath, planText);
+    fs11.writeFileSync(planPath, planText);
   } catch {
   }
   return planPath;
 }
 function writeReview(session, reviewData) {
-  const reviewPath = path8.join(session.sessionDir, `${session.threadId}.review.json`);
+  const reviewPath = path9.join(session.sessionDir, `${session.threadId}.review.json`);
   try {
-    fs10.writeFileSync(reviewPath, JSON.stringify(reviewData, null, 2));
+    fs11.writeFileSync(reviewPath, JSON.stringify(reviewData, null, 2));
   } catch {
   }
   return reviewPath;
@@ -8263,10 +8484,10 @@ function buildUntrackedFileStat(cwd, fileName) {
   let sizeBytes = null;
   let adds = 0;
   try {
-    const stat = fs10.lstatSync(absolutePath);
+    const stat = fs11.lstatSync(absolutePath);
     sizeBytes = stat.size;
     if (stat.isFile() && stat.size <= MAX_UNTRACKED_STAT_BYTES) {
-      const content = fs10.readFileSync(absolutePath);
+      const content = fs11.readFileSync(absolutePath);
       if (!looksBinary(content)) {
         adds = countTextLines(content);
       }
@@ -8283,9 +8504,9 @@ function buildUntrackedFileStat(cwd, fileName) {
   };
 }
 function resolveInsideCwd(cwd, fileName) {
-  const root = path8.resolve(cwd);
-  const absolutePath = path8.resolve(root, fileName);
-  if (absolutePath !== root && !absolutePath.startsWith(root + path8.sep)) {
+  const root = path9.resolve(cwd);
+  const absolutePath = path9.resolve(root, fileName);
+  if (absolutePath !== root && !absolutePath.startsWith(root + path9.sep)) {
     return null;
   }
   return absolutePath;
@@ -8770,25 +8991,25 @@ function formatWarningEvent(session, { reason, family, threshold, sampleCommand,
 }
 
 // src/lib/pending-requests.mjs
-import fs11 from "node:fs";
-import path9 from "node:path";
+import fs12 from "node:fs";
+import path10 from "node:path";
 var DEFAULT_QUESTION_TIMEOUT_MS = 3e5;
 var POLL_INTERVAL_MS = 500;
 function writePendingRequest(sessionDir, threadId, entry) {
-  const filePath = path9.join(sessionDir, `${threadId}.pending.json`);
-  fs11.writeFileSync(filePath, JSON.stringify(entry, null, 2));
+  const filePath = path10.join(sessionDir, `${threadId}.pending.json`);
+  fs12.writeFileSync(filePath, JSON.stringify(entry, null, 2));
   return filePath;
 }
 function readPendingRequestById(sessionDir, requestId) {
   let files;
   try {
-    files = fs11.readdirSync(sessionDir).filter((f) => f.endsWith(".pending.json"));
+    files = fs12.readdirSync(sessionDir).filter((f) => f.endsWith(".pending.json"));
   } catch {
     return null;
   }
   for (const file of files) {
     try {
-      const content = JSON.parse(fs11.readFileSync(path9.join(sessionDir, file), "utf8"));
+      const content = JSON.parse(fs12.readFileSync(path10.join(sessionDir, file), "utf8"));
       if (content.internalId === requestId) {
         return content;
       }
@@ -8798,22 +9019,22 @@ function readPendingRequestById(sessionDir, requestId) {
   return null;
 }
 function clearPendingRequest(sessionDir, threadId) {
-  const filePath = path9.join(sessionDir, `${threadId}.pending.json`);
+  const filePath = path10.join(sessionDir, `${threadId}.pending.json`);
   try {
-    fs11.unlinkSync(filePath);
+    fs12.unlinkSync(filePath);
   } catch {
   }
 }
 function writeResponseFile(sessionDir, threadId, payload) {
-  const filePath = path9.join(sessionDir, `${threadId}.response.json`);
-  fs11.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+  const filePath = path10.join(sessionDir, `${threadId}.response.json`);
+  fs12.writeFileSync(filePath, JSON.stringify(payload, null, 2));
   return filePath;
 }
 function readResponseFile(sessionDir, threadId) {
-  const filePath = path9.join(sessionDir, `${threadId}.response.json`);
+  const filePath = path10.join(sessionDir, `${threadId}.response.json`);
   try {
-    const content = JSON.parse(fs11.readFileSync(filePath, "utf8"));
-    fs11.unlinkSync(filePath);
+    const content = JSON.parse(fs12.readFileSync(filePath, "utf8"));
+    fs12.unlinkSync(filePath);
     return content;
   } catch {
     return null;
@@ -8842,14 +9063,14 @@ function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIME
 }
 
 // src/adapters/codex/pipeline.mjs
-import fs12 from "node:fs";
-import path10 from "node:path";
+import fs13 from "node:fs";
+import path11 from "node:path";
 var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;
 var STAGE_TIMEOUT_MS_DEFAULT = 3e5;
 function loadExecuteInstructions(rootDir) {
-  const p = path10.join(rootDir, "templates", "execute-instructions.md");
+  const p = path11.join(rootDir, "templates", "execute-instructions.md");
   try {
-    return fs12.readFileSync(p, "utf8");
+    return fs13.readFileSync(p, "utf8");
   } catch {
     return "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed.";
   }
@@ -9239,7 +9460,7 @@ function readCapturedDiffContent(diff) {
     return "";
   }
   try {
-    return fs12.readFileSync(diff.diffPath, "utf8");
+    return fs13.readFileSync(diff.diffPath, "utf8");
   } catch {
     return "";
   }
@@ -9434,8 +9655,8 @@ function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
 }
 
 // src/lib/update-check.mjs
-import fs13 from "node:fs";
-import path11 from "node:path";
+import fs14 from "node:fs";
+import path12 from "node:path";
 import os6 from "node:os";
 var DEFAULT_CACHE_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_FETCH_TIMEOUT_MS = 2500;
@@ -9444,12 +9665,12 @@ var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/relea
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
-  const root = pluginDataDir ? path11.join(pluginDataDir, "codex-bridge-update.json") : path11.join(os6.homedir(), ".codex-bridge", "update-cache.json");
+  const root = pluginDataDir ? path12.join(pluginDataDir, "codex-bridge-update.json") : path12.join(os6.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
   try {
-    const raw = fs13.readFileSync(cachePath(), "utf8");
+    const raw = fs14.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
     return parsed;
@@ -9460,8 +9681,8 @@ function readCache() {
 function writeCache(entry) {
   try {
     const p = cachePath();
-    fs13.mkdirSync(path11.dirname(p), { recursive: true });
-    fs13.writeFileSync(p, JSON.stringify(entry, null, 2));
+    fs14.mkdirSync(path12.dirname(p), { recursive: true });
+    fs14.writeFileSync(p, JSON.stringify(entry, null, 2));
     return true;
   } catch {
     return false;
@@ -9475,9 +9696,9 @@ function cacheLockPath() {
 }
 function removeStaleLock(lockPath, staleMs) {
   try {
-    const stat = fs13.statSync(lockPath);
+    const stat = fs14.statSync(lockPath);
     if (Date.now() - stat.mtimeMs <= staleMs) return false;
-    fs13.unlinkSync(lockPath);
+    fs14.unlinkSync(lockPath);
     return true;
   } catch (err) {
     return err?.code === "ENOENT";
@@ -9486,15 +9707,15 @@ function removeStaleLock(lockPath, staleMs) {
 function acquireCacheLock(staleMs) {
   const lockPath = cacheLockPath();
   try {
-    fs13.mkdirSync(path11.dirname(lockPath), { recursive: true });
+    fs14.mkdirSync(path12.dirname(lockPath), { recursive: true });
   } catch {
     return null;
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = fs13.openSync(lockPath, "wx");
+      const fd = fs14.openSync(lockPath, "wx");
       try {
-        fs13.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+        fs14.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
       } catch {
       }
       return { fd, lockPath };
@@ -9507,11 +9728,11 @@ function acquireCacheLock(staleMs) {
 }
 function releaseCacheLock(lock) {
   try {
-    fs13.closeSync(lock.fd);
+    fs14.closeSync(lock.fd);
   } catch {
   }
   try {
-    fs13.unlinkSync(lock.lockPath);
+    fs14.unlinkSync(lock.lockPath);
   } catch {
   }
 }
@@ -9674,20 +9895,20 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path12.join(os7.homedir(), ".codex-bridge");
-    fs14.mkdirSync(logDir, { recursive: true });
-    const logFile = path12.join(logDir, "auto-update.log");
+    const logDir = path13.join(os7.homedir(), ".codex-bridge");
+    fs15.mkdirSync(logDir, { recursive: true });
+    const logFile = path13.join(logDir, "auto-update.log");
     try {
-      const stat = fs14.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs14.truncateSync(logFile, 0);
+      const stat = fs15.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs15.truncateSync(logFile, 0);
     } catch {
     }
-    const fd = fs14.openSync(logFile, "a");
+    const fd = fs15.openSync(logFile, "a");
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-      fs14.writeSync(fd, banner);
+      fs15.writeSync(fd, banner);
       const child = spawn3(
         "npx",
         ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
@@ -9699,7 +9920,7 @@ function spawnDetachedAutoApply(targetVersion) {
       );
       child.on("error", () => {
         try {
-          fs14.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+          fs15.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
 `, "utf8");
         } catch {
         }
@@ -9707,19 +9928,19 @@ function spawnDetachedAutoApply(targetVersion) {
       child.unref();
     } finally {
       try {
-        fs14.closeSync(fd);
+        fs15.closeSync(fd);
       } catch {
       }
     }
   } catch {
   }
 }
-var SCRIPT_DIR = path12.dirname(fileURLToPath2(import.meta.url));
-var SCRIPT_PATH = path12.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs14.existsSync(path12.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path12.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path12.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path12.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path12.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var SCRIPT_DIR = path13.dirname(fileURLToPath2(import.meta.url));
+var SCRIPT_PATH = path13.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs15.existsSync(path13.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path13.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path13.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path13.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path13.join(ROOT_DIR, "templates", "plan-enforcement.md");
 function shellQuote2(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -9733,7 +9954,7 @@ var DEVELOPER_INSTRUCTIONS_FALLBACK = {
 function loadDeveloperInstructions(mode) {
   const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
   try {
-    return fs14.readFileSync(templatePath, "utf8");
+    return fs15.readFileSync(templatePath, "utf8");
   } catch {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
@@ -9894,8 +10115,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path13 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path13}`.trim();
+      const path14 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path14}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -10201,17 +10422,17 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path12.resolve(process9.cwd(), options.cwd) : process9.cwd();
+  return options.cwd ? path13.resolve(process9.cwd(), options.cwd) : process9.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path12.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path13.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs14.existsSync(lockPath);
+  let lockExists = fs15.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -10222,7 +10443,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs14.writeFileSync(
+        fs15.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -10258,7 +10479,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs14.writeFileSync(
+      fs15.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -10271,7 +10492,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs14.rmSync(lockPath, { force: true });
+      fs15.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -11190,14 +11411,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path12.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path13.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs14.readFileSync(absPath, "utf8");
+    return fs15.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -11305,7 +11526,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs14.openSync(stderrPath, "a");
+      const stderrFd = fs15.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
@@ -11329,7 +11550,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs14.closeSync(stdioConfig[2]);
+      fs15.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -11932,7 +12153,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = initSession(sessionDir, result.threadId);
-    const computedEventsPath = result.threadId ? path12.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path13.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -12006,10 +12227,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path12.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path12.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path12.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path12.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path13.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path13.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path13.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path13.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -12237,9 +12458,11 @@ async function handleTask(argv) {
       "turn-default-ms",
       "pipeline-stage-timeout-ms",
       "pipeline-total-timeout-ms",
-      "question-timeout-ms"
+      "question-timeout-ms",
+      "brief",
+      "intercepted-from"
     ],
-    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
       m: "model"
     }
@@ -12259,6 +12482,27 @@ async function handleTask(argv) {
   let cwd = resolveCommandCwd(options);
   const stateCwd = cwd;
   const workspaceRoot = resolveCommandWorkspace(options);
+  let brief = null;
+  let briefHash2 = null;
+  if (options.brief || options["intercepted-from"]) {
+    if (!options["worktree-auto"]) {
+      throw conflictError(
+        "--brief and --intercepted-from require --worktree-auto (the registry slot that stores brief.json / intercepted_from is created by the worktree path).",
+        "BRIEF_REQUIRES_WORKTREE_AUTO"
+      );
+    }
+  }
+  if (options.brief) {
+    const result = loadBrief(options.brief);
+    if (!result.ok) {
+      throw new CliError(result.message, {
+        code: result.code,
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
+      });
+    }
+    brief = result.brief;
+    briefHash2 = result.briefHash;
+  }
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
@@ -12395,7 +12639,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path12.resolve(process9.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path13.resolve(process9.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -12581,7 +12825,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path12.isAbsolute(artifactPath) ? artifactPath : path12.resolve(cwd, artifactPath);
+  const resolvedPath = path13.isAbsolute(artifactPath) ? artifactPath : path13.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -12598,7 +12842,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs14.statSync(resolvedPath);
+      statInfo = fs15.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -12778,7 +13022,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs14.readFileSync(eventsPath, "utf8");
+        const data = fs15.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -12795,13 +13039,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs14.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs15.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs14.existsSync(eventsPath)) {
+              if (fs15.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -12813,12 +13057,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs14.existsSync(eventsPath)) {
+    if (fs15.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs14.existsSync(eventsPath)) {
+        if (fs15.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -12857,7 +13101,7 @@ async function handleWait(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
-  const eventsPath = path12.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path13.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -12922,7 +13166,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
-  const eventsPath = path12.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path13.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -12953,8 +13197,8 @@ async function handleEvents(argv) {
   const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs14.existsSync(eventsPath)) {
-    initial = fs14.readFileSync(eventsPath, "utf8");
+  if (fs15.existsSync(eventsPath)) {
+    initial = fs15.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -13000,7 +13244,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs14.readFileSync(eventsPath, "utf8");
+        data = fs15.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -13022,13 +13266,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs14.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs15.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs14.existsSync(eventsPath)) {
+              if (fs15.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -13039,11 +13283,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs14.existsSync(eventsPath)) {
+    if (fs15.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs14.existsSync(eventsPath)) {
+        if (fs15.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -13174,13 +13418,13 @@ async function handleCancel(argv) {
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path12.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path13.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path12.resolve(cwd, positionals[0]);
+    const candidate = path13.resolve(cwd, positionals[0]);
     try {
-      if (fs14.existsSync(candidate) && fs14.statSync(candidate).isFile()) {
-        return fs14.readFileSync(candidate, "utf8");
+      if (fs15.existsSync(candidate) && fs15.statSync(candidate).isFile()) {
+        return fs15.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -13262,10 +13506,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict requires a task_id positional argument");
   }
   if (options.discard) {
-    const target = path12.join(jobDir(taskId), "verdict.json");
+    const target = path13.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs14.existsSync(target)) {
-      fs14.rmSync(target, { force: true });
+    if (fs15.existsSync(target)) {
+      fs15.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -13779,7 +14023,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs14.readFileSync(session.ndjsonPath, "utf8");
+    content = fs15.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -13878,10 +14122,10 @@ process9.stderr.on("error", (err) => {
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path12.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs14.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path13.join(os7.homedir(), ".codex-bridge", "crashes");
+    fs15.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path12.join(crashDir, `${ts}-${process9.pid}.log`);
+    const file = path13.join(crashDir, `${ts}-${process9.pid}.log`);
     const payload = {
       kind,
       ts,
@@ -13892,7 +14136,7 @@ function writeCrashLog(kind, error) {
       bridgeVersion: package_default.version,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs14.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs15.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
       process9.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}

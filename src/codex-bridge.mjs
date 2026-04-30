@@ -53,6 +53,7 @@ import {
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
 import { jobDir, listTasks, readMeta, readVerdict, writeMeta, writeVerdict } from "./lib/registry.mjs";
+import { loadBrief, renderBriefAsMarkdown } from "./lib/brief.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate, sanitizePromptValue } from "./lib/prompts.mjs";
 import {
@@ -3507,9 +3508,10 @@ async function handleTask(argv) {
       "idle-timeout-ms",
       "turn-plan-ms", "turn-default-ms",
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
-      "question-timeout-ms"
+      "question-timeout-ms",
+      "brief", "intercepted-from"
     ],
-    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
       m: "model"
     }
@@ -3542,6 +3544,41 @@ async function handleTask(argv) {
   let cwd = resolveCommandCwd(options);
   const stateCwd = cwd;
   const workspaceRoot = resolveCommandWorkspace(options);
+
+  // --brief @path.json | <inline-json> loads + validates the structured
+  // brief (T16) and persists it verbatim (brief.json + brief.md) into
+  // the per-task registry directory alongside meta.json. Persisting the
+  // brief is the v2 mechanism by which the original intent is recovered
+  // by review / iterate even if the prompt template later changes.
+  //
+  // Both --brief and --intercepted-from currently require --worktree-auto
+  // because the registry directory is only created when a worktree is
+  // dispatched (T15 wiring). Passing them without --worktree-auto would
+  // silently discard the value, so we fail loudly instead. (Folding the
+  // brief into the prompt itself is a follow-up; for now codex sees the
+  // raw positional prompt and the brief is recovered from disk by the
+  // reviewer.)
+  let brief = null;
+  let briefHash = null;
+  if (options.brief || options["intercepted-from"]) {
+    if (!options["worktree-auto"]) {
+      throw conflictError(
+        "--brief and --intercepted-from require --worktree-auto (the registry slot that stores brief.json / intercepted_from is created by the worktree path).",
+        "BRIEF_REQUIRES_WORKTREE_AUTO",
+      );
+    }
+  }
+  if (options.brief) {
+    const result = loadBrief(options.brief);
+    if (!result.ok) {
+      throw new CliError(result.message, {
+        code: result.code,
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+      });
+    }
+    brief = result.brief;
+    briefHash = result.briefHash;
+  }
 
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
