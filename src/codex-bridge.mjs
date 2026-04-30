@@ -4684,16 +4684,19 @@ async function handleVerdict(argv) {
     throw usageError("verdict requires a task_id positional argument");
   }
 
-  // discard mode: remove the registry directory entirely
+  // discard mode: remove only verdict.json so the rest of the registry
+  // entry (meta.json, session-log.jsonl, etc.) is preserved for audit.
   if (options.discard) {
-    const dir = jobDir(taskId);
-    if (fs.existsSync(dir)) {
-      fs.rmSync(dir, { recursive: true, force: true });
+    const target = path.join(jobDir(taskId), "verdict.json");
+    let removed = false;
+    if (fs.existsSync(target)) {
+      fs.rmSync(target, { force: true });
+      removed = true;
     }
     emitSuccess(
       "verdict",
-      { task_id: taskId, action: "discarded" },
-      `Discarded ${taskId}\n`,
+      { task_id: taskId, action: "discarded", removed },
+      `Discarded verdict for ${taskId}\n`,
       { json: options.json, startedAt },
     );
     return;
@@ -4739,15 +4742,25 @@ async function handleVerdict(argv) {
   );
 }
 
-// verdicts --pending — flat list of tasks with verdict=approved (not yet merged)
-// or verdict=needs-attention (awaiting iterate or discard).
-// Used by the Stop gate (T14) to block session close on unresolved work.
+// verdicts --pending — flat list of tasks with verdict=approved (not yet
+// merged), verdict=needs-attention, or verdict=must-fix. All three states
+// are unresolved work and block the Stop gate (T14) until merged or
+// explicitly discarded with `verdict --discard`.
 async function handleVerdictsPending(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
     booleanOptions: ["json", "pending"],
   });
+
+  // --pending is the only mode currently supported. Require it explicitly
+  // so the CLI contract leaves room for future modes (e.g. --resolved)
+  // without silently changing default behavior.
+  if (!options.pending) {
+    throw usageError(
+      "verdicts requires --pending (only mode currently supported)",
+    );
+  }
 
   const pendingVerdicts = new Set(["approved", "needs-attention", "must-fix"]);
   const tasks = listTasks();
@@ -4887,8 +4900,14 @@ async function handleMerge(argv) {
   }
 
   const mergedAt = nowIso();
+  const {
+    schema_version: _verdictSchemaVersion,
+    task_id: _verdictTaskId,
+    decided_at: _verdictDecidedAt,
+    ...verdictBody
+  } = verdict;
   writeVerdict(taskId, {
-    ...verdict,
+    ...verdictBody,
     merged_at: mergedAt,
     merge: mergeResult,
   });

@@ -17283,14 +17283,16 @@ async function handleVerdict(argv) {
     throw usageError("verdict requires a task_id positional argument");
   }
   if (options.discard) {
-    const dir = jobDir(taskId);
-    if (fs14.existsSync(dir)) {
-      fs14.rmSync(dir, { recursive: true, force: true });
+    const target = path12.join(jobDir(taskId), "verdict.json");
+    let removed = false;
+    if (fs14.existsSync(target)) {
+      fs14.rmSync(target, { force: true });
+      removed = true;
     }
     emitSuccess(
       "verdict",
-      { task_id: taskId, action: "discarded" },
-      `Discarded ${taskId}
+      { task_id: taskId, action: "discarded", removed },
+      `Discarded verdict for ${taskId}
 `,
       { json: options.json, startedAt }
     );
@@ -17339,6 +17341,11 @@ async function handleVerdictsPending(argv) {
     valueOptions: ["cwd"],
     booleanOptions: ["json", "pending"]
   });
+  if (!options.pending) {
+    throw usageError(
+      "verdicts requires --pending (only mode currently supported)"
+    );
+  }
   const pendingVerdicts = /* @__PURE__ */ new Set(["approved", "needs-attention", "must-fix"]);
   const tasks = listTasks();
   const pending = [];
@@ -17489,8 +17496,14 @@ async function handleMerge(argv) {
     );
   }
   const mergedAt = nowIso2();
+  const {
+    schema_version: _verdictSchemaVersion,
+    task_id: _verdictTaskId,
+    decided_at: _verdictDecidedAt,
+    ...verdictBody
+  } = verdict;
   writeVerdict(taskId, {
-    ...verdict,
+    ...verdictBody,
     merged_at: mergedAt,
     merge: mergeResult
   });

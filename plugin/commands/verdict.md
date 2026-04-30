@@ -11,7 +11,7 @@ Three modes:
 
 - **Read** (no flags): prints `~/.codex-bridge/jobs/<task_id>/verdict.json`. Errors with `NOT_FOUND` if no verdict exists.
 - **Write** (`--set <verdict>`): persists the verdict (one of `approved`, `needs-attention`, `must-fix`). Optional `--summary`, `--finding`, `--reviewer` flags add details. Idempotent — re-running with the same `--set` overwrites cleanly.
-- **Discard** (`--discard`): removes the entire `~/.codex-bridge/jobs/<task_id>/` directory. Required to clear the Stop gate's pending-verdict block when you intentionally don't want to merge a task.
+- **Discard** (`--discard`): removes only `~/.codex-bridge/jobs/<task_id>/verdict.json` — the rest of the registry entry (meta.json, session-log.jsonl, etc.) is preserved for audit. Use this to clear the Stop gate's pending-verdict block when you intentionally don't want to merge a task.
 
 Surface: write mode is read by `/codex-bridge:merge` (which refuses unless `verdict === "approved"`) and by `/codex-bridge:verdicts --pending` (which the Stop hook consumes to block session close on unresolved work).
 

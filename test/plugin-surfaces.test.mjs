@@ -119,6 +119,7 @@ const expectedCommands = [
   "task.md",
   "update.md",
   "verdict.md",
+  "verdicts.md",
   "version.md",
   "wait.md"
 ];
