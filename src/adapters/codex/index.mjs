@@ -23,7 +23,7 @@ const adapter = {
   name: "codex",
   displayName: "OpenAI Codex",
   capabilities() {
-    return {
+    return Object.freeze({
       supports_plan_mode:           true,
       supports_questions:           true,
       supports_streaming:           true,
@@ -40,7 +40,7 @@ const adapter = {
       billing_model:                "subscription",
       auth_strategy:                "oauth-cli",
       transport:                    "json-rpc-unix-socket",
-    };
+    });
   },
   validateConfig(_config) {
     return { valid: true, errors: [] };

@@ -82,6 +82,26 @@ export async function loadAdapter(name) {
 // Resolution order documented in ./_interface/CAPABILITIES.md.
 // Highest precedence first; first non-empty string wins.
 export async function selectAdapter(options = {}) {
+  // Validate config layer shape to prevent silent access errors
+  if (options.cwdConfig && typeof options.cwdConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: cwdConfig must be an object",
+    );
+  }
+  if (options.workspaceConfig && typeof options.workspaceConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: workspaceConfig must be an object",
+    );
+  }
+  if (options.userConfig && typeof options.userConfig !== "object") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      "selectAdapter: userConfig must be an object",
+    );
+  }
+
   const candidates = [
     options.backend,
     options.envBackend,
