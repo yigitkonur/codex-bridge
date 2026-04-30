@@ -198,6 +198,19 @@ test("guardCapability throws BACKEND_INCAPABLE when the flag is missing or false
       err.code === "BACKEND_INCAPABLE" &&
       err.details?.capability === "supports_unicorn",
   );
+
+  const falseCapabilityAdapter = {
+    name: "stub-backend",
+    capabilities: () => ({ supports_explicit_false: false }),
+  };
+  assert.throws(
+    () => guardCapability(falseCapabilityAdapter, "supports_explicit_false"),
+    (err) =>
+      err instanceof AdapterError &&
+      err.code === "BACKEND_INCAPABLE" &&
+      err.details?.backend === "stub-backend" &&
+      err.details?.capability === "supports_explicit_false",
+  );
 });
 
 test("registerErrorMapper round-trips with getErrorMapper", () => {
