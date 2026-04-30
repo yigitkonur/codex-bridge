@@ -98,7 +98,14 @@ test("Claude plugin exposes command coverage for bridge orchestration", () => {
   for (const command of expectedCommands) {
     const body = readText(path.join("plugin/commands", command));
     assert.match(body, /CLAUDE_PLUGIN_ROOT/);
-    assert.match(body, /scripts\/codex-bridge\.mjs|codex-bridge-runner/);
+    assert.match(
+      body,
+      /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs|codex-bridge-runner/
+    );
+    assert.doesNotMatch(
+      body,
+      /\$\{CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs/
+    );
   }
 });
 

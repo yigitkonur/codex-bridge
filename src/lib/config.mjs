@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import yaml from "js-yaml";
+// The re-export below does not create a local binding for loadConfig().
 import { DEFAULT_CONFIG } from "./runtime-options.mjs";
 
 export {
