@@ -592,6 +592,14 @@ const COMMANDS = Object.freeze({
       "codex-bridge adversarial-review --scope branch --base main"
     ]
   },
+  iterate: {
+    synopsis: "iterate <task_id_or_prompt> [--max <n>] [--brief <path>] [--backend <name>] [--write] [--json]",
+    summary: "Return the staged closed-loop iterate envelope and next manual task/review/verdict action.",
+    examples: [
+      'codex-bridge iterate "Implement the brief" --max 3 --json',
+      "codex-bridge iterate task-abc --max 2"
+    ]
+  },
   summary: {
     synopsis: "summary <thread-id> [--tail <n>] [--json]",
     summary: "Generate a readable transcript from the NDJSON session log (default tail=200).",
@@ -4669,15 +4677,120 @@ function readReviewedBranchHeadSha(verdict) {
   return null;
 }
 
+// iterate <prompt|task_id> — closed-loop dispatcher that runs task →
+// review → verdict and re-dispatches on needs-attention until either
+// approved or iteration_max is hit.
+//
+// v2.0.0 ships the dispatch surface: argument parsing, dispatcher entry,
+// envelope shape. The actual orchestration (spawning task --background,
+// polling for [DONE], running review, persisting verdict, re-briefing
+// from review findings) lands as a focused follow-up. The reviewer
+// agent (plugin/agents/codex-bridge-reviewer.md) is callable today and
+// covers the review→verdict half of the loop.
+async function handleIterate(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["max", "brief", "backend", "cwd"],
+    booleanOptions: ["json", "write"],
+  });
+  if (positionals.length === 0) {
+    throw usageError("iterate requires either a task_id or a prompt as positional");
+  }
+  const max = options.max ? Number.parseInt(options.max, 10) : 3;
+  if (!Number.isInteger(max) || max < 1 || max > 10) {
+    throw usageError(`--max must be an integer between 1 and 10 (got ${JSON.stringify(options.max)})`);
+  }
+
+  // For v2.0.0, return a structured stub envelope so the slash command
+  // and dispatcher are exercised end-to-end. Manual workflow remains:
+  //   /codex-bridge:task --worktree-auto --write "..."
+  //   /codex-bridge:review <task_id> --json
+  //   /codex-bridge:verdict <task_id> --set <verdict>
+  //   /codex-bridge:merge <task_id>            # if approved
+  //   <repeat with --resume-last>              # if needs-attention
+  // The codex-bridge-reviewer agent (plugin/agents/codex-bridge-reviewer.md)
+  // collapses review+verdict into one subagent call.
+  //
+  // Emit the next-action as a structured argv array rather than a shell
+  // command string. The prompt can contain `$`, backticks, `!`, and
+  // newlines from review findings; embedding it into a shell-quoted
+  // string would either need precise POSIX-shell escaping or risk
+  // re-evaluation when the consumer copy-pastes. argv is unambiguously
+  // data and the consumer (Claude / a subagent) can rebuild the call
+  // safely.
+  const nextActionPrompt = positionals.join(" ");
+  const payload = {
+    iteration_max: max,
+    iterations: [],
+    next_action: {
+      argv: [
+        "node",
+        "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs",
+        "task",
+        "--worktree-auto",
+        "--write",
+        "--json",
+        nextActionPrompt,
+      ],
+      description:
+        "iterate orchestration is staged for a follow-up; for now run task → review → verdict → merge manually, or use the codex-bridge-reviewer subagent to collapse review+verdict into one call.",
+    },
+    status: "not-yet-orchestrated",
+  };
+  emitSuccess(
+    "iterate",
+    payload,
+    `iterate orchestration is staged (--max=${max}); see result.next_action for the manual workflow.\n`,
+    { json: options.json, startedAt },
+  );
+}
+
+const VERDICT_VALUES = new Set(["approved", "needs-attention", "must-fix"]);
+
+function validateVerdictValue(verdict, optionName = "--set") {
+  if (!VERDICT_VALUES.has(verdict)) {
+    throw usageError(
+      `${optionName} must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`,
+    );
+  }
+}
+
+function readVerdictPayloadFromStdin() {
+  const raw = readStdinIfPiped().trim();
+  if (!raw) {
+    throw usageError("--payload-stdin requires a JSON object on stdin");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw usageError(`--payload-stdin must be valid JSON: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw usageError("--payload-stdin must be a JSON object");
+  }
+  validateVerdictValue(parsed.verdict, "payload.verdict");
+  if (parsed.findings != null && !Array.isArray(parsed.findings)) {
+    throw usageError("payload.findings must be an array when provided");
+  }
+  return {
+    verdict: parsed.verdict,
+    summary: typeof parsed.summary === "string" ? parsed.summary : null,
+    findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+    reviewer: typeof parsed.reviewer === "string" ? parsed.reviewer : null,
+  };
+}
+
 // verdict <task_id> — read or write the post-review verdict.
 //   read mode  (no flags):           prints current verdict.json
 //   write mode (--set <verdict>):    persists { verdict, summary?, finding?, reviewer? }
+//   stdin mode (--payload-stdin):     persists a JSON payload without shell-arg interpolation
 //   --discard:                       removes the registry directory
 async function handleVerdict(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["set", "summary", "finding", "reviewer", "cwd"],
-    booleanOptions: ["json", "discard"],
+    booleanOptions: ["json", "discard", "payload-stdin"],
   });
   const taskId = positionals[0];
   if (!taskId) {
@@ -4705,11 +4818,7 @@ async function handleVerdict(argv) {
   // write mode: persist a new verdict
   if (options.set) {
     const verdict = options.set;
-    if (!["approved", "needs-attention", "must-fix"].includes(verdict)) {
-      throw usageError(
-        `--set must be one of approved | needs-attention | must-fix (got ${JSON.stringify(verdict)})`,
-      );
-    }
+    validateVerdictValue(verdict);
     const payload = {
       verdict,
       summary: options.summary ?? null,
@@ -5383,7 +5492,8 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   "await-artifact": handleAwaitArtifact,
   merge: handleMerge,
   verdict: handleVerdict,
-  verdicts: handleVerdictsPending
+  verdicts: handleVerdictsPending,
+  iterate: handleIterate
 });
 
 // Node's default SIGPIPE handling terminates the process when a downstream
