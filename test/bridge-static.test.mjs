@@ -182,8 +182,10 @@ test("working-tree review empty check includes untracked files", () => {
 test("version json exposes backend adapter capability contract", () => {
   const version = bridge.match(/async function handleVersion[\s\S]*?emitSuccess\("version"/)?.[0] ?? "";
   assert.match(bridge, /"backend-adapter"/);
-  assert.match(version, /active_backend:\s*codexAdapter\.name/);
-  assert.match(version, /adapter_capabilities:\s*codexAdapter\.capabilities\(\)/);
+  assert.match(version, /const adapter = await selectAdapter/);
+  assert.match(version, /envBackend:\s*process\.env\.CODEX_BRIDGE_BACKEND/);
+  assert.match(version, /active_backend:\s*adapter\.name/);
+  assert.match(version, /adapter_capabilities:\s*adapter\.capabilities\(\)/);
 });
 
 test("background task writes job record before spawning worker", () => {

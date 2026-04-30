@@ -107,6 +107,21 @@ test("classifies ETIMEDOUT err.code as retryable ClientTimeout", () => {
   assert.equal(classified.exitCode, ExitCode.TRANSIENT);
 });
 
+test("classifies backend adapter failures as BACKEND_INCAPABLE validation errors", () => {
+  const classified = classifyError({
+    name: "AdapterError",
+    code: "BACKEND_INCAPABLE",
+    message: "Unknown backend 'gemini'. Known: codex",
+    details: { backend: "gemini" }
+  });
+
+  assert.equal(classified.class, "validation");
+  assert.equal(classified.code, "BACKEND_INCAPABLE");
+  assert.equal(classified.retryable, false);
+  assert.equal(classified.exitCode, ExitCode.VALIDATION);
+  assert.deepEqual(classified.details, { backend: "gemini" });
+});
+
 test("ETIMEDOUT in message without err.code still hits UPSTREAM_STREAM_DISCONNECTED", () => {
   const classified = classifyError({
     message: "stream disconnected: ETIMEDOUT"

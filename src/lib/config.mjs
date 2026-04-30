@@ -95,6 +95,30 @@ const DEFAULT_CONFIG = {
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 
+function readConfigFile(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const doc = yaml.load(raw) ?? {};
+    const bridge = doc.codex_bridge ?? doc;
+    return typeof bridge === "object" && bridge !== null ? bridge : {};
+  } catch {
+    return {};
+  }
+}
+
+function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
+  const skillConfigPath = skillDir
+    ? path.join(skillDir, "config.yaml")
+    : path.join(os.homedir(), ".codex-bridge", "config.yaml");
+  const workspaceConfigPath =
+    workspaceRoot && workspaceRoot !== overrideDir
+      ? path.join(workspaceRoot, "config.yaml")
+      : null;
+  const overrideConfigPath =
+    overrideDir ? path.join(overrideDir, "config.yaml") : null;
+  return { skillConfigPath, workspaceConfigPath, overrideConfigPath };
+}
+
 // Load bridge config with four-layer precedence (lowest → highest):
 //   1. DEFAULT_CONFIG             — hard-coded fallback
 //   2. `{skillDir}/config.yaml`   — installed skill's global defaults
@@ -111,39 +135,21 @@ const DEFAULT_CONFIG = {
 // `overrideDir` is typically the caller's cwd. If `workspaceRoot` is
 // provided and differs, its config.yaml gets layered in before cwd.
 export function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
-  const readYaml = (p) => {
-    try {
-      const raw = fs.readFileSync(p, "utf8");
-      const doc = yaml.load(raw) ?? {};
-      const bridge = doc.codex_bridge ?? doc;
-      return typeof bridge === "object" && bridge !== null ? bridge : {};
-    } catch {
-      return {};
-    }
-  };
-
-  const skillConfigPath = skillDir
-    ? path.join(skillDir, "config.yaml")
-    : path.join(os.homedir(), ".codex-bridge", "config.yaml");
-  const skillLayer = readYaml(skillConfigPath);
+  const { skillConfigPath, workspaceConfigPath, overrideConfigPath } =
+    configPaths(skillDir, overrideDir, workspaceRoot);
+  const skillLayer = readConfigFile(skillConfigPath);
 
   // Workspace-root layer — only read if distinct from overrideDir (avoid
   // reading the same file twice) and actually exists.
-  const workspaceConfigPath =
-    workspaceRoot && workspaceRoot !== overrideDir
-      ? path.join(workspaceRoot, "config.yaml")
-      : null;
   const workspaceLayer =
     workspaceConfigPath && fs.existsSync(workspaceConfigPath)
-      ? readYaml(workspaceConfigPath)
+      ? readConfigFile(workspaceConfigPath)
       : {};
 
   // Override (cwd) layer — most specific, wins last.
-  const overrideConfigPath =
-    overrideDir ? path.join(overrideDir, "config.yaml") : null;
   const overrideLayer =
     overrideConfigPath && fs.existsSync(overrideConfigPath)
-      ? readYaml(overrideConfigPath)
+      ? readConfigFile(overrideConfigPath)
       : {};
 
   return {
@@ -158,15 +164,8 @@ export function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
 // Used by `config show`, `setup --json`, `version --json` so users can
 // discover the exact file they need to edit. Reports all four layers.
 export function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
-  const skillConfigPath = skillDir
-    ? path.join(skillDir, "config.yaml")
-    : path.join(os.homedir(), ".codex-bridge", "config.yaml");
-  const workspaceConfigPath =
-    workspaceRoot && workspaceRoot !== overrideDir
-      ? path.join(workspaceRoot, "config.yaml")
-      : null;
-  const overrideConfigPath =
-    overrideDir ? path.join(overrideDir, "config.yaml") : null;
+  const { skillConfigPath, workspaceConfigPath, overrideConfigPath } =
+    configPaths(skillDir, overrideDir, workspaceRoot);
   return {
     skillConfigPath,
     skillConfigExists: fs.existsSync(skillConfigPath),
@@ -176,6 +175,15 @@ export function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot
     overrideConfigPath,
     overrideConfigExists:
       overrideConfigPath ? fs.existsSync(overrideConfigPath) : false,
+  };
+}
+
+export function resolveConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
+  const sources = resolveConfigSources(skillDir, overrideDir, workspaceRoot);
+  return {
+    skillConfig: sources.skillConfigExists ? readConfigFile(sources.skillConfigPath) : {},
+    workspaceConfig: sources.workspaceConfigExists ? readConfigFile(sources.workspaceConfigPath) : {},
+    cwdConfig: sources.overrideConfigExists ? readConfigFile(sources.overrideConfigPath) : {},
   };
 }
 
