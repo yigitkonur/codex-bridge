@@ -4,9 +4,11 @@
   "description": "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
   "type": "module",
   "scripts": {
+    "baseline:contracts": "node scripts/baseline-contracts.mjs",
     "build": "node esbuild.config.mjs",
     "dev": "node src/codex-bridge.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
   },
   "author": "Yigit Konur",
   "license": "MIT",

@@ -1,0 +1,402 @@
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+const REQUIRED_JSON_PROBES = Object.freeze([
+  "help",
+  "config",
+  "version",
+  "status",
+  "result",
+  "wait",
+  "events",
+  "setup",
+  "error"
+]);
+
+const GENERATED_SURFACES = Object.freeze([
+  {
+    source: "src/codex-bridge.mjs",
+    outputs: ["skill/scripts/codex-bridge.mjs", "plugin/scripts/codex-bridge.mjs"],
+    kind: "bundle",
+    reason: "CLI entrypoint bundled by esbuild.config.mjs for both install layouts"
+  },
+  {
+    source: "src/adapters/codex/broker.mjs",
+    outputs: ["skill/app-server-broker.mjs", "plugin/scripts/app-server-broker.mjs"],
+    kind: "bundle",
+    reason: "Shared Codex app-server broker bundled by esbuild.config.mjs"
+  },
+  {
+    source: "src/prompts/adversarial-review.md",
+    outputs: ["skill/prompts/adversarial-review.md", "plugin/prompts/adversarial-review.md"],
+    kind: "static-copy",
+    reason: "Prompt asset listed in staticAssets"
+  },
+  {
+    source: "src/schemas/review-output.schema.json",
+    outputs: ["skill/schemas/review-output.schema.json", "plugin/schemas/review-output.schema.json"],
+    kind: "static-copy",
+    reason: "Review schema asset listed in staticAssets"
+  },
+  {
+    source: "src/templates/execute-instructions.md",
+    outputs: ["skill/templates/execute-instructions.md", "plugin/templates/execute-instructions.md"],
+    kind: "static-copy",
+    reason: "Developer-instruction template listed in staticAssets"
+  },
+  {
+    source: "src/templates/plan-enforcement.md",
+    outputs: ["skill/templates/plan-enforcement.md", "plugin/templates/plan-enforcement.md"],
+    kind: "static-copy",
+    reason: "Plan-mode enforcement template listed in staticAssets"
+  },
+  {
+    source: "skill/config.yaml",
+    outputs: ["plugin/config.yaml"],
+    kind: "static-copy",
+    reason: "Plugin default config is copied from the legacy skill config"
+  },
+  {
+    source: "hooks",
+    outputs: ["plugin/hooks"],
+    kind: "directory-copy-with-plugin-path-transform",
+    reason: "Root hook scripts/config are copied into the packaged plugin layout"
+  }
+]);
+
+const JSON_ENVELOPE_PROBES = Object.freeze([
+  {
+    command: "help --json",
+    expected: ["ok", "schema_version", "command", "result.commands", "meta.duration_ms"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "config show --json",
+    expected: ["result.sources", "result.effective_config", "result.precedence_order_low_to_high"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "version --json",
+    expected: ["result.version", "result.active_backend", "result.adapter_capabilities"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "status --json",
+    expected: ["result.workspaceRoot", "result.running", "result.latestFinished"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "result <job-id> --json",
+    expected: ["result.job", "result.storedJob"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "wait <job-id> --json",
+    expected: ["result.jobId", "result.threadId", "result.terminalTag", "result.eventsPath"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "events <job-id> --json",
+    expected: ["result.jobId", "result.threadId", "result.eventsPath"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "setup --json",
+    expected: ["result.ready", "result.reviewGateLockPath", "result.reviewGateEnabled"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "unknown-subcommand --json",
+    expected: ["ok:false", "error.class", "error.code", "error.retryable"],
+    test: "test/baseline-contracts.test.mjs"
+  }
+]);
+
+const COMMAND_COVERAGE = Object.freeze({
+  setup: {
+    mutation: "project stop-review-gate lock and persisted setup state when enable/disable flags are used",
+    success_tests: ["test/official-plugin.test.mjs", "test/plugin-surfaces.test.mjs"],
+    failure_tests: ["test/baseline-contracts.test.mjs"],
+    baseline_gap: null
+  },
+  update: {
+    mutation: "external skills installer only when --apply/--yes is requested",
+    success_tests: ["test/update-command.test.mjs", "test/auto-apply.test.mjs"],
+    failure_tests: ["test/update-command.test.mjs"],
+    baseline_gap: null
+  },
+  review: {
+    mutation: "review session artifacts, events, and registry job state",
+    success_tests: ["test/bridge-static.test.mjs", "test/adapter-routing.test.mjs"],
+    failure_tests: ["test/bridge-static.test.mjs"],
+    baseline_gap: "No fully live review --json round-trip test without an authenticated Codex app-server; release smoke owns that proof."
+  },
+  "adversarial-review": {
+    mutation: "adversarial review session artifacts, prompt output, and review JSON artifact",
+    success_tests: ["test/adversarial-review-prompt.test.mjs", "test/render-finding-validity.test.mjs"],
+    failure_tests: ["test/adversarial-review-prompt.test.mjs"],
+    baseline_gap: "No authenticated app-server review smoke in static tests; Phase 6 must cover live review behavior."
+  },
+  task: {
+    mutation: "workspace jobs, session logs/events, optional worktree changes, and registry artifacts",
+    success_tests: ["test/bridge-static.test.mjs", "test/auto-pipeline-turn-watchdog.test.mjs", "test/job-control.test.mjs"],
+    failure_tests: ["test/bridge-static.test.mjs", "test/cli-errors.test.mjs"],
+    baseline_gap: "Static tests use mocked/runtime slices; Phase 6 must cover real foreground/background Codex task smoke."
+  },
+  "task-worker": {
+    mutation: "internal detached worker updates queued task records and session artifacts",
+    success_tests: ["test/bridge-static.test.mjs"],
+    failure_tests: ["test/bridge-static.test.mjs"],
+    baseline_gap: "Internal command is exercised through launcher/worker static contracts rather than direct CLI invocation."
+  },
+  send: {
+    mutation: "existing thread events and session logs through app-server turn continuation",
+    success_tests: ["test/bridge-static.test.mjs", "test/adapter-routing.test.mjs"],
+    failure_tests: ["test/cli-errors.test.mjs"],
+    baseline_gap: "Live continuation is not static-testable without authenticated Codex app-server."
+  },
+  steer: {
+    mutation: "active Codex turn steering state when supported by upstream runtime",
+    success_tests: ["test/adapter-routing.test.mjs"],
+    failure_tests: ["test/adapter-routing.test.mjs", "test/cli-errors.test.mjs"],
+    baseline_gap: "No live steering smoke; capability is backend-dependent."
+  },
+  respond: {
+    mutation: "pending request response state for requestUserInput prompts",
+    success_tests: ["test/bridge-static.test.mjs", "test/adapter-routing.test.mjs"],
+    failure_tests: ["test/cli-errors.test.mjs"],
+    baseline_gap: "No end-to-end requestUserInput app-server prompt smoke in static tests."
+  },
+  status: {
+    mutation: "state file only for --prune-orphans/--cleanup; default status is read-only",
+    success_tests: ["test/state.test.mjs", "test/job-control.test.mjs", "test/baseline-contracts.test.mjs"],
+    failure_tests: ["test/state.test.mjs"],
+    baseline_gap: null
+  },
+  cancel: {
+    mutation: "job state transitions to cancelled and process termination is attempted",
+    success_tests: ["test/job-control.test.mjs"],
+    failure_tests: ["test/job-control.test.mjs"],
+    baseline_gap: "Cancel has state-level coverage; direct CLI cancellation of a live process remains runtime smoke territory."
+  },
+  verdict: {
+    mutation: "registry verdict.json write/delete",
+    success_tests: ["test/registry.test.mjs", "test/plugin-surfaces.test.mjs"],
+    failure_tests: ["test/registry.test.mjs", "test/plugin-surfaces.test.mjs"],
+    baseline_gap: null
+  },
+  merge: {
+    mutation: "git worktree/base branch fast-forward plus registry verdict/meta updates",
+    success_tests: ["test/git-worktree.test.mjs"],
+    failure_tests: ["test/git-worktree.test.mjs"],
+    baseline_gap: null
+  },
+  iterate: {
+    mutation: "staged orchestration envelope only in current implementation",
+    success_tests: ["test/plugin-surfaces.test.mjs"],
+    failure_tests: ["test/plugin-surfaces.test.mjs"],
+    baseline_gap: "Current command intentionally returns not-yet-orchestrated; Phase 3 owns full mutation coverage when implemented."
+  }
+});
+
+const READ_ONLY_COMMANDS = Object.freeze([
+  "help",
+  "version",
+  "config",
+  "auth-status",
+  "summary",
+  "result",
+  "wait",
+  "events",
+  "task-resume-candidate",
+  "await-artifact",
+  "verdicts"
+]);
+
+function readText(rootDir, relativePath) {
+  return fs.readFileSync(path.join(rootDir, relativePath), "utf8");
+}
+
+function pathExists(rootDir, relativePath) {
+  return fs.existsSync(path.join(rootDir, relativePath));
+}
+
+function extractDispatchCommands(source) {
+  const block = /const SUBCOMMAND_DISPATCH = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(source)?.[1] ?? "";
+  return Array.from(
+    block.matchAll(/^\s*(?:"([^"]+)"|([A-Za-z_$][\w$-]*))\s*:/gm),
+    (match) => match[1] ?? match[2]
+  ).sort();
+}
+
+function withPluginPathTransform(content) {
+  return content
+    .replaceAll(
+      "${CLAUDE_PLUGIN_ROOT}/skill/scripts/codex-bridge.mjs",
+      "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs"
+    )
+    .replaceAll(
+      'path.resolve(SCRIPT_DIR, "..", "skill", "scripts", "codex-bridge.mjs")',
+      'path.resolve(SCRIPT_DIR, "..", "scripts", "codex-bridge.mjs")'
+    );
+}
+
+function compareGeneratedSurface(rootDir, surface) {
+  const failures = [];
+  if (!pathExists(rootDir, surface.source)) {
+    failures.push(`missing source: ${surface.source}`);
+    return failures;
+  }
+
+  for (const output of surface.outputs) {
+    if (!pathExists(rootDir, output)) {
+      failures.push(`missing generated output: ${output}`);
+      continue;
+    }
+    if (surface.kind === "static-copy") {
+      const source = readText(rootDir, surface.source);
+      const generated = readText(rootDir, output);
+      if (source !== generated) failures.push(`stale generated static copy: ${output}`);
+    }
+    if (surface.source === "skill/config.yaml") {
+      const source = readText(rootDir, surface.source);
+      const generated = readText(rootDir, output);
+      if (source !== generated) failures.push(`stale generated config copy: ${output}`);
+    }
+  }
+
+  if (surface.kind === "directory-copy-with-plugin-path-transform") {
+    const sourceDir = path.join(rootDir, surface.source);
+    const outputDir = path.join(rootDir, surface.outputs[0]);
+    for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const sourceRelative = path.join(surface.source, entry.name);
+      const outputRelative = path.join(surface.outputs[0], entry.name);
+      if (!pathExists(rootDir, outputRelative)) {
+        failures.push(`missing generated hook copy: ${outputRelative}`);
+        continue;
+      }
+      const source = withPluginPathTransform(readText(rootDir, sourceRelative));
+      const generated = readText(rootDir, outputRelative);
+      if (source !== generated) failures.push(`stale generated hook copy: ${outputRelative}`);
+    }
+  }
+
+  return failures;
+}
+
+export function buildBaselineContracts(rootDir = process.cwd()) {
+  const pkg = JSON.parse(readText(rootDir, "package.json"));
+  const bridgeSource = readText(rootDir, "src/codex-bridge.mjs");
+  const dispatchCommands = extractDispatchCommands(bridgeSource);
+  const coveredCommands = new Set([...READ_ONLY_COMMANDS, ...Object.keys(COMMAND_COVERAGE)]);
+
+  return {
+    schema_version: "1.0",
+    project: pkg.name,
+    package_version: pkg.version,
+    static_gate: {
+      command: "npm run verify:static",
+      steps: ["npm run build", "npm test", "npm run baseline:contracts -- --check"]
+    },
+    generated_surfaces: GENERATED_SURFACES,
+    json_envelope_probes: JSON_ENVELOPE_PROBES,
+    mutating_command_coverage: COMMAND_COVERAGE,
+    read_only_commands: READ_ONLY_COMMANDS,
+    dispatch_commands: dispatchCommands,
+    baseline_gaps: Object.fromEntries(
+      Object.entries(COMMAND_COVERAGE)
+        .filter(([, value]) => value.baseline_gap)
+        .map(([command, value]) => [command, value.baseline_gap])
+    ),
+    coverage_summary: {
+      dispatch_commands: dispatchCommands.length,
+      classified_commands: dispatchCommands.filter((command) => coveredCommands.has(command)).length,
+      mutating_commands: Object.keys(COMMAND_COVERAGE).length,
+      read_only_commands: READ_ONLY_COMMANDS.length,
+      json_probe_targets: JSON_ENVELOPE_PROBES.length,
+      generated_surface_sources: GENERATED_SURFACES.length
+    }
+  };
+}
+
+export function verifyBaselineContracts(rootDir = process.cwd(), report = buildBaselineContracts(rootDir)) {
+  const failures = [];
+  const pkg = JSON.parse(readText(rootDir, "package.json"));
+
+  if (!pkg.scripts?.["verify:static"]) failures.push("package.json missing scripts.verify:static");
+  if (!pkg.scripts?.["baseline:contracts"]) failures.push("package.json missing scripts.baseline:contracts");
+  if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("npm run build")) {
+    failures.push("verify:static must run npm run build");
+  }
+  if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("npm test")) {
+    failures.push("verify:static must run npm test");
+  }
+  if (pkg.scripts?.["verify:static"] && !pkg.scripts["verify:static"].includes("baseline:contracts")) {
+    failures.push("verify:static must run baseline:contracts -- --check");
+  }
+
+  for (const surface of report.generated_surfaces) {
+    failures.push(...compareGeneratedSurface(rootDir, surface));
+  }
+
+  const coveredCommands = new Set([...report.read_only_commands, ...Object.keys(report.mutating_command_coverage)]);
+  for (const command of report.dispatch_commands) {
+    if (!coveredCommands.has(command)) {
+      failures.push(`dispatch command is not classified as read-only or mutating: ${command}`);
+    }
+  }
+
+  for (const probe of REQUIRED_JSON_PROBES) {
+    if (!report.json_envelope_probes.some((entry) => entry.command.split(" ")[0] === probe || probe === "error" && entry.command.includes("unknown-subcommand"))) {
+      failures.push(`missing JSON envelope probe target: ${probe}`);
+    }
+  }
+
+  for (const [command, coverage] of Object.entries(report.mutating_command_coverage)) {
+    if (!Array.isArray(coverage.success_tests) || coverage.success_tests.length === 0) {
+      failures.push(`${command} missing success_tests coverage entry`);
+    }
+    if (!Array.isArray(coverage.failure_tests) || coverage.failure_tests.length === 0) {
+      failures.push(`${command} missing failure_tests coverage entry`);
+    }
+    for (const testFile of [...coverage.success_tests, ...coverage.failure_tests]) {
+      if (!pathExists(rootDir, testFile)) failures.push(`${command} references missing test file: ${testFile}`);
+    }
+  }
+
+  for (const probe of report.json_envelope_probes) {
+    if (!pathExists(rootDir, probe.test)) failures.push(`JSON probe references missing test file: ${probe.test}`);
+  }
+
+  return {
+    ok: failures.length === 0,
+    failures
+  };
+}
+
+function printUsage() {
+  process.stdout.write("Usage: node scripts/baseline-contracts.mjs [--json] [--check]\n");
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const args = new Set(process.argv.slice(2));
+  if (args.has("--help") || args.has("-h")) {
+    printUsage();
+    process.exit(0);
+  }
+
+  const report = buildBaselineContracts(process.cwd());
+  const check = verifyBaselineContracts(process.cwd(), report);
+  if (args.has("--check")) {
+    if (!check.ok) {
+      process.stderr.write(`${check.failures.join("\n")}\n`);
+      process.exit(1);
+    }
+    process.stdout.write("Baseline contracts: OK\n");
+    process.exit(0);
+  }
+
+  process.stdout.write(`${JSON.stringify({ ...report, check }, null, 2)}\n`);
+}
