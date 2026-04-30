@@ -67,3 +67,33 @@ test("PreToolUse(Bash) honors explicit worktree opt-out", () => {
     { continue: true },
   );
 });
+
+test("PreToolUse(Bash) does not match flags inside quoted prompt text", () => {
+  // Prompt argument names the flag — must NOT short-circuit the gate.
+  assert.equal(
+    isDenied(runHook('codex-bridge task --write "Fix the --worktree-auto check"')),
+    true,
+  );
+  assert.equal(
+    isDenied(runHook("codex-bridge task --write 'audit --worktree-auto handling'")),
+    true,
+  );
+  // Prompt mentions --read-only — must not flip the conflict path either.
+  assert.equal(
+    isDenied(runHook('codex-bridge task --write "explain --read-only mode"')),
+    true,
+  );
+});
+
+test("PreToolUse(Bash) rewrite suggestion does not corrupt task-bearing paths", () => {
+  const output = runHook('node /opt/task-runner/codex-bridge.mjs task --write "edit"');
+  assert.equal(isDenied(output), true);
+  assert.match(
+    output.hookSpecificOutput.additionalContext,
+    /\/opt\/task-runner\/codex-bridge\.mjs task --worktree-auto --write/,
+  );
+  assert.doesNotMatch(
+    output.hookSpecificOutput.additionalContext,
+    /task --worktree-auto-runner/,
+  );
+});

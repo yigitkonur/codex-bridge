@@ -73,6 +73,59 @@ function unquoteInlineValue(value) {
   return trimmed;
 }
 
+// Strip shell-quoted segments (single + double quotes) before flag
+// detection so a prompt argument like `"Fix the --worktree-auto check"`
+// cannot impersonate a real CLI flag and bypass the safety gate. Each
+// stripped segment is replaced with a single space so adjacent tokens
+// stay separated. Single quotes are taken literally per POSIX; double
+// quotes honor backslash-escapes for the closing quote. Unterminated
+// quoted segments are stripped to end-of-string — the safe direction
+// of failure here is "deny" (treat the rest as opaque), not "allow".
+function stripQuotedSegments(command) {
+  if (typeof command !== "string" || command.length === 0) return command;
+  let out = "";
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end === -1) {
+        out += " ";
+        break;
+      }
+      out += " ";
+      i = end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      let closed = false;
+      while (j < n) {
+        if (command[j] === "\\" && j + 1 < n) {
+          j += 2;
+          continue;
+        }
+        if (command[j] === '"') {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (!closed) {
+        out += " ";
+        break;
+      }
+      out += " ";
+      i = j + 1;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 // Detect enabled boolean flags using the same important convention as the
 // bridge parser: --flag=false is false; bare --flag and other inline values
 // are enabled. This is intentionally not a full shell parser.
@@ -93,9 +146,14 @@ function classifyCommand(command) {
   if (!command || typeof command !== "string") return null;
   if (!BRIDGE_TASK_PATTERN.test(command)) return null;
 
-  const isWrite = booleanFlagEnabled(command, "--write");
-  const isReadOnly = booleanFlagEnabled(command, "--read-only");
-  const hasWorktreeAuto = booleanFlagEnabled(command, "--worktree-auto");
+  // Detect flags only on the unquoted portion of the command so prompt
+  // arguments like `"add --worktree-auto"` cannot impersonate real CLI
+  // flags and silently bypass the worktree-isolation gate.
+  const scannable = stripQuotedSegments(command);
+
+  const isWrite = booleanFlagEnabled(scannable, "--write");
+  const isReadOnly = booleanFlagEnabled(scannable, "--read-only");
+  const hasWorktreeAuto = booleanFlagEnabled(scannable, "--worktree-auto");
 
   if (isWrite && isReadOnly) {
     return { decision: "conflict" };
@@ -111,9 +169,14 @@ function classifyCommand(command) {
 }
 
 function buildRewriteSuggestion(command) {
-  // Insert --worktree-auto right after `task`. Best-effort string surgery.
-  const insertion = " --worktree-auto";
-  return command.replace(/\btask\b/, `task${insertion}`);
+  // Insert --worktree-auto right after the `task` subcommand of the
+  // matched codex-bridge invocation. Anchor on BRIDGE_TASK_PATTERN so we
+  // don't corrupt unrelated occurrences of "task" inside file paths
+  // (e.g. `node /opt/task-runner/codex-bridge.mjs task --write ...`).
+  const m = BRIDGE_TASK_PATTERN.exec(command);
+  if (!m) return command;
+  const insertAt = m.index + m[0].length;
+  return `${command.slice(0, insertAt)} --worktree-auto${command.slice(insertAt)}`;
 }
 
 function main() {
