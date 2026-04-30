@@ -36,6 +36,8 @@ All four layers are honored. Before 1.1.0, only the skill config layer was read 
 | `pipeline_stage_ms` | integer | `300000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
 | `pipeline_total_ms` | integer | `900000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
 | `question_answer_ms` | integer | `300000` | How long `requestUserInput` waits for a response before logging `QUESTION_TIMEOUT` and replying to the upstream server request with `result: { answers: {} }` (an empty-answer success response, not a rejection — see `src/codex-bridge.mjs:2197`). CLI override: `--question-timeout-ms`. |
+| `default_backend` | string | `"codex"` fallback | Backend selected when no `--backend`, `CODEX_BRIDGE_BACKEND`, task metadata backend, or matching `adapter_routing` entry is set. In this build only `codex` is implemented. |
+| `adapter_routing` | object | unset | Optional map of subagent type to `{ backend }`. Routing entries from all config layers are checked before any `default_backend` layer; cwd routing wins over workspace routing, which wins over skill config routing. |
 
 Resolution order for every timeout: CLI flag → `config.yaml` key → built-in default.
 
@@ -53,7 +55,7 @@ Run `config show` whenever a knob seems to have no effect — the output enumera
 
 ## Environment variable overrides
 
-Four `CODEX_BRIDGE_*` env vars override runtime-only knobs that are not surfaced as `config.yaml` keys or CLI flags. **When they are read varies** — see the rightmost column:
+Several `CODEX_BRIDGE_*` env vars override runtime-only knobs. **When they are read varies** — see the rightmost column:
 
 | Env var | Default | Read when | Purpose |
 |---|---|---|---|
@@ -61,6 +63,7 @@ Four `CODEX_BRIDGE_*` env vars override runtime-only knobs that are not surfaced
 | `CODEX_BRIDGE_CHECKPOINT_MS` | `300000` (5 min) | once per `task` / `send` turn (checkpoint-loop init) | Interval for `[CHECKPOINT]` digests (last assistant message + tool calls + git delta). Also drives the stall detector (see below). |
 | `CODEX_BRIDGE_STALL_CHECKPOINTS` | `3` | once per `task` / `send` turn (checkpoint-loop init) | Consecutive **barren** checkpoint windows (no commands, no file changes, no plans) before the bridge emits `[ERROR] \| StallDetected` and stops the heartbeat/checkpoint timers. The barren counter only starts after the first actionable item lands (grace period); default stall window = `CHECKPOINT_MS × STALL_CHECKPOINTS` = 15 min once Codex is past that grace. |
 | `CODEX_BRIDGE_NO_UPDATE_CHECK` | unset | every bridge invocation (auto-apply hot path) | Set to `"1"` (strict equality) to disable the silent auto-apply that re-installs `yigitkonur/codex-bridge` via `npx -y skills add` on non-`--json`, non-`update` invocations (rate-limited to once/hour/workspace). This is the only opt-out. |
+| `CODEX_BRIDGE_BACKEND` | unset | before `task`, `send`, `review`, `adversarial-review`, and `version` resolve the active adapter | Backend override below `--backend` and above task metadata / config. In this build only `codex` is implemented; other names exit 6 `BACKEND_INCAPABLE`. |
 
 
 ### `skip_meta_skills`

@@ -107,7 +107,7 @@ A failed `task --json` **does not** return a success envelope with `phase=error`
 Start a new Codex task. Default: plan mode, configured sandbox, foreground.
 
 ```
-codex-bridge task [--write] [--effort <level>] [--mode <plan|default>] [-m <model>]
+codex-bridge task [--backend <name>] [--write] [--effort <level>] [--mode <plan|default>] [-m <model>]
                   [--prompt-file <path>] [--resume | --resume-last] [--fresh]
                   [--background] [--no-pipeline] [--quiet]
                   [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>]
@@ -117,6 +117,7 @@ codex-bridge task [--write] [--effort <level>] [--mode <plan|default>] [-m <mode
 
 | Flag | Description |
 |------|-------------|
+| `--backend <name>` | Select backend for this run. In this build only `codex` is implemented; other names exit 6 `BACKEND_INCAPABLE`. |
 | `--write` | Request the workspace-write sandbox (used when the turn is in default mode and `config.sandbox_policy` is unset). **Ship default note:** `sandbox_policy` ships as `"danger-full-access"`, which takes precedence over the mode-derived branch — so by default `--write` is redundant because Codex can already write. **Restricted-sandbox caveat:** if you set `sandbox_policy: "read-only"` (or clear the override so plan mode falls back to `readOnly`), the plan turn still uses `readOnly` and `--write` has no effect until `send <thread-id> --mode default …` approves the plan. To skip the plan turn and write on turn 1, pass `--mode default` on `task`. |
 | `--effort <level>` | Reasoning effort: none, minimal, low, medium, high, xhigh |
 | `--mode <plan\|default>` | Override `config.mode` for this single run. Honored on both foreground and background paths. Rejected with `USAGE_ERROR` (exit 2) for any other value. |
@@ -149,13 +150,14 @@ Thread IDs returned by `task` are UUID v7 strings (e.g. `019d9a86-1c8a-7f41-8032
 Resume a thread with a new prompt. Used for plan approval, revisions, and follow-ups.
 
 ```
-codex-bridge send <thread-id> [--mode <plan|default>] [--effort <level>] [--quiet]
+codex-bridge send <thread-id> [--backend <name>] [--mode <plan|default>] [--effort <level>] [--quiet]
                               [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>]
                               [--question-timeout-ms <ms>] [--json] [prompt or file.md]
 ```
 
 | Flag | Description |
 |------|-------------|
+| `--backend <name>` | Select backend for this follow-up. In this build only `codex` is implemented; other names exit 6 `BACKEND_INCAPABLE`. |
 | `--mode <plan\|default>` | Switch collaboration mode. Omit to keep current mode. |
 | `--effort <level>` | Override reasoning effort for this turn |
 | `--quiet` | Suppress `[codex] …` stderr progress |
@@ -198,11 +200,12 @@ codex-bridge respond <request-id> --json-payload '{"answers":{"q1":{"answers":["
 Run a standalone code review using Codex's built-in reviewer. **This runs a billed Codex turn** (not a local diff probe); expect 30–180 s and tokens proportional to the diff size.
 
 ```
-codex-bridge review [--scope <auto|working-tree|branch>] [--base <ref>] [-m <model>] [--json]
+codex-bridge review [--backend <name>] [--scope <auto|working-tree|branch>] [--base <ref>] [-m <model>] [--json]
 ```
 
 | Flag | Description |
 |------|-------------|
+| `--backend <name>` | Select backend for the review. In this build only `codex` is implemented; other names exit 6 `BACKEND_INCAPABLE`. |
 | `--scope auto` | Auto-detect: dirty tree → working-tree, clean → branch (default) |
 | `--scope working-tree` | Review uncommitted changes |
 | `--scope branch` | Review branch vs base |
@@ -217,7 +220,7 @@ Focus text is not accepted by `review`. Use `adversarial-review` for custom focu
 Run an adversarial review with structured JSON output.
 
 ```
-codex-bridge adversarial-review [--scope <s>] [--base <ref>] [-m <model>] [--json] [focus text...]
+codex-bridge adversarial-review [--backend <name>] [--scope <s>] [--base <ref>] [-m <model>] [--json] [focus text...]
 ```
 
 Focus text directs the reviewer's attention (e.g., "focus on SQL injection risks").

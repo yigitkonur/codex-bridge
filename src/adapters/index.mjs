@@ -2,8 +2,10 @@
 // ./_interface/INTERFACE.md for the prose version, and
 // ./_interface/CAPABILITIES.md for the resolution order.
 
+import process from "node:process";
 import codexAdapter from "./codex/index.mjs";
 import { CliError } from "../lib/cli-errors.mjs";
+import { loadConfigLayers } from "../lib/config.mjs";
 
 const REQUIRED_FIELDS = ["name", "displayName"];
 const REQUIRED_METHODS = ["capabilities", "validateConfig", "dispatch", "streamEvents", "getResult", "cancel"];
@@ -16,6 +18,8 @@ const OPTIONAL_CAPABILITY_METHODS = Object.freeze({
 const ADAPTER_LOADERS = {
   codex: () => codexAdapter,
 };
+
+export const BACKEND_ENV_VAR = "CODEX_BRIDGE_BACKEND";
 
 // v2.0 ships only codex. Future adapters are added here when their
 // index.mjs is implemented; stub directories under src/adapters/ are
@@ -148,6 +152,50 @@ export async function selectAdapter(options = {}) {
     );
   }
   return loadAdapter(name);
+}
+
+function metadataBackend(metadata) {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  return metadata.backend;
+}
+
+function metadataSubagentType(metadata) {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  return metadata.subagentType ?? metadata.subagent_type;
+}
+
+export function buildAdapterSelectionOptions(options = {}) {
+  const env = options.env ?? process.env;
+  const metadata = options.taskMetadata ?? options.metadata ?? null;
+  const layers = options.configLayers ?? {};
+  return {
+    backend: options.backend,
+    envBackend: env?.[BACKEND_ENV_VAR],
+    metaBackend: options.metaBackend ?? metadataBackend(metadata),
+    subagentType: options.subagentType ?? metadataSubagentType(metadata),
+    cwdConfig: options.cwdConfig ?? layers.cwdConfig,
+    workspaceConfig: options.workspaceConfig ?? layers.workspaceConfig,
+    userConfig: options.userConfig ?? layers.userConfig ?? layers.skillConfig,
+    defaultBackend: options.defaultBackend,
+  };
+}
+
+export async function resolveAdapter(options = {}) {
+  return selectAdapter(buildAdapterSelectionOptions(options));
+}
+
+export async function resolveAdapterForRuntime(options = {}) {
+  const configLayers =
+    options.configLayers ??
+    loadConfigLayers(
+      options.skillDir ?? null,
+      options.cwd ?? null,
+      options.workspaceRoot ?? null,
+    );
+  return resolveAdapter({
+    ...options,
+    configLayers,
+  });
 }
 
 export function guardCapability(adapter, capability) {

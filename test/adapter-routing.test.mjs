@@ -1,9 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 import {
   loadAdapter,
   selectAdapter,
+  resolveAdapterForRuntime,
   guardCapability,
   registerErrorMapper,
   getErrorMapper,
@@ -11,6 +17,28 @@ import {
   _resetAdapterCache,
   _resetErrorMappers,
 } from "../src/adapters/index.mjs";
+
+const BRIDGE_SCRIPT = fileURLToPath(new URL("../src/codex-bridge.mjs", import.meta.url));
+
+async function makeConfigFixture(t, configs = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-bridge-adapter-routing-"));
+  const skillDir = path.join(root, "skill");
+  const workspaceRoot = path.join(root, "workspace");
+  const cwd = path.join(workspaceRoot, "nested");
+  await mkdir(skillDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+
+  const writeConfig = async (dir, body) => {
+    if (body == null) return;
+    await writeFile(path.join(dir, "config.yaml"), body, "utf8");
+  };
+  await writeConfig(skillDir, configs.skill);
+  await writeConfig(workspaceRoot, configs.workspace);
+  await writeConfig(cwd, configs.cwd);
+
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return { skillDir, workspaceRoot, cwd };
+}
 
 test("selectAdapter({backend:'codex'}) resolves the codex adapter", async () => {
   _resetAdapterCache();
@@ -65,6 +93,32 @@ test("envBackend wins over config layers when set", async () => {
     }),
     (err) =>
       err instanceof AdapterError && err.message.includes("env-backend"),
+  );
+});
+
+test("resolveAdapterForRuntime reads CODEX_BRIDGE_BACKEND from process.env", async (t) => {
+  _resetAdapterCache();
+  const fixture = await makeConfigFixture(t);
+  const previous = process.env.CODEX_BRIDGE_BACKEND;
+  process.env.CODEX_BRIDGE_BACKEND = "env-backend";
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env.CODEX_BRIDGE_BACKEND;
+    } else {
+      process.env.CODEX_BRIDGE_BACKEND = previous;
+    }
+  });
+
+  await assert.rejects(
+    resolveAdapterForRuntime({
+      skillDir: fixture.skillDir,
+      cwd: fixture.cwd,
+      workspaceRoot: fixture.workspaceRoot,
+    }),
+    (err) =>
+      err instanceof AdapterError &&
+      err.code === "BACKEND_INCAPABLE" &&
+      err.message.includes("env-backend"),
   );
 });
 
@@ -171,6 +225,123 @@ test("user adapter_routing wins over every default_backend layer", async () => {
       err.code === "BACKEND_INCAPABLE" &&
       err.message.includes("user-route"),
   );
+});
+
+test("resolveAdapterForRuntime preserves real config layer origins for routing precedence", async (t) => {
+  _resetAdapterCache();
+  const fixture = await makeConfigFixture(t, {
+    skill: [
+      "codex_bridge:",
+      "  adapter_routing:",
+      "    Explore:",
+      "      backend: user-route",
+      "  default_backend: user-backend",
+      "",
+    ].join("\n"),
+    workspace: [
+      "codex_bridge:",
+      "  default_backend: workspace-backend",
+      "",
+    ].join("\n"),
+    cwd: [
+      "codex_bridge:",
+      "  adapter_routing:",
+      "    Other:",
+      "      backend: cwd-other-route",
+      "  default_backend: cwd-backend",
+      "",
+    ].join("\n"),
+  });
+
+  await assert.rejects(
+    resolveAdapterForRuntime({
+      skillDir: fixture.skillDir,
+      cwd: fixture.cwd,
+      workspaceRoot: fixture.workspaceRoot,
+      subagentType: "Explore",
+      env: {},
+    }),
+    (err) =>
+      err instanceof AdapterError &&
+      err.code === "BACKEND_INCAPABLE" &&
+      err.message.includes("user-route"),
+  );
+});
+
+test("resolveAdapterForRuntime drives default_backend precedence through real config files", async (t) => {
+  _resetAdapterCache();
+  const fixture = await makeConfigFixture(t, {
+    workspace: [
+      "codex_bridge:",
+      "  default_backend: workspace-backend",
+      "",
+    ].join("\n"),
+    cwd: [
+      "codex_bridge:",
+      "  default_backend: codex",
+      "",
+    ].join("\n"),
+  });
+
+  const adapter = await resolveAdapterForRuntime({
+    skillDir: fixture.skillDir,
+    cwd: fixture.cwd,
+    workspaceRoot: fixture.workspaceRoot,
+    env: {},
+  });
+  assert.equal(adapter.name, "codex");
+});
+
+test("resolveAdapterForRuntime lets task metadata backend outrank real config files", async (t) => {
+  _resetAdapterCache();
+  const fixture = await makeConfigFixture(t, {
+    cwd: [
+      "codex_bridge:",
+      "  default_backend: cwd-backend",
+      "",
+    ].join("\n"),
+  });
+
+  await assert.rejects(
+    resolveAdapterForRuntime({
+      skillDir: fixture.skillDir,
+      cwd: fixture.cwd,
+      workspaceRoot: fixture.workspaceRoot,
+      taskMetadata: { backend: "meta-backend" },
+      env: {},
+    }),
+    (err) =>
+      err instanceof AdapterError &&
+      err.code === "BACKEND_INCAPABLE" &&
+      err.message.includes("meta-backend"),
+  );
+});
+
+test("task CLI drives --backend through production adapter resolution before Codex runtime", async (t) => {
+  const fixture = await makeConfigFixture(t);
+  const stateRoot = await mkdtemp(path.join(os.tmpdir(), "codex-bridge-adapter-state-"));
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+
+  const result = spawnSync(
+    process.execPath,
+    [BRIDGE_SCRIPT, "task", "--backend", "unknown", "--json", "probe prompt"],
+    {
+      cwd: fixture.cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_BRIDGE_BACKEND: "",
+        CODEX_BRIDGE_NO_UPDATE_CHECK: "1",
+        CODEX_BRIDGE_PLUGIN_DATA: stateRoot,
+      },
+    },
+  );
+
+  assert.equal(result.status, 6, result.stderr || result.stdout);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.command, "task");
+  assert.equal(envelope.error.code, "BACKEND_INCAPABLE");
+  assert.match(envelope.error.message, /Unknown backend 'unknown'/);
 });
 
 test("loadAdapter caches resolved adapters between calls", async () => {

@@ -15,7 +15,11 @@ import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+<<<<<<< HEAD
 import { selectAdapter } from "./adapters/index.mjs";
+=======
+import { resolveAdapterForRuntime } from "./adapters/index.mjs";
+>>>>>>> 1e991d7 (review(stage 4): apply adversarial-review findings)
 import {
   CliError,
   emitError,
@@ -303,6 +307,36 @@ function getBridgeConfig(cwd = null, workspaceRoot = null) {
   return loadConfig(ROOT_DIR, cwd, workspaceRoot);
 }
 
+async function resolveCommandAdapter({
+  cwd = null,
+  workspaceRoot = null,
+  backend = null,
+  metaBackend = null,
+  taskMetadata = null,
+  subagentType = null,
+} = {}) {
+  const resolvedWorkspaceRoot = workspaceRoot ?? (cwd ? resolveWorkspaceRoot(cwd) : null);
+  return resolveAdapterForRuntime({
+    skillDir: ROOT_DIR,
+    cwd,
+    workspaceRoot: resolvedWorkspaceRoot,
+    backend,
+    metaBackend,
+    taskMetadata,
+    subagentType,
+    env: process.env,
+  });
+}
+
+function ensureCodexRuntimeAdapter(adapter) {
+  if (adapter?.name === "codex") return;
+  throw validationError(
+    `Backend '${adapter?.name ?? "unknown"}' is selected but this CLI path is not wired to that adapter yet.`,
+    "BACKEND_INCAPABLE",
+    "Use --backend codex, unset CODEX_BRIDGE_BACKEND, or choose a config default_backend supported by this build."
+  );
+}
+
 // Pending requests are persisted to disk by the worker process.
 // The respond command reads from disk and writes a response file.
 // See lib/pending-requests.mjs for the file-based IPC protocol.
@@ -514,7 +548,7 @@ function extractItemText(item) {
 // table as the CLI contract and update it in the same commit as any flag move.
 const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    synopsis: "task [--backend <name>] [--write] [--read-only] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -525,7 +559,7 @@ const COMMANDS = Object.freeze({
     ]
   },
   send: {
-    synopsis: "send <thread-id> [--mode plan|default] [--effort <level>] [--quiet] [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    synopsis: "send <thread-id> [--backend <name>] [--mode plan|default] [--effort <level>] [--quiet] [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
     summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task.",
     examples: [
       'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --mode default "Implement the plan."',
@@ -546,7 +580,7 @@ const COMMANDS = Object.freeze({
     ]
   },
   review: {
-    synopsis: "review [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json]",
+    synopsis: "review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json]",
     summary: "Run a standalone code review using Codex's built-in reviewer.",
     examples: [
       "codex-bridge review --scope working-tree",
@@ -554,7 +588,7 @@ const COMMANDS = Object.freeze({
     ]
   },
   "adversarial-review": {
-    synopsis: "adversarial-review [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json] [focus text...]",
+    synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json] [focus text...]",
     summary: "Run an adversarial review with a structured JSON result.",
     examples: [
       'codex-bridge adversarial-review "focus on SQL injection risks"',
@@ -1058,6 +1092,7 @@ async function handleVersion(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+<<<<<<< HEAD
   const configLayers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
   const adapter = await selectAdapter({
     backend: options.backend,
@@ -1067,6 +1102,9 @@ async function handleVersion(argv) {
     userConfig: configLayers.skillConfig,
     defaultBackend: "codex",
   });
+=======
+  const adapter = await resolveCommandAdapter({ cwd, workspaceRoot });
+>>>>>>> 1e991d7 (review(stage 4): apply adversarial-review findings)
   const codex = getCodexAvailability(cwd);
 
   // `version --check-update` forces a fresh GitHub round-trip; the bare
@@ -1510,6 +1548,12 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
 }
 
 async function executeReviewRun(request) {
+  const adapter = await resolveCommandAdapter({
+    cwd: request.cwd,
+    workspaceRoot: resolveWorkspaceRoot(request.cwd),
+    backend: request.backend ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
   const startedAt = Date.now();
@@ -1923,7 +1967,8 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
 function buildTaskRequest({
   cwd, model, effort, prompt, write, readOnly, resumeLast, jobId, mode,
   idleTimeoutMs, noPipeline,
-  turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs
+  turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs,
+  backend = null,
 }) {
   const opt = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null);
   return {
@@ -1942,7 +1987,8 @@ function buildTaskRequest({
     pipelineStageMs: opt(pipelineStageMs),
     pipelineTotalMs: opt(pipelineTotalMs),
     questionAnswerMs: opt(questionAnswerMs),
-    noPipeline: Boolean(noPipeline)
+    noPipeline: Boolean(noPipeline),
+    backend: backend ?? null
   };
 }
 
@@ -2219,7 +2265,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 async function handleReviewCommand(argv, config) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
+    valueOptions: ["base", "scope", "model", "cwd", "backend"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -2228,6 +2274,12 @@ async function handleReviewCommand(argv, config) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+  const adapter = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
   const focusText = positionals.join(" ").trim();
   const target = resolveReviewTarget(cwd, {
     base: options.base,
@@ -2252,6 +2304,7 @@ async function handleReviewCommand(argv, config) {
         base: options.base,
         scope: options.scope,
         model: options.model,
+        backend: options.backend ?? null,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
@@ -2279,6 +2332,15 @@ async function handleReview(argv) {
 async function runBridgeTask(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
+  const adapter = await resolveCommandAdapter({
+    cwd: request.cwd ?? null,
+    workspaceRoot,
+    backend: request.backend ?? null,
+    metaBackend: request.metaBackend ?? null,
+    taskMetadata: request.taskMetadata ?? null,
+    subagentType: request.subagentType ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
   const sessionDir = resolveSessionDir(config.session_dir);
 
   // Override params based on config. Request-level `mode` (from --mode) wins over config.yaml.
@@ -3409,7 +3471,7 @@ async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: [
-      "model", "effort", "cwd", "prompt-file", "mode",
+      "model", "effort", "cwd", "prompt-file", "mode", "backend",
       "idle-timeout-ms",
       "turn-plan-ms", "turn-default-ms",
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
@@ -3479,6 +3541,13 @@ async function handleTask(argv) {
     prompt,
     resumeLast
   });
+  const adapter = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null,
+    taskMetadata,
+  });
+  ensureCodexRuntimeAdapter(adapter);
 
   if (options.background) {
     ensureCodexAvailable(cwd);
@@ -3500,7 +3569,8 @@ async function handleTask(argv) {
       pipelineStageMs: pipelineStageOverride,
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
-      noPipeline
+      noPipeline,
+      backend: options.backend ?? null
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -3531,6 +3601,7 @@ async function handleTask(argv) {
         pipelineTotalMs: pipelineTotalOverride,
         questionAnswerMs: questionTimeoutOverride,
         noPipeline,
+        backend: options.backend ?? null,
         // `--quiet` suppresses the stderr `[codex] …` progress stream so
         // agents don't pattern-match a thread UUID out of it. Monitor /
         // `events --follow` remain the canonical in-run observation surface.
@@ -4510,7 +4581,7 @@ function resolvePromptInput(options, positionals, cwd) {
 async function handleSend(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: [
-      "mode", "effort", "cwd",
+      "mode", "effort", "cwd", "backend",
       "idle-timeout-ms",
       "turn-timeout-ms",
       "question-timeout-ms"
@@ -4553,6 +4624,12 @@ async function handleSend(argv) {
 
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getBridgeConfig(cwd, workspaceRoot);
+  const adapter = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
   const modeOverride = options.mode;
 
   const sessionDir = resolveSessionDir(config.session_dir);

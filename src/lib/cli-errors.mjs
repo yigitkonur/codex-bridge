@@ -228,6 +228,7 @@ export function classifyError(err) {
       code: "BACKEND_INCAPABLE",
       message: err.message ?? String(err),
       retryable: false,
+      suggestion: "Select a supported backend, or unset CODEX_BRIDGE_BACKEND.",
       details: err?.details,
       exitCode: ExitCode.VALIDATION
     };
