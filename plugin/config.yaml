@@ -1,23 +1,15 @@
 codex_bridge:
   # Collaboration mode: "plan" (default) or "default"
-<<<<<<< HEAD
   # "plan" — Codex plans first, Claude approves, then executes
   # "default" — Codex executes directly (may ask questions if allow_questions: true)
   #
   # Override on a single run with `codex-bridge task --mode <plan|default> …`.
-=======
-  # "plan" - Codex plans first, Claude approves, then executes
-  # "default" - Codex executes directly (may ask questions if allow_questions: true)
-  #
-  # Override on a single run with `codex-bridge task --mode <plan|default> ...`.
->>>>>>> cddad0e (review(stage 4): apply adversarial-review findings)
   # Background launches preserve the override in the stored job record.
   mode: "plan"
 
   # Default model (inherits from Codex config if not set here)
   # model: "gpt-5.4"
 
-<<<<<<< HEAD
   # Backend selection. This build ships only the codex backend; non-codex
   # values fail with BACKEND_INCAPABLE until future adapters land.
   # Per-run override: `--backend <name>`, then CODEX_BRIDGE_BACKEND.
@@ -29,11 +21,6 @@ codex_bridge:
   # Execution reasoning effort: none | minimal | low | medium | high | xhigh
   # Plan mode always uses xhigh regardless of this setting. Shipped default
   # is xhigh (changed in 1.3.0) — live delegations on non-trivial work
-=======
-  # Execution reasoning effort: none | minimal | low | medium | high | xhigh
-  # Plan mode always uses xhigh regardless of this setting. Shipped default
-  # is xhigh (changed in 1.3.0) - live delegations on non-trivial work
->>>>>>> cddad0e (review(stage 4): apply adversarial-review findings)
   # consistently benefited from xhigh; callers who want a cheaper turn can
   # set this to high or lower, or pass --effort high at the CLI.
   effort: "xhigh"
@@ -56,11 +43,7 @@ codex_bridge:
 
   # When true, prepend a strong orchestrator directive telling Codex not to
   # invoke any internal planning / ceremony / meta-skill chain before
-<<<<<<< HEAD
   # execution (framework-agnostic — covers any skill chain that produces
-=======
-  # execution (framework-agnostic - covers any skill chain that produces
->>>>>>> cddad0e (review(stage 4): apply adversarial-review findings)
   # spec or plan scaffolding under `docs/`, `plans/`, `specs/` or similar
   # paths before touching the deliverable). Codex's default skill chains
   # can burn many minutes producing such artifacts when an orchestrator is
@@ -82,15 +65,9 @@ codex_bridge:
   # sandbox`.
   #
   # Values:
-<<<<<<< HEAD
   #   danger-full-access  — no sandbox, no permission blocker (SHIPPED DEFAULT)
   #   workspace-write     — write inside cwd only, `.git/` blocked
   #   read-only           — no writes at all
-=======
-  #   danger-full-access  - no sandbox, no permission blocker (SHIPPED DEFAULT)
-  #   workspace-write     - write inside cwd only, `.git/` blocked
-  #   read-only           - no writes at all
->>>>>>> cddad0e (review(stage 4): apply adversarial-review findings)
   #
   # Opt into a stricter profile by uncommenting one of the two lines below.
   # The setting applies to task/send turns and the auto-pipeline fix stage.
@@ -102,11 +79,7 @@ codex_bridge:
   # Session log directory
   session_dir: "~/.codex-bridge/sessions"
 
-<<<<<<< HEAD
   # Footer appended to every prompt — instructs Codex to use requestUserInput tool
-=======
-  # Footer appended to every prompt - instructs Codex to use requestUserInput tool
->>>>>>> cddad0e (review(stage 4): apply adversarial-review findings)
   # for questions instead of asking via plain text messages
   prompt_footer: >
     When you need to ask a question to user, always use the request_user_input
@@ -116,16 +89,9 @@ codex_bridge:
   # Timeout budgets (all in milliseconds). Override per-invocation via the
   # matching --*-ms CLI flag on `task` / `send`; uncomment below to change
   # the persistent default.
-<<<<<<< HEAD
   # idle_timeout_ms: 300000       # No-event watchdog — max gap between app-server notifications (5 min)
   # turn_plan_ms: 1800000         # Per-turn ceiling for plan turns (30 min)
   # turn_default_ms: 1800000      # Per-turn ceiling for execute turns (30 min)
   # pipeline_stage_ms: 300000     # Auto-pipeline per-stage cap — review / fix / check (5 min)
-=======
-  # idle_timeout_ms: 300000       # No-event watchdog - max gap between app-server notifications (5 min)
-  # turn_plan_ms: 1800000         # Per-turn ceiling for plan turns (30 min)
-  # turn_default_ms: 1800000      # Per-turn ceiling for execute turns (30 min)
-  # pipeline_stage_ms: 300000     # Auto-pipeline per-stage cap - review / fix / check (5 min)
->>>>>>> cddad0e (review(stage 4): apply adversarial-review findings)
   # pipeline_total_ms: 900000     # Auto-pipeline total cap across all stages (15 min)
   # question_answer_ms: 300000    # requestUserInput wait before rejecting unanswered request (5 min)

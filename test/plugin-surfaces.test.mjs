@@ -265,15 +265,15 @@ test("canonical plugin manifest paths resolve inside the plugin package", () => 
 
   for (const skillPath of manifest.skills ?? []) {
     assert.equal(
-      pathExists(path.join("plugin", skillPath, "SKILL.md")),
+      exists(path.join("plugin", skillPath, "SKILL.md")),
       true,
       `missing plugin skill referenced by manifest: ${skillPath}`
     );
   }
-  assert.equal(pathExists(path.join("plugin", manifest.commands)), true);
-  assert.equal(pathExists(path.join("plugin", manifest.agents)), true);
-  assert.equal(pathExists(path.join("plugin", manifest.hooks)), true);
-  assert.equal(pathExists("plugin/config.yaml"), true);
+  assert.equal(exists(path.join("plugin", manifest.commands)), true);
+  assert.equal(exists(path.join("plugin", manifest.agents)), true);
+  assert.equal(exists(path.join("plugin", manifest.hooks)), true);
+  assert.equal(exists("plugin/config.yaml"), true);
 
   const result = spawnSync(
     process.execPath,

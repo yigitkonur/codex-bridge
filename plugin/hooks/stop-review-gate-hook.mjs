@@ -14,8 +14,11 @@ const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_SCRIPT = path.resolve(SCRIPT_DIR, "..", "scripts", "codex-bridge.mjs");
+// Mirrors src/lib/state.mjs — kept inline so the cheap legacy-intent probe
+// (see hasLegacyStopReviewGateIntent) can read state.json without spawning
+// the bundled bridge. Update both files in lockstep if the layout changes.
 const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
-const CLAUDE_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 
@@ -65,73 +68,10 @@ function reviewGateActivation(cwd) {
   const projectRoot = resolveProjectRoot(cwd);
   const lockPath = path.join(projectRoot, REVIEW_GATE_LOCK_FILE);
   if (fs.existsSync(lockPath)) {
-    return { active: true, lockPath };
+    return { active: true, source: "lock-file", lockPath };
   }
 
-  return { active: false, lockPath };
-}
-
-function resolveStateFilePath(cwd) {
-  const workspaceRoot = resolveProjectRoot(cwd);
-  let canonicalWorkspaceRoot = workspaceRoot;
-  try {
-    canonicalWorkspaceRoot = fs.realpathSync.native(workspaceRoot);
-  } catch {
-    canonicalWorkspaceRoot = workspaceRoot;
-  }
-
-  const slugSource = path.basename(workspaceRoot) || "workspace";
-  const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
-  const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[CLAUDE_PLUGIN_DATA_ENV];
-  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  return path.join(stateRoot, `${slug}-${hash}`, STATE_FILE_NAME);
-}
-
-function hasLegacyStopReviewGateIntent(cwd) {
-  const stateFile = resolveStateFilePath(cwd);
-  if (!fs.existsSync(stateFile)) return false;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    return parsed?.config?.stopReviewGate === true;
-  } catch {
-    return false;
-  }
-}
-
-function maybeMigrateLegacyGate(cwd, input, activation) {
-  if (activation.active) return activation;
-  if (!hasLegacyStopReviewGateIntent(cwd)) return activation;
-
-  const setup = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });
-  const setupPayload = parseJson(setup.stdout);
-  const result = setupPayload?.result;
-  if (!setupPayload?.ok || !result) return activation;
-  if (result.reviewGateSuppressedByOfficialPlugin === true || result.reviewGateLockIgnored === true) {
-    return activation;
-  }
-  if (result.reviewGateEnabled !== true && result.reviewGateLockExists !== true) {
-    return activation;
-  }
-
-  const migrated = reviewGateActivation(cwd);
-  if (migrated.active) return migrated;
-
-  try {
-    fs.writeFileSync(
-      activation.lockPath,
-      [
-        "# Codex Bridge stop-time review gate",
-        "# Presence of this file enables the Claude Code Stop hook for this project.",
-        "# Migrated from legacy state.json config.stopReviewGate=true.",
-        ""
-      ].join("\n"),
-      "utf8"
-    );
-  } catch {
-    return activation;
-  }
-  return reviewGateActivation(cwd);
+  return { active: false, source: "disabled", lockPath };
 }
 
 function runningJobNote(cwd, input) {
@@ -143,6 +83,21 @@ function runningJobNote(cwd, input) {
   return `Codex Bridge job ${first.id ?? "unknown"} is still running. Check /codex-bridge:status and use /codex-bridge:cancel ${first.id ?? ""} if you want to stop it before ending the session.`;
 }
 
+// Read the last assistant turn out of Claude Code's transcript JSONL. Stop-hook
+// payload shape (per Claude Code docs) is `{ session_id, transcript_path, cwd,
+// reason, stop_hook_active }` — there is NO `last_assistant_message` field, so
+// the review must hydrate the transcript itself or it asks Codex to ALLOW/BLOCK
+// an unspecified previous turn. Best-effort: any read/parse failure falls back
+// to an empty string and we log a stderr warning so the operator knows the
+// review prompt was un-grounded for this turn.
+//
+// Transcript format: each line is one JSON record. Records carrying a final
+// assistant turn look like `{type:"assistant", message:{role:"assistant",
+// content:[{type:"text", text:"..."}, ...]}}`. We only want the most recent
+// such record (so we ignore mid-session assistant tool-use turns prior to it
+// — those still appear, but the LAST one is the user-facing final answer
+// that triggered Stop). Content blocks other than `text` (tool_use,
+// thinking, etc.) are skipped; we only join the `text` blocks.
 function extractLastAssistantText(transcriptPath) {
   if (!transcriptPath || typeof transcriptPath !== "string") return "";
   let raw;
@@ -187,6 +142,9 @@ function extractLastAssistantText(transcriptPath) {
 }
 
 function buildStopReviewPrompt(input) {
+  // `last_assistant_message` is NOT a Claude Code Stop-hook payload field. We
+  // keep the (defensive) read for any future shape change but the real source
+  // is `transcript_path` — see extractLastAssistantText.
   const fromPayload = String(input.last_assistant_message ?? "").trim();
   const fromTranscript = fromPayload || extractLastAssistantText(input?.transcript_path);
   const claudeResponseBlock = fromTranscript
@@ -224,6 +182,108 @@ function parseStopReview(rawOutput) {
     ok: false,
     reason: "The stop-time Codex Bridge review returned an unexpected answer. Run /codex-bridge:review --wait manually or disable the gate."
   };
+}
+
+// Resolve the workspace's state.json path the same way src/lib/state.mjs
+// does, without importing bridge code (this hook ships separately and
+// must stay zero-dep on the bundle for the cheap path). Returns null when
+// we can't resolve a workspace root — in that case there's no state file
+// to read, so callers should treat it as "no legacy intent".
+function resolveStateFilePath(cwd) {
+  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 5000
+  });
+  const workspaceRoot =
+    result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()
+      ? result.stdout.trim()
+      : cwd;
+  if (!workspaceRoot) return null;
+
+  let canonicalWorkspaceRoot = workspaceRoot;
+  try {
+    canonicalWorkspaceRoot = fs.realpathSync.native(workspaceRoot);
+  } catch {
+    canonicalWorkspaceRoot = workspaceRoot;
+  }
+
+  const slugSource = path.basename(workspaceRoot) || "workspace";
+  const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[PLUGIN_DATA_ENV];
+  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+  return path.join(stateRoot, `${slug}-${hash}`, STATE_FILE_NAME);
+}
+
+// Cheap, best-effort probe for "this workspace previously enabled the
+// stop-time review gate via the legacy boolean-only setup". Reads
+// state.json directly. Returns true ONLY when the file exists AND
+// `config.stopReviewGate === true`. Anything else (no file, parse error,
+// missing config, false) means there is nothing to migrate, so the
+// hook's caller can skip the expensive `setup --json` spawn.
+function hasLegacyStopReviewGateIntent(cwd) {
+  const stateFile = resolveStateFilePath(cwd);
+  if (!stateFile) return false;
+  if (!fs.existsSync(stateFile)) return false;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    return parsed?.config?.stopReviewGate === true;
+  } catch {
+    return false;
+  }
+}
+
+// Self-migrate workspaces that enabled the gate before lock-file activation
+// landed: `setup --enable-review-gate` used to persist only
+// `config.stopReviewGate: true` in state.json, but this branch made the
+// hook gate on the project-root lock file. Without migration the hook
+// would return at the activation check below and silently disable an
+// already-enabled gate on upgrade. We mint the lock inline here when
+// setup reports legacy intent and no on-disk lock, then re-evaluate so
+// the rest of the hook proceeds with the migrated state. Suppressed-by-
+// official-plugin workspaces are honored — we don't create a lock the
+// bridge would refuse to honor anyway.
+//
+// Cheap path: the vast majority of Stop-hook invocations land in
+// workspaces that never enabled the gate (the documented disabled
+// default). We short-circuit those by reading state.json directly first
+// — no `setup --json` spawn, no Codex availability/auth probe, no
+// app-server contact. We only fall through to the full setup probe when
+// state.json actually carries `config.stopReviewGate: true`, which is
+// the genuine legacy → migration case.
+function maybeMigrateLegacyGate(cwd, input, activation) {
+  if (activation.active) return activation;
+  if (!hasLegacyStopReviewGateIntent(cwd)) return activation;
+  const probe = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });
+  const probePayload = parseJson(probe.stdout);
+  const result = probePayload?.result;
+  if (!probePayload?.ok || !result) return activation;
+  if (result.reviewGateSuppressedByOfficialPlugin === true) return activation;
+
+  // `setup --json` also reads the gate state and can migrate legacy
+  // `config.stopReviewGate: true` into the project lock file. Do not keep
+  // using the pre-probe inactive activation after setup had that chance.
+  const activationAfterProbe = reviewGateActivation(cwd);
+  if (activationAfterProbe.active) return activationAfterProbe;
+  if (result.stopReviewGateConfig !== true) return activationAfterProbe;
+  if (result.reviewGateLockExists === true) return activationAfterProbe;
+
+  try {
+    fs.mkdirSync(path.dirname(activationAfterProbe.lockPath), { recursive: true });
+    const payload = {
+      enabledAt: new Date().toISOString(),
+      enabledBy: "codex-bridge-stop-hook-legacy-migration"
+    };
+    fs.writeFileSync(activationAfterProbe.lockPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  } catch {
+    // Lock-write failure is non-fatal: the next setup --json call will
+    // surface the gate as inactive and the hook returns inert. The user
+    // can rerun `codex-bridge setup --enable-review-gate` to retry.
+    return activationAfterProbe;
+  }
+
+  return reviewGateActivation(cwd);
 }
 
 function main() {
@@ -268,6 +328,20 @@ function main() {
     return;
   }
 
+  // `--read-only` forces the gate-time review onto a read-only sandbox even
+  // when the workspace `config.sandbox_policy` is `danger-full-access`. The
+  // Stop hook only ALLOWs/BLOCKs the previous Claude turn — it must not
+  // mutate the repo at session shutdown. Without `--read-only`, omitting
+  // `--write` is insufficient because `buildSandboxPolicy` still honors the
+  // config override (see src/lib/config.mjs::buildSandboxPolicy).
+  //
+  // The prompt is written to a tempfile and forwarded via `--prompt-file`
+  // because Unix argv has a hard cap (~256 KiB on macOS, ~2 MiB on Linux).
+  // The Stop-hook prompt embeds the previous assistant turn extracted from
+  // `transcript_path` — when that turn contains generated code or long
+  // logs, passing the prompt as a single spawnSync argv item could fail
+  // with E2BIG before Codex even runs and leave the gate blocking. Bounding
+  // the size by the filesystem instead of argv removes that failure mode.
   const promptFile = path.join(
     os.tmpdir(),
     `codex-bridge-stop-review-${randomBytes(16).toString("hex")}.prompt.md`
@@ -285,7 +359,8 @@ function main() {
     try {
       fs.rmSync(promptFile, { force: true });
     } catch {
-      // Best-effort cleanup; tmpdir entries are reaped by the OS.
+      // Best-effort cleanup; tmpdir entries are reaped by the OS. We
+      // never want a cleanup error to mask the real review outcome.
     }
   }
 
