@@ -110,17 +110,53 @@ async function isBrokerEndpointReady(endpoint) {
   }
 }
 
-function resolveBrokerScriptPath() {
+function isSourceBrokerLifecycleUrl(moduleUrl) {
+  try {
+    const modulePath = fileURLToPath(moduleUrl);
+    return (
+      path.basename(modulePath) === "broker-lifecycle.mjs" &&
+      path.basename(path.dirname(modulePath)) === "lib" &&
+      path.basename(path.dirname(path.dirname(modulePath))) === "src"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readBrokerLogTail(logFile, maxChars = 4000) {
+  try {
+    const log = fs.readFileSync(logFile, "utf8").trim();
+    if (!log) {
+      return "";
+    }
+    return log.length > maxChars ? log.slice(-maxChars) : log;
+  } catch {
+    return "";
+  }
+}
+
+function createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs }) {
+  const logTail = readBrokerLogTail(logFile);
+  const detail = logTail ? ` Broker log:\n${logTail}` : " No broker log output was captured.";
+  const error = new Error(
+    `Codex app-server broker failed to start within ${timeoutMs}ms at ${endpoint} using ${scriptPath}.${detail}`
+  );
+  error.code = "BROKER_START_FAILED";
+  return error;
+}
+
+function resolveBrokerScriptPath({ moduleUrl = import.meta.url, existsSync = fs.existsSync } = {}) {
   // Bundled mode places the broker at skill/app-server-broker.mjs (relative to
   // skill/scripts/codex-bridge.mjs). Source mode places it at
   // src/adapters/codex/broker.mjs (relative to src/lib/broker-lifecycle.mjs).
-  const candidates = [
-    new URL("../app-server-broker.mjs", import.meta.url),
-    new URL("../adapters/codex/broker.mjs", import.meta.url),
-  ];
+  const bundledBroker = new URL("../app-server-broker.mjs", moduleUrl);
+  const sourceBroker = new URL("../adapters/codex/broker.mjs", moduleUrl);
+  const candidates = isSourceBrokerLifecycleUrl(moduleUrl)
+    ? [sourceBroker, bundledBroker]
+    : [bundledBroker, sourceBroker];
   for (const url of candidates) {
     const p = fileURLToPath(url);
-    if (fs.existsSync(p)) return p;
+    if (existsSync(p)) return p;
   }
   throw new Error(
     `Could not locate broker script. Tried:\n  ${candidates
@@ -153,6 +189,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
   const pidFile = path.join(sessionDir, "broker.pid");
   const logFile = path.join(sessionDir, "broker.log");
   const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
+  const timeoutMs = options.timeoutMs ?? 2000;
 
   const child = spawnBrokerProcess({
     scriptPath,
@@ -163,8 +200,9 @@ export async function ensureBrokerSession(cwd, options = {}) {
     env: options.env ?? process.env
   });
 
-  const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
+  const ready = await waitForBrokerEndpoint(endpoint, timeoutMs);
   if (!ready) {
+    const startFailure = createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs });
     teardownBrokerSession({
       endpoint,
       pidFile,
@@ -173,7 +211,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
       pid: child.pid ?? null,
       killProcess: options.killProcess ?? null
     });
-    return null;
+    throw startFailure;
   }
 
   const session = {
@@ -224,3 +262,7 @@ export function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessi
     }
   }
 }
+
+export const __testHooks__ = {
+  resolveBrokerScriptPath
+};

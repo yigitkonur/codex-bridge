@@ -516,14 +516,42 @@ async function isBrokerEndpointReady(endpoint) {
     return false;
   }
 }
-function resolveBrokerScriptPath() {
-  const candidates = [
-    new URL("../app-server-broker.mjs", import.meta.url),
-    new URL("../adapters/codex/broker.mjs", import.meta.url)
-  ];
+function isSourceBrokerLifecycleUrl(moduleUrl) {
+  try {
+    const modulePath = fileURLToPath(moduleUrl);
+    return path3.basename(modulePath) === "broker-lifecycle.mjs" && path3.basename(path3.dirname(modulePath)) === "lib" && path3.basename(path3.dirname(path3.dirname(modulePath))) === "src";
+  } catch {
+    return false;
+  }
+}
+function readBrokerLogTail(logFile, maxChars = 4e3) {
+  try {
+    const log = fs2.readFileSync(logFile, "utf8").trim();
+    if (!log) {
+      return "";
+    }
+    return log.length > maxChars ? log.slice(-maxChars) : log;
+  } catch {
+    return "";
+  }
+}
+function createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs }) {
+  const logTail = readBrokerLogTail(logFile);
+  const detail = logTail ? ` Broker log:
+${logTail}` : " No broker log output was captured.";
+  const error = new Error(
+    `Codex app-server broker failed to start within ${timeoutMs}ms at ${endpoint} using ${scriptPath}.${detail}`
+  );
+  error.code = "BROKER_START_FAILED";
+  return error;
+}
+function resolveBrokerScriptPath({ moduleUrl = import.meta.url, existsSync = fs2.existsSync } = {}) {
+  const bundledBroker = new URL("../app-server-broker.mjs", moduleUrl);
+  const sourceBroker = new URL("../adapters/codex/broker.mjs", moduleUrl);
+  const candidates = isSourceBrokerLifecycleUrl(moduleUrl) ? [sourceBroker, bundledBroker] : [bundledBroker, sourceBroker];
   for (const url of candidates) {
     const p = fileURLToPath(url);
-    if (fs2.existsSync(p)) return p;
+    if (existsSync(p)) return p;
   }
   throw new Error(
     `Could not locate broker script. Tried:
@@ -552,6 +580,7 @@ async function ensureBrokerSession(cwd, options = {}) {
   const pidFile = path3.join(sessionDir, "broker.pid");
   const logFile = path3.join(sessionDir, "broker.log");
   const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
+  const timeoutMs = options.timeoutMs ?? 2e3;
   const child = spawnBrokerProcess({
     scriptPath,
     cwd,
@@ -560,8 +589,9 @@ async function ensureBrokerSession(cwd, options = {}) {
     logFile,
     env: options.env ?? process4.env
   });
-  const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2e3);
+  const ready = await waitForBrokerEndpoint(endpoint, timeoutMs);
   if (!ready) {
+    const startFailure = createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs });
     teardownBrokerSession({
       endpoint,
       pidFile,
@@ -570,7 +600,7 @@ async function ensureBrokerSession(cwd, options = {}) {
       pid: child.pid ?? null,
       killProcess: options.killProcess ?? null
     });
-    return null;
+    throw startFailure;
   }
   const session = {
     endpoint,
