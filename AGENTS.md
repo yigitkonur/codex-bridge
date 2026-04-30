@@ -21,13 +21,9 @@ Runtime source lives under `src/`. The build emits installable artifacts under
 both `skill/` and `plugin/`:
 
 - `src/codex-bridge.mjs` -> `skill/scripts/codex-bridge.mjs`
-<<<<<<< HEAD
-- `src/adapters/codex/broker.mjs` -> `skill/app-server-broker.mjs`
-=======
 - `src/codex-bridge.mjs` -> `plugin/scripts/codex-bridge.mjs`
 - `src/adapters/codex/broker.mjs` -> `skill/app-server-broker.mjs`
 - `src/adapters/codex/broker.mjs` -> `plugin/scripts/app-server-broker.mjs`
->>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 - `src/prompts/*`, `src/schemas/*`, and `src/templates/*` -> matching
   generated files under both layouts
 - `commands/` and `agents/` -> generated plugin copies under `plugin/`
@@ -69,12 +65,8 @@ restored in the tree and backed by package scripts or tests.
 |---|---|
 | `src/codex-bridge.mjs` | Main CLI dispatcher, command metadata, task/review orchestration, stop-gate setup, update/version/config/status handlers |
 | `src/adapters/codex/broker.mjs` | Standalone shared app-server socket broker spawned by broker lifecycle code |
-<<<<<<< HEAD
-| `src/lib/` | App-server client, Codex turn capture, state, session logs, config, git/review context, errors, rendering, update checks |
-=======
 | `src/adapters/codex/` | Codex adapter runtime: protocol client, turn/review capture, pipeline defaults, and broker |
 | `src/lib/` | Shared broker lifecycle, state/jobs, config, git/review context, errors, rendering, update checks, and process helpers |
->>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 | `src/prompts/` | Authored adversarial review prompt source |
 | `src/schemas/` | Authored JSON schema for adversarial review output |
 | `src/templates/` | Authored developer-instruction templates for plan/default modes |
@@ -88,16 +80,10 @@ restored in the tree and backed by package scripts or tests.
 
 ## Build And Generated Files
 
-<<<<<<< HEAD
-After any change to `src/codex-bridge.mjs`, `src/adapters/codex/broker.mjs`,
-`src/lib/**`, `src/prompts/**`, `src/schemas/**`, or `src/templates/**`, run
-`npm run build` and include the generated skill output diff.
-=======
 After any change to `src/codex-bridge.mjs`, `src/adapters/codex/**`,
 `src/lib/**`, `src/prompts/**`, `src/schemas/**`, `src/templates/**`,
 `commands/**`, `agents/**`, or `skill/config.yaml`, run `npm run build` and
 include the generated output diff.
->>>>>>> c6e1250 (review(stage 3): address existing PR comments)
 
 `esbuild.config.mjs` is the source of truth for generated outputs. Add new
 bundled static assets to `staticAssets` or a layout-specific asset list and

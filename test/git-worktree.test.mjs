@@ -114,6 +114,33 @@ test("createSubagentWorktree treats shell metacharacters in baseRef as a ref, no
   }
 });
 
+test("createSubagentWorktree can reject branch-only fallback without switching checkout", () => {
+  const repo = makeTempRepo();
+  const blocker = path.join(os.tmpdir(), `codex-bridge-worktree-blocker-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(blocker, "not a directory");
+  try {
+    assert.throws(
+      () =>
+        createSubagentWorktree({
+          cwd: repo,
+          taskId: "task-no-fallback",
+          backend: "codex",
+          worktreeRoot: blocker,
+          allowBranchFallback: false,
+        }),
+      /branch fallback is disabled/,
+    );
+    assert.equal(execSync("git branch --show-current", { cwd: repo }).toString().trim(), "main");
+    assert.equal(
+      execSync("git branch --list subagent/codex/task-no-fallback", { cwd: repo }).toString().trim(),
+      "",
+    );
+  } finally {
+    fs.rmSync(blocker, { force: true });
+    cleanup(repo);
+  }
+});
+
 test("pruneWorktreeOnCancel removes worktree + branch idempotently", () => {
   const repo = makeTempRepo();
   try {

@@ -522,6 +522,7 @@ export function createSubagentWorktree({
   baseRef,
   branchPrefix = "subagent",
   worktreeRoot,
+  allowBranchFallback = true,
 }) {
   assertSafeTaskId(taskId, "createSubagentWorktree");
 
@@ -568,16 +569,21 @@ export function createSubagentWorktree({
       created_at: createdAt,
     };
   } catch (err) {
-    // Branch-only fallback: stay in cwd, create the branch in place.
     // Roll back the partial worktree creation so we don't leave a
     // half-set worktree pointer.
     tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    if (!allowBranchFallback) {
+      throw new Error(
+        `createSubagentWorktree: worktree creation failed and branch fallback is disabled: ${err.message ?? err}`,
+      );
+    }
     if (getWorkingTreeState(repoRoot).isDirty) {
       throw new Error(
         "createSubagentWorktree: worktree creation failed and branch-only fallback is unsafe with a dirty working tree",
       );
     }
     const previousRef = currentCheckoutRef(repoRoot);
+    // Branch-only fallback: stay in cwd, create the branch in place.
     try {
       runGit(repoRoot, ["checkout", "-b", branch, baseSha]);
     } catch (innerErr) {

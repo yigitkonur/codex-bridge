@@ -44,6 +44,7 @@ export async function runAutoPipeline(options) {
     runAppServerTurn,
     runAppServerReview,
     jobId = null,
+    stateCwd = cwd,
     stageTimeoutMs = null,
     totalTimeoutMs = null,
   } = options;
@@ -420,6 +421,7 @@ export async function runAutoPipeline(options) {
         scriptPath,
         jobId,
         cwd,
+        stateCwd,
       }));
     } else {
       logEvent(session, formatIncompleteEvent(session, {
@@ -431,6 +433,7 @@ export async function runAutoPipeline(options) {
         scriptPath,
         jobId,
         cwd,
+        stateCwd,
       }));
     }
 
@@ -515,6 +518,7 @@ export async function runAutoPipeline(options) {
       jobId,
       upstreamRequestId,
       cwd,
+      stateCwd,
     }));
 
     logNdjson(session, "PIPELINE_ERROR", null, {
