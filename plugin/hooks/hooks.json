@@ -44,6 +44,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-bash.mjs\"",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
