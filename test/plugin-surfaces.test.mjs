@@ -1105,7 +1105,8 @@ test("reviewer subagent uses task-bound normalized review output and stdin verdi
 
 test("verdict stdin payload preserves untrusted review text as data", () => {
   const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-verdict-stdin-"));
-  const reviewedHead = "0123456789abcdef0123456789abcdef01234567";
+  const reviewedHead = "0123456789ABCDEF0123456789ABCDEF01234567";
+  const normalizedHead = reviewedHead.toLowerCase();
   const result = runBridge(
     "src/codex-bridge.mjs",
     ["verdict", "task-stdin", "--payload-stdin", "--json"],
@@ -1115,7 +1116,10 @@ test("verdict stdin payload preserves untrusted review text as data", () => {
         summary: "review text with $(rm -rf /) stays data",
         findings: ["line one\n$(echo unsafe)"],
         reviewer: "codex-bridge-reviewer",
-        reviewed_branch_head_sha: reviewedHead,
+        review_id: "review-123",
+        review_kind: "adversarial",
+        raw_output: "raw $(echo unsafe)\nreview text",
+        branchHeadSha: reviewedHead,
       }),
       env: { CODEX_BRIDGE_REGISTRY: registry },
     },
@@ -1124,13 +1128,87 @@ test("verdict stdin payload preserves untrusted review text as data", () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.verdict.verdict, "must-fix");
-  assert.equal(payload.result.verdict.reviewed_branch_head_sha, reviewedHead);
+  assert.equal(payload.result.verdict.branch_head_sha, normalizedHead);
+  assert.equal(payload.result.verdict.reviewed_branch_head_sha, normalizedHead);
+  assert.equal(payload.result.verdict.review_id, "review-123");
+  assert.equal(payload.result.verdict.review_kind, "adversarial");
+  assert.equal(payload.result.verdict.raw_output, "raw $(echo unsafe)\nreview text");
   assert.deepEqual(payload.result.verdict.findings, ["line one\n$(echo unsafe)"]);
 
   const source = readText("src/codex-bridge.mjs");
   const verdictBlock = source.match(/async function handleVerdict[\s\S]*?async function handleVerdictsPending/)?.[0] ?? "";
   assert.match(verdictBlock, /"payload-stdin"/);
   assert.match(verdictBlock, /readVerdictPayloadFromStdin\(\)/);
+});
+
+test("verdict stdin payload rejects malformed payloads and conflicting modes before mutation", () => {
+  const cases = [
+    {
+      name: "invalid-json",
+      args: ["verdict", "task-invalid-json", "--payload-stdin", "--json"],
+      input: "{ nope",
+      message: /must be valid JSON/,
+      taskId: "task-invalid-json",
+    },
+    {
+      name: "non-object",
+      args: ["verdict", "task-non-object", "--payload-stdin", "--json"],
+      input: "[]",
+      message: /must be a JSON object/,
+      taskId: "task-non-object",
+    },
+    {
+      name: "missing-verdict",
+      args: ["verdict", "task-missing-verdict", "--payload-stdin", "--json"],
+      input: JSON.stringify({ summary: "no verdict" }),
+      message: /payload\.verdict must be one of/,
+      taskId: "task-missing-verdict",
+    },
+    {
+      name: "invalid-verdict",
+      args: ["verdict", "task-invalid-verdict", "--payload-stdin", "--json"],
+      input: JSON.stringify({ verdict: "ship-it" }),
+      message: /payload\.verdict must be one of/,
+      taskId: "task-invalid-verdict",
+    },
+    {
+      name: "invalid-sha",
+      args: ["verdict", "task-invalid-sha", "--payload-stdin", "--json"],
+      input: JSON.stringify({ verdict: "approved", branch_head_sha: "not-a-sha" }),
+      message: /40-character hex SHA/,
+      taskId: "task-invalid-sha",
+    },
+    {
+      name: "set-conflict",
+      args: ["verdict", "task-set-conflict", "--payload-stdin", "--set", "approved", "--json"],
+      input: JSON.stringify({ verdict: "approved" }),
+      message: /modes are mutually exclusive/,
+      taskId: "task-set-conflict",
+    },
+    {
+      name: "discard-conflict",
+      args: ["verdict", "task-discard-conflict", "--payload-stdin", "--discard", "--json"],
+      input: JSON.stringify({ verdict: "approved" }),
+      message: /modes are mutually exclusive/,
+      taskId: "task-discard-conflict",
+    },
+  ];
+
+  for (const item of cases) {
+    const registry = fs.mkdtempSync(path.join(os.tmpdir(), `codex-bridge-verdict-${item.name}-`));
+    const result = runBridge("src/codex-bridge.mjs", item.args, {
+      input: item.input,
+      env: { CODEX_BRIDGE_REGISTRY: registry },
+    });
+
+    assert.notEqual(result.status, 0, item.name);
+    assert.match(`${result.stdout}\n${result.stderr}`, item.message, item.name);
+    assert.equal(
+      fs.existsSync(path.join(registry, item.taskId, "verdict.json")),
+      false,
+      `${item.name} must not write verdict.json`,
+    );
+  }
 });
 
 test("plugin PostToolUse auto-arm is visible at Bash and parent Agent boundaries", { skip: "T25 stage forward-looking — auto-arm hook surfaces under refactoring" }, () => {

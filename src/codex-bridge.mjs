@@ -5044,8 +5044,8 @@ function readVerdictPayloadFromStdin() {
     throw usageError("payload.findings must be an array when provided");
   }
   const reviewedBranchHeadSha =
-    parsed.reviewed_branch_head_sha ??
     parsed.branch_head_sha ??
+    parsed.reviewed_branch_head_sha ??
     parsed.branchHeadSha ??
     null;
   if (
@@ -5054,12 +5054,20 @@ function readVerdictPayloadFromStdin() {
   ) {
     throw usageError("payload.reviewed_branch_head_sha must be a 40-character hex SHA when provided");
   }
+  const normalizedBranchHeadSha =
+    typeof reviewedBranchHeadSha === "string" ? reviewedBranchHeadSha.trim().toLowerCase() : null;
   return {
+    ...parsed,
     verdict: parsed.verdict,
     summary: typeof parsed.summary === "string" ? parsed.summary : null,
     findings: Array.isArray(parsed.findings) ? parsed.findings : [],
     reviewer: typeof parsed.reviewer === "string" ? parsed.reviewer : null,
-    ...(reviewedBranchHeadSha ? { reviewed_branch_head_sha: reviewedBranchHeadSha.trim() } : {}),
+    ...(normalizedBranchHeadSha
+      ? {
+          branch_head_sha: normalizedBranchHeadSha,
+          reviewed_branch_head_sha: normalizedBranchHeadSha,
+        }
+      : {}),
   };
 }
 
