@@ -2,7 +2,7 @@
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-05-01)
+See: `.planning/PROJECT.md` (updated 2026-05-02)
 Requirements: `.planning/REQUIREMENTS.md`
 Roadmap: `.planning/ROADMAP.md`
 Research summary: `.planning/research/SUMMARY.md`
@@ -16,7 +16,7 @@ Codebase maps: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/CONCERN
 Phase: 3 of 6 (Review Verdict And Iterate Loop)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-05-01 - Phase 2 completed. Routed supported Codex task, resume, respond, steer, cancel, result, and event operations through the backend adapter; added adapter lifecycle tests; rebuilt generated bundles; validated with `npm run verify:static` and authenticated runtime smoke.
+Last activity: 2026-05-02 - Refreshed `.planning/codebase/` with four mapper agents against current source at commit `6b3a78a98eb5396798d0ed2ee3d8f7451f204652`. All 7 codebase maps were rewritten, verified non-empty, and scanned for secret-like patterns.
 
 Progress: [####------] 33%
 
@@ -55,10 +55,12 @@ Recent decisions affecting current work:
 - Use coarse six-phase roadmap matching the existing 28 v1 requirement traceability.
 - Phase 1 produced `npm run verify:static`, `scripts/baseline-contracts.mjs`, JSON envelope probes, generated-surface checks, and a mutating-command coverage map before runtime changes.
 - Phase 2 made the Codex backend adapter the actual supported runtime path for task dispatch, resume, respond, steer, cancel, result, and event reads.
+- Codebase maps were refreshed on 2026-05-02 from current source truth by parallel mappers: tech, architecture, quality, and concerns.
 
 ### Pending Todos
 
 - Phase 3 should start by proving native/adversarial review context and output contracts before wiring iterate/merge automation on top.
+- Use refreshed `.planning/codebase/CONCERNS.md` as Phase 3 risk input; it now calls out staged `iterate`, verdict stdin wiring, approved-head merge binding, relative `session_dir`, malformed respond payload errors, and `allow_questions` enforcement.
 
 ### Blockers/Concerns
 
@@ -76,7 +78,7 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-01
-Stopped at: Phase 2 complete; Phase 3 is next.
+Last session: 2026-05-02
+Stopped at: Codebase map refreshed; Phase 3 remains next.
 Resume file: None
 Next recommended command: `$gsd-plan-phase 3`

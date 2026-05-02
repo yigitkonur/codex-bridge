@@ -57,6 +57,8 @@ State is intentionally split. Project/workspace job state lives under a plugin-d
 
 The risk profile is mostly contract drift. Source changes can require generated bundle updates, command/help/schema changes can break plugin surfaces, hook changes can stall Claude shutdown, and app-server protocol changes can invalidate tests that only simulate local behavior. Future work should preserve small, source-first changes followed by `npm run build` and `npm test`.
 
+The current codebase map in `.planning/codebase/` was refreshed on 2026-05-02 at source commit `6b3a78a98eb5396798d0ed2ee3d8f7451f204652`. Planning for Phase 3 should use the refreshed `CONCERNS.md`, `ARCHITECTURE.md`, `STRUCTURE.md`, and `TESTING.md` maps rather than the older 2026-04-30 snapshot.
+
 ## Constraints
 
 - **Runtime**: Node.js `>=22.0.0`, ESM modules, no CommonJS migration unless package metadata and tests change together.
@@ -95,4 +97,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state.
 
 ---
-*Last updated: 2026-05-01 after Phase 2 completion*
+*Last updated: 2026-05-02 after codebase map refresh*

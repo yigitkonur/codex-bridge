@@ -1,402 +1,375 @@
 ---
-last_mapped_commit: 16f4fd188f47160bdaddabb9813c6fe67e486d5d
-mapped_date: 2026-04-30
-evidence_boundary: Repository Markdown files were not read or used as evidence for this map.
+last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 ---
-
-<!-- refreshed: 2026-04-30 -->
+<!-- refreshed: 2026-05-02 -->
 # Architecture
 
-**Analysis Date:** 2026-04-30
+**Analysis Date:** 2026-05-02
 
 ## System Overview
 
 ```text
-+-------------------------------------------------------------+
-|                    Distribution Surfaces                     |
-| .claude-plugin/plugin.json | skill/ | plugin/ | hooks/       |
-+----------------------------+---------+---------+-------------+
-                             |
-                             v
-+-------------------------------------------------------------+
-|                      CLI Orchestrator                        |
-|                    src/codex-bridge.mjs                      |
-| COMMANDS -> handlers -> SUBCOMMAND_DISPATCH -> main()        |
-+----------------------------+--------------------------------+
-                             |
-                             v
-+-------------------------------------------------------------+
-| Runtime Options, Config, Adapter Selection, and Git Context  |
-| src/lib/runtime-options.mjs | src/lib/config.mjs             |
-| src/adapters/index.mjs     | src/lib/git.mjs                |
-+----------------------------+--------------------------------+
-                             |
-                             v
-+-------------------------------------------------------------+
-|                       Codex Runtime                          |
-| src/adapters/codex/codex.mjs                                 |
-| src/adapters/codex/protocol.mjs                              |
-| src/adapters/codex/pipeline.mjs                              |
-+----------------------------+--------------------------------+
-                             |
-                             v
-+-------------------------------------------------------------+
-| Broker, State, Session Logs, Job Control, and User Responses |
-| src/adapters/codex/broker.mjs | src/lib/broker-lifecycle.mjs |
-| src/lib/state.mjs            | src/lib/session-log.mjs       |
-| src/lib/tracked-jobs.mjs     | src/lib/job-control.mjs       |
-| src/lib/pending-requests.mjs | src/lib/registry.mjs          |
-+-------------------------------------------------------------+
++-------------------------------------------------------------------+
+| Claude Code Surfaces                                               |
+| `.claude-plugin/`, `plugin/commands/`, `plugin/agents/`, `hooks/`  |
++----------------------+----------------------+---------------------+
+                       |                      |
+                       v                      v
++-------------------------------------------------------------------+
+| Generated Runtime Entrypoints                                      |
+| `plugin/scripts/codex-bridge.mjs`, `skill/scripts/codex-bridge.mjs`|
+| `plugin/scripts/app-server-broker.mjs`, `skill/app-server-broker.mjs` |
++-------------------------------------------------------------------+
+                       |
+                       v
++-------------------------------------------------------------------+
+| Authored CLI Orchestrator                                          |
+| `src/codex-bridge.mjs`                                             |
+| command registry, handlers, task/review lifecycle, Stop gate setup |
++----------------------+----------------------+---------------------+
+                       |                      |
+                       v                      v
++----------------------------------+  +-----------------------------+
+| Adapter Boundary                 |  | Shared Runtime Libraries     |
+| `src/adapters/index.mjs`         |  | `src/lib/*.mjs`              |
+| `src/adapters/codex/index.mjs`   |  | config, state, git, render,  |
++----------------------------------+  | session logs, job control    |
+                       |             +-----------------------------+
+                       v                      |
++-------------------------------------------------------------------+
+| Codex App-Server Runtime                                           |
+| `src/adapters/codex/codex.mjs`, `src/adapters/codex/protocol.mjs`  |
+| `src/adapters/codex/broker.mjs`, `src/lib/broker-lifecycle.mjs`    |
++-------------------------------------------------------------------+
+                       |
+                       v
++-------------------------------------------------------------------+
+| External Process / Workspace Artifacts                             |
+| Codex CLI app-server, Git worktrees, `.events`, `.ndjson`, state   |
+| roots from `CODEX_BRIDGE_PLUGIN_DATA`, `CLAUDE_PLUGIN_DATA`, temp  |
++-------------------------------------------------------------------+
 ```
 
 ## Component Responsibilities
 
 | Component | Responsibility | File |
 |-----------|----------------|------|
-| CLI command registry | Defines command metadata and user-facing subcommands. | `src/codex-bridge.mjs` |
-| CLI dispatch | Parses argv, handles help/errors/update checks, and routes to handlers. | `src/codex-bridge.mjs` |
-| Task orchestration | Builds bridge requests, config, sessions, checkpoints, pipeline hooks, and Codex turns. | `src/codex-bridge.mjs` |
-| Review orchestration | Resolves git review targets and runs native or prompt-driven review flows. | `src/codex-bridge.mjs`, `src/lib/git.mjs` |
-| Adapter registry | Validates adapter shape, selects a backend, and gates declared capabilities. | `src/adapters/index.mjs` |
-| Codex adapter descriptor | Declares Codex capabilities; lifecycle methods are placeholders for the generic adapter contract. | `src/adapters/codex/index.mjs` |
-| Codex runtime | Starts/resumes app-server threads, captures turns, interrupts turns, and parses structured output. | `src/adapters/codex/codex.mjs` |
-| App-server protocol client | Sends newline-delimited JSON requests to direct or brokered app-server transports. | `src/adapters/codex/protocol.mjs` |
-| Shared broker | Multiplexes one direct `codex app-server` process behind a local socket/pipe endpoint. | `src/adapters/codex/broker.mjs` |
-| Auto pipeline | Runs review, fix, completion-check, and terminal reporting stages around a task. | `src/adapters/codex/pipeline.mjs` |
-| Runtime defaults | Owns default mode/model/effort/timeouts/sandbox policy and collaboration builders. | `src/lib/runtime-options.mjs` |
-| Config loader | Merges install, workspace, and cwd YAML config layers. | `src/lib/config.mjs` |
-| Workspace state | Stores job index, stop-gate config, broker metadata, locks, and job files. | `src/lib/state.mjs` |
-| Job lifecycle | Creates tracked job records, writes job logs, and resolves status/result/cancel targets. | `src/lib/tracked-jobs.mjs`, `src/lib/job-control.mjs` |
-| Session logging | Writes `.ndjson`, `.events`, `.diff`, `.plan.md`, and review artifacts for a thread. | `src/lib/session-log.mjs` |
-| Pending responses | Bridges Codex server requests to the `respond` command through session files. | `src/lib/pending-requests.mjs` |
-| Git and worktrees | Captures review context, diffs, subagent worktrees, branch merges, and cleanup. | `src/lib/git.mjs` |
-| Rendering | Produces human and JSON command envelopes. | `src/lib/render.mjs` |
-| Update checks | Checks GitHub releases and supports detached installer auto-apply. | `src/lib/update-check.mjs` |
-| Build layout | Bundles runtime entry points and copies static assets into `skill/` and `plugin/`. | `esbuild.config.mjs` |
-| Hooks | Wires session lifecycle and stop-time review gate behavior. | `hooks/hooks.json`, `hooks/session-lifecycle-hook.mjs`, `hooks/stop-gate.mjs` |
+| CLI command registry | Defines the public subcommand surface, help metadata, and dispatch names. | `src/codex-bridge.mjs` |
+| CLI handlers | Parse command flags, resolve cwd/workspace roots, and coordinate task, review, setup, status, result, wait, cancel, send, steer, respond, merge, verdict, update, and config flows. | `src/codex-bridge.mjs` |
+| Task lifecycle | Builds bridge requests, opens sessions, injects plan/default instructions, handles heartbeats, checkpoints, retry state, Stop-gate review, and auto-pipeline transitions. | `src/codex-bridge.mjs` |
+| Adapter registry | Selects a runtime backend from command flags, environment, task metadata, user config, and default config. | `src/adapters/index.mjs` |
+| Codex adapter facade | Exposes dispatch, resume, steer, respond, cancel, result, and event streaming operations for the CLI. | `src/adapters/codex/index.mjs` |
+| Codex turn capture | Translates Codex app-server notifications into task results, plans, diffs, reasoning summaries, command executions, and review output. | `src/adapters/codex/codex.mjs` |
+| App-server protocol client | Sends newline-delimited JSON request objects, tracks pending calls, handles server-originated requests, and connects through a broker or direct app-server process. | `src/adapters/codex/protocol.mjs` |
+| Shared broker process | Serializes app-server access across clients, rejects incompatible concurrent calls, permits interrupts while a turn stream is active, and cleans endpoint state. | `src/adapters/codex/broker.mjs` |
+| Broker lifecycle | Starts, reuses, tears down, and persists managed broker sessions for a workspace. | `src/lib/broker-lifecycle.mjs` |
+| Runtime config | Loads YAML config layers and converts mode, effort, sandbox, and pipeline settings into Codex request options. | `src/lib/config.mjs`, `src/lib/runtime-options.mjs` |
+| Workspace state | Stores workspace-scoped job index, broker state, review-gate flags, stop-gate metadata, and job request payloads with lock-protected atomic writes. | `src/lib/state.mjs` |
+| Job execution records | Wraps detached jobs, writes job JSON/log files, and mirrors status into the workspace state index. | `src/lib/tracked-jobs.mjs`, `src/lib/job-control.mjs` |
+| Session artifacts | Appends event and NDJSON streams, writes plans/diffs/reviews, formats terminal tags, and exposes followable event tails. | `src/lib/session-log.mjs` |
+| Pending questions | Persists one pending app-server question per thread and lets the separate `respond` command return answers through disk files. | `src/lib/pending-requests.mjs` |
+| Git context and isolation | Resolves review targets, collects working-tree or branch diffs, creates task worktrees, prunes worktrees, and ff-merges approved branches. | `src/lib/git.mjs` |
+| Task registry | Stores per-task artifacts, structured briefs, events, verdicts, and metadata under the user registry root. | `src/lib/registry.mjs`, `src/lib/brief.mjs` |
+| Rendering and validation | Formats setup/status/result/review output and validates structured review result shape. | `src/lib/render.mjs` |
+| Error envelopes | Normalizes CLI failures into machine-readable classes, exit codes, retryability, and human suggestions. | `src/lib/cli-errors.mjs` |
+| Build pipeline | Bundles source into skill and plugin runtime layouts and copies static assets into generated destinations. | `esbuild.config.mjs` |
+| Tests and CI | Verify adapter contracts, protocol behavior, state locking, hooks, plugin surfaces, generated drift, and static CLI contracts. | `test/*.test.mjs`, `.github/workflows/build.yml` |
 
 ## Pattern Overview
 
-**Overall:** ESM CLI orchestrator with a Codex app-server runtime and disk-backed job/session state.
+**Overall:** Source-first ESM CLI orchestrator with an adapter boundary, Codex app-server transport, generated distribution layouts, and append-only observable job/session artifacts.
 
 **Key Characteristics:**
-- Use `src/codex-bridge.mjs` as the orchestration boundary for user commands and runtime policy.
-- Use `src/adapters/index.mjs` for backend selection and capability checks; the only loadable backend is `codex`.
-- Use `src/adapters/codex/codex.mjs` and `src/adapters/codex/protocol.mjs` for actual Codex app-server execution.
-- Use a shared broker when available, but keep direct app-server fallback behavior inside `CodexAppServerClient.connect`.
-- Use disk state and append-only session logs as the command surface for `status`, `result`, `wait`, `events`, `respond`, and hook flows.
-- Generate installable `skill/` and `plugin/` runtime files from source through `esbuild.config.mjs`; do not hand-edit generated bundles.
+- Use `src/codex-bridge.mjs` as the only authored public CLI orchestrator. Add command metadata to `COMMANDS`, add the handler, and wire `SUBCOMMAND_DISPATCH` together.
+- Keep runtime backend calls behind `src/adapters/index.mjs` and `src/adapters/codex/index.mjs`. The implemented backend is Codex; other adapter directories under `src/adapters/` contain interface notes and placeholders.
+- Treat `src/` as source of truth and `skill/` plus `plugin/` runtime copies as build outputs where `esbuild.config.mjs` marks them generated.
+- Keep long-running work observable through synchronous `.events` and `.ndjson` session streams from `src/lib/session-log.mjs`.
+- Keep workspace-scoped coordination in `src/lib/state.mjs`; keep per-task artifact registry data in `src/lib/registry.mjs`.
+- Isolate write-mode delegated work through Git worktrees or a controlled branch-only fallback from `src/lib/git.mjs`.
+- Route Claude plugin commands and agents through the packaged script under `plugin/scripts/codex-bridge.mjs`; root `commands/` and `agents/` directories are not present in this checkout.
 
 ## Layers
 
-**Distribution Layer:**
-- Purpose: Ship the same runtime through legacy skill and canonical plugin layouts.
-- Location: `.claude-plugin/plugin.json`, `skill/`, `plugin/`, `hooks/`, `esbuild.config.mjs`.
-- Contains: Plugin metadata, installable bundles, copied command/agent/hook surfaces, and default config.
-- Depends on: `src/codex-bridge.mjs`, `src/adapters/codex/broker.mjs`, `src/prompts/`, `src/schemas/`, `src/templates/`, `commands/`, `agents/`, `hooks/`, `skill/config.yaml`.
-- Used by: Claude Code plugin installs and CI workflow checks in `.github/workflows/build.yml`.
+**Claude Plugin and Skill Surface:**
+- Purpose: Provides installable slash commands, agents, hooks, plugin metadata, skill metadata, and default config.
+- Location: `.claude-plugin/`, `plugin/`, `skill/`, `hooks/`
+- Contains: Plugin manifests, command markdown, agent markdown, hook scripts/config, generated runtime bundles, generated prompts/schemas/templates, and legacy skill assets.
+- Depends on: Generated scripts from `esbuild.config.mjs` and the Node runtime.
+- Used by: Claude Code plugin/skill users invoking `/codex-bridge:*` commands and lifecycle hooks.
 
-**CLI Layer:**
-- Purpose: Parse commands, enforce command contracts, select runtime options, and render outputs.
-- Location: `src/codex-bridge.mjs`.
-- Contains: `COMMANDS`, handlers such as `handleTask`, `handleReviewCommand`, `handleStatus`, `handleResult`, `handleEvents`, and `SUBCOMMAND_DISPATCH`.
-- Depends on: `src/lib/*`, `src/adapters/*`, Node built-ins, package metadata.
-- Used by: Source-mode `npm run dev`, bundled `skill/scripts/codex-bridge.mjs`, bundled `plugin/scripts/codex-bridge.mjs`, and hooks.
+**CLI Orchestration Layer:**
+- Purpose: Owns command parsing, foreground/background routing, session setup, task/review flow control, Stop-gate setup, update checks, and machine-readable envelopes.
+- Location: `src/codex-bridge.mjs`
+- Contains: `COMMANDS`, `SUBCOMMAND_DISPATCH`, command handlers, task/review execution functions, worker entrypoints, event/status/result/wait/cancel operations, and lifecycle signal handling.
+- Depends on: `src/lib/*.mjs`, `src/adapters/index.mjs`, `src/adapters/codex/*.mjs`, `src/prompts/`, `src/schemas/`, and `src/templates/`.
+- Used by: `npm run dev`, generated `skill/scripts/codex-bridge.mjs`, generated `plugin/scripts/codex-bridge.mjs`, plugin commands, plugin agents, and hooks.
 
-**Runtime Options and Config Layer:**
-- Purpose: Normalize user flags and config layers into collaboration mode, sandbox policy, model, effort, pipeline, and timeout settings.
-- Location: `src/lib/runtime-options.mjs`, `src/lib/config.mjs`.
-- Contains: `DEFAULT_CONFIG`, `buildCollaborationMode`, `buildSandboxPolicy`, config-source resolution, and YAML parsing.
-- Depends on: `js-yaml`, `src/lib/workspace.mjs`.
-- Used by: `runBridgeTask`, `handleConfigShow`, setup/version/status output, and pipeline setup.
-
-**Adapter Layer:**
-- Purpose: Provide a backend contract and backend selection policy.
-- Location: `src/adapters/index.mjs`, `src/adapters/codex/index.mjs`.
-- Contains: Required adapter fields/methods, backend loaders, route matching, capability gates, and Codex capability metadata.
-- Depends on: `src/lib/config.mjs`, `src/lib/errors.mjs`.
-- Used by: CLI handlers before runtime execution and user-facing capability/status commands.
+**Adapter Boundary Layer:**
+- Purpose: Selects and validates runtime adapters and guards capability use.
+- Location: `src/adapters/index.mjs`, `src/adapters/index.d.ts`
+- Contains: Adapter loading, backend selection precedence, capability validation, and runtime config integration.
+- Depends on: `src/lib/config.mjs` and adapter implementation modules.
+- Used by: CLI task/review/setup/auth/result/send/steer/respond flows in `src/codex-bridge.mjs`.
 
 **Codex Runtime Layer:**
-- Purpose: Run Codex app-server threads and reviews, capture streaming state, and transform app-server output into bridge results.
-- Location: `src/adapters/codex/codex.mjs`.
-- Contains: `runAppServerTurn`, `runAppServerReview`, `interruptAppServerTurn`, availability checks, thread parameter construction, and turn capture.
-- Depends on: `src/adapters/codex/protocol.mjs`, `src/lib/process.mjs`, `src/lib/errors.mjs`, `src/lib/session-log.mjs`.
-- Used by: `task`, `send`, `review`, `adversarial-review`, `cancel`, auto-pipeline stages, and stop-gate hooks.
+- Purpose: Implements the Codex backend by translating bridge requests into Codex app-server turns, reviews, interruptions, server-request responses, and result capture.
+- Location: `src/adapters/codex/`
+- Contains: Adapter facade in `src/adapters/codex/index.mjs`, turn capture in `src/adapters/codex/codex.mjs`, protocol client in `src/adapters/codex/protocol.mjs`, broker process in `src/adapters/codex/broker.mjs`, pipeline defaults in `src/adapters/codex/pipeline.mjs`, and protocol types in `src/adapters/codex/protocol.d.ts`.
+- Depends on: Codex CLI `codex app-server`, `src/lib/broker-lifecycle.mjs`, runtime options, session logging, and JSON schema assets.
+- Used by: Task, review, send, steer, respond, cancel, setup, and auth-status commands.
 
-**Transport and Broker Layer:**
-- Purpose: Speak the app-server JSON protocol directly or through a reusable local broker.
-- Location: `src/adapters/codex/protocol.mjs`, `src/adapters/codex/broker.mjs`, `src/lib/broker-lifecycle.mjs`, `src/lib/broker-endpoint.mjs`.
-- Contains: Direct process client, broker socket client, broker process lifecycle, endpoint parsing, streaming ownership, and server-request forwarding.
-- Depends on: Node `child_process`, `net`, `fs`, `os`, and state broker metadata in `src/lib/state.mjs`.
-- Used by: All Codex turn/review/interrupt operations.
+**Shared Runtime Libraries:**
+- Purpose: Encapsulate config, errors, process execution, Git, workspace resolution, state, jobs, rendering, pending requests, update checks, prompt loading, and filesystem helpers.
+- Location: `src/lib/`
+- Contains: Single-purpose ESM modules used by the CLI and adapter layers.
+- Depends on: Node built-ins, `js-yaml`, Git, Codex CLI checks, and configured filesystem roots.
+- Used by: `src/codex-bridge.mjs`, `src/adapters/codex/*.mjs`, hooks, and tests.
 
-**State and Job Layer:**
-- Purpose: Persist job metadata, broker metadata, stop-gate config, and background job results by canonical workspace root.
-- Location: `src/lib/state.mjs`, `src/lib/tracked-jobs.mjs`, `src/lib/job-control.mjs`, `src/lib/registry.mjs`.
-- Contains: State root resolution, lock files, atomic JSON writes, job history, job logs, artifact registry, and status/result/cancel lookup helpers.
-- Depends on: `src/lib/workspace.mjs`, `src/lib/process.mjs`, `src/lib/broker-lifecycle.mjs`.
-- Used by: `task --background`, `task-worker`, `status`, `result`, `wait`, `cancel`, `merge`, hooks, and broker reuse.
+**Artifact and State Layer:**
+- Purpose: Makes task execution inspectable and resumable across processes.
+- Location: `src/lib/state.mjs`, `src/lib/session-log.mjs`, `src/lib/tracked-jobs.mjs`, `src/lib/job-control.mjs`, `src/lib/registry.mjs`, `src/lib/pending-requests.mjs`
+- Contains: `state.json`, `state.lock`, `jobs/*.json`, job logs, session `.events`, `.ndjson`, `.plan.md`, `.diff`, `.review.json`, pending question files, response files, and task registry artifacts.
+- Depends on: Workspace root canonicalization from `src/lib/workspace.mjs` and state root environment variables.
+- Used by: Background workers, status/result/wait/events/cancel commands, `respond`, Stop hooks, and review/merge/verdict flows.
 
-**Session Log Layer:**
-- Purpose: Preserve observable thread history and artifacts in append-only files.
-- Location: `src/lib/session-log.mjs`, `src/lib/pending-requests.mjs`.
-- Contains: `.events` formatting, `.ndjson` records, diff/review/plan artifacts, terminal-tag detection, pending question and response files.
-- Depends on: Git commands and synchronous filesystem append operations.
-- Used by: `events`, `wait`, `summary`, `respond`, pipeline, stop-gate, and result rendering.
+**Authored Prompt/Schema/Template Layer:**
+- Purpose: Holds source assets consumed by task and review flows.
+- Location: `src/prompts/`, `src/schemas/`, `src/templates/`
+- Contains: Adversarial review prompt, structured review schema, execute instructions, and plan enforcement instructions.
+- Depends on: Build copying rules in `esbuild.config.mjs`.
+- Used by: Review execution in `src/codex-bridge.mjs`, generated `skill/` assets, generated `plugin/` assets, and strict prompt/schema tests.
 
-**Git and Review Context Layer:**
-- Purpose: Resolve branch/working-tree review targets, collect diff context, create isolated worktrees, merge approved work, and prune canceled work.
-- Location: `src/lib/git.mjs`.
-- Contains: Review target resolution, status/diff/log collection, worktree creation, fast-forward merge checks, and cleanup.
-- Depends on: Git CLI and workspace root resolution.
-- Used by: `review`, `adversarial-review`, `task --worktree-auto`, `merge`, and auto-pipeline review stages.
-
-**Hook Layer:**
-- Purpose: Attach bridge state to Claude sessions and run optional stop-time review gates.
-- Location: `hooks/hooks.json`, `hooks/session-lifecycle-hook.mjs`, `hooks/stop-gate.mjs`, `hooks/stop-review-gate-hook.mjs`.
-- Contains: Session env-file writes, orphan pruning, stop-gate status checks, and read-only review tasks.
-- Depends on: Bundled `codex-bridge.mjs` path rewrites performed by `esbuild.config.mjs`.
-- Used by: Plugin runtime declared in `plugin/.claude-plugin/plugin.json`.
+**Build and CI Layer:**
+- Purpose: Produces installable plugin/skill layouts and verifies generated artifacts.
+- Location: `esbuild.config.mjs`, `package.json`, `.github/workflows/build.yml`, `.github/workflows/release.yml`
+- Contains: Dual esbuild targets, static asset copy lists, plugin hook/command/agent copy rules, Node 22 test workflow, generated drift checks, release packaging.
+- Depends on: Node 22, npm, `esbuild`, `js-yaml`.
+- Used by: Local verification and GitHub Actions.
 
 ## Data Flow
 
-### Primary Foreground Task Path
+### Primary Task Path
 
-1. `main()` parses argv and dispatches the command through `SUBCOMMAND_DISPATCH` (`src/codex-bridge.mjs:5679`, `src/codex-bridge.mjs:5591`).
-2. `handleTask` validates task flags, resolves the adapter, builds a job request, and either queues background work or calls `runBridgeTask` (`src/codex-bridge.mjs:3580`, `src/codex-bridge.mjs:2435`).
-3. `runBridgeTask` resolves workspace root, config, session directory, collaboration mode, sandbox policy, prompt footer, callbacks, checkpoint handling, and pipeline options (`src/codex-bridge.mjs:2435`).
-4. The internal task executor calls `runAppServerTurn` with thread, prompt, model/effort, sandbox, collaboration, server-request handler, and streaming callbacks (`src/adapters/codex/codex.mjs:1232`).
-5. `CodexAppServerClient.connect` chooses brokered or direct transport, initializes the app-server client, and sends app-server requests (`src/adapters/codex/protocol.mjs:530`).
-6. `captureTurn` in the Codex runtime consumes notifications and final output, while CLI callbacks write session events and job progress (`src/adapters/codex/codex.mjs`, `src/lib/session-log.mjs:32`, `src/lib/session-log.mjs:47`).
-7. `renderResult` and related render helpers emit a human or JSON envelope from `src/lib/render.mjs`.
+1. CLI startup enters `main` and dispatches through `SUBCOMMAND_DISPATCH` (`src/codex-bridge.mjs:5738`, `src/codex-bridge.mjs:5650`).
+2. `handleTask` parses mode, model, effort, sandbox, prompt, background, brief, and worktree options (`src/codex-bridge.mjs:3603`).
+3. Write-mode auto-isolation calls `createSubagentWorktree` and persists registry metadata when `--worktree-auto` is used (`src/codex-bridge.mjs:3723`, `src/lib/git.mjs:527`, `src/lib/registry.mjs:95`).
+4. Foreground tasks run through `runForegroundCommand`; background tasks create a job request and spawn `task-worker` through `enqueueBackgroundTask` (`src/codex-bridge.mjs:2195`, `src/codex-bridge.mjs:2275`).
+5. `runBridgeTask` resolves config, workspace root, adapter, session directory, prompt decorators, timeouts, heartbeat state, and terminal-event handlers (`src/codex-bridge.mjs:2456`).
+6. The bridge request includes collaboration mode, sandbox policy, user prompt, cwd, metadata, server-request handler, and lifecycle callbacks (`src/codex-bridge.mjs:2570`).
+7. `executeTaskRun` resolves the active adapter and calls `adapter.dispatch` (`src/codex-bridge.mjs:1828`, `src/codex-bridge.mjs:1877`).
+8. The Codex adapter facade calls `runAppServerTurn` (`src/adapters/codex/index.mjs:99`, `src/adapters/codex/codex.mjs:1232`).
+9. `runAppServerTurn` opens a brokered or direct `CodexAppServerClient`, initializes/resumes a thread, sends `turn/start`, and captures app-server events (`src/adapters/codex/protocol.mjs:530`, `src/adapters/codex/codex.mjs:1295`, `src/adapters/codex/codex.mjs:1332`).
+10. `captureTurn` maps app-server notifications and output items into progress, plans, final messages, command executions, and file changes (`src/adapters/codex/codex.mjs:641`).
+11. Session and job files are written by event callbacks and tracked-job wrappers (`src/lib/session-log.mjs:32`, `src/lib/session-log.mjs:47`, `src/lib/tracked-jobs.mjs:144`).
+12. `runBridgeTask` emits terminal `DONE`, `ERROR`, `PARTIAL`, `HANDOFF`, or `INCOMPLETE` events and may run an auto-review pipeline before returning (`src/codex-bridge.mjs:3244`, `src/codex-bridge.mjs:3451`, `src/lib/session-log.mjs:327`).
 
-### Background Task Path
+### Review Path
 
-1. `handleTask --background` stores a job request and creates a tracked job record (`src/codex-bridge.mjs:3580`, `src/lib/tracked-jobs.mjs:60`).
-2. `task-worker` reloads the stored request and runs it through `runTrackedJob` (`src/codex-bridge.mjs:3809`, `src/lib/tracked-jobs.mjs:144`).
-3. `runTrackedJob` writes running, terminal, error, rendered, and result details to job files and state index (`src/lib/tracked-jobs.mjs:144`, `src/lib/state.mjs:520`).
-4. `status`, `result`, `wait`, and `events` resolve job/session state through `src/lib/job-control.mjs`, `src/lib/state.mjs`, and `src/lib/session-log.mjs`.
+1. `review` and `adversarial-review` dispatch through `handleReviewCommand` and `handleReview` (`src/codex-bridge.mjs:2365`, `src/codex-bridge.mjs:2444`).
+2. `executeReviewRun` resolves Git repository state, default or explicit target, runtime adapter, and review mode (`src/codex-bridge.mjs:1573`, `src/lib/git.mjs:163`).
+3. Native reviews call `runAppServerReview` with a branch or working-tree prompt (`src/codex-bridge.mjs:1655`, `src/adapters/codex/codex.mjs:1169`).
+4. Adversarial reviews collect inline or self-collect Git context, load `src/prompts/adversarial-review.md`, load `src/schemas/review-output.schema.json`, and call `runAppServerTurn` with structured output (`src/codex-bridge.mjs:1675`, `src/lib/git.mjs:397`, `src/lib/adversarial-review-prompt.mjs`, `src/adapters/codex/codex.mjs:1232`).
+5. Review artifacts are written as `.review.json` plus session events and optional task-registry verdicts (`src/lib/session-log.mjs:78`, `src/lib/registry.mjs:168`, `src/lib/registry.mjs:173`).
 
-### Review and Auto-Pipeline Path
+### Background Monitor Path
 
-1. `handleReviewCommand` parses review flags, resolves a backend, resolves the git review target, collects review context, creates a job, and runs `executeReviewRun` (`src/codex-bridge.mjs:2344`, `src/lib/git.mjs:163`, `src/lib/git.mjs:397`).
-2. Native Codex review uses `runAppServerReview`; adversarial review uses authored schema/prompt assets and structured output parsing in the Codex runtime (`src/adapters/codex/codex.mjs:1169`, `src/adapters/codex/codex.mjs`).
-3. `runAutoPipeline` captures initial diff, may run review, may run fix, may run completion check, and writes `PIPELINE:*`, `DONE`, or `INCOMPLETE` events (`src/adapters/codex/pipeline.mjs:36`).
-4. Pipeline stages rely on `captureGitDiff`, `writeReview`, `buildCollaborationMode`, and `buildSandboxPolicy` rather than duplicating those policies (`src/lib/session-log.mjs:150`, `src/lib/runtime-options.mjs:101`, `src/lib/runtime-options.mjs:129`).
+1. Background task/review commands store a job request in the workspace state directory and launch a detached Node worker (`src/codex-bridge.mjs:2275`, `src/lib/state.mjs:520`).
+2. `task-worker` reloads the stored request and runs the same `runBridgeTask` path inside `runTrackedJob` (`src/codex-bridge.mjs:3839`, `src/lib/tracked-jobs.mjs:144`).
+3. `status`, `result`, `wait`, `events`, and `cancel` resolve jobs through `src/lib/job-control.mjs` and workspace state (`src/codex-bridge.mjs:3904`, `src/codex-bridge.mjs:4261`, `src/codex-bridge.mjs:4367`, `src/codex-bridge.mjs:4432`, `src/codex-bridge.mjs:4730`).
+4. `events --follow` tails `.events` files and filters terminal or noisy tags (`src/codex-bridge.mjs:4432`, `src/lib/session-log.mjs:710`, `src/lib/session-log.mjs:722`).
 
-### App-Server Protocol and Broker Flow
+### Interactive Question Path
 
-1. `buildThreadParams` sets app-server thread options including approval policy, sandbox, service name, and ephemeral behavior (`src/adapters/codex/codex.mjs:59`).
-2. `CodexAppServerClient.connect` prefers an explicit broker endpoint, then an existing broker, then a managed broker, with direct fallback only for stale saved broker initialization failures (`src/adapters/codex/protocol.mjs:530`).
-3. Direct mode spawns `codex app-server`; broker mode connects to a local endpoint stored by `ensureBrokerSession` (`src/adapters/codex/protocol.mjs:339`, `src/adapters/codex/protocol.mjs:457`, `src/lib/broker-lifecycle.mjs:171`).
-4. Outbound app-server messages are newline-delimited JSON objects containing `id`, `method`, and `params`; the client does not add a `jsonrpc` field (`src/adapters/codex/protocol.mjs`).
-5. The broker tracks one active streaming request among `turn/start`, `review/start`, and `thread/compact/start`, while allowing `turn/interrupt` during an active stream (`src/adapters/codex/broker.mjs:13`, `src/adapters/codex/broker.mjs:51`).
-6. Broker endpoints are Unix sockets on non-Windows and named pipes on Windows (`src/lib/broker-endpoint.mjs:10`, `src/lib/broker-endpoint.mjs:19`).
+1. Codex app-server sends `item/tool/requestUserInput` to the client (`src/adapters/codex/protocol.mjs:241`).
+2. `createBridgeServerRequestHandler` writes a pending question file, logs a `QUESTION` event, and waits for a matching response file (`src/codex-bridge.mjs:350`, `src/lib/pending-requests.mjs:20`, `src/lib/pending-requests.mjs:88`).
+3. The `respond` command locates the pending request by thread or request id and writes `{threadId}.response.json` (`src/codex-bridge.mjs:5486`, `src/lib/pending-requests.mjs:35`, `src/lib/pending-requests.mjs:62`).
+4. The worker consumes the response file and resolves the upstream server request over its own app-server connection (`src/lib/pending-requests.mjs:68`, `src/adapters/codex/protocol.mjs:302`).
 
-### Session, Events, and User Response Flow
+### Stop Review Gate Path
 
-1. `initSession` creates a thread-specific `.ndjson` and `.events` pair under the configured session directory (`src/lib/session-log.mjs:8`, `src/lib/session-log.mjs:14`).
-2. Runtime callbacks append structured NDJSON and formatted event blocks synchronously (`src/lib/session-log.mjs:32`, `src/lib/session-log.mjs:47`).
-3. If Codex asks for user input, the bridge writes a pending request file through `writePendingRequest` (`src/lib/pending-requests.mjs:20`).
-4. `respond` writes the answer file for the waiting worker and logs the response (`src/codex-bridge.mjs:5431`).
-5. `events`, `wait`, and `summary` read session artifacts instead of contacting the app-server (`src/codex-bridge.mjs:4394`, `src/codex-bridge.mjs:4329`, `src/codex-bridge.mjs:5494`).
-
-### Setup, Config, Update, and Hook Flow
-
-1. `handleSetup` checks runtime readiness and stop-review-gate state; enabling the gate creates a project lock only when the official OpenAI Codex plugin is absent (`src/codex-bridge.mjs:1048`, `src/lib/state.mjs:433`).
-2. `handleConfigShow` resolves effective config using defaults, install-root config, workspace-root config, and cwd config (`src/lib/config.mjs:107`).
-3. `handleUpdate` calls the release checker and `maybeTriggerAutoApply` can detach an installer on normal hot-path commands (`src/codex-bridge.mjs:1252`, `src/lib/update-check.mjs:261`).
-4. `hooks/session-lifecycle-hook.mjs` writes session and data-root env vars on SessionStart, while Stop hooks invoke bridge commands from the bundled runtime path (`hooks/session-lifecycle-hook.mjs:13`, `hooks/stop-gate.mjs:78`, `hooks/stop-review-gate-hook.mjs:16`).
+1. `setup --enable-review-gate` creates project-local lock state for the hook when the official OpenAI Codex plugin is not present (`src/codex-bridge.mjs:1048`, `src/codex-bridge.mjs:856`).
+2. Claude Stop hooks are registered by `hooks/hooks.json` and generated into `plugin/hooks/hooks.json`.
+3. `hooks/stop-gate.mjs` reads hook input, validates the lock and setup readiness, extracts the latest assistant transcript, writes a temporary prompt, and invokes a read-only no-pipeline `task` review command.
+4. The hook interprets `ALLOW:` or `BLOCK:` from the reviewer output and returns a Claude hook JSON decision (`hooks/stop-gate.mjs`).
 
 **State Management:**
-- Workspace state keys off the canonical workspace root and stores `state.json`, `state.lock`, `jobs/`, and broker metadata under the plugin data root (`src/lib/state.mjs`).
-- Plugin data root precedence is `CODEX_BRIDGE_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, then an OS temp fallback (`src/lib/state.mjs`).
-- Session logs default to `~/.codex-bridge/sessions` unless config supplies another session directory (`src/lib/session-log.mjs:8`).
-- Per-task artifact registry defaults to `~/.codex-bridge/jobs` unless `CODEX_BRIDGE_REGISTRY` is set (`src/lib/registry.mjs`).
+- Config precedence is `DEFAULT_CONFIG` < install-root `config.yaml` < workspace-root `config.yaml` < cwd `config.yaml` (`src/lib/config.mjs:56`, `src/lib/runtime-options.mjs:1`).
+- Workspace state root uses `CODEX_BRIDGE_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, then `os.tmpdir()/codex-companion`; each workspace gets a slug plus hash directory (`src/lib/state.mjs:10`, `src/lib/state.mjs:41`).
+- Workspace state uses `state.lock`, atomic JSON writes, stale-lock handling, and corrupt-state recovery (`src/lib/state.mjs:79`, `src/lib/state.mjs:173`, `src/lib/state.mjs:247`).
+- Session logs use append-only synchronous `.ndjson` and `.events` writes (`src/lib/session-log.mjs:14`, `src/lib/session-log.mjs:32`, `src/lib/session-log.mjs:47`).
+- Task registry artifacts default to `~/.codex-bridge/jobs/<task_id>` and can be redirected with `CODEX_BRIDGE_REGISTRY` for tests (`src/lib/registry.mjs:51`).
+- Pending request IPC uses `{threadId}.pending.json` and `{threadId}.response.json` in the session directory (`src/lib/pending-requests.mjs:15`).
 
 ## Key Abstractions
 
-**Backend Adapter:**
-- Purpose: Declare backend identity, capabilities, and lifecycle methods.
-- Examples: `src/adapters/index.mjs`, `src/adapters/codex/index.mjs`.
-- Pattern: Registry with shape validation and capability guards. Add new loadable backends by adding a loader in `src/adapters/index.mjs`.
+**Command Definition:**
+- Purpose: Public CLI contract for help, JSON help, plugin command coverage, and dispatch.
+- Examples: `COMMANDS` and `SUBCOMMAND_DISPATCH` in `src/codex-bridge.mjs`.
+- Pattern: Add metadata, add handler, then wire dispatch in the same file.
 
 **Bridge Request:**
-- Purpose: Carry prompt, cwd, mode, config, timeouts, sandbox, callbacks, session, and job metadata into task execution.
-- Examples: `src/codex-bridge.mjs`.
-- Pattern: Build once in CLI handlers, then pass through `runBridgeTask` into Codex runtime calls.
+- Purpose: Normalizes task/review inputs before an adapter sees them.
+- Examples: `buildTaskRequest`, `runBridgeTask`, `executeTaskRun` in `src/codex-bridge.mjs`.
+- Pattern: Pass mode, cwd, prompt, collaboration, sandbox, metadata, hooks, and timeout policy as one request object.
+
+**Runtime Adapter:**
+- Purpose: Keeps backend selection and backend-specific execution separate from CLI command handlers.
+- Examples: `src/adapters/index.mjs`, `src/adapters/codex/index.mjs`.
+- Pattern: Adapter modules expose capabilities and methods; callers ask the registry to resolve a runtime adapter before execution.
 
 **Codex App-Server Client:**
-- Purpose: Hide direct process vs broker socket transport behind the same request/notification API.
-- Examples: `src/adapters/codex/protocol.mjs`.
-- Pattern: Initialize with `initialize` and `initialized`, then write newline-delimited JSON requests and resolve pending responses by id.
+- Purpose: Provides the JSONL request/response/notification transport to Codex.
+- Examples: `AppServerClientBase`, `SpawnedCodexAppServerClient`, `BrokerCodexAppServerClient`, `CodexAppServerClient.connect` in `src/adapters/codex/protocol.mjs`.
+- Pattern: Prefer brokered sessions when available, then fall back to direct `codex app-server` when broker setup is unavailable.
 
-**Broker Stream Tracker:**
-- Purpose: Preserve single-stream ownership until the active stream and related sub-threads complete.
-- Examples: `src/adapters/codex/broker.mjs`, `test/broker-stream-release-ordering.test.mjs`.
-- Pattern: Track active stream socket, known thread ids, early completions, disconnects, and cleanup before accepting another streaming request.
+**Managed Broker:**
+- Purpose: Keeps a shared app-server process alive per workspace and serializes concurrent clients.
+- Examples: `src/adapters/codex/broker.mjs`, `src/lib/broker-lifecycle.mjs`, `src/lib/broker-endpoint.mjs`.
+- Pattern: Start through lifecycle helpers, persist endpoint/pid/log state, and reject concurrent streaming turns except interrupt operations.
 
-**Session Event Log:**
-- Purpose: Provide durable command-visible progress without requiring a live Codex connection.
-- Examples: `src/lib/session-log.mjs`, `test/events-json.test.mjs`.
-- Pattern: Append formatted event blocks and structured NDJSON synchronously; consumers read or follow files.
+**Session Event Stream:**
+- Purpose: Makes long-running work monitorable by CLI commands and Claude command hints.
+- Examples: `.events`, `.ndjson`, `.plan.md`, `.diff`, `.review.json` from `src/lib/session-log.mjs`.
+- Pattern: Append events synchronously and use terminal tags as the durable completion contract.
 
-**Tracked Job Record:**
-- Purpose: Persist background job state, progress, result, rendered output, and logs.
-- Examples: `src/lib/tracked-jobs.mjs`, `src/lib/job-control.mjs`, `src/lib/state.mjs`.
-- Pattern: State index plus per-job file, with terminal history pruning and active-job retention.
+**Workspace Job Index:**
+- Purpose: Lets detached workers and foreground commands share job state safely.
+- Examples: `loadState`, `updateState`, `upsertJob`, `writeJobFile`, `readJobFile` in `src/lib/state.mjs`.
+- Pattern: Store canonical workspace data under a workspace-specific state directory with a lock and atomic rewrites.
 
-**Review Target:**
-- Purpose: Normalize dirty working tree, branch diff, and explicit review targets into a reviewable context.
-- Examples: `src/lib/git.mjs`.
-- Pattern: Resolve target first, collect bounded context second, then pass context to native or prompt-based review.
+**Git Review Target:**
+- Purpose: Converts user review intent into working-tree or branch review context.
+- Examples: `resolveReviewTarget`, `collectReviewContext`, `collectWorkingTreeContext`, `collectBranchContext` in `src/lib/git.mjs`.
+- Pattern: Default to dirty working-tree diffs; otherwise compare current branch against detected default branch unless the user passes a base.
 
-**Generated Surface:**
-- Purpose: Keep installable runtime surfaces in sync with source.
-- Examples: `esbuild.config.mjs`, `skill/scripts/codex-bridge.mjs`, `plugin/scripts/codex-bridge.mjs`.
-- Pattern: Edit source or authored plugin inputs, run `npm run build`, and include generated diffs.
+**Task Worktree:**
+- Purpose: Isolates write-mode work from the user's checkout.
+- Examples: `createSubagentWorktree`, `pruneWorktreeOnCancel`, `mergeSubagentBranch`, `listSubagentWorktrees` in `src/lib/git.mjs`.
+- Pattern: Create `subagent/<backend>/<task_id>` branches under `../.codex-bridge-worktrees/<task_id>` and only use branch-only fallback when safe.
+
+**Structured Brief:**
+- Purpose: Supplies machine-checkable delegated task context.
+- Examples: `loadBrief`, `renderBriefMarkdown`, `VALID_BACKENDS` in `src/lib/brief.mjs`.
+- Pattern: Validate without AJV, hash raw input, reject unknown fields, and attach rendered brief text to the task prompt.
 
 ## Entry Points
 
-**Source CLI:**
-- Location: `src/codex-bridge.mjs`.
-- Triggers: `npm run dev`, direct `node src/codex-bridge.mjs`, generated bundle execution.
-- Responsibilities: Command dispatch, option validation, config resolution, adapter selection, job/session setup, runtime execution, and rendering.
+**Package CLI:**
+- Location: `src/codex-bridge.mjs`
+- Triggers: `npm run dev`, generated skill/plugin scripts, plugin commands, agents, hooks, and CI sanity checks.
+- Responsibilities: Dispatch all bridge subcommands, load config, resolve adapters, coordinate jobs, and emit JSON/human output.
 
-**Bundled Skill CLI:**
-- Location: `skill/scripts/codex-bridge.mjs`.
-- Triggers: Legacy skill install layout.
-- Responsibilities: Execute bundled CLI code emitted from `src/codex-bridge.mjs`.
+**Generated Plugin Runtime:**
+- Location: `plugin/scripts/codex-bridge.mjs`
+- Triggers: `plugin/commands/*.md`, `plugin/agents/*.md`, `plugin/hooks/*.mjs`
+- Responsibilities: Packaged runtime entrypoint produced by `npm run build`; do not hand-edit.
 
-**Bundled Plugin CLI:**
-- Location: `plugin/scripts/codex-bridge.mjs`.
-- Triggers: Plugin command and hook surfaces.
-- Responsibilities: Execute bundled CLI code emitted from `src/codex-bridge.mjs`.
+**Generated Skill Runtime:**
+- Location: `skill/scripts/codex-bridge.mjs`
+- Triggers: Legacy skill usage and release package.
+- Responsibilities: Installable skill runtime produced by `npm run build`; do not hand-edit.
 
-**Broker Process:**
-- Location: `src/adapters/codex/broker.mjs`, `skill/app-server-broker.mjs`, `plugin/scripts/app-server-broker.mjs`.
-- Triggers: Managed broker lifecycle from `src/lib/broker-lifecycle.mjs`.
-- Responsibilities: Host one upstream Codex app-server process and broker local downstream clients.
+**App-Server Broker:**
+- Location: `src/adapters/codex/broker.mjs`
+- Triggers: Spawned by `ensureBrokerSession` through generated broker scripts.
+- Responsibilities: Own one upstream Codex app-server connection and multiplex local clients over a socket/pipe endpoint.
 
-**Hooks:**
-- Location: `hooks/hooks.json`, `hooks/session-lifecycle-hook.mjs`, `hooks/stop-gate.mjs`, `hooks/stop-review-gate-hook.mjs`.
-- Triggers: Claude Code SessionStart, SessionEnd, and Stop hook events.
-- Responsibilities: Session environment propagation, orphan pruning, and optional read-only stop-gate review.
+**Claude Plugin Commands:**
+- Location: `plugin/commands/*.md`
+- Triggers: Claude Code slash commands under the plugin.
+- Responsibilities: Forward user arguments to the generated CLI or delegate through `codex-bridge-runner` / `codex-bridge-reviewer`.
+
+**Claude Plugin Agents:**
+- Location: `plugin/agents/codex-bridge-runner.md`, `plugin/agents/codex-bridge-reviewer.md`
+- Triggers: Plugin command front matter and explicit agent invocations.
+- Responsibilities: Run bridge tasks/reviews through the packaged script and return monitor or verdict output.
+
+**Claude Hooks:**
+- Location: `hooks/hooks.json`, `hooks/session-lifecycle-hook.mjs`, `hooks/stop-gate.mjs`
+- Triggers: Claude `SessionStart`, `SessionEnd`, and `Stop` hook events.
+- Responsibilities: Inject bridge environment variables, prune orphan jobs, and run Stop-gate review checks.
 
 **Build:**
-- Location: `esbuild.config.mjs`.
-- Triggers: `npm run build`, CI workflow.
-- Responsibilities: Bundle CLI/broker entry points and copy static assets into `skill/` and `plugin/`.
+- Location: `esbuild.config.mjs`
+- Triggers: `npm run build` and `.github/workflows/build.yml`.
+- Responsibilities: Bundle source entrypoints and copy source assets, plugin commands, plugin agents, hooks, and config into installable layouts.
+
+**Tests:**
+- Location: `test/*.test.mjs`
+- Triggers: `npm test` and `.github/workflows/build.yml`.
+- Responsibilities: Verify CLI contracts, adapter behavior, broker behavior, state/job handling, hook behavior, generated surfaces, and prompt/schema contracts.
 
 ## Architectural Constraints
 
-- **Runtime:** Use Node.js `>=22.0.0` and ESM modules. Package metadata lives in `package.json`.
-- **Backend:** Only `codex` is loadable through `ADAPTER_LOADERS` in `src/adapters/index.mjs`.
-- **Adapter shell:** Do not rely on `src/adapters/codex/index.mjs` lifecycle methods for execution; bridge command handlers call Codex runtime helpers directly.
-- **Protocol:** App-server outbound requests are newline-delimited JSON objects with `id`, `method`, and `params`, without a `jsonrpc` field.
-- **Client info:** Keep `DEFAULT_CLIENT_INFO.name` as `codex_bridge` unless the app-server contract and tests change (`src/adapters/codex/protocol.mjs:26`).
-- **Plan mode:** `buildCollaborationMode` forces reasoning effort `xhigh` for plan mode regardless of configured execute effort (`src/lib/runtime-options.mjs:101`).
-- **Config precedence:** Defaults merge below install-root `config.yaml`, workspace-root `config.yaml`, and cwd `config.yaml` (`src/lib/config.mjs:107`).
-- **State root:** Use `CODEX_BRIDGE_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, then temp fallback for workspace state (`src/lib/state.mjs`).
-- **Session writes:** Keep session `.events` and `.ndjson` append-only and synchronous through `src/lib/session-log.mjs`.
-- **Stop gate:** Stop review gate is project-scoped through `.codex-bridge-stop-review-gate.lock` and is suppressed when the official OpenAI Codex plugin is active.
-- **Generated outputs:** Do not hand-edit generated runtime files under `skill/scripts/`, `skill/prompts/`, `skill/schemas/`, `skill/templates/`, `plugin/scripts/`, `plugin/prompts/`, `plugin/schemas/`, `plugin/templates/`, `plugin/commands/`, `plugin/agents/`, `plugin/hooks/`, or `plugin/config.yaml`.
-- **CI drift check:** `.github/workflows/build.yml` runs `npm run build`, `npm test`, and fails if committed generated paths drift from a fresh build.
+- **Runtime:** Use Node.js `>=22.0.0` and ESM modules only (`package.json`).
+- **Threading:** Main CLI work is single-process/single-event-loop; background execution uses detached Node worker processes; app-server sharing uses a detached broker process (`src/codex-bridge.mjs`, `src/lib/tracked-jobs.mjs`, `src/adapters/codex/broker.mjs`).
+- **Transport:** Outbound app-server messages are newline-delimited JSON objects with `id`, `method`, and `params`; do not add a `jsonrpc` field (`src/adapters/codex/protocol.mjs`).
+- **Client identity:** Keep `DEFAULT_CLIENT_INFO.name` as `codex_bridge` unless the app-server contract and tests change together (`src/adapters/codex/protocol.mjs`).
+- **Backend support:** The active implementation is the Codex adapter; `aider`, `claude-cli`, `gemini`, and `ollama` directories under `src/adapters/` are documentation/stub surfaces.
+- **Plan mode effort:** Plan mode always injects `reasoning.effort = "xhigh"` through `buildCollaborationMode` (`src/lib/runtime-options.mjs:101`).
+- **Config precedence:** Preserve the config layer order implemented by `loadConfigLayers` (`src/lib/config.mjs:56`).
+- **Global state:** Use workspace-scoped state helpers instead of module-level mutable job state; managed broker, job index, and gate settings live under the resolved state directory (`src/lib/state.mjs`).
+- **Session writes:** Append `.events` and `.ndjson` synchronously through `src/lib/session-log.mjs`; do not introduce a competing writer for the same files.
+- **Generated outputs:** Do not hand-edit generated runtime files under `skill/scripts/`, `skill/app-server-broker.mjs`, `skill/prompts/`, `skill/schemas/`, `skill/templates/`, `plugin/scripts/`, `plugin/prompts/`, `plugin/schemas/`, `plugin/templates/`, or `plugin/config.yaml`.
+- **Plugin commands and agents:** In this checkout, `plugin/commands/` and `plugin/agents/` are the packaged command/agent surfaces. If root `commands/` or `agents/` directories are restored, `esbuild.config.mjs` copies them into `plugin/` and those restored roots become the edit targets.
+- **Stop gate:** The Stop review gate is project-scoped and lock-driven; hook decisions must check both lock/setup readiness and workspace state before blocking (`src/codex-bridge.mjs`, `hooks/stop-gate.mjs`).
+- **Circular imports:** No circular dependency chain was detected in the static source import pass. Keep adapter-facing imports one-directional: CLI -> adapter registry -> adapter implementation -> shared libs.
 
 ## Anti-Patterns
 
 ### Editing Generated Runtime Files
 
-**What happens:** A change is made directly under `skill/scripts/`, `plugin/scripts/`, generated prompt/schema/template copies, plugin command copies, plugin agent copies, plugin hook copies, or `plugin/config.yaml`.
+**What happens:** A change is made directly in `plugin/scripts/codex-bridge.mjs`, `skill/scripts/codex-bridge.mjs`, `plugin/prompts/`, `plugin/schemas/`, `plugin/templates/`, or `plugin/config.yaml`.
+**Why it's wrong:** `npm run build` overwrites these paths from `src/`, `skill/config.yaml`, and configured static assets.
+**Do this instead:** Edit `src/codex-bridge.mjs`, `src/adapters/codex/**`, `src/lib/**`, `src/prompts/**`, `src/schemas/**`, `src/templates/**`, `hooks/**`, `plugin/commands/**`, `plugin/agents/**`, or `skill/config.yaml` as appropriate, then run `npm run build`.
 
-**Why it's wrong:** `esbuild.config.mjs` overwrites those paths and CI checks generated drift.
+### Bypassing `runBridgeTask`
 
-**Do this instead:** Edit the source in `src/`, `commands/`, `agents/`, `hooks/`, `src/prompts/`, `src/schemas/`, `src/templates/`, or `skill/config.yaml`, then run `npm run build`.
+**What happens:** A new task-like command calls `runAppServerTurn` directly and skips session events, question handling, job state, heartbeat, stop-gate review, or auto-pipeline behavior.
+**Why it's wrong:** Users lose monitorability, terminal tags, cancellation/result integration, and consistent error envelopes.
+**Do this instead:** Route task execution through `runBridgeTask` and `executeTaskRun` in `src/codex-bridge.mjs`; add adapter-specific behavior inside `src/adapters/codex/*.mjs` only when the backend contract changes.
 
-### Bypassing Runtime Option Builders
+### Adding Command Metadata Without Dispatch
 
-**What happens:** A handler constructs model, effort, sandbox, or collaboration options manually.
+**What happens:** A command appears in help or plugin markdown but has no handler in `SUBCOMMAND_DISPATCH`, or a handler exists without matching metadata and tests.
+**Why it's wrong:** JSON help, plugin surface tests, and runtime behavior diverge.
+**Do this instead:** Update `COMMANDS`, add the handler, wire `SUBCOMMAND_DISPATCH`, update `plugin/commands/<command>.md` when user-facing, and add/adjust `test/*.test.mjs`.
 
-**Why it's wrong:** Plan mode effort, sandbox fallback, prompt footer, and pipeline timeout behavior are centralized.
+### Sharing State Outside State Helpers
 
-**Do this instead:** Use `buildCollaborationMode`, `buildSandboxPolicy`, and config helpers in `src/lib/runtime-options.mjs`.
+**What happens:** A background worker writes ad hoc JSON files outside `src/lib/state.mjs`, `src/lib/tracked-jobs.mjs`, `src/lib/session-log.mjs`, or `src/lib/registry.mjs`.
+**Why it's wrong:** Status, result, wait, cancel, and orphan pruning cannot see the state consistently.
+**Do this instead:** Use `writeJobFile`, `updateState`, `runTrackedJob`, `logEvent`, `logNdjson`, and registry helpers from `src/lib/`.
 
-### Treating `.events` as an Unstructured Log
+### Treating Packaged Extra Hooks As Active
 
-**What happens:** A new command scans `.events` with ad hoc terminal checks or assumes all events are one-line strings.
-
-**Why it's wrong:** Event blocks have formatted tags and terminal semantics implemented by `src/lib/session-log.mjs`.
-
-**Do this instead:** Use the session-log helpers and preserve terminal tags consumed by `wait`, `events`, and pipeline flows.
-
-### Adding Async Session Writers
-
-**What happens:** New code writes competing asynchronous streams to the same `.events` or `.ndjson` files.
-
-**Why it's wrong:** The current durability model is synchronous append through `logEvent` and `logNdjson`.
-
-**Do this instead:** Route all session artifact writes through `src/lib/session-log.mjs`.
-
-### Assuming Broker Concurrency Is Unbounded
-
-**What happens:** A new app-server call starts while another streaming `turn/start` or `review/start` is active.
-
-**Why it's wrong:** The broker is designed around one active streaming owner and rejects other requests with a broker busy code, except allowed interrupts.
-
-**Do this instead:** Respect broker busy responses and use status/session surfaces to monitor active work.
+**What happens:** Code assumes every file in `plugin/hooks/` is registered.
+**Why it's wrong:** Active hook execution is determined by `hooks/hooks.json` and generated `plugin/hooks/hooks.json`; several packaged hook scripts are present but not registered in the active manifest.
+**Do this instead:** Update `hooks/hooks.json` and tests when changing active hook behavior.
 
 ## Error Handling
 
-**Strategy:** Convert local validation failures and runtime failures into `CliError`-style command envelopes, while preserving raw session/job evidence on disk.
+**Strategy:** Normalize user-facing and machine-readable errors through `CliError`, error classes, JSON envelopes, terminal session events, and tracked-job failure records.
 
 **Patterns:**
-- Validate user flags and adapter capability before spawning Codex (`src/codex-bridge.mjs`, `src/adapters/index.mjs`).
-- Map app-server availability, protocol, idle-timeout, turn-timeout, and pipeline failures into structured command errors (`src/adapters/codex/codex.mjs`, `src/lib/cli-errors.mjs`).
-- Write recoverable progress and terminal state to `.events`, `.ndjson`, job files, and registry files (`src/lib/session-log.mjs`, `src/lib/tracked-jobs.mjs`, `src/lib/registry.mjs`).
-- On unexpected CLI crashes, write a crash log under the bridge data area before rethrow/rendering (`src/codex-bridge.mjs`).
-- Use best-effort cleanup for broker sessions, worktrees, process trees, stale locks, stale job files, and orphaned jobs (`src/lib/broker-lifecycle.mjs`, `src/lib/git.mjs`, `src/lib/process.mjs`, `src/lib/state.mjs`).
+- Throw `CliError` for validation, dependency, configuration, not-found, timeout, conflict, and cancelable precondition failures (`src/lib/cli-errors.mjs`).
+- Let `main` catch unhandled errors and emit the normalized envelope with appropriate exit code (`src/codex-bridge.mjs:5738`).
+- For background workers, persist failures through `runTrackedJob` and job detail files (`src/lib/tracked-jobs.mjs:144`).
+- For long task sessions, emit terminal `ERROR`, `INCOMPLETE`, `PARTIAL`, or `HANDOFF` events instead of relying only on process exit (`src/lib/session-log.mjs`).
+- For app-server turn timeouts and interrupts, use adapter capture logic and protocol cancellation rather than killing the process immediately (`src/adapters/codex/codex.mjs`, `src/adapters/codex/protocol.mjs`).
 
 ## Cross-Cutting Concerns
 
-**Logging:**
-- Use `src/lib/session-log.mjs` for per-thread `.events` and `.ndjson`.
-- Use `src/lib/tracked-jobs.mjs` for per-job logs and terminal result files.
-- Use `src/lib/registry.mjs` for task-scoped registry artifacts.
+**Logging:** Use `src/lib/session-log.mjs` for session streams, `src/lib/tracked-jobs.mjs` for job log/status mirrors, and `src/lib/registry.mjs` for per-task event artifacts.
 
-**Validation:**
-- Use command flag validation in `src/codex-bridge.mjs`.
-- Use adapter shape and capability validation in `src/adapters/index.mjs`.
-- Use schema-backed structured review output through `src/schemas/review-output.schema.json` and Codex output parsing.
-- Use tests under `test/*.test.mjs` for adapter routing, protocol, broker lifecycle, session logging, state, events, pipeline, plugin surfaces, and CLI behavior.
+**Validation:** Use `src/lib/args.mjs` for CLI argument parsing helpers, `src/lib/brief.mjs` for structured brief validation, `src/lib/render.mjs` plus `src/schemas/review-output.schema.json` for review output shape, and tests under `test/*.test.mjs` for surface contracts.
 
-**Authentication:**
-- The bridge delegates real auth to the Codex CLI and app-server runtime.
-- `getCodexAvailability` checks the Codex binary and app-server support before runtime use (`src/adapters/codex/codex.mjs:1127`).
-- Official OpenAI Codex plugin detection is isolated in `src/lib/official-plugin.mjs` and affects stop-gate setup.
+**Authentication:** Codex auth is external to this package and checked through Codex CLI commands in setup/auth-status flows (`src/codex-bridge.mjs`, `src/adapters/codex/codex.mjs`). Official OpenAI Codex plugin presence is detected through `src/lib/official-plugin.mjs` and can suppress the local Stop review gate.
 
-**Configuration:**
-- Keep defaults in `src/lib/runtime-options.mjs`.
-- Keep YAML loading and source precedence in `src/lib/config.mjs`.
-- Keep shipped default config in `skill/config.yaml`, then regenerate `plugin/config.yaml`.
+**Process Safety:** Use `src/lib/process.mjs` wrappers for child processes, `src/lib/git.mjs` safe argument arrays for Git, `src/lib/state.mjs` locking for shared state, and `src/lib/broker-lifecycle.mjs` teardown paths for stale broker sessions.
 
-**Process Control:**
-- Use `src/lib/process.mjs` for binary checks, spawned commands, and process tree termination.
-- Use `src/lib/broker-lifecycle.mjs` for broker process startup, health checks, saved broker session metadata, and teardown.
-
-## Test Anchors
-
-| Area | Tests |
-|------|-------|
-| Adapter contract and routing | `test/adapter-registry.test.mjs`, `test/adapter-routing.test.mjs` |
-| App-server client protocol | `test/app-server-client.test.mjs`, `test/app-server-client-helpers.test.mjs` |
-| Broker startup and stream release | `test/broker-lifecycle.test.mjs`, `test/broker-stream-release-ordering.test.mjs` |
-| Session logs and event JSON | `test/session-log.test.mjs`, `test/events-json.test.mjs` |
-| State and job control | `test/state.test.mjs`, `test/job-control.test.mjs`, `test/status-watch.test.mjs` |
-| Task and review command behavior | `test/task-command.test.mjs`, `test/review-command.test.mjs`, `test/turn-request.test.mjs` |
-| Pipeline behavior | `test/pipeline-command.test.mjs`, `test/auto-pipeline.test.mjs` |
-| Build and plugin surfaces | `test/plugin-surfaces.test.mjs`, `.github/workflows/build.yml` |
+**Build Drift:** Use `npm run build` after changes to source/assets/hook/command/agent/config inputs and rely on `.github/workflows/build.yml` to fail if generated paths drift.
 
 ---
 
-*Architecture analysis: 2026-04-30*
+*Architecture analysis: 2026-05-02*

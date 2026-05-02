@@ -1,189 +1,159 @@
 ---
-last_mapped_commit: 16f4fd188f47160bdaddabb9813c6fe67e486d5d
-analysis_date: 2026-04-30
-evidence_policy: current non-Markdown package, source, config, workflow, hook, and test files only
+last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 ---
-
 # External Integrations
 
-**Analysis Date:** 2026-04-30
+**Analysis Date:** 2026-05-02
 
 ## APIs & External Services
 
-**OpenAI Codex CLI / app-server:**
-- Codex CLI is the primary execution backend for `codex-bridge`.
-  - SDK/Client: No npm SDK; integration is process-based through the `codex` binary in `src/adapters/codex/protocol.mjs` and availability probes in `src/adapters/codex/codex.mjs`.
-  - Process commands: `codex --version`, `codex app-server --help`, and `codex app-server`.
-  - Protocol: newline-delimited JSON request/response and notification objects over child-process stdio or broker socket; request messages are built in `src/adapters/codex/protocol.mjs`.
-  - Client identity: `DEFAULT_CLIENT_INFO.name` is `codex_bridge` in `src/adapters/codex/protocol.mjs`.
-  - Auth: Codex CLI account state is read via app-server methods `account/read` and `config/read` in `src/adapters/codex/codex.mjs`; no Codex token is stored in this repository.
+**OpenAI Codex Runtime:**
+- OpenAI Codex CLI/app-server - Primary execution, review, resume, steering, question, and cancel runtime.
+  - SDK/Client: No npm SDK; `src/adapters/codex/protocol.mjs` spawns `codex app-server` and communicates through newline-delimited JSON objects over stdio or broker sockets.
+  - Auth: Managed by the external Codex CLI/account; bridge checks `codex --version`, `codex app-server --help`, `account/read`, and `config/read` in `src/adapters/codex/codex.mjs`.
+  - Protocol methods: `initialize`, `thread/start`, `thread/resume`, `thread/name/set`, `thread/list`, `review/start`, `turn/start`, `turn/steer`, `turn/interrupt`, `account/read`, and `config/read` are typed in `src/adapters/codex/protocol.d.ts`.
+  - Transport: Direct child-process stdio or shared broker socket selected in `src/adapters/codex/protocol.mjs` and `src/lib/broker-lifecycle.mjs`.
 
-**Codex app-server broker:**
-- Shared local broker is started by `src/lib/broker-lifecycle.mjs` and implemented by `src/adapters/codex/broker.mjs`.
-  - SDK/Client: Local Node `net` server plus `CodexAppServerClient`.
-  - Endpoint env var: `CODEX_COMPANION_APP_SERVER_ENDPOINT` from `src/adapters/codex/protocol.mjs`.
-  - PID/log env vars: `CODEX_COMPANION_APP_SERVER_PID_FILE` and `CODEX_COMPANION_APP_SERVER_LOG_FILE` from `src/lib/broker-lifecycle.mjs`.
-  - Transport: `unix:<sessionDir>/broker.sock` on non-Windows; `pipe:\\\\.\\pipe\\<name>` on Windows from `src/lib/broker-endpoint.mjs`.
-  - State: broker session metadata is saved as `broker.json` under the bridge state directory by `src/lib/broker-lifecycle.mjs`.
+**Claude Code Plugin/Skill Surface:**
+- Claude Code plugin system - Provides slash commands, agents, and hooks for the packaged plugin layout.
+  - SDK/Client: File-based plugin manifests and command/agent Markdown in `.claude-plugin/plugin.json`, `plugin/.claude-plugin/plugin.json`, `plugin/commands/`, `plugin/agents/`, and `plugin/hooks/hooks.json`.
+  - Auth: Inherits Claude Code's local plugin execution context; no application secrets are stored by this repo.
+  - Hooks: Registered hooks in `plugin/hooks/hooks.json` and `hooks/hooks.json` run local Node scripts for `SessionStart`, `SessionEnd`, and `Stop`.
+  - Env contract: Hook scripts read `CLAUDE_ENV_FILE`, `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, and `CODEX_BRIDGE_PLUGIN_DATA`.
 
-**Claude Code plugin and skill runtime:**
-- Root plugin metadata is in `.claude-plugin/plugin.json` and exposes `./skill`.
-  - Canonical packaged plugin metadata is in `plugin/.claude-plugin/plugin.json`.
-  - Plugin commands live under `plugin/commands/`; current checkout has 22 command Markdown files inventoried by file listing only.
-  - Plugin agents live under `plugin/agents/`; current checkout has 2 agent Markdown files inventoried by file listing only.
-  - Plugin hooks are registered by `plugin/hooks/hooks.json`.
-  - Legacy skill bundle lives under `skill/`.
-  - Plugin-local skill bundle lives under `plugin/skills/codex-bridge/`.
-  - Path env vars used by hooks: `CLAUDE_PLUGIN_ROOT`, `CLAUDE_ENV_FILE`, and `CLAUDE_PROJECT_DIR`.
+**Claude CLI:**
+- Official OpenAI Codex plugin detection - Prevents duplicate stop-gate behavior when the official plugin is active.
+  - SDK/Client: `src/lib/official-plugin.mjs` shells out to `claude plugin list --json`.
+  - Auth: Uses the local Claude CLI/plugin installation; no tokens are read by bridge code.
 
-**Claude CLI official plugin detection:**
-- The bridge detects whether the official OpenAI Codex plugin is enabled by spawning `claude plugin list --json` in `src/lib/official-plugin.mjs`.
-  - Auth: none handled by this repository; it relies on the local Claude CLI environment.
-  - Use: stop-review-gate setup can suppress codex-bridge's own Stop gate when the official plugin is active through `src/lib/state.mjs` and `src/codex-bridge.mjs`.
-
-**Git and worktree operations:**
-- Git CLI is used by `src/lib/git.mjs`, `src/lib/workspace.mjs`, `src/lib/session-log.mjs`, `src/lib/state.mjs`, and Stop hooks.
-  - Commands include `rev-parse`, `symbolic-ref`, `show-ref`, `branch --show-current`, `diff`, `ls-files`, `merge-base`, `status --porcelain`, and `log`.
-  - Review target resolution uses dirty working tree detection and branch comparison in `src/lib/git.mjs`.
-  - Workspace identity for state uses `git rev-parse --show-toplevel` through `src/lib/workspace.mjs` and `src/lib/state.mjs`.
-  - Stop gate lock path is the Git project root plus `.codex-bridge-stop-review-gate.lock` in `src/lib/state.mjs` and `hooks/stop-gate.mjs`.
+**Git:**
+- Git command-line integration - Repository discovery, diff capture, review target selection, worktree creation, branch merge, and cleanup.
+  - SDK/Client: `src/lib/git.mjs`, `src/lib/session-log.mjs`, `src/lib/state.mjs`, and hook state helpers run `git` through `child_process`.
+  - Auth: Uses the user's local Git configuration for any remote access.
+  - Remote calls: `src/lib/git.mjs` runs `git fetch --no-tags origin <baseRef>` during merge best-effort refresh.
 
 **GitHub Releases API:**
-- Update checks call `https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest` in `src/lib/update-check.mjs`.
-  - SDK/Client: Node 22 global `fetch`.
-  - Auth: anonymous request with `Accept: application/vnd.github+json` and `User-Agent: codex-bridge-update-check`; no `GITHUB_TOKEN` or `GH_TOKEN` path is implemented in current source.
-  - Cache: `codex-bridge-update.json` under `CODEX_BRIDGE_PLUGIN_DATA`, `CLAUDE_PLUGIN_DATA`, or `~/.codex-bridge/update-cache.json`.
-  - Timeout: default fetch timeout is 2500 ms in `src/lib/update-check.mjs`.
+- Public release update checks - Detects whether a newer `codex-bridge` release exists.
+  - SDK/Client: Native Node `fetch` in `src/lib/update-check.mjs`.
+  - Endpoint: `https://api.github.com/repos/yigitkonur/codex-bridge/releases/latest`.
+  - Auth: Anonymous; comments in `src/lib/update-check.mjs` state no `GITHUB_TOKEN` or `GH_TOKEN` path is used for update checks.
+  - Cache: Update results are cached in `CODEX_BRIDGE_PLUGIN_DATA/codex-bridge-update.json`, `CLAUDE_PLUGIN_DATA/codex-bridge-update.json`, or `~/.codex-bridge/update-cache.json`.
 
-**npm / skills installer:**
-- Update auto-apply and explicit apply spawn `npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y` from `src/codex-bridge.mjs`.
-  - SDK/Client: local `npx` process.
-  - Auth: none detected in repository code.
-  - Control env var: `CODEX_BRIDGE_NO_UPDATE_CHECK=1` disables hot-path update checks in `src/codex-bridge.mjs`.
+**npm / skills Installer:**
+- Skill installer update path - Applies newer bridge releases through the public skills installer.
+  - SDK/Client: `src/codex-bridge.mjs` spawns `npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y`.
+  - Auth: Uses npm registry access available to `npx`; no npm token file is read by bridge code.
+  - Logs: Detached auto-apply writes `~/.codex-bridge/auto-update.log` from `src/codex-bridge.mjs`.
+
+**GitHub Actions:**
+- CI build and release automation - Verifies builds/tests and publishes release artifacts.
+  - SDK/Client: `.github/workflows/build.yml` uses `actions/checkout@v4` and `actions/setup-node@v4`; `.github/workflows/release.yml` also uses `softprops/action-gh-release@v2`.
+  - Auth: GitHub Actions provides repository permissions; release workflow declares `contents: write` in `.github/workflows/release.yml`.
 
 ## Data Storage
 
 **Databases:**
-- Not detected. There is no database server, ORM, or persistent remote data store in `package.json` or source imports.
-
-**Local filesystem state:**
-- Bridge state root is resolved in `src/lib/state.mjs`.
-  - Preferred root: `CODEX_BRIDGE_PLUGIN_DATA/state`.
-  - Fallback root: `CLAUDE_PLUGIN_DATA/state`.
-  - Final fallback: `os.tmpdir()/codex-companion`.
-  - Workspace state file: `state.json`.
-  - State lock file: `state.lock`.
-  - Job metadata directory: `jobs/`.
-  - Broker session file: `broker.json` from `src/lib/broker-lifecycle.mjs`.
-- Session logs are local files from `src/lib/session-log.mjs`.
-  - `*.ndjson` append-only event log.
-  - `*.events` append-only human-readable event stream.
-  - `*.diff`, `*.plan.md`, and `*.review.json` generated as task/review artifacts.
-- Hook diagnostics are local files under `~/.codex-bridge/hook-errors/` in `plugin/hooks/*.mjs` and `hooks/stop-gate.mjs`.
-- Update cache is local JSON from `src/lib/update-check.mjs`.
-- Temporary prompt files are written under `os.tmpdir()` by `hooks/stop-gate.mjs` and `plugin/hooks/pre-tool-agent.mjs`, then removed best-effort.
+- Not detected.
+  - Connection: Not applicable.
+  - Client: No database ORM or database client dependency appears in `package.json`, `package-lock.json`, or source imports.
 
 **File Storage:**
-- Local filesystem only. No S3, GCS, Azure Blob, or hosted file storage integration detected.
+- Local filesystem state only.
+  - Session logs: `src/lib/session-log.mjs` writes `.ndjson`, `.events`, `.diff`, `.plan.md`, and `.review.json` files under `session_dir`, defaulting to `~/.codex-bridge/sessions`.
+  - Workspace state: `src/lib/state.mjs` writes `state.json`, `state.lock`, per-job JSON files, and `broker.json` under `CODEX_BRIDGE_PLUGIN_DATA/state/<workspace-hash>`, `CLAUDE_PLUGIN_DATA/state/<workspace-hash>`, or `os.tmpdir()/codex-companion`.
+  - Artifact registry: `src/lib/registry.mjs` writes `meta.json`, `verdict.json`, and `events.jsonl` under `CODEX_BRIDGE_REGISTRY` or `~/.codex-bridge/jobs`.
+  - Pending questions: `src/lib/pending-requests.mjs` writes `{threadId}.pending.json` and `{threadId}.response.json` in the session directory.
+  - Broker runtime: `src/lib/broker-lifecycle.mjs` writes temp `broker.pid`, `broker.log`, Unix socket/pipe endpoint files, and saved broker session metadata.
+  - Crash and hook diagnostics: `src/codex-bridge.mjs` writes `~/.codex-bridge/crashes/*`; `plugin/hooks/*.mjs` write `~/.codex-bridge/hook-errors/*` and `~/.codex-bridge/hook-state/*`.
+  - Worktree isolation: `src/lib/git.mjs` creates worker worktrees under `<repoRoot>/../.codex-bridge-worktrees/<taskId>` when requested.
 
 **Caching:**
-- GitHub release cache in `src/lib/update-check.mjs`.
-- Update apply-attempt lock/cache in `src/lib/update-check.mjs`.
-- Official plugin detection cache in `src/lib/official-plugin.mjs`.
-- Adapter cache in `src/adapters/index.mjs`.
-- Broker session cache in `src/lib/broker-lifecycle.mjs`.
+- Update cache: `src/lib/update-check.mjs` caches latest release metadata and apply-attempt markers.
+- Broker session cache: `src/lib/broker-lifecycle.mjs` stores `broker.json` under the workspace state directory.
+- Official plugin detection cache: `src/lib/official-plugin.mjs` keeps an in-process cache for `claude plugin list --json` results.
+- Seen Monitor jobs: `plugin/hooks/post-tool-bash.mjs` stores bounded seen-job files under `~/.codex-bridge/hook-state/<workspace>/`.
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- Codex CLI OAuth/account state is the effective auth provider for OpenAI work.
-  - Implementation: `src/adapters/codex/codex.mjs` connects to app-server and reads account/config state.
-  - Capability metadata in `src/adapters/codex/index.mjs` declares `auth_strategy: "oauth-cli"` and `billing_model: "subscription"`.
-  - No access tokens, API keys, or OAuth secrets are read from repository files.
-
-**Claude Code Identity:**
-- Claude Code plugin execution identity comes from local Claude plugin runtime env vars and hook payloads.
-  - `CODEX_COMPANION_SESSION_ID` scopes session behavior in `hooks/session-lifecycle-hook.mjs`, `plugin/hooks/session-start.mjs`, `plugin/hooks/session-end.mjs`, and `src/lib/state.mjs`.
-  - `CLAUDE_PROJECT_DIR` and hook payload `cwd` choose workspace cwd in hook scripts.
+- OpenAI Codex CLI authentication.
+  - Implementation: `src/adapters/codex/codex.mjs` checks Codex availability, then reads app-server `account/read` and `config/read` status. It classifies OAuth and API-key account types from the app-server response; the bridge does not store OpenAI tokens.
+- Claude Code local plugin identity.
+  - Implementation: Plugin and hook execution are file/local-process based through `.claude-plugin/plugin.json`, `plugin/.claude-plugin/plugin.json`, `plugin/hooks/hooks.json`, and `hooks/hooks.json`.
+- Git identity and remotes.
+  - Implementation: Git operations in `src/lib/git.mjs` use the user's local Git configuration and remote credentials.
+- GitHub Actions release identity.
+  - Implementation: `.github/workflows/release.yml` relies on workflow `contents: write` permissions for `softprops/action-gh-release@v2`; no explicit repository secret names are configured.
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- No external error tracking service detected.
-- Hook errors are written to `~/.codex-bridge/hook-errors/` by `plugin/hooks/*.mjs` and `hooks/stop-gate.mjs`.
-- CLI task/review events are written to `.ndjson` and `.events` files by `src/lib/session-log.mjs`.
+- None external.
+- Local crash reports are written by `src/codex-bridge.mjs` to `~/.codex-bridge/crashes/`.
+- Hook failures are logged by `plugin/hooks/*.mjs` to `~/.codex-bridge/hook-errors/`.
 
 **Logs:**
-- Session logs: `src/lib/session-log.mjs`.
-- Broker log file: `broker.log` under a temporary broker session directory from `src/lib/broker-lifecycle.mjs`.
-- Background job log file: `resolveJobLogFile()` in `src/lib/state.mjs`.
-- Git diff and partial-progress artifacts: `src/lib/session-log.mjs` and `src/lib/git.mjs`.
-- Monitor/event command support is implemented in `src/codex-bridge.mjs` and backed by job/session artifacts under the state/session directories.
+- Per-thread `.events` and `.ndjson` files are written by `src/lib/session-log.mjs`.
+- Per-job logs are written by `src/lib/tracked-jobs.mjs` under the workspace state jobs directory from `src/lib/state.mjs`.
+- Registry events are appended by `src/lib/registry.mjs` as `events.jsonl`.
+- Broker logs are written by `src/lib/broker-lifecycle.mjs` to temp `broker.log` files.
+- GitHub Actions logs come from `.github/workflows/build.yml` and `.github/workflows/release.yml`.
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Not applicable. This package ships as local Claude Code skill/plugin files, not a hosted web service.
+- Not detected as a hosted runtime.
+- Distribution target is local installable artifacts: legacy skill bundle under `skill/` and packaged Claude Code plugin under `plugin/`.
+- Release artifacts are tar/zip archives produced from `skill/` in `.github/workflows/release.yml`.
 
 **CI Pipeline:**
-- GitHub Actions build workflow: `.github/workflows/build.yml`.
-  - Triggers: push to `main` and pull request to `main`.
-  - Steps: checkout, setup Node 22 with npm cache, `npm ci`, `npm run build`, `npm test`, generated bundle drift check, bundle existence checks, CLI sanity probes.
-- GitHub Actions release workflow: `.github/workflows/release.yml`.
-  - Trigger: version tags `v*.*.*`.
-  - Steps: checkout, setup Node 22, `npm ci`, `npm run build`, stage `skill/`, remove maintainer docs from release payload, create tar/zip archives, create `SHA256SUMS`, build release notes, upload to GitHub release via `softprops/action-gh-release@v2`.
+- GitHub Actions.
+- Build workflow `.github/workflows/build.yml` runs `npm ci`, `npm run build`, `npm test`, generated-output drift checks, bundle existence checks, and CLI sanity probes.
+- Release workflow `.github/workflows/release.yml` runs `npm ci`, `npm run build`, stages `skill/`, removes maintainer docs, creates tar/zip archives and `SHA256SUMS`, builds release notes from `CHANGELOG.md`, and uploads artifacts.
 
 ## Environment Configuration
 
 **Required env vars:**
-- None are required for local source inspection or `npm test`.
-- Real Claude plugin runtime supplies `CLAUDE_PLUGIN_ROOT`, `CLAUDE_ENV_FILE`, `CLAUDE_PROJECT_DIR`, and hook JSON payloads.
-- Real Codex runtime requires `codex` on `PATH`; availability is checked by `src/adapters/codex/codex.mjs`.
-
-**Optional/runtime env vars:**
-- `CODEX_BRIDGE_BACKEND` - Backend override in `src/adapters/index.mjs`.
-- `CODEX_BRIDGE_PLUGIN_DATA` - Preferred plugin data root in `src/lib/state.mjs` and hook scripts.
-- `CLAUDE_PLUGIN_DATA` - Legacy/fallback plugin data root in `src/lib/state.mjs` and hook scripts.
-- `CODEX_COMPANION_SESSION_ID` - Session scoping in hooks and state.
-- `CODEX_COMPANION_APP_SERVER_ENDPOINT` - Explicit app-server broker endpoint in `src/adapters/codex/protocol.mjs`.
-- `CODEX_COMPANION_APP_SERVER_PID_FILE` - Broker PID file path in `src/lib/broker-lifecycle.mjs`.
-- `CODEX_COMPANION_APP_SERVER_LOG_FILE` - Broker log file path in `src/lib/broker-lifecycle.mjs`.
-- `CODEX_BRIDGE_NO_UPDATE_CHECK` - Disables update checks in `src/codex-bridge.mjs`.
-- `CODEX_BRIDGE_HOOK_DISABLE` - Disables specific or all plugin hooks in `hooks/stop-gate.mjs` and `plugin/hooks/*.mjs`.
-- `CODEX_BRIDGE_DISABLE_WORKTREE_AUTO` - Allows `task --write` without `--worktree-auto` in `plugin/hooks/pre-tool-bash.mjs`.
+- None are required for the default local CLI beyond standard `PATH` access to `node`, `git`, and `codex`.
+- `CODEX_BRIDGE_BACKEND` optionally overrides backend selection in `src/adapters/index.mjs`.
+- `CODEX_BRIDGE_PLUGIN_DATA` optionally controls bridge state root and takes precedence over `CLAUDE_PLUGIN_DATA` in `src/lib/state.mjs` and hook helpers.
+- `CLAUDE_PLUGIN_DATA` is the legacy/fallback plugin data root in `src/lib/state.mjs`, `src/lib/update-check.mjs`, and hook files.
+- `CODEX_COMPANION_SESSION_ID` scopes jobs to a Claude session in `src/lib/tracked-jobs.mjs` and hooks.
+- `CODEX_COMPANION_APP_SERVER_ENDPOINT` optionally points clients at an existing Codex app-server broker in `src/adapters/codex/protocol.mjs`.
+- `CODEX_COMPANION_APP_SERVER_PID_FILE` and `CODEX_COMPANION_APP_SERVER_LOG_FILE` are broker lifecycle exports in `src/lib/broker-lifecycle.mjs`.
+- `CODEX_BRIDGE_NO_UPDATE_CHECK` disables hot-path update checks in `src/codex-bridge.mjs`.
+- `CODEX_BRIDGE_REGISTRY` optionally overrides registry storage in `src/lib/registry.mjs`.
+- `CODEX_BRIDGE_HEARTBEAT_MS`, `CODEX_BRIDGE_CHECKPOINT_MS`, and `CODEX_BRIDGE_STALL_CHECKPOINTS` tune observability timers in `src/codex-bridge.mjs`.
+- `CODEX_BRIDGE_HOOK_DISABLE` disables specific plugin hooks in `plugin/hooks/*.mjs` and root stop/session hook code.
+- `CODEX_BRIDGE_DISABLE_WORKTREE_AUTO` opts out of the `task --write` worktree-isolation hook in `plugin/hooks/pre-tool-bash.mjs`.
+- `CLAUDE_ENV_FILE`, `CLAUDE_PROJECT_DIR`, and `CLAUDE_PLUGIN_ROOT` are provided by Claude Code plugin execution and consumed by `hooks/session-lifecycle-hook.mjs` and `plugin/hooks/*.mjs`.
 
 **Secrets location:**
-- Not detected. No `.env*`, `*secret*`, or `*credential*` files were found during the mapping check.
-- Do not put secrets in `skill/config.yaml`, `plugin/config.yaml`, workspace `config.yaml`, or cwd `config.yaml`; the config loader in `src/lib/config.mjs` reads YAML as plain local configuration.
+- Secrets are not stored in repo-tracked files.
+- No `.env` file was detected in the repo scan.
+- `.gitignore` excludes `.env`, `.env.local`, `.env.*.local`, `*.pem`, `*.p12`, `id_rsa`, `*.key`, `credentials.json`, and `service-account.json`.
+- Codex, Claude, Git, npm, and GitHub credentials are delegated to their respective external CLIs/platforms.
 
-## Hooks & Callbacks
+## Webhooks & Callbacks
 
 **Incoming:**
-- Claude Code hook events registered in `hooks/hooks.json` and `plugin/hooks/hooks.json`:
-  - `SessionStart` -> `node "${CLAUDE_PLUGIN_ROOT}/hooks/session-lifecycle-hook.mjs" SessionStart`.
-  - `SessionEnd` -> `node "${CLAUDE_PLUGIN_ROOT}/hooks/session-lifecycle-hook.mjs" SessionEnd`.
-  - `Stop` -> `node "${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.mjs"`.
-- `plugin/hooks/hooks.json` currently registers only SessionStart, SessionEnd, and Stop. Additional hook scripts exist under `plugin/hooks/`, but they are not referenced by the current hook registration JSON.
+- Claude Code plugin hooks registered by `plugin/hooks/hooks.json` and `hooks/hooks.json`:
+  - `SessionStart` runs `node "${CLAUDE_PLUGIN_ROOT}/hooks/session-lifecycle-hook.mjs" SessionStart`.
+  - `SessionEnd` runs `node "${CLAUDE_PLUGIN_ROOT}/hooks/session-lifecycle-hook.mjs" SessionEnd`.
+  - `Stop` runs `node "${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.mjs"`.
+- Packaged but not manifest-registered hook scripts also exist under `plugin/hooks/` for `session-start`, `session-end`, `pre-tool-bash`, `pre-tool-agent`, `post-tool-bash`, `subagent-stop`, and `user-prompt-submit`; the active manifest for this checkout is still `plugin/hooks/hooks.json`.
+- Codex app-server can issue server requests such as `item/tool/requestUserInput`; `src/adapters/codex/protocol.mjs`, `src/adapters/codex/broker.mjs`, and `src/lib/pending-requests.mjs` route these through pending/response files.
+- Broker management accepts local `broker/shutdown` messages in `src/lib/broker-lifecycle.mjs` and `src/adapters/codex/broker.mjs`.
 
 **Outgoing:**
-- Stop gate can spawn `codex-bridge task --json --mode default --read-only --no-pipeline` for stop-time review from `hooks/stop-gate.mjs`.
-- Session lifecycle hook spawns `codex-bridge status --prune-orphans --json` on SessionEnd from `hooks/session-lifecycle-hook.mjs`.
-- Packaged plugin hook scripts can spawn bridge commands and write hook context when registered; current registered JSON points to the legacy `session-lifecycle-hook.mjs` and `stop-gate.mjs` scripts.
-
-## External Boundary Rules
-
-**Generated artifact boundary:**
-- Build writes both legacy skill and packaged plugin outputs. Future source changes under `src/`, `skill/config.yaml`, or hook/plugin surfaces must run `npm run build` before committing generated outputs.
-- `.github/workflows/build.yml` enforces generated-output freshness.
-
-**Network boundary:**
-- Runtime network use detected in source is limited to GitHub Releases API update checks through `src/lib/update-check.mjs`.
-- Codex app-server communication is local process/socket communication with the user's installed Codex CLI; upstream model/network behavior is owned by Codex CLI, not by repository HTTP code.
-
-**Process boundary:**
-- Child process execution is central: `codex`, `git`, `claude`, `npx`, and Node worker/broker scripts are spawned by `src/lib/process.mjs`, `src/adapters/codex/protocol.mjs`, `src/lib/official-plugin.mjs`, `src/codex-bridge.mjs`, and hook scripts.
-- `src/lib/process.mjs` sets `shell` to `process.env.SHELL || true` only on Windows and otherwise avoids shell mode for spawned commands.
+- Codex app-server requests are sent by `src/adapters/codex/protocol.mjs` over child stdio or local broker sockets.
+- Git commands are run by `src/lib/git.mjs`, `src/lib/session-log.mjs`, and `src/lib/state.mjs`.
+- Claude plugin list checks are run by `src/lib/official-plugin.mjs`.
+- GitHub Releases API requests are made by `src/lib/update-check.mjs`.
+- `npx skills@latest add yigitkonur/codex-bridge -a claude-code -g -y` is launched by `src/codex-bridge.mjs` for update apply paths.
+- GitHub release uploads are performed by `softprops/action-gh-release@v2` in `.github/workflows/release.yml`.
+- No inbound or outbound HTTP webhooks are implemented in source.
 
 ---
 
-*Integration audit: 2026-04-30*
+*Integration audit: 2026-05-02*

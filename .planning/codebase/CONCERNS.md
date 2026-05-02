@@ -1,259 +1,253 @@
 ---
-analysis_date: 2026-04-30
-last_mapped_commit: 16f4fd188f47160bdaddabb9813c6fe67e486d5d
-evidence_scope: current non-Markdown source, tests, and CI workflows only
+last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 ---
 
 # Codebase Concerns
 
-**Analysis Date:** 2026-04-30
-
-## Evidence Boundary
-
-- Evidence is from current code, tests, and workflow files such as `src/codex-bridge.mjs`, `src/adapters/codex/*.mjs`, `src/lib/*.mjs`, `hooks/*.mjs`, `esbuild.config.mjs`, `.github/workflows/*.yml`, and `test/*.test.mjs`.
-- Repository Markdown files are excluded as evidence. Some tests mention Markdown paths as fixtures or generated surfaces; those tests are treated only as executable contract evidence.
-- Current risks are separated from invariants already covered by tests. Do not file new phases for tested invariants unless changing the underlying contract.
+**Analysis Date:** 2026-05-02
 
 ## Tech Debt
 
-**Backend adapter registry is not the runtime abstraction yet:**
-- Issue: `src/adapters/index.mjs:18-27` loads only the `codex` adapter, while `src/adapters/codex/index.mjs:14-51` exposes lifecycle methods that throw `NOT_IMPLEMENTED`. Main CLI flows still call `src/adapters/codex/codex.mjs` directly.
-- Files: `src/adapters/index.mjs`, `src/adapters/codex/index.mjs`, `src/adapters/codex/codex.mjs`, `src/codex-bridge.mjs`
-- Impact: Adding another backend is not a small config change. New backends must implement dispatch, event streaming, result lookup, cancellation, capability validation, error mapping, and CLI routing, or they will pass selection but fail at runtime.
-- Fix approach: Treat multi-adapter support as a dedicated phase. First wire the Codex adapter through the registry for one user-facing command, then migrate remaining direct `codex.mjs` call sites.
-- Detection/verification: Extend `test/adapter-registry.test.mjs` with a fake fully implemented adapter and a command-level test that proves `CODEX_BRIDGE_BACKEND` routes real CLI execution.
-- Phase relevance: Any backend, routing, resume, steering, or questions phase.
+**Closed-loop iterate command is a staged envelope:**
+- Issue: `iterate` validates task and verdict state, but returns `status: "not-yet-orchestrated"` instead of launching the next mutation/fix turn.
+- Files: `src/codex-bridge.mjs`, `scripts/baseline-contracts.mjs`, `.planning/STATE.md`
+- Impact: The package exposes a review-to-iterate loop surface, but callers must manually run the suggested task command to continue the loop. Automation built on `iterate --json` cannot depend on an actual mutation pass.
+- Fix approach: Move the manual `next_action.argv` path into a real orchestration call, persist the child job/session metadata, and update `scripts/baseline-contracts.mjs` so the command has mutation coverage instead of a staged-only contract.
 
-**Artifact registry writes are partially transactional but not locked:**
-- Issue: `src/lib/registry.mjs:21-25` defines the registry as a minimum v1 API. `writeMeta` and `writeVerdict` use temp files plus rename (`src/lib/registry.mjs:95-112`, `src/lib/registry.mjs:173-193`), but there is no cross-process lock or fsync. `appendEvent` explicitly notes cross-process or oversized payload interleaving risk (`src/lib/registry.mjs:196-205`).
-- Files: `src/lib/registry.mjs`, `src/codex-bridge.mjs`
-- Impact: Concurrent review, verdict, merge, and event writers can lose ordering or overwrite metadata. Forensics can become inconsistent exactly when several agents operate on the same task.
-- Fix approach: Add per-task lock helpers before expanding registry consumers. Reuse the stale-lock discipline from `src/lib/state.mjs:79-170` rather than adding a second ad hoc lock style.
-- Detection/verification: Add tests that run concurrent `writeMeta`, `writeVerdict`, and `appendEvent` calls from separate Node processes and verify readable final JSON plus ordered event lines.
-- Phase relevance: Review loops, merge automation, verdict tracking, artifact retention, cancellation.
+**Monolithic CLI dispatcher concentrates unrelated behavior:**
+- Issue: `src/codex-bridge.mjs` contains command metadata, parsing, update checks, setup, task orchestration, review orchestration, session heartbeat handling, verdict handling, merge handling, stop-gate setup, and status rendering in one 5,000+ line module.
+- Files: `src/codex-bridge.mjs`
+- Impact: Small command changes have a wide review surface. Dead or disconnected pieces are easy to keep, including `readVerdictPayloadFromStdin`, the unused `renderBriefAsMarkdown` task path, and the advertised but unenforced `allow_questions` setting.
+- Fix approach: Split command handlers into focused modules under `src/lib/` or `src/commands/`, keep shared runtime orchestration in a separate module, and add static checks for unused command options/imports/helpers.
 
-**Worktree dispatch can continue after registry metadata fails:**
-- Issue: `--worktree-auto` creates an isolated worktree and writes registry metadata, but metadata failures are swallowed at `src/codex-bridge.mjs:3726-3737` before execution moves to the worktree.
-- Files: `src/codex-bridge.mjs`, `src/lib/registry.mjs`, `src/lib/git.mjs`
-- Impact: A task can run and modify a branch while later `review`, `verdict`, or `merge` cannot find `meta.json`. That leaves recovery dependent on manual branch/worktree inspection.
-- Fix approach: Make registry persistence a hard precondition for `--worktree-auto`, or add a recovery command that reconstructs `meta.json` from `git worktree list` and branch naming.
-- Detection/verification: Inject a `writeMeta` failure in a CLI-level `task --worktree-auto --write` test and assert the worktree is pruned or the command fails before dispatch.
-- Phase relevance: Worktree isolation, merge gates, background jobs, multi-agent dispatch.
+**Structured task briefs are validated but not persisted:**
+- Issue: `--brief` accepts and validates a structured JSON brief, but the task metadata writer only stores backend, capabilities, worktree, base, phase, and backend options. The rendered brief helper is imported but not used in the task execution path.
+- Files: `src/codex-bridge.mjs`, `src/lib/brief.mjs`
+- Impact: Acceptance criteria, constraints, and original structured intent are not available to later status, review, verdict, merge, or iterate steps. Recovery after interruption depends on the free-form prompt and session logs instead of a stable brief artifact.
+- Fix approach: Persist `brief.json`, a rendered `brief.md`, and `brief_hash` in the task session directory before the Codex turn starts. Include those artifacts in status and review context.
 
-**Closed-loop iterate is a command stub:**
-- Issue: `handleIterate` returns `status: "not-yet-orchestrated"` and a manual next-action argv (`src/codex-bridge.mjs:4794-4860`).
-- Files: `src/codex-bridge.mjs`, `src/lib/registry.mjs`, `src/lib/git.mjs`
-- Impact: Slash commands can present an iterate surface, but the CLI does not yet run task -> review -> verdict -> redispatch automatically. Future automation must not assume loop completion exists.
-- Fix approach: Implement orchestration around background task state, review execution, verdict persistence, and bounded iteration count. Keep the current structured argv behavior as a compatibility fallback.
-- Detection/verification: Add an end-to-end fake-adapter iterate test that reaches approved, reaches iteration max, and preserves failed intermediate artifacts.
-- Phase relevance: Review convergence, autonomous repair loops, merge automation.
+**Dual generated distribution has a high drift burden:**
+- Issue: Runtime source and static assets are emitted into both the legacy skill layout and packaged plugin layout. The generated surfaces include scripts, prompts, schemas, templates, config, and hook copies.
+- Files: `esbuild.config.mjs`, `scripts/baseline-contracts.mjs`, `skill/scripts/codex-bridge.mjs`, `plugin/scripts/codex-bridge.mjs`, `plugin/hooks/`
+- Impact: Runtime, hook, prompt, schema, config, command, or agent changes require a fresh build and generated diff. The CI drift checks reduce risk, but any local change that skips `npm run build` leaves installable artifacts inconsistent.
+- Fix approach: Keep `esbuild.config.mjs` as the only generator source, keep generated directories read-only by convention, and treat `npm run build` plus `npm test` as mandatory for any source or plugin-surface change.
 
-**Release packaging and plugin packaging are separate surfaces:**
-- Issue: The build workflow validates both `skill/` and `plugin/` generated outputs (`.github/workflows/build.yml:39-88`), but the release workflow stages only `skill/` into `dist/codex-bridge/` (`.github/workflows/release.yml:30-46`).
-- Files: `.github/workflows/build.yml`, `.github/workflows/release.yml`, `esbuild.config.mjs`
-- Impact: Plugin layout can be correct in CI while the tagged release artifact still distributes only the legacy skill payload. A phase that changes canonical plugin installation must update release packaging, not just build checks.
-- Fix approach: Decide whether releases must include plugin layout. If yes, add a plugin artifact and release smoke checks for `.claude-plugin/plugin.json`, `plugin/scripts/codex-bridge.mjs`, and hook paths.
-- Detection/verification: Add release-dry-run tests or a workflow step that inspects generated release archives for both intended install layouts.
-- Phase relevance: Distribution, marketplace/plugin migration, install/update flows.
+**Configuration failures can silently fall back to defaults:**
+- Issue: Config file read/YAML parse errors return `{}` without surfacing a warning, and unknown sandbox policy values fall through to mode-derived defaults.
+- Files: `src/lib/config.mjs`, `src/lib/runtime-options.mjs`
+- Impact: A typo in `config.yaml` can silently change model, effort, sandbox, session directory, or review behavior. Operators may believe a safety or routing setting is active when the runtime uses defaults.
+- Fix approach: Add config validation with warnings in `config`/`setup --json`, include the config source path in resolved runtime options, and emit a startup event when a config file cannot be read or contains unknown keys/values.
 
 ## Known Bugs
 
-**Completion-check prose can mark a pipeline complete:**
-- Symptoms: If the completion-check turn succeeds but returns non-JSON text, the parser treats it as `complete: true` with no missing items (`src/adapters/codex/pipeline.mjs:336-345`).
-- Files: `src/adapters/codex/pipeline.mjs`, `test/auto-pipeline-turn-watchdog.test.mjs`
-- Trigger: A completion-check model response that describes unresolved work in prose but is not valid JSON.
-- Impact: The auto pipeline can emit a completed result even when the checker did not follow the schema. Tests cover failed checks, unstructured review attention, and timeout paths, but this fallback remains a false-positive risk.
-- Workaround: Keep completion-check prompts/schema strict and inspect final output when the check summary is plain prose.
-- Fix approach: Treat invalid completion-check JSON as incomplete unless there is an explicit allowlist phrase and no issue language.
-- Detection/verification: Add a test where `finalMessage` is prose containing missing work and assert `completionResult.complete === false`.
-- Phase relevance: Pipeline reliability, completion verification, autonomous fixes.
+**Verdict `--payload-stdin` is documented but not wired:**
+- Symptoms: The packaged reviewer agent and command documentation instruct `codex-bridge verdict <task_id> --payload-stdin --json`, but the verdict command parser does not define `payload-stdin` and the handler does not call the stdin payload reader.
+- Files: `src/codex-bridge.mjs`, `plugin/agents/codex-bridge-reviewer.md`, `plugin/commands/verdict.md`
+- Trigger: Run the reviewer-agent handoff command or invoke `verdict` with `--payload-stdin`.
+- Workaround: Use `verdict <task_id> --set <approved|changes_requested|blocked> --summary ... --finding ... --json` manually, but that path still cannot attach a branch head SHA.
 
-**Legacy stop-review hook behavior can diverge from the canonical hook:**
-- Symptoms: `hooks/stop-review-gate-hook.mjs` hardcodes a bridge script path through `skill/scripts` (`hooks/stop-review-gate-hook.mjs:15-16`), has its own legacy gate migration path (`hooks/stop-review-gate-hook.mjs:237-287`), and returns inert on setup failure or not-ready Codex (`hooks/stop-review-gate-hook.mjs:305-329`).
-- Files: `hooks/stop-review-gate-hook.mjs`, `hooks/stop-gate.mjs`, `.github/workflows/build.yml`, `test/plugin-surfaces.test.mjs`
-- Trigger: A generated or legacy hook surface invokes `stop-review-gate-hook.mjs` instead of the newer `stop-gate.mjs` behavior.
-- Impact: The newer Stop gate blocks on setup failure, readiness failure, review timeout, and failed review command, while the legacy hook can fail open in setup/readiness cases. CI only checks that generated hook files exist and plugin hooks avoid stale script paths.
-- Workaround: Prefer the canonical Stop hook surface configured through `hooks/hooks.json` and generated plugin hooks.
-- Fix approach: Delete, replace, or route the legacy hook through the canonical implementation after confirming all install layouts.
-- Detection/verification: Add a test proving no shipped hook entry references `stop-review-gate-hook.mjs`, or update its behavior to match `hooks/stop-gate.mjs`.
-- Phase relevance: Stop gate reliability, generated hook migration, plugin/skill compatibility.
+**Approved verdicts written by the CLI cannot satisfy merge SHA binding:**
+- Symptoms: `merge` refuses approved verdicts that lack `branch_head_sha`, but `verdict --set` writes no branch head SHA and the stdin helper drops any branch head value.
+- Files: `src/codex-bridge.mjs`, `src/lib/git.mjs`, `plugin/commands/merge.md`
+- Trigger: Approve a task with the shipped `verdict` command, then run `merge <task_id>`.
+- Workaround: Use lower-level state manipulation outside the public command surface, or update the verdict file manually with the reviewed branch head SHA before merge.
+
+**Relative `session_dir` resolves against process cwd instead of command cwd:**
+- Symptoms: A workspace `config.yaml` with `session_dir: "./sessions"` is loaded from `--cwd`, but `resolveSessionDir` returns the relative path unchanged. Later commands read or write sessions relative to the shell process cwd.
+- Files: `src/lib/session-log.mjs`, `src/lib/config.mjs`, `src/codex-bridge.mjs`
+- Trigger: Invoke `node src/codex-bridge.mjs respond --cwd <workspace> ...` or another session command from outside `<workspace>` while that workspace config uses a relative `session_dir`.
+- Workaround: Use an absolute `session_dir` or invoke all session commands from the same directory that owns the config file.
+
+**Malformed `respond --json-payload` reports as an internal error:**
+- Symptoms: With an existing pending request, invalid JSON passed to `respond --json-payload` throws a raw `JSON.parse` exception and exits through the internal-error envelope instead of a usage/config error.
+- Files: `src/codex-bridge.mjs`, `src/lib/pending-requests.mjs`
+- Trigger: Run `respond <request_id> --json-payload '{' --json` for a real pending request.
+- Workaround: Validate JSON before calling the command, or use plain text response flags where possible.
+
+**`allow_questions` is advertised but not enforced:**
+- Symptoms: The default config and generated config comments expose `allow_questions`, but task and send paths still attach the bridge server request handler.
+- Files: `src/lib/runtime-options.mjs`, `skill/config.yaml`, `plugin/config.yaml`, `src/codex-bridge.mjs`
+- Trigger: Set `allow_questions: false` and run a task/send flow that asks the bridge server for user input.
+- Workaround: Avoid workflows that trigger bridge questions, or add command-specific handling before relying on the config key.
 
 ## Security Considerations
 
-**Auto-update executes a global installer from normal command hot paths:**
-- Risk: `maybeTriggerAutoApply` asynchronously checks GitHub releases and can spawn `npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y` outside the caller's lifecycle (`src/codex-bridge.mjs:169-241`).
-- Files: `src/codex-bridge.mjs`, `src/lib/update-check.mjs`, `test/auto-apply.test.mjs`, `test/update-check.test.mjs`
-- Current mitigation: `--json`, help/version/update subcommands, and `CODEX_BRIDGE_NO_UPDATE_CHECK=1` skip the hot-path update (`src/codex-bridge.mjs:171-175`). Apply attempts are rate-limited through cache markers (`src/lib/update-check.mjs:156-198`). Tests cover spawn-error logging and apply-claim behavior.
-- Recommendations: Keep update output detached from command stdout/stderr. Add a dry-run or explicit opt-in path before expanding install behavior. Verify installer failure, cache corruption, and concurrent invocations.
-- Phase relevance: Update UX, enterprise installs, reproducibility, CI-safe command behavior.
+**Detached auto-update can execute `skills@latest` with inherited environment:**
+- Risk: Normal hot-path invocations can spawn a detached `npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y` process after a release check. The child inherits `process.env` and uses the latest installer package.
+- Files: `src/codex-bridge.mjs`, `package.json`
+- Current mitigation: Auto-update is skipped for JSON output, `update`, `version`, and `--help` flows; `CODEX_BRIDGE_NO_UPDATE_CHECK=1` disables the check; release lookup uses the public GitHub releases API.
+- Recommendations: Make auto-apply opt-in or notify-only by default, pin the installer package/version, verify release integrity, and pass a minimal environment to the detached process.
 
-**Review and session artifacts can contain repository content:**
-- Risk: Review context can inline branch or working-tree diffs (`src/lib/git.mjs:397-443`), session logging writes diffs to the session directory (`src/lib/session-log.mjs:150-163`), and tracked file diffs are not redacted.
-- Files: `src/lib/git.mjs`, `src/lib/session-log.mjs`, `src/adapters/codex/codex.mjs`
-- Current mitigation: Untracked files are represented as metadata markers rather than full content in session diffs (`src/lib/session-log.mjs:242-265`), and untracked path/content handling is bounded and path-checked (`src/lib/session-log.mjs:185-223`, `src/lib/git.mjs:253-319`).
-- Recommendations: Any phase that broadens context capture should add explicit redaction tests and document which artifacts may leave the local machine through Codex app-server calls.
-- Phase relevance: Privacy-sensitive review, artifact retention, telemetry, context collection.
+**Default sandbox policy grants full filesystem access:**
+- Risk: The shipped default config sets `sandbox_policy: "danger-full-access"`, and runtime option resolution maps that value to unrestricted tool access for regular task/send flows.
+- Files: `src/lib/runtime-options.mjs`, `skill/config.yaml`, `plugin/config.yaml`
+- Current mitigation: Some internal review/stop-gate paths pass explicit read-only sandbox overrides, and users can override sandbox policy in config.
+- Recommendations: Prefer `workspace-write` as the shipped default, require an explicit per-command or config opt-in for full access, and show the resolved sandbox in every task/review startup event.
 
-**Hook transcript hydration has shutdown-time access to recent assistant output:**
-- Risk: Stop hooks read Claude transcript JSONL and embed the latest assistant text into a temporary prompt (`hooks/stop-gate.mjs:164-238`, `hooks/stop-gate.mjs:465-501`; legacy path `hooks/stop-review-gate-hook.mjs:101-160`, `hooks/stop-review-gate-hook.mjs:345-357`).
-- Files: `hooks/stop-gate.mjs`, `hooks/stop-review-gate-hook.mjs`, `test/plugin-surfaces.test.mjs`
-- Current mitigation: The canonical hook writes the prompt to a temp file for argv safety and removes it after the review; the legacy hook uses file mode `0o600` for the temp prompt (`hooks/stop-review-gate-hook.mjs:345-360`).
-- Recommendations: Keep prompt temp files permission-restricted, avoid logging prompt bodies, and add tests for cleanup on review timeout and spawn failure.
-- Phase relevance: Hook hardening, Stop gate changes, audit logging.
+**Unauthenticated local broker socket must stay strictly local:**
+- Risk: The app-server broker communicates through local Unix sockets or Windows named pipes without an application-level authentication token. Filesystem permissions and endpoint path isolation are the main boundary.
+- Files: `src/adapters/codex/broker.mjs`, `src/lib/broker-endpoint.mjs`, `src/lib/broker-lifecycle.mjs`
+- Current mitigation: Broker endpoints are created under user-specific temp/plugin data locations, stale endpoints are cleaned, and request handling is local IPC rather than a network listener.
+- Recommendations: Keep endpoint paths under private user-controlled directories, set restrictive socket file permissions where supported, and add tests around endpoint ownership/cleanup behavior.
+
+**Git diff capture can include sensitive untracked file contents:**
+- Risk: Session logging captures tracked diffs and limited untracked file content for text-like files. If a secret file is untracked and not excluded, it can be copied into session artifacts.
+- Files: `src/lib/session-log.mjs`, `src/lib/git.mjs`
+- Current mitigation: Untracked capture is size-limited and the repository instructions forbid reading/quoting secret files.
+- Recommendations: Exclude common secret patterns from untracked capture, respect `.gitignore` for all untracked content capture, and add a redaction layer before writing session artifacts.
 
 ## Performance Bottlenecks
 
-**Broker serializes long streaming work:**
-- Problem: The broker rejects new non-interrupt work while `activeRequestSocket` or `activeStreamSocket` is set (`src/adapters/codex/broker.mjs:483-491`).
-- Files: `src/adapters/codex/broker.mjs`, `test/broker-stream-release-ordering.test.mjs`
-- Cause: A single shared app-server session has one active stream/request owner. Stream release depends on receiving upstream terminal notifications for root and sub-threads (`src/adapters/codex/broker.mjs:51-212`).
-- Improvement path: Keep the single-stream contract unless app-server supports multiplexing. If adding new streaming methods, update `STREAMING_METHODS` and stream tracker tests before shipping.
-- Phase relevance: Parallel agents, background jobs, broker throughput.
+**Synchronous full diff capture runs on session paths:**
+- Problem: Session artifact creation invokes Git synchronously and captures `git diff HEAD` plus selected untracked content.
+- Files: `src/lib/session-log.mjs`, `src/lib/git.mjs`
+- Cause: The capture path favors complete local evidence, but it runs in-process and can traverse large diffs or many untracked files.
+- Improvement path: Add explicit byte/time limits for tracked diffs, include truncation metadata, and move large diff capture to an optional artifact path.
 
-**Large diffs push review context into self-collect mode:**
-- Problem: `collectReviewContext` measures file count and diff bytes before deciding whether to inline diffs (`src/lib/git.mjs:397-443`).
-- Files: `src/lib/git.mjs`, `src/adapters/codex/pipeline.mjs`, `src/codex-bridge.mjs`
-- Cause: Inline diff safety caps protect prompt size, but large changes require the reviewer to run its own read-only git commands.
-- Improvement path: Add chunked diff summaries or per-file selection instead of all-or-self-collect.
-- Phase relevance: Large PR reviews, generated bundle changes, release migrations.
+**Shared app-server broker serializes active streaming work:**
+- Problem: The broker tracks a single active streaming socket/request path and rejects or defers overlapping work when it is busy.
+- Files: `src/adapters/codex/broker.mjs`, `src/lib/broker-lifecycle.mjs`
+- Cause: One shared Codex app-server connection/broker lifecycle is simpler to supervise, but parallel task/review workloads contend for the same IPC stream.
+- Improvement path: Add per-workspace or per-job broker allocation, or add an explicit queue with status visibility and cancellation semantics.
 
-**Synchronous filesystem and git work are on command/hook paths:**
-- Problem: State, registry, session logging, git context, and hooks use synchronous writes/spawns (`src/lib/state.mjs`, `src/lib/registry.mjs`, `src/lib/session-log.mjs`, `hooks/stop-gate.mjs`).
-- Files: `src/lib/state.mjs`, `src/lib/registry.mjs`, `src/lib/session-log.mjs`, `hooks/stop-gate.mjs`
-- Cause: Synchronous work simplifies process-exit and hook behavior, but can stall CLI invocations under slow disk, locked git metadata, or long transcript files.
-- Improvement path: Keep synchronous writes for append-only critical event paths, but add timeouts and diagnostics around heavier git/transcript operations.
-- Phase relevance: Hook responsiveness, large repos, multi-agent background runs.
+**Large status/watch output can repeatedly scan session state:**
+- Problem: Status and watch flows read state, tasks, pending requests, event logs, and process metadata on an interval.
+- Files: `src/codex-bridge.mjs`, `src/lib/state.mjs`, `src/lib/pending-requests.mjs`
+- Cause: The watch implementation favors fresh filesystem state over an indexed process model.
+- Improvement path: Cache stable job metadata, index session directories by task id, and bound event-tail reads for long-running sessions.
 
 ## Fragile Areas
 
-**Broker stream-release ordering is a high-risk contract:**
-- Files: `src/adapters/codex/broker.mjs`, `test/broker-stream-release-ordering.test.mjs`
-- Why fragile: Release depends on correlating `turn/start`, `review/start`, and `thread/compact/start` with notification shapes and thread IDs. Early sub-thread completions are buffered until the broker learns about the thread (`src/adapters/codex/broker.mjs:176-186`).
-- Safe modification: Do not add or rename streaming methods without adding broker tests for downstream disconnect, same-chunk response/completion, early sub-thread completion, root completion, and clear-all behavior.
-- Test coverage: Strong targeted tests exist in `test/broker-stream-release-ordering.test.mjs`. Remaining gap is live app-server protocol drift.
+**Verdict, review, and merge state contract spans several unrelated files:**
+- Files: `src/codex-bridge.mjs`, `src/lib/git.mjs`, `plugin/agents/codex-bridge-reviewer.md`, `plugin/commands/verdict.md`, `plugin/commands/merge.md`
+- Why fragile: Review output, verdict persistence, branch head binding, and merge eligibility are enforced in different places. The command documentation, agent instruction, and handler options are already inconsistent around `--payload-stdin` and branch head SHA.
+- Safe modification: Change verdict schema, command options, agent instructions, and merge validation together. Add an integration test that approves a task through the public CLI and verifies merge reaches the expected pre-merge checks.
+- Test coverage: Unit tests cover pieces of git/merge behavior, but the shipped reviewer-agent verdict handoff is not covered end to end.
 
-**Stop review gate spans setup, state, lock files, hooks, and generated plugin surfaces:**
-- Files: `src/codex-bridge.mjs`, `hooks/stop-gate.mjs`, `hooks/hooks.json`, `test/plugin-surfaces.test.mjs`
-- Why fragile: Setup migrates legacy state to a project lock, suppresses the gate when the official plugin is present, and the hook blocks or allows shutdown based on setup readiness and review output (`src/codex-bridge.mjs:859-953`, `src/codex-bridge.mjs:1048-1099`, `hooks/stop-gate.mjs:414-527`).
-- Safe modification: Update setup JSON fields, hook behavior, generated hooks, and tests in one phase. Preserve the kill switch and active-lock diagnostic behavior.
-- Test coverage: Tests cover hook path wiring, readiness blocking, timeout margins, kill-switch diagnostics, and hook error handling. A legacy migration test is skipped in `test/plugin-surfaces.test.mjs`, so do not treat that path as fully protected.
+**Native review parsing depends on text formatting heuristics:**
+- Files: `src/adapters/codex/pipeline.mjs`, `src/prompts/adversarial-review.md`, `src/schemas/review-output.schema.json`
+- Why fragile: Auto-review verdict extraction parses native review text with regular expressions and bullet-line conventions. A format change can downgrade structured findings to unstructured attention text.
+- Safe modification: Prefer schema-backed adversarial review output for automation, keep native parsing as a display fallback, and add fixtures for the exact review text formats accepted by the parser.
+- Test coverage: Pipeline tests cover selected behaviors, but there is no authoritative upstream native-review format contract in CI.
 
-**Generated bundles can drift from source across multiple layouts:**
-- Files: `esbuild.config.mjs`, `.github/workflows/build.yml`, `skill/`, `plugin/`, `commands/`, `agents/`, `hooks/`
-- Why fragile: One source edit can require generated changes in `skill/` and `plugin/`; commands, agents, config, prompts, schemas, templates, scripts, and hooks all have copied outputs (`esbuild.config.mjs:21-75`, `esbuild.config.mjs:107-123`).
-- Safe modification: After touching runtime source, prompts, schemas, templates, root commands/agents/hooks, or `skill/config.yaml`, run `npm run build` and inspect generated drift.
-- Test coverage: CI checks committed generated paths and basic bundle sanity (`.github/workflows/build.yml:39-151`). It does not run live Codex app-server round trips.
+**Stop review gate depends on lock, official plugin detection, and workspace state:**
+- Files: `hooks/stop-review-gate-hook.mjs`, `hooks/stop-gate.mjs`, `src/codex-bridge.mjs`, `src/lib/state.mjs`
+- Why fragile: The hook blocks only when a project lock exists, the official OpenAI Codex plugin is absent, and workspace state indicates a relevant pending review condition.
+- Safe modification: Treat setup JSON, hook behavior, and state transitions as one contract. Keep hook tests focused on lock presence, official plugin suppression, and project-root resolution.
+- Test coverage: Hook and setup behavior have static tests, but live Claude Code hook invocation is not exercised in CI.
 
-**App-server protocol assumptions are narrow and literal:**
-- Files: `src/adapters/codex/protocol.mjs`, `src/adapters/codex/codex.mjs`, `test/app-server-client.test.mjs`, `test/app-server-abort.test.mjs`, `test/codex-capture.test.mjs`
-- Why fragile: Outbound messages are newline JSON objects with `id`, `method`, and `params`, client info is fixed, and server requests are rejected unless a handler resolves them (`src/adapters/codex/protocol.mjs:25-41`, `src/adapters/codex/protocol.mjs:206`, `src/adapters/codex/protocol.mjs:277-303`).
-- Safe modification: Treat every method or notification shape change as a protocol migration. Update code, `.d.ts` declarations, capture logic, and tests together.
-- Test coverage: Tests cover unsupported server-request rejection, same-client request resolution, transport exit rejection, broker fallback rules, abort cleanup, and idle/turn timeout cleanup. Remaining gap is upstream app-server schema drift.
+**Config precedence lacks source-aware normalization:**
+- Files: `src/lib/config.mjs`, `src/lib/session-log.mjs`, `src/codex-bridge.mjs`
+- Why fragile: Config values merge from install root, workspace root, and cwd, but path-like values are not normalized relative to the file that supplied them.
+- Safe modification: Return `{ config, sources }` from config loading, normalize path fields after merge, and preserve display of both original and resolved paths.
+- Test coverage: Config loading tests cover merge behavior, but relative path behavior across process cwd and command cwd needs direct coverage.
 
-**Session artifacts are best-effort while job state is authoritative:**
-- Files: `src/lib/session-log.mjs`, `src/lib/state.mjs`, `src/codex-bridge.mjs`, `test/session-log.test.mjs`
-- Why fragile: `logNdjson`, `logEvent`, `writeDiff`, `writePlan`, and `writeReview` swallow write failures (`src/lib/session-log.mjs:32-83`). Commands such as wait/events rely on event files plus polling.
-- Safe modification: Keep state transitions and event tags in sync. When adding terminal events, test both job state and `.events` behavior under missing or unwritable files.
-- Test coverage: Tests cover command quoting and untracked file markers. There is no fault-injection coverage for unwritable session directories.
+**Generated plugin surfaces depend on authored root hooks and packaged command files:**
+- Files: `hooks/`, `plugin/hooks/`, `plugin/commands/`, `plugin/agents/`, `esbuild.config.mjs`
+- Why fragile: `plugin/commands/` and `plugin/agents/` are the packaged surfaces in this checkout, while hooks are authored at root and copied to `plugin/hooks/`. If root `commands/` or `agents/` are restored, the edit source changes.
+- Safe modification: Check `esbuild.config.mjs` before editing plugin surfaces. Edit root hook sources under `hooks/`, then run `npm run build` and include generated hook diffs.
+- Test coverage: Plugin surface tests validate presence and selected content, but they do not prove every command example invokes an implemented option.
 
 ## Scaling Limits
 
-**One broker session can become a queue choke point:**
-- Current capacity: One active streaming request plus interrupt handling per shared broker process.
-- Limit: Additional non-interrupt streaming or request work receives a busy error until the active owner releases (`src/adapters/codex/broker.mjs:483-491`).
-- Scaling path: Add broker sharding by workspace/job or app-server multiplexing only after live app-server behavior is verified.
+**Workspace state is filesystem-backed without a concurrency lock layer:**
+- Current capacity: Local single-user workflows with append-only session logs and state files.
+- Limit: Multiple concurrent bridge commands in the same workspace can race on task metadata, verdict files, pending request files, or broker lifecycle artifacts.
+- Files: `src/lib/state.mjs`, `src/lib/session-log.mjs`, `src/lib/pending-requests.mjs`, `src/lib/broker-lifecycle.mjs`
+- Scaling path: Add file locks or atomic compare-and-swap writes around mutable task/verdict/pending-request records, and report lock contention in JSON responses.
 
-**State lock defaults favor short CLI invocations:**
-- Current capacity: `src/lib/state.mjs` uses a 5 second lock timeout and 30 second stale-lock window (`src/lib/state.mjs:20-24`).
-- Limit: A paused process, slow filesystem, or heavily concurrent background jobs can trip lock timeout even if state is not corrupted.
-- Scaling path: Add backoff/diagnostics before increasing concurrency. Preserve inode-protected stale lock deletion tested in `test/state-stale-lock-toctou.test.mjs`.
+**Broker lifecycle is optimized for one local Codex app-server lane:**
+- Current capacity: One shared local broker connection per configured endpoint namespace.
+- Limit: Parallel branch review or task farms can bottleneck on a single broker and active stream.
+- Files: `src/adapters/codex/broker.mjs`, `src/lib/broker-endpoint.mjs`, `src/lib/broker-lifecycle.mjs`
+- Scaling path: Add per-job broker namespaces, expose broker queue depth in `status --json`, and allow explicit broker pool sizing.
 
-**CI is static and short-running:**
-- Current capacity: Build job timeout is 5 minutes and tests timeout after 2 minutes (`.github/workflows/build.yml:16-37`).
-- Limit: CI validates bundles, unit tests, and CLI envelope probes, but accepts missing Codex CLI for version checks and does not exercise authenticated app-server sessions (`.github/workflows/build.yml:105-126`).
-- Scaling path: Add an optional integration workflow for authenticated Codex environments rather than overloading the default PR gate.
+**Session artifacts can grow without retention controls:**
+- Current capacity: Local append-only `.events` and `.ndjson` files plus task metadata under the resolved session directory.
+- Limit: Long-running or high-volume workspaces can accumulate large session directories and slow status/watch operations.
+- Files: `src/lib/session-log.mjs`, `src/lib/state.mjs`, `src/codex-bridge.mjs`
+- Scaling path: Add `sessions prune`, retention config, event compaction, and bounded default event tails.
 
 ## Dependencies at Risk
 
-**Codex CLI and app-server protocol:**
-- Risk: Runtime requires `codex --version` and `codex app-server --help`; protocol code spawns `codex app-server` directly and falls back from stale saved broker endpoints only in specific cases (`src/adapters/codex/protocol.mjs:345-386`, `src/adapters/codex/protocol.mjs:561-575`).
-- Impact: Upstream CLI behavior, app-server method names, socket behavior, or auth state changes can break core commands without failing static tests.
-- Migration plan: Keep unit tests for local invariants, then add live smoke tests for `setup --json`, one `turn/start`, one review, and broker reuse.
+**Codex app-server protocol is an external moving contract:**
+- Risk: The package depends on method names, notification shapes, streaming behavior, and Codex CLI/app-server availability that are not validated by live CI.
+- Impact: Changes in Codex app-server behavior can break task, review, send, steer, respond, cancel, or broker behavior while static tests continue to pass.
+- Files: `src/adapters/codex/protocol.mjs`, `src/adapters/codex/codex.mjs`, `scripts/baseline-contracts.mjs`, `.github/workflows/build.yml`
+- Migration plan: Add a gated live smoke job for authenticated Codex installs, version-detect app-server capabilities, and fail closed when required methods are unavailable.
 
-**Git and filesystem semantics:**
-- Risk: Worktree creation, branch fallback, merge, pruning, lock files, temp directories, and session artifacts rely on local Git and POSIX-like filesystem behavior (`src/lib/git.mjs:527-861`, `src/lib/state.mjs`, `src/lib/broker-lifecycle.mjs`).
-- Impact: Linked worktrees, dirty checkouts, restricted `.git` metadata, stale sockets, or Windows named pipes can block or misreport jobs.
-- Migration plan: Add platform-specific integration tests for named pipes, stale worktree cleanup, dirty task worktree refusal, and broker session teardown.
+**Auto-update relies on network, GitHub releases, npx, and `skills@latest`:**
+- Risk: Update discovery and application depend on GitHub release availability and the latest published `skills` installer behavior.
+- Impact: Network failures, rate limits, registry changes, or installer regressions can create noisy background failures or unexpected global install changes.
+- Files: `src/codex-bridge.mjs`, `package.json`
+- Migration plan: Make the hot-path check read-only, expose `update --apply` as the explicit mutation path, and pin installer semantics.
 
-**External update and release services:**
-- Risk: Update checks call the public GitHub releases API anonymously and hot-path auto-apply shells out through `npx` (`src/lib/update-check.mjs:228-315`, `src/codex-bridge.mjs:217-224`).
-- Impact: Rate limiting, network failures, package installer changes, or global install policy can cause stale installs or silent apply failures.
-- Migration plan: Keep update checks non-blocking, add explicit status surfaces for last apply failure, and cover cache fallback behavior with tests.
+**Package has a narrow dev dependency set but a broad runtime toolchain:**
+- Risk: `package.json` declares only `esbuild` and `js-yaml` as dev dependencies, while real runtime flows require Node 22+, Git, Codex CLI, Codex app-server support, and local IPC support.
+- Impact: `npm test` can pass in environments where real bridge commands cannot run.
+- Files: `package.json`, `src/codex-bridge.mjs`, `src/lib/process.mjs`, `.github/workflows/build.yml`
+- Migration plan: Keep `setup --json` as the runtime readiness contract, add explicit CI smoke tests where tools are available, and document unsupported runtime combinations in generated config/help.
 
 ## Missing Critical Features
 
-**Merge does not run acceptance tests yet:**
-- Problem: `mergeSubagentBranch` returns `tests_passed: null` when tests are requested, with comments saying follow-up execution will read acceptance criteria later (`src/lib/git.mjs:695-831`).
-- Blocks: Treating `merge` as full verification for generated code. Merge currently proves verdict/branch SHA and fast-forward safety, not task-specific test success.
-- Phase relevance: Merge automation, ship workflows, review convergence.
+**End-to-end review verdict to merge flow is incomplete through public commands:**
+- Problem: The public reviewer instruction path uses unsupported `--payload-stdin`, verdict persistence lacks branch head SHA, and merge requires branch head SHA.
+- Blocks: Safe automated merge after review approval through the packaged plugin surface.
+- Files: `src/codex-bridge.mjs`, `src/lib/git.mjs`, `plugin/agents/codex-bridge-reviewer.md`, `plugin/commands/verdict.md`, `plugin/commands/merge.md`
 
-**PR mode is explicit but not implemented:**
-- Problem: `merge --pr` throws `MERGE_PR_NOT_IMPLEMENTED` (`src/codex-bridge.mjs:5084-5090`).
-- Blocks: Workflows that need branch push and pull request creation instead of local fast-forward merge.
-- Phase relevance: GitHub integration, release workflows, team review.
+**Merge path has no real test execution gate:**
+- Problem: `performTrustBudgetedMerge` accepts `runTests`, but the implementation records test state instead of running a configured command. The command surface includes `--no-tests`, but the positive path does not execute tests.
+- Blocks: Trust-budgeted merge cannot prove the approved branch passes project checks before integration.
+- Files: `src/lib/git.mjs`, `src/codex-bridge.mjs`, `plugin/commands/merge.md`
 
-**Artifact registry lacks cleanup, compaction, and iteration-chain helpers:**
-- Problem: `src/lib/registry.mjs:21-25` documents full helpers as follow-ups.
-- Blocks: Long-running teams can accumulate stale task directories, orphaned events, and hard-to-query iteration history.
-- Phase relevance: Job lifecycle, storage management, dashboard/status UX.
+**Task/request question policy lacks enforcement:**
+- Problem: `allow_questions` exists in default config and generated config files, but request handler attachment does not consult it.
+- Blocks: Non-interactive workflows cannot reliably disable bridge questions through config.
+- Files: `src/lib/runtime-options.mjs`, `skill/config.yaml`, `plugin/config.yaml`, `src/codex-bridge.mjs`
+
+**Closed-loop mutation from review findings is not implemented:**
+- Problem: Baseline contracts classify `iterate` as staged orchestration only, and the active planning state points at the review verdict and iterate-loop phase.
+- Blocks: Fully automated review/fix/review loops from the bridge CLI/plugin surface.
+- Files: `src/codex-bridge.mjs`, `scripts/baseline-contracts.mjs`, `.planning/STATE.md`
 
 ## Test Coverage Gaps
 
-**Live Codex app-server round trips are not covered by default CI:**
-- What's not tested: Authenticated `codex app-server` initialization, `turn/start`, `review/start`, broker reuse, and real notification streams.
-- Files: `.github/workflows/build.yml`, `src/adapters/codex/protocol.mjs`, `src/adapters/codex/codex.mjs`, `src/lib/broker-lifecycle.mjs`
-- Risk: Static protocol and fake-process tests can pass while real app-server behavior changes.
-- Priority: High for protocol, broker, and review pipeline phases.
+**Live Codex app-server round trips:**
+- What's not tested: Authenticated `task`, `task-worker`, `review`, `adversarial-review`, `send`, `steer`, `respond`, `cancel`, and broker lifecycle behavior against a real Codex app-server.
+- Files: `scripts/baseline-contracts.mjs`, `.github/workflows/build.yml`, `src/adapters/codex/`
+- Risk: Protocol or CLI integration drift can ship with static tests passing.
+- Priority: High
 
-**Registry concurrency is not covered:**
-- What's not tested: Cross-process `writeMeta`, `writeVerdict`, and `appendEvent` races.
-- Files: `src/lib/registry.mjs`
-- Risk: Multi-agent review/merge workflows lose artifact consistency.
-- Priority: High before expanding registry consumers.
+**Reviewer-agent verdict command contract:**
+- What's not tested: The packaged reviewer instruction `verdict <task_id> --payload-stdin --json`, branch head SHA persistence, and merge eligibility from a public verdict write.
+- Files: `plugin/agents/codex-bridge-reviewer.md`, `plugin/commands/verdict.md`, `src/codex-bridge.mjs`, `src/lib/git.mjs`
+- Risk: The documented plugin review approval path cannot drive merge.
+- Priority: High
 
-**Stop gate has a skipped legacy migration test and dual hook implementations:**
-- What's not tested: Legacy stop-review hook migration behavior across generated install layouts.
-- Files: `hooks/stop-gate.mjs`, `hooks/stop-review-gate-hook.mjs`, `test/plugin-surfaces.test.mjs`
-- Risk: Some installed hooks fail open or call stale script paths.
-- Priority: Medium-high for hook or plugin-surface phases.
+**Relative config path behavior:**
+- What's not tested: Relative `session_dir` under install-root, workspace-root, and cwd config files when the shell process cwd differs from command `--cwd`.
+- Files: `src/lib/config.mjs`, `src/lib/session-log.mjs`, `src/codex-bridge.mjs`
+- Risk: Session events, pending requests, and status lookups use different directories across commands.
+- Priority: High
 
-**Auto-update path is only partially tested:**
-- What's not tested: Detached installer success/failure lifecycle, installer stdout/stderr isolation across platforms, cache corruption, and update behavior under real network rate limiting.
-- Files: `src/codex-bridge.mjs`, `src/lib/update-check.mjs`, `test/auto-apply.test.mjs`, `test/update-check.test.mjs`
-- Risk: Background global install changes can be hard to diagnose or reproduce.
-- Priority: Medium.
+**Config validation and unknown setting warnings:**
+- What's not tested: Malformed YAML, unknown config keys, invalid sandbox policy values, and user-visible diagnostics.
+- Files: `src/lib/config.mjs`, `src/lib/runtime-options.mjs`, `skill/config.yaml`, `plugin/config.yaml`
+- Risk: Safety and routing settings silently fail open or fall back.
+- Priority: Medium
 
-**Windows named-pipe broker behavior lacks end-to-end coverage:**
-- What's not tested: Named pipe endpoint creation, stale endpoint probing, teardown, and explicit broker failure on Windows.
-- Files: `src/lib/broker-endpoint.mjs`, `src/lib/broker-lifecycle.mjs`, `src/adapters/codex/protocol.mjs`
-- Risk: Windows support exists at endpoint construction level but should not be claimed as fully tested.
-- Priority: Medium unless Windows becomes a supported target.
+**Large diff/session artifact handling:**
+- What's not tested: Behavior when tracked diffs exceed synchronous capture limits, untracked files are large, or session event files are very large.
+- Files: `src/lib/session-log.mjs`, `src/lib/git.mjs`, `src/codex-bridge.mjs`
+- Risk: Status/review context can truncate, slow down, or include unintended content.
+- Priority: Medium
 
-**Release archives are not inspected for plugin layout:**
-- What's not tested: Tagged release contents for canonical plugin installation.
-- Files: `.github/workflows/release.yml`, `esbuild.config.mjs`, `.github/workflows/build.yml`
-- Risk: Plugin layout can pass build checks but remain absent from release artifacts.
-- Priority: Medium for distribution phases.
-
-## Already-Tested Invariants
-
-- `src/lib/state.mjs` state writes are protected against concurrent writer loss, stale lock inode races, temp-file stragglers, stale job reaping, and corrupt JSON quarantine by `test/state.test.mjs`, `test/state-stale-lock-toctou.test.mjs`, and `test/state-tmp-sweep-on-rename-failure.test.mjs`.
-- `src/adapters/codex/broker.mjs` stream ownership release ordering is covered for downstream disconnects, same-chunk responses, early sub-thread completion, root completion, and clear-all behavior by `test/broker-stream-release-ordering.test.mjs`.
-- `src/lib/git.mjs` worktree safety is covered for safe task IDs, shell metacharacter handling, branch clobber refusal, dirty parent fallback refusal, dirty task worktree merge refusal, reviewed SHA drift, custom worktree roots, and fast-forward merge/prune by `test/git-worktree.test.mjs`.
-- `src/adapters/codex/protocol.mjs` request cleanup and broker fallback behavior is covered by `test/app-server-client.test.mjs` and `test/app-server-abort.test.mjs`.
-- Generated bundle drift and basic CLI envelope behavior for both skill and plugin script layouts are covered in `.github/workflows/build.yml`.
-- Stop gate command surfaces, timeout margins, kill-switch diagnostics, and readiness/block behavior are covered in `test/plugin-surfaces.test.mjs`, except for the skipped legacy migration path.
+**Auto-update safety and opt-out behavior:**
+- What's not tested: Detached update process spawning, inherited environment shape, opt-out coverage, release-cache behavior, and failure reporting.
+- Files: `src/codex-bridge.mjs`
+- Risk: Hot-path commands can trigger unexpected background mutation attempts.
+- Priority: Medium
 
 ---
 
-*Concerns audit: 2026-04-30*
+*Concerns audit: 2026-05-02*

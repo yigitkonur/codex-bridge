@@ -1,202 +1,139 @@
 ---
-last_mapped_commit: 16f4fd188f47160bdaddabb9813c6fe67e486d5d
-mapped_date: 2026-04-30
-evidence_policy: source-tests-package-ci-only
+last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 ---
 
 # Coding Conventions
 
-**Analysis Date:** 2026-04-30
-
-## Evidence Boundary
-
-Use source files, `package.json`, workflow YAML, and `test/*.test.mjs` as evidence for this map. Repository Markdown files are not used as evidence for this mapping.
+**Analysis Date:** 2026-05-02
 
 ## Naming Patterns
 
 **Files:**
-- Use ESM `.mjs` for runtime source under `src/`, such as `src/codex-bridge.mjs`, `src/lib/state.mjs`, and `src/adapters/codex/protocol.mjs`.
-- Use `.test.mjs` for Node built-in tests under `test/`, such as `test/cli-errors.test.mjs`, `test/state.test.mjs`, and `test/plugin-surfaces.test.mjs`.
-- Keep generated bundle targets under `skill/` and `plugin/` aligned through `esbuild.config.mjs`; source files remain under `src/`, `hooks/`, `commands/`, `agents/`, and `skill/config.yaml` when those source paths exist.
+- Use ESM `.mjs` for runtime JavaScript. Core files include `src/codex-bridge.mjs`, `src/lib/state.mjs`, `src/lib/cli-errors.mjs`, `src/adapters/codex/protocol.mjs`, and `hooks/stop-gate.mjs`.
+- Use lower-kebab or short domain names for source files: `src/lib/broker-lifecycle.mjs`, `src/lib/pending-requests.mjs`, `src/adapters/codex/pipeline.mjs`, `scripts/baseline-contracts.mjs`.
+- Use `.test.mjs` under `test/` for tests: `test/adapter-routing.test.mjs`, `test/plugin-surfaces.test.mjs`, `test/bridge-static.test.mjs`.
+- Use lower-kebab JSON/schema names for contract files: `src/schemas/review-output.schema.json`, `plugin/schemas/review-output.schema.json`.
+- Generated bundle targets keep stable install-layout names: `skill/scripts/codex-bridge.mjs`, `plugin/scripts/codex-bridge.mjs`, `skill/app-server-broker.mjs`, `plugin/scripts/app-server-broker.mjs`.
 
 **Functions:**
-- Use camelCase for exported and local functions, matching `emitError` in `src/lib/cli-errors.mjs`, `loadState` in `src/lib/state.mjs`, `collectReviewContext` in `src/lib/git.mjs`, and `buildCollaborationMode` in `src/lib/runtime-options.mjs`.
-- Use verb-first names for side-effecting functions, such as `writeState`, `appendEvent`, `captureGitDiff`, and `spawnBackgroundWorker`.
+- Use lower camelCase verbs for functions: `loadConfigLayers` in `src/lib/config.mjs`, `resolveAdapterForRuntime` in `src/adapters/index.mjs`, `captureTurn` in `src/adapters/codex/codex.mjs`, `writeJsonFileAtomic` in `src/lib/state.mjs`.
+- Use action prefixes consistently:
+  - `build*` for structured payloads or rendered components: `buildErrorEnvelope` in `src/lib/cli-errors.mjs`, `buildCapabilities` in `src/adapters/codex/index.mjs`, `buildBaselineContracts` in `scripts/baseline-contracts.mjs`.
+  - `resolve*` for path, config, adapter, and job lookup: `resolveStateDir` in `src/lib/state.mjs`, `resolveReviewTarget` in `src/lib/git.mjs`, `resolveCommandCwd` in `src/codex-bridge.mjs`.
+  - `parse*` for string or CLI parsing: `parseArgs` in `src/lib/args.mjs`, `parseStructuredOutput` in `src/adapters/codex/codex.mjs`, `parseBrokerEndpoint` in `src/lib/broker-endpoint.mjs`.
+  - `format*` and `render*` for display output: `formatDoneEvent` in `src/lib/session-log.mjs`, `renderStatusReport` in `src/lib/render.mjs`.
+  - `handle*` for CLI subcommand handlers: `handleTask`, `handleEvents`, `handleVerdict`, and `handleMerge` in `src/codex-bridge.mjs`.
+- Keep test-only reset hooks visibly test-only with leading underscores: `_resetAdapterCache` in `src/adapters/index.mjs`, `_setCodexAdapterRuntimeForTest` in `src/adapters/codex/index.mjs`.
 
 **Variables:**
-- Use camelCase for local variables and lower-case object keys in runtime envelopes.
-- Use UPPER_SNAKE_CASE for constants and environment variable names, such as `DEFAULT_CONFIG` in `src/lib/runtime-options.mjs`, `DEFAULT_CLIENT_INFO` in `src/adapters/codex/protocol.mjs`, and `CODEX_BRIDGE_PLUGIN_DATA` in `src/lib/state.mjs`.
+- Use lower camelCase for local variables and object fields inside JS: `workspaceRoot`, `sessionDir`, `threadId`, `startedAt`, `adapterCapabilities` in `src/codex-bridge.mjs` and `src/lib/job-control.mjs`.
+- Use SCREAMING_SNAKE_CASE for constants and environment variable names: `DEFAULT_CONFIG` in `src/lib/runtime-options.mjs`, `BACKEND_ENV_VAR` in `src/adapters/index.mjs`, `CODEX_BRIDGE_PLUGIN_DATA` handling in `src/lib/state.mjs`.
+- Preserve established public field casing instead of normalizing it during feature work. CLI envelopes use fields such as `schema_version` and `reviewGateLockPath` in `src/lib/cli-errors.mjs` and `src/codex-bridge.mjs`; config and registry files use snake_case keys such as `default_backend`, `adapter_routing`, `sandbox_policy`, and `task_id` in `src/lib/runtime-options.mjs`, `src/lib/registry.mjs`, and `skill/config.yaml`.
+- Boolean helpers use `is*`, `has*`, `should*`, or explicit state names: `isThreadId` in `src/lib/thread-id.mjs`, `isActiveJob` in `src/lib/state.mjs`, `shouldAttemptApply` in `src/lib/update-check.mjs`, `hasLegacyStopReviewGateIntent` in `hooks/stop-gate.mjs`.
 
 **Types:**
-- Use class names in PascalCase for error and protocol abstractions, such as `CliError` in `src/lib/cli-errors.mjs`, `AdapterError` in `src/adapters/index.mjs`, `AppServerClientBase` in `src/adapters/codex/protocol.mjs`, and `CodexAppServerClient` in `src/adapters/codex/protocol.mjs`.
-- Use JSDoc typedefs near the top of source files when a module needs structured object contracts, as in `src/adapters/codex/codex.mjs` and `src/adapters/codex/protocol.mjs`.
+- Use PascalCase for classes and JSDoc typedefs: `CliError` in `src/lib/cli-errors.mjs`, `AdapterError` in `src/adapters/index.mjs`, `RegistryReadError` in `src/lib/registry.mjs`, `AppServerClientBase` and `CodexAppServerClient` in `src/adapters/codex/protocol.mjs`.
+- Use `Object.freeze(...)` for enum-like maps and immutable contracts: `ExitCode` in `src/lib/cli-errors.mjs`, `COMMANDS` and `SUBCOMMAND_DISPATCH` in `src/codex-bridge.mjs`, `GENERATED_SURFACES` in `scripts/baseline-contracts.mjs`.
 
 ## Code Style
 
 **Formatting:**
-- No dedicated formatter config is detected at the repository root. Match adjacent source style in the file being changed.
-- Keep source ESM-only. Import Node built-ins with `node:` specifiers, as in `src/lib/process.mjs`, `src/lib/state.mjs`, and `src/lib/git.mjs`.
-- Prefer plain objects and small helpers over framework abstractions. Runtime modules use standard Node APIs, `js-yaml`, and local helpers rather than broad utility libraries.
+- Use semicolons. Runtime files such as `src/lib/process.mjs`, `src/lib/state.mjs`, `src/adapters/index.mjs`, and `esbuild.config.mjs` terminate imports, declarations, and calls with semicolons.
+- Use double quotes for JS strings by default. Single quotes appear mainly for embedded shell snippets or quote-sensitive test strings in `test/pre-tool-bash-hook.test.mjs`, `test/git-worktree.test.mjs`, and `src/lib/session-log.mjs`.
+- Use two-space indentation for blocks, object literals, and test bodies. Match local indentation in large existing files such as `src/codex-bridge.mjs` instead of reformatting unrelated code.
+- Use trailing commas in multiline imports, arrays, objects, and function calls when the surrounding file already does so, as in `src/adapters/codex/index.mjs`, `src/lib/runtime-options.mjs`, and `test/adapter-registry.test.mjs`.
+- Keep runtime source ESM-only. Import built-ins with `node:` specifiers, for example `node:fs`, `node:path`, `node:child_process`, and `node:test` in `src/lib/process.mjs` and `test/baseline-contracts.test.mjs`.
+- Prefer structured APIs over shell strings. `src/lib/process.mjs` wraps `spawnSync(command, args, ...)`, and `src/lib/git.mjs` passes git arguments as arrays through `runCommand` and `runCommandChecked`.
+- Use synchronous filesystem writes for bridge state, registry, session logs, generated files, hooks, and test fixtures when the code needs deterministic ordering: `src/lib/state.mjs`, `src/lib/session-log.mjs`, `src/lib/registry.mjs`, `esbuild.config.mjs`, and `test/plugin-surfaces.test.mjs`.
 
 **Linting:**
-- No lint script or lint configuration is detected in `package.json`.
-- Rely on `npm test`, focused `node --test` commands, and `npm run build` for automated validation.
+- Not detected. There is no ESLint, Prettier, Biome, Jest, Vitest, or TypeScript compiler config in the repository root.
+- The enforced static quality gate is command-based, not linter-based:
+  - `npm run verify:static` in `package.json` runs `npm run build`, `npm test`, and `npm run baseline:contracts -- --check`.
+  - `.github/workflows/build.yml` runs `npm ci`, `npm run build`, `npm test`, generated bundle drift checks, output existence checks, and JSON-envelope sanity probes.
+  - `scripts/baseline-contracts.mjs` verifies generated surfaces, command coverage metadata, and JSON envelope probe expectations.
 
 ## Import Organization
 
 **Order:**
-1. Node built-ins with `node:` specifiers, such as `node:fs`, `node:path`, `node:os`, and `node:child_process`.
-2. Third-party packages, such as `js-yaml` in `src/lib/config.mjs` and `esbuild` in `esbuild.config.mjs`.
-3. Internal relative `.mjs` modules, such as `src/lib/cli-errors.mjs`, `src/lib/process.mjs`, and `src/adapters/codex/protocol.mjs`.
+1. Node built-ins with `node:` specifiers, as in `src/lib/state.mjs`, `src/lib/git.mjs`, `src/adapters/codex/protocol.mjs`, and `test/plugin-surfaces.test.mjs`.
+2. External package imports, as in `esbuild.config.mjs` (`esbuild`) and `src/lib/config.mjs` (`js-yaml`).
+3. A blank line before relative local imports, as in `src/lib/git.mjs`, `src/adapters/index.mjs`, and `src/codex-bridge.mjs`.
+4. Relative local imports ending in `.mjs`; JSON imports use `with { type: "json" }` where needed, as in `src/codex-bridge.mjs`.
 
 **Path Aliases:**
-- No path aliases are detected. Use explicit relative imports with file extensions, as in `src/codex-bridge.mjs` and `src/adapters/index.mjs`.
+- Not detected. Use relative paths such as `../src/lib/state.mjs`, `./cli-errors.mjs`, and `../../lib/session-log.mjs`.
+- Generated layouts are located through runtime root detection instead of aliases. `src/codex-bridge.mjs` computes `ROOT_DIR`; `src/lib/broker-lifecycle.mjs` resolves source, `skill/`, and `plugin/` broker script paths.
 
-## CLI And Error Envelopes
-
-**Patterns:**
-- Represent CLI failures with `CliError` and `emitError` from `src/lib/cli-errors.mjs`. Do not hand-build JSON error output in command handlers.
-- JSON success output uses the central envelope emitted by `emitSuccess` in `src/lib/cli-errors.mjs`: include `ok`, `schema_version`, `command`, `result`, and `meta`.
-- JSON failure output uses the central envelope emitted by `emitError` in `src/lib/cli-errors.mjs`: include `ok`, `schema_version`, `error`, and optional command context.
-- Map semantic error classes to exit codes through `ExitCode` and `CLASS_TO_EXIT` in `src/lib/cli-errors.mjs`.
-- Preserve command dispatch through `COMMANDS`, command handlers, and `SUBCOMMAND_DISPATCH` in `src/codex-bridge.mjs`.
-- Detect top-level `--json` and help flags with the helper functions in `src/lib/cli-errors.mjs`; tests in `test/cli-errors.test.mjs` cover avoiding prompt-text false positives.
-
-**Error Class Guidance:**
-- Use `CliError` for user-facing CLI failures in modules like `src/lib/git.mjs`, `src/lib/brief.mjs`, and `src/codex-bridge.mjs`.
-- Use `AdapterError` from `src/adapters/index.mjs` for backend selection and capability failures.
-- Preserve retryability and classification fields because `test/cli-errors.test.mjs` asserts timeout, sandbox, upstream disconnect, and other Codex error normalization behavior.
-
-## JSON And Schema Behavior
+## Error Handling
 
 **Patterns:**
-- Keep structured output schemas strict. `src/schemas/review-output.schema.json` uses required fields, enums, numeric bounds, and `additionalProperties: false`.
-- Update schema, prompt, renderer, and tests together for review-output changes: `src/schemas/review-output.schema.json`, `src/prompts/adversarial-review.md`, `src/lib/render.mjs`, and `test/render-finding-validity.test.mjs`.
-- Keep completion-check JSON strict through `COMPLETION_CHECK_SCHEMA` in `src/lib/runtime-options.mjs`.
-- Keep structured brief validation in `src/lib/brief.mjs` hand-rolled and explicit. Tests in `test/brief.test.mjs` cover allowed fields, size limits, hashes, backend values, and path loading.
-- Registry writes in `src/lib/registry.mjs` own fields such as schema, task identity, and timestamps. Do not trust caller-provided values for controlled metadata.
+- CLI-facing errors must flow through `CliError`, factory helpers, `classifyError`, `buildErrorEnvelope`, and `emitError` in `src/lib/cli-errors.mjs`.
+- CLI handlers in `src/codex-bridge.mjs` should emit successful responses with `emitSuccess` and error responses with `emitError`; do not hand-roll JSON envelopes in new command handlers.
+- Use semantic error classes and codes for user-facing failures. Examples include `INVALID_THREAD_ID` in `src/lib/cli-errors.mjs`, `BACKEND_INCAPABLE` in `src/adapters/index.mjs`, `PROMPT_FILE_NOT_FOUND` in `src/codex-bridge.mjs`, and `DEFAULT_BRANCH_NOT_FOUND` in `src/lib/git.mjs`.
+- Low-level module contract violations use standard `Error` or `TypeError`, as in `src/lib/registry.mjs`, `src/lib/broker-endpoint.mjs`, and `src/lib/prompts.mjs`.
+- Adapter selection errors use `AdapterError` in `src/adapters/index.mjs` and are classified as validation errors by `src/lib/cli-errors.mjs`.
+- Registry read failures use `RegistryReadError` in `src/lib/registry.mjs`; missing registry JSON returns `null`, invalid JSON throws a typed read error.
+- Best-effort observability paths swallow failures to avoid breaking the primary operation: `logNdjson`, `logEvent`, `writeDiff`, `writePlan`, and `writeReview` in `src/lib/session-log.mjs`.
+- Durable state mutations should fail loudly or preserve forensic data. `src/lib/state.mjs` uses lock files, atomic temp-file writes, corrupt-state quarantine, and temp-file cleanup on failed rename.
+- Hooks must fail open unless their purpose is explicitly to block. `plugin/hooks/pre-tool-agent.mjs`, `plugin/hooks/pre-tool-bash.mjs`, and `hooks/session-lifecycle-hook.mjs` return `{"continue":true}` on hook-local failures; `hooks/stop-gate.mjs` emits `{"decision":"block"}` only for active review-gate decisions.
 
-## Config, Runtime Options, And State
+## Logging
 
-**Configuration:**
-- Load YAML config through `src/lib/config.mjs`; the optional `codex_bridge` root is supported there.
-- Preserve config precedence from `src/lib/config.mjs`: defaults, install-root config, workspace-root config, then cwd config.
-- Add new config keys in `DEFAULT_CONFIG` and related rendering/merge behavior in `src/lib/runtime-options.mjs`, with tests under `test/`.
+**Framework:** `process.stdout` / `process.stderr` / filesystem appenders
 
-**Runtime Defaults:**
-- Keep default runtime options centralized in `DEFAULT_CONFIG` in `src/lib/runtime-options.mjs`.
-- Plan mode must continue to force reasoning effort through `buildCollaborationMode` in `src/lib/runtime-options.mjs`.
-- Sandbox mapping belongs in `buildSandboxPolicy` in `src/lib/runtime-options.mjs`.
-
-**State:**
-- Use `src/lib/state.mjs` for workspace-scoped state. State is keyed by the canonical workspace root and stored under the plugin data root chosen by `CODEX_BRIDGE_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, then the temp fallback.
-- Preserve lock behavior in `withStateLock` in `src/lib/state.mjs`, including stale-lock and inode checks covered by `test/state-stale-lock-toctou.test.mjs`.
-- Use atomic write helpers in `src/lib/state.mjs`; tests in `test/state.test.mjs` and `test/state-tmp-sweep-on-rename-failure.test.mjs` cover corruption quarantine, pruning, concurrent writers, and temp cleanup.
-- Keep read-only status paths read-only. `listJobs` in `src/lib/state.mjs` reaps stale PIDs in memory unless called through a mutating path.
-
-**Session Logs:**
-- Use `src/lib/session-log.mjs` for `.ndjson` and `.events` writes. These writes are synchronous append-only best-effort writes.
-- Event formatting belongs in `src/lib/session-log.mjs`; update event tags and terminal behavior there with tests in `test/session-log.test.mjs`.
-- Terminal event tags are intentionally limited. Pipeline and review events are formatted in `src/lib/session-log.mjs` and verified by `test/bridge-static.test.mjs` and `test/auto-pipeline-turn-watchdog.test.mjs`.
-
-## Filesystem, Process, And Git Interactions
-
-**Process Execution:**
-- Use `runCommand` and `runCommandChecked` from `src/lib/process.mjs` for subprocesses. Do not introduce ad hoc shell execution for behavior that needs testable timeouts, signals, or exit-code handling.
-- Keep command arguments as arrays. Tests in `test/process.test.mjs` cover timeout, signal, status, and output behavior.
-
-**Git:**
-- Use helpers in `src/lib/git.mjs` for repository detection, dirty-state checks, diff capture, worktree creation, branch merging, and pruning.
-- Preserve safe ref and task-id validation in `src/lib/git.mjs`; tests in `test/git-worktree.test.mjs` cover branch clobbering, unsafe ids, injection attempts, fallback behavior, fast-forward merge, and stale expected SHA guards.
-- Keep untracked file capture conservative in `collectReviewContext` in `src/lib/git.mjs`; tests in `test/git.test.mjs` and `test/session-log.test.mjs` cover omitted bodies, symlink handling, and safe file limits.
-
-## Adapter And Protocol Conventions
-
-**Adapter Registry:**
-- Backend selection and capability checks live in `src/adapters/index.mjs`.
-- Add backend behavior through adapter registry shapes and tests in `test/adapter-registry.test.mjs`, `test/adapter-routing.test.mjs`, and `test/adapter-selection.test.mjs`.
-- Keep adapter capability errors mapped through `AdapterError` in `src/adapters/index.mjs`.
-
-**Codex Protocol:**
-- Keep `DEFAULT_CLIENT_INFO.name` in `src/adapters/codex/protocol.mjs` stable as `codex_bridge`.
-- Outbound app-server messages from `src/adapters/codex/protocol.mjs` are newline-delimited JSON with `id`, `method`, and `params`.
-- Do not add a JSON-RPC version field to outbound app-server messages unless protocol tests are changed with it.
-- Server-originated requests without handlers are rejected by `AppServerClientBase` in `src/adapters/codex/protocol.mjs`; tests in `test/app-server-client.test.mjs` cover this behavior.
-- Request abort cleanup and pending-turn cleanup are covered by `test/app-server-abort.test.mjs`, `test/codex-capture.test.mjs`, and `test/codex-capture-turn-timeout-fallback.test.mjs`.
-
-## Generated File Discipline
-
-**Build Source Of Truth:**
-- `esbuild.config.mjs` is the source of truth for bundled outputs and copied static assets.
-- After changes to runtime source, adapter source, library source, prompts, schemas, templates, plugin surfaces, hooks, or `skill/config.yaml`, run `npm run build` and include generated output changes.
-
-**Do Not Hand Edit Generated Runtime Outputs:**
-- Do not hand-edit `skill/scripts/`, `skill/app-server-broker.mjs`, `skill/prompts/`, `skill/schemas/`, or `skill/templates/`.
-- Do not hand-edit `plugin/scripts/`, `plugin/prompts/`, `plugin/schemas/`, `plugin/templates/`, `plugin/config.yaml`, `plugin/commands/`, `plugin/agents/`, or `plugin/hooks/`.
-- Edit source paths such as `src/`, `hooks/`, `commands/`, `agents/`, and `skill/config.yaml` where present, then regenerate through `npm run build`.
-- CI in `.github/workflows/build.yml` fails when generated outputs drift from a fresh build.
+**Patterns:**
+- Use `emitSuccess` and `emitError` from `src/lib/cli-errors.mjs` for command stdout/stderr and JSON envelope consistency.
+- Keep machine-readable JSON on stdout and diagnostics/progress on stderr. `src/codex-bridge.mjs` foreground and background command paths preserve stdout for envelopes and rendered command output.
+- Use session artifacts for runtime observability:
+  - `.ndjson` via `logNdjson` in `src/lib/session-log.mjs`.
+  - `.events` via `logEvent` in `src/lib/session-log.mjs`.
+  - Diff, plan, and review artifacts via `writeDiff`, `writePlan`, and `writeReview` in `src/lib/session-log.mjs`.
+- Use tracked job logs for background progress through `createProgressReporter`, `appendLogLine`, and `runTrackedJob` in `src/lib/tracked-jobs.mjs`.
+- Hook diagnostics go to `~/.codex-bridge/hook-errors` through `logHookError` in `hooks/stop-gate.mjs`, `plugin/hooks/pre-tool-agent.mjs`, and `plugin/hooks/pre-tool-bash.mjs`.
+- `console.log` is limited to build/help-style output such as `esbuild.config.mjs` and some command rendering in `src/codex-bridge.mjs`; new runtime code should prefer explicit stdout/stderr writers or existing emit helpers.
 
 ## Comments
 
 **When to Comment:**
-- Add comments only when they preserve an invariant, explain a race, document a compatibility contract, or clarify a non-obvious failure mode.
-- Good comment locations are timeout/race logic in `src/adapters/codex/codex.mjs`, lock/atomic-write logic in `src/lib/state.mjs`, protocol handling in `src/adapters/codex/protocol.mjs`, and generated asset copying in `esbuild.config.mjs`.
+- Comment invariants, failure modes, concurrency decisions, generated-layout rules, and error taxonomy. Good examples are the state lock comments in `src/lib/state.mjs`, timeout comments in `hooks/stop-gate.mjs`, adapter registry comments in `src/adapters/index.mjs`, and generated-surface comments in `esbuild.config.mjs`.
+- Keep comments near the code that owns the invariant. Generated surface ownership belongs in `esbuild.config.mjs`, bundle drift proof belongs in `scripts/baseline-contracts.mjs`, and event formatting rules belong in `src/lib/session-log.mjs`.
+- Avoid comments that restate obvious assignments. Prefer short orientation before a complex block, as in `src/lib/args.mjs` quote parsing and `plugin/hooks/pre-tool-bash.mjs` command classification.
 
 **JSDoc/TSDoc:**
-- Prefer local JSDoc typedefs for structured runtime objects where TypeScript is not present.
-- Keep typedefs near the functions that consume them, matching patterns in `src/adapters/codex/codex.mjs` and `src/adapters/codex/protocol.mjs`.
+- Use JSDoc typedef blocks where plain JS needs type contracts. `src/adapters/codex/protocol.mjs` defines protocol typedefs, and `src/adapters/codex/codex.mjs` defines turn-capture typedefs.
+- Keep formal TypeScript declarations in `.d.ts` files, especially `src/adapters/index.d.ts` and `src/adapters/codex/protocol.d.ts`.
+- Do not add TypeScript source files; this package is ESM JavaScript with declaration files only.
 
 ## Function Design
 
-**Size:**
-- Keep small validation, parsing, and normalization helpers close to their owning module.
-- Large orchestration functions in `src/codex-bridge.mjs` and `src/adapters/codex/pipeline.mjs` should delegate filesystem, state, process, git, render, and protocol behavior to `src/lib/` and `src/adapters/codex/` helpers.
+**Size:** Keep new reusable logic in focused modules under `src/lib/` or `src/adapters/` instead of adding to `src/codex-bridge.mjs` unless it is command-dispatch glue. Existing large integration files include `src/codex-bridge.mjs`, `src/adapters/codex/codex.mjs`, and `src/lib/session-log.mjs`; new helpers should reduce growth in those files.
 
-**Parameters:**
-- Use options objects for helpers with optional behavior, dependency injection, or test fakes. Examples include `runCommand` in `src/lib/process.mjs`, adapter selection in `src/adapters/index.mjs`, and turn capture in `src/adapters/codex/codex.mjs`.
-- Preserve injectable dependencies used by tests, such as custom spawn implementations, fake clients, and custom environment objects.
+**Parameters:** Use explicit `cwd`, `workspaceRoot`, `sessionDir`, `threadId`, and `options = {}` parameters. Established examples include `runCommand(command, args, options)` in `src/lib/process.mjs`, `loadConfigLayers(skillDir, overrideDir, workspaceRoot)` in `src/lib/config.mjs`, `selectAdapter(options)` in `src/adapters/index.mjs`, and `captureTurn(client, threadId, startRequest, options)` in `src/adapters/codex/codex.mjs`.
 
-**Return Values:**
-- Return structured objects for CLI envelopes, git context, adapter selection, registry reads, and state snapshots.
-- Prefer explicit `{ ok: true }` / `{ ok: false }` style where a caller needs non-throwing validation, matching `loadBrief` in `src/lib/brief.mjs`.
+**Return Values:** Return structured, JSON-serializable objects for command and adapter boundaries. Public envelopes use stable fields such as `ok`, `schema_version`, `command`, `result`, `error`, `meta`, `jobId`, `threadId`, and `phase` in `src/lib/cli-errors.mjs`, `src/adapters/codex/index.mjs`, and `src/codex-bridge.mjs`.
+
+**Async Boundaries:** Use `async` functions for app-server, adapter, and pipeline operations. Keep synchronous helpers for short, local filesystem or subprocess checks where ordering matters, as in `src/lib/state.mjs`, `src/lib/process.mjs`, and `hooks/stop-gate.mjs`.
+
+**Dependency Injection:** Add optional injected dependencies when tests need deterministic behavior. Existing examples include `options.spawnSync` in `src/lib/process.mjs`, `options.killProcess` in `src/lib/broker-lifecycle.mjs`, `runtime` overrides in `src/adapters/codex/index.mjs`, and `__testHooks__` in `src/adapters/codex/broker.mjs`.
 
 ## Module Design
 
-**Exports:**
-- Export focused helpers and classes from each module. Avoid exporting incidental module internals unless tests or runtime composition need them.
-- Test-only reset helpers are acceptable where cache state exists, such as adapter and official-plugin detection helpers covered by `test/adapter-routing.test.mjs` and `test/cli-status-spawn-memoization.test.mjs`.
+**Exports:** Use named exports for library modules. Examples: `src/lib/state.mjs`, `src/lib/config.mjs`, `src/lib/process.mjs`, `src/lib/cli-errors.mjs`, and `src/lib/git.mjs`.
 
-**Barrel Files:**
-- `src/adapters/index.mjs` acts as the adapter registry entry point. No broad project-level barrel file is detected.
+**Default Exports:** Use default exports only where a module represents one primary adapter object. `src/adapters/codex/index.mjs` exports the Codex adapter as default.
 
-## Change Procedures
+**Barrel Files:** There is no broad barrel export for `src/lib/`. `src/adapters/index.mjs` is an adapter registry and resolver, not a re-export-only barrel. Import helpers directly from their owning module.
 
-**New CLI Subcommand:**
-- Update `COMMANDS`, add a handler, and wire `SUBCOMMAND_DISPATCH` in `src/codex-bridge.mjs`.
-- Add or update focused tests under `test/`, and update plugin command surfaces if the command is user-facing.
-- Run focused tests, `npm run build`, then `npm test`.
+**Generated Surfaces:** Source-first edits are required for generated assets. `esbuild.config.mjs` copies or bundles:
+- `src/codex-bridge.mjs` to `skill/scripts/codex-bridge.mjs` and `plugin/scripts/codex-bridge.mjs`.
+- `src/adapters/codex/broker.mjs` to `skill/app-server-broker.mjs` and `plugin/scripts/app-server-broker.mjs`.
+- `src/prompts/adversarial-review.md`, `src/schemas/review-output.schema.json`, and `src/templates/*.md` to both `skill/` and `plugin/`.
+- `hooks/` to `plugin/hooks/` with plugin path transforms.
+- `skill/config.yaml` to `plugin/config.yaml`.
 
-**New Config Key:**
-- Add the key to `DEFAULT_CONFIG` in `src/lib/runtime-options.mjs`.
-- Update config loading/render behavior in `src/lib/config.mjs` or `src/lib/runtime-options.mjs` as needed.
-- Update `skill/config.yaml` and generated `plugin/config.yaml` through `npm run build`.
-- Add tests for precedence and CLI visibility in files like `test/adapter-routing.test.mjs` or a focused new test file.
-
-**New Event Tag:**
-- Add event formatting in `src/lib/session-log.mjs`.
-- Update tests that assert event text, JSON envelopes, terminal behavior, or pipeline tag vocabulary: `test/session-log.test.mjs`, `test/events-json.test.mjs`, `test/bridge-static.test.mjs`, and related adapter tests.
-
-**New Review Output Field:**
-- Update `src/schemas/review-output.schema.json`, `src/lib/render.mjs`, prompt loading/formatting code, and tests such as `test/render-finding-validity.test.mjs` and `test/adversarial-review-prompt.test.mjs`.
-
-**Protocol Or App-Server Change:**
-- Update `src/adapters/codex/protocol.mjs` and related capture code in `src/adapters/codex/codex.mjs`.
-- Add tests in `test/app-server-client.test.mjs`, `test/app-server-abort.test.mjs`, or `test/codex-capture*.test.mjs`.
-
-**Git Or Workspace Change:**
-- Update `src/lib/git.mjs` or `src/lib/state.mjs`.
-- Use real temporary repositories and focused state tests matching `test/git-worktree.test.mjs`, `test/git.test.mjs`, and `test/state*.test.mjs`.
+**Plugin Surfaces:** Packaged command and agent markdown files are part of the tested product surface. `test/plugin-surfaces.test.mjs` pins 22 command files under `plugin/commands/` and 2 agent files under `plugin/agents/`. Command markdown uses YAML frontmatter with `description`, `argument-hint`, and `allowed-tools`; agent markdown uses frontmatter with `name`, `description`, `model`, `tools`, and `skills`.
 
 ---
 
-*Convention analysis: 2026-04-30*
+*Convention analysis: 2026-05-02*

@@ -1,303 +1,230 @@
 ---
-last_mapped_commit: 16f4fd188f47160bdaddabb9813c6fe67e486d5d
-mapped_date: 2026-04-30
-evidence_policy: source-tests-package-ci-only
+last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 ---
 
 # Testing Patterns
 
-**Analysis Date:** 2026-04-30
-
-## Evidence Boundary
-
-Use `package.json`, `.github/workflows/build.yml`, `.github/workflows/release.yml`, source files, and `test/*.test.mjs` as testing evidence. Repository Markdown files are not used as evidence for this mapping.
+**Analysis Date:** 2026-05-02
 
 ## Test Framework
 
 **Runner:**
 - Node built-in test runner through `node --test test/*.test.mjs`.
-- Config: `package.json` script `test`.
-- Runtime requirement: Node.js `>=22.0.0` from `package.json`.
+- Config: no separate test config file detected. The runner command lives in `package.json`.
+- Test files: 39 files under `test/` with 303 `test(...)` declarations.
 
 **Assertion Library:**
-- `node:assert/strict` is the standard assertion library across `test/*.test.mjs`.
+- `node:assert/strict` is used throughout the suite. Examples include `test/baseline-contracts.test.mjs`, `test/adapter-routing.test.mjs`, `test/plugin-surfaces.test.mjs`, and `test/cli-errors.test.mjs`.
 
 **Run Commands:**
 ```bash
-npm test                                      # Run all repository tests
-npm run build                                # Rebuild bundled skill and plugin outputs
-node --test test/cli-errors.test.mjs         # Run one focused suite
-node src/codex-bridge.mjs help --json        # Probe local CLI JSON output
-node src/codex-bridge.mjs setup --json       # Probe local runtime readiness
+npm test                               # Run all Node test files
+node --test test/*.test.mjs            # Direct runner equivalent
+npm run verify:static                  # Build, test, and baseline contract check
+npm run baseline:contracts -- --check  # Static generated-surface and CLI-contract check
 ```
+
+Watch mode is not configured in `package.json`.
+
+Coverage is not configured in `package.json`, `.github/workflows/build.yml`, or repository test config. Use `npm run verify:static` for the enforced static gate.
 
 ## Test File Organization
 
 **Location:**
-- Tests live under `test/` and use one `.test.mjs` file per behavior area.
+- Tests live in the top-level `test/` directory, separate from `src/`, `hooks/`, `plugin/`, and `scripts/`.
+- Source modules are imported directly from `../src/...` and generated bundle surfaces are read from `skill/` and `plugin/`.
 
 **Naming:**
-- Use behavior names in file names, such as `test/cli-errors.test.mjs`, `test/git-worktree.test.mjs`, `test/auto-pipeline-turn-watchdog.test.mjs`, and `test/plugin-surfaces.test.mjs`.
+- Use `<area>.test.mjs`: `test/args.test.mjs`, `test/state.test.mjs`, `test/git-worktree.test.mjs`, `test/codex-adapter-lifecycle.test.mjs`.
+- Use domain-specific names for contract tests: `test/bridge-static.test.mjs`, `test/plugin-surfaces.test.mjs`, `test/baseline-contracts.test.mjs`, `test/skill-word-budget.test.mjs`.
 
 **Structure:**
 ```text
 test/
-├── adapter-*.test.mjs                 # Adapter registry, routing, and backend selection
-├── app-server-*.test.mjs              # App-server protocol and abort behavior
-├── codex-capture*.test.mjs            # Turn capture, timeout, and exit flushing
-├── git*.test.mjs                      # Git context, worktree, merge, and prune behavior
-├── state*.test.mjs                    # State locking, pruning, corruption, and cleanup
-├── *hook*.test.mjs                    # Plugin hook behavior
-└── plugin-surfaces.test.mjs           # Packaged plugin, commands, hooks, and generated surfaces
+|-- *-static.test.mjs              # regex/source-shape contracts, e.g. test/bridge-static.test.mjs
+|-- *-lifecycle.test.mjs           # adapter/broker lifecycle behavior
+|-- *-hook.test.mjs                # hook subprocess tests
+|-- *-worktree.test.mjs            # real git worktree tests
+`-- <module>.test.mjs              # focused unit tests for src/lib and adapters
 ```
 
 ## Test Structure
 
 **Suite Organization:**
 ```javascript
-import test from 'node:test'
-import assert from 'node:assert/strict'
+import assert from "node:assert/strict";
+import test from "node:test";
 
-test('behavior under test', async (t) => {
-  // arrange temp state, fake clients, or subprocesses
-  // act through exported helpers or CLI entry points
-  assert.equal(actual, expected)
-})
+import { parseArgs } from "../src/lib/args.mjs";
+
+test("inline long value options preserve additional equals signs", () => {
+  assert.deepEqual(parseArgs(["req-1", "--answer=FOO=bar=baz"], {
+    valueOptions: ["answer"]
+  }), {
+    options: { answer: "FOO=bar=baz" },
+    positionals: ["req-1"]
+  });
+});
 ```
 
 **Patterns:**
-- Import `test` from `node:test` and assertions from `node:assert/strict`.
-- Use async tests for subprocesses, fake protocol clients, and filesystem state.
-- Use temporary directories from `node:os` and `node:fs` for state, registry, git, and hook tests.
-- Restore mutated environment variables and process state in `t.after`, `try/finally`, or local cleanup helpers.
-- Use `process.execPath` when spawning Node subprocesses from tests, as seen in CLI, hook, and plugin surface suites.
+- Import `test` and `assert` at the top of every test file. Both `import test from "node:test"` and `import assert from "node:assert/strict"` orders exist; match the local file.
+- Use one behavior per `test(...)` block with descriptive names. Examples: `test/cli-errors.test.mjs`, `test/process.test.mjs`, and `test/codex-capture.test.mjs`.
+- Use `async (t)` when cleanup should be registered with `t.after`, as in `test/adapter-routing.test.mjs`, `test/broker-lifecycle.test.mjs`, `test/codex-adapter-lifecycle.test.mjs`, and `test/update-check.test.mjs`.
+- Use `try`/`finally` cleanup for temp roots, env changes, process monkeypatches, and worktrees. Examples: `test/baseline-contracts.test.mjs`, `test/state.test.mjs`, `test/git-worktree.test.mjs`, and `test/plugin-surfaces.test.mjs`.
+- Use direct assertions on public shapes rather than snapshots. Examples: JSON envelopes in `test/baseline-contracts.test.mjs`, generated surface lists in `test/plugin-surfaces.test.mjs`, and review result validation in `test/render-finding-validity.test.mjs`.
+- Use static source contract tests only for high-value invariants that are hard to prove with runtime tests. `test/bridge-static.test.mjs` checks source snippets around terminal event ordering, adapter routing, background job persistence, and workspace-dirty recovery.
 
 ## Mocking
 
-**Framework:** Node built-ins and local fakes. No external mocking framework is detected.
+**Framework:** None. The suite uses manual fakes, dependency injection, temp files, env variables, subprocesses, and source inspection.
 
 **Patterns:**
 ```javascript
-class FakeClient {
-  async startTurn(params) {
-    return { threadId: params?.threadId ?? 'thread-id' }
+class FakeTurnClient {
+  constructor() {
+    this.notificationHandler = null;
+    this.listeners = new Map();
+    this.requests = [];
   }
 }
 ```
 
+`test/codex-capture.test.mjs`, `test/codex-capture-on-exit-flush.test.mjs`, `test/codex-capture-turn-timeout-fallback.test.mjs`, `test/app-server-client.test.mjs`, and `test/broker-stream-release-ordering.test.mjs` use fake client classes to exercise app-server lifecycle logic without a real Codex process.
+
+```javascript
+_setCodexAdapterRuntimeForTest({
+  async runTurn(callCwd, options) {
+    calls.push({ cwd: callCwd, options });
+    return { status: 0, threadId: "thread", turnId: "turn" };
+  }
+});
+```
+
+`test/codex-adapter-lifecycle.test.mjs` uses `_setCodexAdapterRuntimeForTest` and `_resetCodexAdapterRuntimeForTest` from `src/adapters/codex/index.mjs`.
+
+```javascript
+const result = runCommand("git", ["status"], {
+  spawnSync(command, args, options) {
+    captured = { command, args, options };
+    return makeSpawnResult({ stdout: "ok\n" });
+  }
+});
+```
+
+`test/process.test.mjs` injects `spawnSync` through `src/lib/process.mjs`.
+
 **What to Mock:**
-- Mock Codex app-server clients for turn capture, timeouts, review output, and pipeline behavior in `test/codex-capture*.test.mjs` and `test/auto-pipeline-turn-watchdog.test.mjs`.
-- Mock subprocess spawn behavior when testing process and broker lifecycle edges in `test/process.test.mjs` and `test/broker-lifecycle.test.mjs`.
-- Mock environment variables for config, adapter routing, state root precedence, and hook behavior in `test/adapter-routing.test.mjs`, `test/state.test.mjs`, and hook suites.
+- Mock app-server clients, adapter runtime methods, subprocess calls, timeouts, and hook bridge scripts when the test owns the behavior boundary. Use patterns in `test/app-server-client.test.mjs`, `test/codex-adapter-lifecycle.test.mjs`, `test/auto-pipeline-turn-watchdog.test.mjs`, and `test/plugin-surfaces.test.mjs`.
+- Mock global time only inside a `try`/`finally` with restoration. `test/auto-pipeline-turn-watchdog.test.mjs` patches `Date.now`, `globalThis.setTimeout`, and `globalThis.clearTimeout`.
+- Use temp CLI scripts for hook and plugin behavior. `test/pre-tool-agent-hook.test.mjs` creates a stub `plugin/scripts/codex-bridge.mjs`; `test/plugin-surfaces.test.mjs` creates stop-gate harness scripts.
 
 **What NOT to Mock:**
-- Do not mock git when validating repository and worktree behavior. Use real temporary repositories as in `test/git-worktree.test.mjs` and `test/git.test.mjs`.
-- Do not replace JSON envelope parsing with static text assertions when command behavior can be executed through `node src/codex-bridge.mjs ...`.
-- Do not rely only on static source checks for app-server round trips; use runtime probes against an authenticated Codex install for behavior that depends on the real Codex app-server.
+- Do not mock generated bundle drift checks. `test/baseline-contracts.test.mjs`, `scripts/baseline-contracts.mjs`, and `.github/workflows/build.yml` compare generated outputs and expected surfaces directly.
+- Do not mock plugin manifest paths or command coverage. `test/plugin-surfaces.test.mjs` reads `.claude-plugin/plugin.json`, `plugin/.claude-plugin/plugin.json`, `plugin/commands/`, `plugin/agents/`, `hooks/hooks.json`, and `plugin/hooks/hooks.json`.
+- Do not mock git behavior for worktree/merge safety tests. `test/git-worktree.test.mjs` creates real temporary git repositories and runs real `git` commands.
+- Do not require an authenticated live Codex runtime in static tests. Runtime smoke belongs outside `npm test`; `scripts/baseline-contracts.mjs` records live-smoke gaps for commands that need Codex app-server round trips.
 
-## Fixtures And Factories
+## Fixtures and Factories
 
 **Test Data:**
 ```javascript
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-bridge-test-'))
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-state-test-"));
+const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+process.env.CODEX_BRIDGE_PLUGIN_DATA = root;
+try {
+  // seed state, job files, events, or config.yaml
+} finally {
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(workspace, { recursive: true, force: true });
+}
 ```
 
 **Location:**
-- Fixtures are mostly created inline in `test/*.test.mjs`.
-- Temporary git repositories are created inside tests like `test/git-worktree.test.mjs`.
-- Temporary config, registry, state, and hook files are created inside focused suites such as `test/registry.test.mjs`, `test/state.test.mjs`, and hook tests.
+- Fixtures are created inline in test files. There is no shared `fixtures/` directory.
+- Common fixture helpers live near their tests:
+  - `withCliFixture`, `runBridge`, and `makeContractFixture` in `test/baseline-contracts.test.mjs`.
+  - `makeConfigFixture` in `test/adapter-routing.test.mjs`.
+  - `makeStopGateHarness` and `runStopGateHarness` in `test/plugin-surfaces.test.mjs`.
+  - `makeTempRepo` and `cleanup` in `test/git-worktree.test.mjs`.
+  - `makeTempSession`, `makeReviewStub`, and `makeTurnStub` in `test/auto-pipeline-turn-watchdog.test.mjs`.
+- Environment mutation must snapshot and restore previous values. Examples: `CODEX_BRIDGE_PLUGIN_DATA` and `CLAUDE_PLUGIN_DATA` handling in `test/state.test.mjs`, `test/baseline-contracts.test.mjs`, `test/events-json.test.mjs`, and `test/update-check.test.mjs`.
 
 ## Coverage
 
-**Requirements:** No coverage threshold or coverage script is detected in `package.json`.
+**Requirements:** No line, branch, or statement coverage target is enforced.
 
 **View Coverage:**
 ```bash
 # Not configured in package.json
 ```
 
-## CI Gates
-
-**Build Workflow:**
-- `.github/workflows/build.yml` runs on push and pull requests to `main`.
-- CI uses Node 22, `npm ci`, `npm run build`, and `npm test`.
-- CI fails if generated outputs drift after a fresh build. The generated-path check covers `skill/scripts/codex-bridge.mjs`, `skill/app-server-broker.mjs`, `skill/prompts/`, `skill/schemas/`, `skill/templates/`, `plugin/scripts/`, `plugin/prompts/`, `plugin/schemas/`, `plugin/templates/`, `plugin/commands/`, `plugin/agents/`, `plugin/hooks/`, and `plugin/config.yaml`.
-- CI probes bundled CLIs under both `skill/scripts/codex-bridge.mjs` and `plugin/scripts/codex-bridge.mjs`.
-- CI sanity probes cover JSON help, JSON version, unknown subcommands, and invalid thread-id errors.
-
-**Release Workflow:**
-- `.github/workflows/release.yml` rebuilds from source with Node 22 before packaging.
-- Release packaging stages the skill payload from `skill/` and generates archives and checksums.
+The repository uses contract coverage instead of code coverage:
+- `scripts/baseline-contracts.mjs` defines `COMMAND_COVERAGE`, `GENERATED_SURFACES`, and `JSON_ENVELOPE_PROBES`.
+- `test/baseline-contracts.test.mjs` asserts that mutating dispatch commands have success/failure test references and that JSON envelope probes stay populated.
+- `.github/workflows/build.yml` runs bundle drift checks and sanity probes against both `skill/scripts/codex-bridge.mjs` and `plugin/scripts/codex-bridge.mjs`.
 
 ## Test Types
 
 **Unit Tests:**
-- CLI error normalization and JSON envelopes: `test/cli-errors.test.mjs`, `test/events-json.test.mjs`.
-- Argument parsing: `test/args.test.mjs`.
-- Prompt/template/brief validation: `test/prompts-strict.test.mjs`, `test/adversarial-review-prompt.test.mjs`, `test/brief.test.mjs`.
-- Structured review rendering and schema validation: `test/render-finding-validity.test.mjs`.
-- Process wrapper behavior: `test/process.test.mjs`.
+- Scope: parser, config, error classification, rendering, registry, process helper, prompt interpolation, and adapter registry logic.
+- Files: `test/args.test.mjs`, `test/cli-errors.test.mjs`, `test/render-finding-validity.test.mjs`, `test/registry.test.mjs`, `test/process.test.mjs`, `test/prompts-strict.test.mjs`, `test/adapter-registry.test.mjs`.
+- Approach: import the owning module directly from `src/`, call one function or small cluster, assert exact return objects and errors.
 
 **Integration Tests:**
-- Adapter routing and backend selection: `test/adapter-routing.test.mjs`, `test/adapter-selection.test.mjs`, `test/adapter-registry.test.mjs`.
-- App-server protocol and capture behavior with fake transports: `test/app-server-client.test.mjs`, `test/app-server-abort.test.mjs`, `test/codex-capture.test.mjs`, `test/codex-capture-turn-timeout-fallback.test.mjs`, `test/codex-capture-on-exit-flush.test.mjs`.
-- Auto-pipeline review/fix/check behavior: `test/auto-pipeline-turn-watchdog.test.mjs`.
-- State, registry, and job control: `test/state.test.mjs`, `test/state-stale-lock-toctou.test.mjs`, `test/state-tmp-sweep-on-rename-failure.test.mjs`, `test/registry.test.mjs`, `test/job-control.test.mjs`.
-- Git review context and worktree behavior: `test/git.test.mjs`, `test/git-worktree.test.mjs`.
-- Plugin, hook, and generated bundle surfaces: `test/plugin-surfaces.test.mjs`, `test/pre-tool-bash-hook.test.mjs`, `test/pre-tool-agent-hook.test.mjs`, `test/official-plugin.test.mjs`, `test/cli-status-spawn-memoization.test.mjs`.
-- Broker lifecycle and stream ordering: `test/broker-lifecycle.test.mjs`, `test/broker-stream-release-ordering.test.mjs`.
+- Scope: CLI envelopes, generated bundle outputs, plugin surfaces, hooks, state files, git worktrees, broker lifecycle, and adapter lifecycle.
+- Files: `test/baseline-contracts.test.mjs`, `test/plugin-surfaces.test.mjs`, `test/events-json.test.mjs`, `test/pre-tool-bash-hook.test.mjs`, `test/pre-tool-agent-hook.test.mjs`, `test/git-worktree.test.mjs`, `test/broker-lifecycle.test.mjs`, `test/codex-adapter-lifecycle.test.mjs`.
+- Approach: use `spawnSync`, temp repos, temp plugin data dirs, generated bundle paths, and actual hook scripts.
 
 **E2E Tests:**
-- No separate E2E framework is detected.
-- Real runtime behavior that depends on Codex CLI authentication and app-server round trips must be probed manually with CLI commands after the static and Node test gates pass.
-
-## Focused Test Commands
-
-**CLI, Arguments, And Envelopes:**
-```bash
-node --test test/cli-errors.test.mjs test/events-json.test.mjs test/args.test.mjs
-```
-
-**Config, Adapter Routing, And Backend Selection:**
-```bash
-node --test test/adapter-routing.test.mjs test/adapter-selection.test.mjs test/adapter-registry.test.mjs
-```
-
-**App-Server Protocol And Turn Capture:**
-```bash
-node --test test/app-server-client.test.mjs test/app-server-abort.test.mjs test/codex-capture.test.mjs test/codex-capture-turn-timeout-fallback.test.mjs test/codex-capture-on-exit-flush.test.mjs
-```
-
-**Pipeline And Session Events:**
-```bash
-node --test test/auto-pipeline-turn-watchdog.test.mjs test/session-log.test.mjs
-```
-
-**State, Registry, And Jobs:**
-```bash
-node --test test/state.test.mjs test/state-stale-lock-toctou.test.mjs test/state-tmp-sweep-on-rename-failure.test.mjs test/registry.test.mjs test/job-control.test.mjs
-```
-
-**Git And Worktrees:**
-```bash
-node --test test/git.test.mjs test/git-worktree.test.mjs
-```
-
-**Plugin, Hooks, And Generated Surfaces:**
-```bash
-node --test test/plugin-surfaces.test.mjs test/pre-tool-bash-hook.test.mjs test/pre-tool-agent-hook.test.mjs test/official-plugin.test.mjs test/cli-status-spawn-memoization.test.mjs
-```
-
-**Prompts, Briefs, And Review Schema:**
-```bash
-node --test test/adversarial-review-prompt.test.mjs test/prompts-strict.test.mjs test/render-finding-validity.test.mjs test/brief.test.mjs
-```
-
-**Update Path:**
-```bash
-node --test test/update-check.test.mjs test/update-command.test.mjs test/auto-apply.test.mjs
-```
-
-## Build Drift Checks
-
-**When Required:**
-- Run `npm run build` after changes to `src/codex-bridge.mjs`, `src/adapters/**`, `src/lib/**`, `src/prompts/**`, `src/schemas/**`, `src/templates/**`, `hooks/**`, `commands/**`, `agents/**`, or `skill/config.yaml`.
-
-**What It Proves:**
-- `esbuild.config.mjs` creates the bundled CLI outputs.
-- Static assets from prompts, schemas, templates, config, commands, agents, and hooks are copied into the appropriate installable layouts.
-- Generated outputs under `skill/` and `plugin/` are synchronized with source.
-
-**Recommended Local Gate:**
-```bash
-npm run build
-npm test
-```
-
-## Runtime Probes
-
-**Local CLI Probes:**
-```bash
-node src/codex-bridge.mjs help --json
-node src/codex-bridge.mjs version --json
-node src/codex-bridge.mjs does-not-exist --json
-node src/codex-bridge.mjs send thr_abc hi --json
-```
-
-**Expected Coverage:**
-- `help --json` and `version --json` prove JSON envelope paths.
-- Unknown subcommands prove `UNKNOWN_SUBCOMMAND` handling and exit-code mapping.
-- Invalid thread IDs prove send-command validation and `INVALID_THREAD_ID` handling.
-- `setup --json` probes local Codex readiness, but full readiness depends on a usable Codex CLI and app-server.
+- Not used in `npm test`. There is no Playwright, browser, or authenticated live Codex app-server E2E suite in package scripts.
+- For runtime behavior changes, run the relevant CLI command against an authenticated Codex install after `npm run verify:static`. Static tests do not prove live app-server round trips.
 
 ## Common Patterns
 
 **Async Testing:**
 ```javascript
-test('waits for async behavior', async () => {
-  const result = await runScenario()
-  assert.equal(result.ok, true)
-})
+test("codex adapter dispatch delegates to the app-server turn runtime", async (t) => {
+  _setCodexAdapterRuntimeForTest({ async runTurn() { return { status: 0 }; } });
+  t.after(() => _resetCodexAdapterRuntimeForTest());
+  const result = await codexAdapter.dispatch("hello", { cwd, sessionDir });
+  assert.equal(result.rawResult.status, 0);
+});
 ```
+
+Use this style for adapter runtime injection in `test/codex-adapter-lifecycle.test.mjs`, broker lifecycle promises in `test/broker-lifecycle.test.mjs`, and capture-turn lifecycle checks in `test/codex-capture.test.mjs`.
 
 **Error Testing:**
 ```javascript
 await assert.rejects(
-  () => operationThatShouldFail(),
-  /expected failure/
-)
+  selectAdapter({ backend: "unknown" }),
+  (err) => err instanceof AdapterError && err.code === "BACKEND_INCAPABLE"
+);
 ```
 
-**Subprocess JSON Testing:**
+Use predicate assertions when checking typed errors, details, and mapped exit behavior. Examples: `test/adapter-routing.test.mjs`, `test/adapter-registry.test.mjs`, `test/cli-errors.test.mjs`, and `test/git-worktree.test.mjs`.
+
+**Subprocess Testing:**
 ```javascript
-const result = spawnSync(process.execPath, ['src/codex-bridge.mjs', 'help', '--json'], {
-  cwd: repoRoot,
-  encoding: 'utf8',
-})
-const envelope = JSON.parse(result.stdout)
-assert.equal(envelope.ok, true)
+const result = spawnSync(process.execPath, [bridgePath, "events", job.id, "--json"], {
+  cwd: workspace,
+  env,
+  encoding: "utf8"
+});
+assert.equal(result.status, 0, result.stderr || result.stdout);
 ```
 
-**Temporary Git Testing:**
+Use subprocess tests for real CLI/hook entrypoints in `test/baseline-contracts.test.mjs`, `test/events-json.test.mjs`, `test/plugin-surfaces.test.mjs`, `test/pre-tool-bash-hook.test.mjs`, and `test/pre-tool-agent-hook.test.mjs`.
+
+**Static Contract Testing:**
 ```javascript
-const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-bridge-git-'))
-runGit(repo, ['init'])
+const bridge = fs.readFileSync(new URL("../src/codex-bridge.mjs", import.meta.url), "utf8");
+assert.match(bridge, /adapter\.dispatch\(request\.prompt/);
+assert.doesNotMatch(bridge, /runAppServerTurn\(cwd, turnOptions\)/);
 ```
 
-## Behavioral Contracts To Preserve
-
-**CLI Contracts:**
-- Error envelopes, retryability, classes, and exit codes are asserted in `test/cli-errors.test.mjs`.
-- JSON event output must stay a single structured envelope without raw event text, as asserted in `test/events-json.test.mjs`.
-
-**State Contracts:**
-- Concurrent state writers must preserve jobs in `test/state.test.mjs`.
-- Corrupt state files are quarantined and defaults are returned in `test/state.test.mjs`.
-- Lock races and temp cleanup are covered by `test/state-stale-lock-toctou.test.mjs` and `test/state-tmp-sweep-on-rename-failure.test.mjs`.
-
-**Git Contracts:**
-- Worktree branches must not clobber existing branches in `test/git-worktree.test.mjs`.
-- Unsafe task IDs and ref injection attempts must be rejected in `test/git-worktree.test.mjs`.
-- Fast-forward merge, stale expected SHA, and prune behavior are covered in `test/git-worktree.test.mjs`.
-
-**Pipeline Contracts:**
-- Review, fix, and completion-check stages must receive bounded watchdog timeouts in `test/auto-pipeline-turn-watchdog.test.mjs`.
-- Unparsed needs-attention review text must not trigger a blind fix in `test/auto-pipeline-turn-watchdog.test.mjs`.
-- Failed review, failed fix, and failed completion-check paths must produce the correct terminal status in `test/auto-pipeline-turn-watchdog.test.mjs`.
-
-**Plugin Surface Contracts:**
-- Packaged plugin commands, agents, hooks, generated scripts, and command JSON behavior are covered by `test/plugin-surfaces.test.mjs`.
-- Hook safety and monitor behavior are covered by `test/pre-tool-bash-hook.test.mjs`, `test/pre-tool-agent-hook.test.mjs`, and `test/official-plugin.test.mjs`.
-
-## Skipped Or Non-Static Areas
-
-**Skipped Tests:**
-- Some tests in `test/bridge-static.test.mjs` and `test/plugin-surfaces.test.mjs` are marked skipped for forward-looking behavior. Do not cite skipped tests as implemented behavior.
-
-**Manual Validation Needed:**
-- Static and fake-client tests do not prove real Codex app-server round trips.
-- For runtime behavior changes, run the relevant CLI command against an authenticated Codex install after `npm run build` and `npm test`.
+Use static source assertions sparingly for cross-cutting invariants that are expensive to exercise end to end. `test/bridge-static.test.mjs`, `test/adversarial-review-prompt.test.mjs`, `test/prompts-strict.test.mjs`, and `test/skill-word-budget.test.mjs` follow this pattern.
 
 ---
 
-*Testing analysis: 2026-04-30*
+*Testing analysis: 2026-05-02*
