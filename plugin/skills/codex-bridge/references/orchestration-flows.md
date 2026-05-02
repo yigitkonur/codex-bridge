@@ -87,16 +87,15 @@ It returns `approved`, `iteration-limit`, or an explicit incomplete status such 
 
 ## Verdict and merge
 
-`adversarial-review` writes review output. Convert it into a verdict:
+Prefer `iterate` for normal approval and follow-up. For manual recovery, run task-bound review and write the normalized review result through stdin so the verdict is bound to the reviewed branch head:
 
 ```
-/codex-bridge:verdict <task_id> --set approved --summary "Tests green; concerns dismissed."
-/codex-bridge:verdict <task_id> --set needs-attention --finding "Auth gap on the retry path"
-/codex-bridge:verdict <task_id> --set must-fix --finding "Drops 4xx errors silently"
+/codex-bridge:adversarial-review --task <task_id> --json
+/codex-bridge:verdict <task_id> --payload-stdin --json
 /codex-bridge:verdict <task_id> --discard
 ```
 
-If approved: `/codex-bridge:merge <task_id>` fetches the recorded base ref, checks it out, and fast-forwards it to the task branch. The merge is gated — refuses when verdict ≠ approved. Run acceptance tests yourself before setting `approved`.
+Pass `result.review_result` from the review JSON as the stdin payload. If approved: `/codex-bridge:merge <task_id>` fetches the recorded base ref, checks it out, and fast-forwards it to the task branch. The merge is gated — refuses when verdict is not approved, when the verdict is missing `branch_head_sha`, or when the current branch head no longer matches the reviewed head. Run acceptance tests yourself before merging.
 
 Before stopping, run `/codex-bridge:verdicts --pending` and resolve approved-but-unmerged or needs-attention work.
 

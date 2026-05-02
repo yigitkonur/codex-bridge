@@ -14583,21 +14583,33 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
     log_file: logFile
   };
 }
-function readMetaIfSafeTaskId(value) {
+function isSafeTaskId(value) {
   if (typeof value !== "string" || !/^[A-Za-z0-9._-]+$/.test(value) || value === "." || value === "..") {
-    return null;
+    return false;
   }
-  try {
-    return readMeta(value);
-  } catch {
-    return null;
-  }
+  return true;
 }
 function resolveIterateInput(options, positionals, cwd) {
   if (positionals.length === 1) {
     const taskId = positionals[0];
-    const meta = readMetaIfSafeTaskId(taskId);
-    if (meta) return { taskId, prompt: null, meta };
+    if (isSafeTaskId(taskId) && existsTask(taskId)) {
+      let meta;
+      try {
+        meta = readMeta(taskId);
+      } catch (err) {
+        throw validationError(
+          `task ${taskId} metadata is unreadable: ${err.message ?? err}`,
+          "TASK_META_UNREADABLE"
+        );
+      }
+      if (!meta) {
+        throw validationError(
+          `task ${taskId} exists but is missing meta.json; restore the task metadata or discard the task before iterating`,
+          "TASK_META_MISSING"
+        );
+      }
+      return { taskId, prompt: null, meta };
+    }
   }
   return {
     taskId: null,

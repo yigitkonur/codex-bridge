@@ -475,6 +475,16 @@ test("iterate and verdict plugin docs describe implemented loop and merge safety
   assert.match(merge, /--payload-stdin/);
 });
 
+test("orchestration flow reference keeps manual approval branch-bound", () => {
+  const flows = readText("plugin/skills/codex-bridge/references/orchestration-flows.md");
+
+  assert.match(flows, /adversarial-review --task <task_id> --json/);
+  assert.match(flows, /verdict <task_id> --payload-stdin --json/);
+  assert.match(flows, /result\.review_result/);
+  assert.match(flows, /branch_head_sha/);
+  assert.doesNotMatch(flows, /--set approved/);
+});
+
 test("review command metadata advertises task-bound review mode", () => {
   const help = runBridge("src/codex-bridge.mjs", ["help", "--json"]);
   assert.equal(help.status, 0, help.stderr || help.stdout);
@@ -538,6 +548,20 @@ test("review --task validates missing and malformed task metadata before review 
   });
   result = runBridge("src/codex-bridge.mjs", ["review", "--task", "task-no-head", "--json"], { env });
   assert.equal(parseBridgeError(result).code, "TASK_REVIEW_HEAD_UNRESOLVED");
+});
+
+test("iterate existing corrupt task metadata fails closed instead of starting a prompt task", () => {
+  const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-iterate-corrupt-"));
+  const taskId = "task-corrupt";
+  fs.mkdirSync(path.join(registry, taskId), { recursive: true });
+  fs.writeFileSync(path.join(registry, taskId, "meta.json"), "{ nope\n", "utf8");
+
+  const result = runBridge("src/codex-bridge.mjs", ["iterate", taskId, "--json"], {
+    env: { CODEX_BRIDGE_REGISTRY: registry },
+  });
+  const error = parseBridgeError(result);
+  assert.equal(error.code, "TASK_META_UNREADABLE");
+  assert.match(error.message, /meta\.json|Could not read registry file/);
 });
 
 test("review --task rejects an explicit --cwd outside the task worktree", () => {
