@@ -4564,13 +4564,16 @@ function formatHandoffEvent(session, { reason, origin, errorCode, upstreamReques
   lines.push("    see: skill/references/orchestration-flows.md#recovering-from-upstream-state-loss");
   return lines.join("\n");
 }
-function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, failingStage = null, missingItems, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
   const jobCwd = jobCommandCwd(cwd, stateCwd);
   const lines = [
     `[INCOMPLETE] ${session.threadId} | ${diffStat}`,
     `  diff: ${diffPath}`,
     `  review: ${verdict} (${findingCount} findings)`
   ];
+  if (failingStage) {
+    lines.push(`  failing_stage: ${failingStage}`);
+  }
   if (missingItems && missingItems.length > 0) {
     lines.push("  missing:");
     for (const item of missingItems) {
@@ -9644,6 +9647,10 @@ async function runAutoPipeline(options) {
     };
   };
   let fixFilesTouched = [];
+  let reviewVerdict = "approved";
+  let reviewFindings = [];
+  let reviewFindingCount = 0;
+  let incompleteStage = null;
   try {
     logEvent(session, formatPipelineEvent(session, { stage: "diff" }));
     logNdjson(session, "PIPELINE_STAGE", null, { stage: "diff" });
@@ -9651,9 +9658,6 @@ async function runAutoPipeline(options) {
     completedStages.push("diff");
     logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
     checkPipelineTimeout();
-    let reviewVerdict = "approve";
-    let reviewFindings = [];
-    let reviewFindingCount = 0;
     let unstructuredReviewAttention = false;
     if (config.auto_review) {
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
@@ -9691,11 +9695,11 @@ async function runAutoPipeline(options) {
         completedStages.push("review");
         checkPipelineTimeout();
         if (reviewResult.reviewText) {
-          const parsed = parseReviewText(reviewResult.reviewText);
+          const parsed = parseNativeReviewText(reviewResult.reviewText);
           reviewVerdict = parsed.verdict;
           reviewFindings = parsed.findings;
           reviewFindingCount = reviewFindings.length;
-          unstructuredReviewAttention = reviewVerdict !== "approve" && reviewFindingCount === 0;
+          unstructuredReviewAttention = reviewVerdict !== "approved" && reviewFindingCount === 0;
         }
         logEvent(session, formatPipelineEvent(session, {
           stage: "review",
@@ -9815,6 +9819,7 @@ async function runAutoPipeline(options) {
         );
         completedStages.push("check");
         if (checkResult.status !== 0) {
+          incompleteStage = "check";
           completionResult = {
             complete: false,
             missing_items: [
@@ -9825,14 +9830,19 @@ async function runAutoPipeline(options) {
         } else if (checkResult.finalMessage) {
           try {
             completionResult = JSON.parse(checkResult.finalMessage);
-          } catch {
+          } catch (error) {
+            const parseMessage = error instanceof Error ? error.message : String(error);
+            incompleteStage = "check";
             completionResult = {
-              complete: true,
-              missing_items: [],
-              summary: checkResult.finalMessage.slice(0, 200)
+              complete: false,
+              missing_items: [
+                `Completion check returned invalid JSON: ${parseMessage}. Re-run the check or return JSON matching the completion schema.`
+              ],
+              summary: "completion-check invalid-json"
             };
           }
         } else {
+          incompleteStage = "check";
           completionResult = {
             complete: false,
             missing_items: ["Completion check produced no final message."],
@@ -9850,6 +9860,7 @@ async function runAutoPipeline(options) {
         }
         const message = error instanceof Error ? error.message : String(error);
         const detail = message || "check failed";
+        incompleteStage = "check";
         completionResult = {
           complete: false,
           missing_items: [
@@ -9869,6 +9880,7 @@ async function runAutoPipeline(options) {
     if (unstructuredReviewAttention) {
       const missingItem = "Native review reported needs-attention but did not include parseable file/line findings, so auto-fix could not run.";
       const existingMissingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
+      incompleteStage ??= "review";
       completionResult = {
         complete: false,
         missing_items: existingMissingItems.includes(missingItem) ? existingMissingItems : [...existingMissingItems, missingItem],
@@ -9879,7 +9891,11 @@ async function runAutoPipeline(options) {
     const duration = Math.round((Date.now() - startTime) / 1e3);
     const missingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
     const completionSummary = typeof completionResult.summary === "string" ? completionResult.summary : null;
-    if (completionResult.complete) {
+    const complete = Boolean(completionResult.complete);
+    const partial = !complete;
+    const failingStage = partial ? incompleteStage : null;
+    const completion = normalizeCompletionResult(completionResult, missingItems, completionSummary, complete);
+    if (complete) {
       logEvent(session, formatDoneEvent(session, {
         duration,
         diffStat: finalDiff.diffStat,
@@ -9897,6 +9913,7 @@ async function runAutoPipeline(options) {
         diffPath: finalDiff.diffPath,
         verdict: reviewVerdict,
         findingCount: reviewFindingCount,
+        failingStage,
         missingItems,
         scriptPath,
         jobId,
@@ -9907,20 +9924,36 @@ async function runAutoPipeline(options) {
     logNdjson(session, "PIPELINE_COMPLETE", null, {
       completedStages,
       duration,
-      complete: completionResult.complete,
+      complete,
+      partial,
+      failing_stage: failingStage,
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+      reviewVerdict,
+      reviewFindingCount,
+      fixFilesTouched,
       missingItems,
       completionSummary,
+      completion,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
       stage: "done",
-      detail: `stages=${completedStages.join(",")} complete=${Boolean(completionResult.complete)} touched=${fixFilesTouched.length}`
+      detail: `stages=${completedStages.join(",")} complete=${complete} partial=${partial}${failingStage ? ` failing_stage=${failingStage}` : ""} touched=${fixFilesTouched.length}`
     }));
     return {
-      complete: completionResult.complete,
+      complete,
+      partial,
       completedStages,
       duration,
       diff: finalDiff,
+      failing_stage: failingStage,
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+      reviewVerdict,
+      reviewFindingCount,
+      fixFilesTouched,
+      completion,
       missingItems,
       completionSummary,
       touchedFiles: fixFilesTouched
@@ -9957,20 +9990,52 @@ async function runAutoPipeline(options) {
       error: errorMessage,
       origin,
       failing_stage: failingStage,
+      partial: true,
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+      reviewVerdict,
+      reviewFindingCount,
+      fixFilesTouched,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
       stage: "failed",
-      detail: `at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+      detail: `failing_stage=${failingStage ?? "unknown"} at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
+    const completion = normalizeCompletionResult(
+      { complete: false, missing_items: [], summary: null },
+      [],
+      null,
+      false
+    );
     return {
       complete: false,
+      partial: true,
       completedStages,
       duration,
       error: errorMessage,
+      diff: finalDiff,
+      failing_stage: failingStage,
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+      reviewVerdict,
+      reviewFindingCount,
+      fixFilesTouched,
+      completion,
+      missingItems: [],
+      completionSummary: null,
       touchedFiles: fixFilesTouched
     };
   }
+}
+function normalizeCompletionResult(completionResult, missingItems, completionSummary, complete) {
+  const source = completionResult && typeof completionResult === "object" && !Array.isArray(completionResult) ? completionResult : {};
+  return {
+    ...source,
+    complete,
+    missing_items: missingItems,
+    summary: completionSummary
+  };
 }
 function buildFixPrompt(findings) {
   const lines = ["Fix the following review findings:"];
@@ -10066,13 +10131,6 @@ function uniqueStrings(values) {
     unique.push(value);
   }
   return unique;
-}
-function parseReviewText(reviewText) {
-  const parsed = parseNativeReviewText(reviewText);
-  return {
-    verdict: parsed.verdict === "approved" ? "approve" : "needs-attention",
-    findings: parsed.findings
-  };
 }
 function mapStageLabel(label) {
   switch (label) {
@@ -13004,7 +13062,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       });
       if (pipelineResult?.complete === false) {
         const pipelineErrored = Boolean(pipelineResult.error);
-        const failedStage = pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff";
+        const failedStage = pipelineResult.failing_stage ?? (pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff");
         const nextAction = pipelineErrored ? {
           command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
           description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`
