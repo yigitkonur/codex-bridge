@@ -86,9 +86,14 @@ Completion evidence:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01: Native/adversarial review schema and context proof
-- [ ] 03-02: Auto-pipeline partial-completion and check-stage proof
-- [ ] 03-03: Verdict, approved-head merge, and iterate orchestration
+- [ ] 03-01: Native/adversarial review schema and context proof (wave 1; creates shared review-result and registry review artifact contracts)
+- [ ] 03-02: Auto-pipeline partial-completion and check-stage proof (wave 2; depends on 03-01 shared parser/contracts)
+- [ ] 03-03: Verdict, approved-head merge, and iterate orchestration (wave 3; depends on 03-01 and 03-02)
+
+Planning evidence:
+- Phase artifacts: `.planning/phases/03-review-verdict-and-iterate-loop/`
+- Plan check: `.planning/phases/03-review-verdict-and-iterate-loop/03-PLAN-CHECK.md`
+- Execution readiness: ready for `$gsd-execute-phase 3`
 
 ### Phase 4: Plugin And Hook Surface Hardening
 **Goal**: Maintainers can ship a consistent packaged plugin surface with safe hook activation, bounded decisions, and tested metadata relationships.
