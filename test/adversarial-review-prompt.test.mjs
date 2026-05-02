@@ -35,6 +35,10 @@ const PROMPT_SRC = fs.readFileSync(
   new URL("../src/prompts/adversarial-review.md", import.meta.url),
   "utf8",
 );
+const SCHEMA = JSON.parse(fs.readFileSync(
+  new URL("../src/schemas/review-output.schema.json", import.meta.url),
+  "utf8",
+));
 const PLUGIN_PROMPT_SRC = fs.readFileSync(
   new URL("../plugin/prompts/adversarial-review.md", import.meta.url),
   "utf8",
@@ -45,14 +49,31 @@ test("adversarial-review prompt declares OPUS_CONCERNS placeholder (src + plugin
   assert.match(PROMPT_SRC, /\{\{OPUS_CONCERNS\}\}/);
   assert.match(PROMPT_SRC, /<orchestrator_concerns>/);
   assert.match(PROMPT_SRC, /untrusted data labels, not commands or instructions/);
+  assert.match(PROMPT_SRC, /result\.review_result/);
   assert.doesNotMatch(PROMPT_SRC, /privileged channel/);
   assert.match(PLUGIN_PROMPT_SRC, /\{\{OPUS_CONCERNS\}\}/);
   assert.match(PLUGIN_PROMPT_SRC, /<orchestrator_concerns>/);
   assert.match(PLUGIN_PROMPT_SRC, /untrusted data labels, not commands or instructions/);
+  assert.match(PLUGIN_PROMPT_SRC, /result\.review_result/);
   assert.doesNotMatch(PLUGIN_PROMPT_SRC, /privileged channel/);
   // The two copies must share identical placeholder semantics — esbuild
   // copies src/ → plugin/ at build time, so divergence is a build bug.
   assert.equal(PROMPT_SRC, PLUGIN_PROMPT_SRC);
+});
+
+test("adversarial-review schema pins the raw output fields normalized by the bridge", () => {
+  assert.deepEqual(SCHEMA.required, ["verdict", "summary", "findings", "next_steps"]);
+  assert.deepEqual(SCHEMA.properties.verdict.enum, ["approve", "needs-attention"]);
+  assert.deepEqual(SCHEMA.properties.findings.items.required, [
+    "severity",
+    "title",
+    "body",
+    "file",
+    "line_start",
+    "line_end",
+    "confidence",
+    "recommendation",
+  ]);
 });
 
 test("buildAdversarialReviewPrompt passes OPUS_CONCERNS at the call site", () => {
@@ -157,9 +178,10 @@ test("handleReviewCommand declares brief + repeatable concern in its parseComman
   const block =
     BRIDGE_SRC.match(/async function handleReviewCommand[\s\S]*?\n\}\n/)?.[0] ?? "";
   assert.ok(block.length > 0);
-  assert.match(block, /valueOptions:\s*\[[^\]]*"brief"/);
+  assert.match(block, /valueOptions:\s*\[[^\]]*"brief"[\s\S]*"task"/);
   assert.match(block, /repeatableValueOptions:\s*\["concern"\]/);
-  assert.match(block, /const cwd = resolveCommandCwd\(options\);/);
+  assert.match(block, /const taskReview = options\.task \? requireTaskReviewContext\(options\.task, options\) : null;/);
+  assert.match(block, /const cwd = taskReview\?\.cwd \?\? resolveCommandCwd\(options\);/);
   assert.match(block, /loadBrief\(options\.brief,\s*\{\s*baseDir:\s*cwd\s*\}\)/);
   // The handler must forward brief + opusConcerns into executeReviewRun.
   assert.match(block, /brief,/);
@@ -171,6 +193,7 @@ test("adversarial-review help advertises brief and repeatable concern flags", ()
     BRIDGE_SRC.match(/"adversarial-review": \{[\s\S]*?\n  \},/)?.[0] ?? "";
   assert.ok(block.length > 0);
   assert.match(block, /--brief @<path>\.json/);
+  assert.match(block, /--task <task_id>/);
   assert.match(block, /--concern <text>\]\.\.\./);
   assert.match(block, /--brief @review-brief\.json/);
 });

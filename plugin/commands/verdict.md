@@ -11,6 +11,7 @@ Three modes:
 
 - **Read** (no flags): prints `~/.codex-bridge/jobs/<task_id>/verdict.json`. Errors with `NOT_FOUND` if no verdict exists.
 - **Write** (`--set <verdict>`): persists the verdict (one of `approved`, `needs-attention`, `must-fix`). Optional `--summary`, `--finding`, `--reviewer` flags add details. Idempotent — re-running with the same `--set` overwrites cleanly.
+- **Stdin write** (`--payload-stdin`): reads a JSON object from stdin with `verdict`, optional `summary`, optional `findings`, optional `reviewer`, and optional `reviewed_branch_head_sha`. Use this for review-derived verdicts so untrusted review text never becomes a shell argument.
 - **Discard** (`--discard`): removes only `~/.codex-bridge/jobs/<task_id>/verdict.json` — the rest of the registry entry (meta.json, session-log.jsonl, etc.) is preserved for audit. Use this to clear the Stop gate's pending-verdict block when you intentionally don't want to merge a task.
 
 Surface: write mode is read by `/codex-bridge:merge` (which refuses unless `verdict === "approved"`) and by `/codex-bridge:verdicts --pending` (which the Stop hook consumes to block session close on unresolved work).

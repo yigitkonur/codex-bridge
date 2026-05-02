@@ -464,6 +464,22 @@ test("review command metadata advertises task-bound review mode", () => {
   assert.match(adversarial.summary, /review_result/);
 });
 
+test("review command docs describe task-bound JSON review artifacts", () => {
+  const review = readText("plugin/commands/review.md");
+  const adversarial = readText("plugin/commands/adversarial-review.md");
+
+  for (const body of [review, adversarial]) {
+    assert.match(body, /--task <task_id>/);
+    assert.match(body, /Working-tree mode/);
+    assert.match(body, /Branch mode/);
+    assert.match(body, /Task-bound mode/);
+    assert.match(body, /result\.review_result/);
+    assert.match(body, /reviewed_branch_head_sha/);
+    assert.match(body, /review\.json/);
+  }
+  assert.match(adversarial, /result\.result/);
+});
+
 test("review --task validates missing and malformed task metadata before review execution", () => {
   const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-review-task-"));
   const env = { CODEX_BRIDGE_REGISTRY: registry };
@@ -1075,16 +1091,46 @@ test("canonical plugin manifest paths resolve inside the plugin package", () => 
   assert.match(payload.result.sources.skill_config_path, /plugin[/\\]config\.yaml$/);
 });
 
-test("reviewer subagent uses structured review output and stdin verdict payloads", { skip: "T21 stage 2 forward-looking — reviewer agent body not yet finalized" }, () => {
+test("reviewer subagent uses task-bound normalized review output and stdin verdict payloads", () => {
   const reviewer = readText("plugin/agents/codex-bridge-reviewer.md");
 
-  assert.match(reviewer, /adversarial-review --json/);
-  assert.match(reviewer, /result\.result\.verdict/);
+  assert.match(reviewer, /adversarial-review --task <task_id> --json/);
+  assert.match(reviewer, /result\.review_result\.verdict/);
+  assert.match(reviewer, /result\.review_result\.reviewed_branch_head_sha/);
+  assert.doesNotMatch(reviewer, /result\.result\.verdict/);
   assert.match(reviewer, /--payload-stdin/);
+  assert.match(reviewer, /reviewed_branch_head_sha/);
   assert.match(reviewer, /single-quoted heredoc delimiter/);
 });
 
-test("verdict stdin payload preserves untrusted review text as data", { skip: "T21 stage 2 forward-looking — verdict --payload-stdin not yet wired" }, () => {
+test("verdict stdin payload preserves untrusted review text as data", () => {
+  const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-verdict-stdin-"));
+  const reviewedHead = "0123456789abcdef0123456789abcdef01234567";
+  const result = runBridge(
+    "src/codex-bridge.mjs",
+    ["verdict", "task-stdin", "--payload-stdin", "--json"],
+    {
+      input: JSON.stringify({
+        verdict: "must-fix",
+        summary: "review text with $(rm -rf /) stays data",
+        findings: ["line one\n$(echo unsafe)"],
+        reviewer: "codex-bridge-reviewer",
+        reviewed_branch_head_sha: reviewedHead,
+      }),
+      env: { CODEX_BRIDGE_REGISTRY: registry },
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.verdict.verdict, "must-fix");
+  assert.equal(payload.result.verdict.reviewed_branch_head_sha, reviewedHead);
+  assert.deepEqual(payload.result.verdict.findings, ["line one\n$(echo unsafe)"]);
+
+  const source = readText("src/codex-bridge.mjs");
+  const verdictBlock = source.match(/async function handleVerdict[\s\S]*?async function handleVerdictsPending/)?.[0] ?? "";
+  assert.match(verdictBlock, /"payload-stdin"/);
+  assert.match(verdictBlock, /readVerdictPayloadFromStdin\(\)/);
 });
 
 test("plugin PostToolUse auto-arm is visible at Bash and parent Agent boundaries", { skip: "T25 stage forward-looking — auto-arm hook surfaces under refactoring" }, () => {

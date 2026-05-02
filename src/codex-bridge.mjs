@@ -705,12 +705,13 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge task-resume-candidate --json"]
   },
   verdict: {
-    synopsis: "verdict <task-id> [--set approved|needs-attention|must-fix --summary <text> [--finding <text>]... | --discard] [--json]",
-    summary: "Read or write a task's verdict.json. Read mode (no flags) prints the current verdict. Write mode (--set) persists; idempotent on retries. --discard removes the artifact directory and clears the Stop gate's pending list. The Stop hook blocks while approved verdicts are unmerged.",
+    synopsis: "verdict <task-id> [--set approved|needs-attention|must-fix --summary <text> [--finding <text>]... | --payload-stdin | --discard] [--json]",
+    summary: "Read or write a task's verdict.json. Read mode (no flags) prints the current verdict. Write mode (--set) persists; stdin mode (--payload-stdin) reads a JSON object without putting review text in argv. --discard removes the artifact directory and clears the Stop gate's pending list. The Stop hook blocks while approved verdicts are unmerged.",
     examples: [
       "codex-bridge verdict task-mo5xxx",
       'codex-bridge verdict task-mo5xxx --set approved --summary "Tests green; concerns dismissed."',
       'codex-bridge verdict task-mo5xxx --set must-fix --finding "Drops 4xx errors silently" --json',
+      "codex-bridge verdict task-mo5xxx --payload-stdin --json",
       "codex-bridge verdict task-mo5xxx --discard"
     ]
   },
@@ -5041,11 +5042,23 @@ function readVerdictPayloadFromStdin() {
   if (parsed.findings != null && !Array.isArray(parsed.findings)) {
     throw usageError("payload.findings must be an array when provided");
   }
+  const reviewedBranchHeadSha =
+    parsed.reviewed_branch_head_sha ??
+    parsed.branch_head_sha ??
+    parsed.branchHeadSha ??
+    null;
+  if (
+    reviewedBranchHeadSha != null &&
+    (typeof reviewedBranchHeadSha !== "string" || !/^[0-9a-f]{40}$/i.test(reviewedBranchHeadSha.trim()))
+  ) {
+    throw usageError("payload.reviewed_branch_head_sha must be a 40-character hex SHA when provided");
+  }
   return {
     verdict: parsed.verdict,
     summary: typeof parsed.summary === "string" ? parsed.summary : null,
     findings: Array.isArray(parsed.findings) ? parsed.findings : [],
     reviewer: typeof parsed.reviewer === "string" ? parsed.reviewer : null,
+    ...(reviewedBranchHeadSha ? { reviewed_branch_head_sha: reviewedBranchHeadSha.trim() } : {}),
   };
 }
 
@@ -5059,11 +5072,16 @@ async function handleVerdict(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["set", "summary", "reviewer", "cwd"],
     repeatableValueOptions: ["finding"],
-    booleanOptions: ["json", "discard"],
+    booleanOptions: ["json", "discard", "payload-stdin"],
   });
   const taskId = positionals[0];
   if (!taskId) {
     throw usageError("verdict requires a task_id positional argument");
+  }
+  const modeCount = [Boolean(options.discard), Boolean(options.set), Boolean(options["payload-stdin"])]
+    .filter(Boolean).length;
+  if (modeCount > 1) {
+    throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
 
   // discard mode: remove only verdict.json so the rest of the registry
@@ -5079,6 +5097,22 @@ async function handleVerdict(argv) {
       "verdict",
       { task_id: taskId, action: "discarded", removed },
       `Discarded verdict for ${taskId}\n`,
+      { json: options.json, startedAt },
+    );
+    return;
+  }
+
+  if (options["payload-stdin"]) {
+    if (options.summary || options.reviewer || options.finding) {
+      throw usageError("--payload-stdin cannot be combined with --summary, --reviewer, or --finding");
+    }
+    const payload = readVerdictPayloadFromStdin();
+    writeVerdict(taskId, payload);
+    const stored = readVerdict(taskId);
+    emitSuccess(
+      "verdict",
+      { task_id: taskId, action: "set", verdict: stored },
+      `Verdict for ${taskId}: ${payload.verdict}\n`,
       { json: options.json, startedAt },
     );
     return;

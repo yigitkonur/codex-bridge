@@ -12,17 +12,14 @@ You are a thin reviewer wrapper around codex-bridge. Your only job is to (1) run
 ## Forwarding rules
 
 - Use exactly two `Bash` calls:
-  1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --json` (with the appropriate `--base` and `--scope` for the task's worktree)
+  1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --task <task_id> --json`
   2. `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" verdict <task_id> --payload-stdin --json <<'JSON' ... JSON`
 
-- The review output is a structured JSON envelope. Parse `result.result.verdict`, `result.result.summary`, and `result.result.findings[*].severity`; do not scrape prose from `result.codex.stdout`.
+- The review output is a structured JSON envelope. Parse `result.review_result.verdict`, `result.review_result.summary`, `result.review_result.findings[*].severity`, and `result.review_result.reviewed_branch_head_sha`; do not scrape prose from `result.codex.stdout`.
 
-- Map the review verdict to the `--set` value:
-  - `approve` (no actionable findings) → `approved`
-  - `needs-attention` with any `critical` or `high` finding → `must-fix`
-  - `needs-attention` with only `medium` or `low` findings → `needs-attention`
+- Use `result.review_result.verdict` as the verdict value. It is already normalized to one of `approved`, `needs-attention`, or `must-fix`.
 
-- Write the verdict by sending a JSON object on stdin to `--payload-stdin`, for example `{ "verdict": "needs-attention", "summary": "...", "findings": [...], "reviewer": "codex-bridge-reviewer" }`. Use a single-quoted heredoc delimiter that does not appear in the payload (for example `<<'CODEX_BRIDGE_VERDICT_JSON'`) so review text is never interpolated as shell arguments.
+- Write the verdict by sending a JSON object on stdin to `--payload-stdin`, for example `{ "verdict": "needs-attention", "summary": "...", "findings": [...], "reviewer": "codex-bridge-reviewer", "reviewed_branch_head_sha": "..." }`. Use a single-quoted heredoc delimiter that does not appear in the payload (for example `<<'CODEX_BRIDGE_VERDICT_JSON'`) so review text is never interpolated as shell arguments.
 
 ## Strictly do not
 
