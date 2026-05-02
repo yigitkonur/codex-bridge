@@ -4947,6 +4947,97 @@ function readReviewedBranchHeadSha(verdict) {
   return null;
 }
 
+function readCurrentTaskBranchHeadSha(meta, cwd) {
+  const branch = meta?.worktree?.branch;
+  if (!branch) return null;
+  const candidates = [
+    meta?.worktree?.path,
+    cwd,
+  ].filter((candidate, index, all) =>
+    typeof candidate === "string" &&
+    candidate.length > 0 &&
+    fs.existsSync(candidate) &&
+    all.indexOf(candidate) === index
+  );
+  for (const candidateCwd of candidates) {
+    const result = runCommand("git", ["rev-parse", "--verify", branch], {
+      cwd: candidateCwd,
+      timeout: 10_000,
+    });
+    if (result.status !== 0 || result.error) continue;
+    const sha = result.stdout.trim().toLowerCase();
+    if (/^[a-f0-9]{40}$/.test(sha)) return sha;
+  }
+  return null;
+}
+
+function describeMergeBlocker(blocker) {
+  if (blocker === "missing_approval") return "verdict is not approved";
+  if (blocker === "missing_branch_sha") return "approved verdict is missing branch_head_sha";
+  if (blocker === "missing_branch") return "task metadata is missing worktree.branch";
+  if (blocker === "branch_head_unavailable") return "current branch head could not be resolved";
+  if (blocker === "head_drift") return "current branch head differs from the approved reviewed head";
+  return "merge readiness could not be determined";
+}
+
+function nextActionForMergeReadiness(taskId, blocker) {
+  if (!blocker) {
+    return {
+      kind: "merge",
+      argv: ["merge", taskId],
+      description: "Merge the approved unchanged reviewed branch head.",
+    };
+  }
+  if (blocker === "missing_approval") {
+    return {
+      kind: "review-or-iterate",
+      argv: ["iterate", taskId],
+      description: "Continue review or iterate until the task has an approved verdict.",
+    };
+  }
+  if (blocker === "missing_branch_sha" || blocker === "head_drift" || blocker === "branch_head_unavailable") {
+    return {
+      kind: "rerun-review",
+      argv: ["adversarial-review", "--task", taskId, "--json"],
+      description: "Rerun task-bound review and record a fresh verdict for the current branch head.",
+    };
+  }
+  return {
+    kind: "inspect-task-metadata",
+    argv: ["verdict", taskId, "--json"],
+    description: "Inspect task metadata before attempting merge.",
+  };
+}
+
+function buildVerdictMergeReadiness(taskId, verdict, meta, cwd) {
+  const reviewedBranchHeadSha = readReviewedBranchHeadSha(verdict);
+  const currentBranchHeadSha = readCurrentTaskBranchHeadSha(meta, cwd);
+  const blockers = [];
+  if (verdict?.verdict !== "approved") {
+    blockers.push("missing_approval");
+  } else if (!reviewedBranchHeadSha) {
+    blockers.push("missing_branch_sha");
+  } else if (!meta?.worktree?.branch) {
+    blockers.push("missing_branch");
+  } else if (!currentBranchHeadSha) {
+    blockers.push("branch_head_unavailable");
+  } else if (currentBranchHeadSha !== reviewedBranchHeadSha) {
+    blockers.push("head_drift");
+  }
+  const primaryBlocker = blockers[0] ?? null;
+  return {
+    merge_ready: blockers.length === 0,
+    merge_blocked_by: primaryBlocker,
+    merge_blockers: blockers,
+    merge_block_reason: primaryBlocker ? describeMergeBlocker(primaryBlocker) : null,
+    branch: meta?.worktree?.branch ?? null,
+    branch_head_sha: reviewedBranchHeadSha,
+    reviewed_branch_head_sha: reviewedBranchHeadSha,
+    current_branch_head_sha: currentBranchHeadSha,
+    next_action: nextActionForMergeReadiness(taskId, primaryBlocker),
+  };
+}
+
 // iterate <prompt|task_id> — closed-loop dispatcher that runs task →
 // review → verdict and re-dispatches on needs-attention until either
 // approved or iteration_max is hit.
@@ -5159,10 +5250,24 @@ async function handleVerdict(argv) {
       `no verdict found for ${taskId}; use --set to create one`,
     );
   }
+  const cwd = resolveCommandCwd(options);
+  const meta = readMeta(taskId);
+  const mergeReadiness = buildVerdictMergeReadiness(taskId, stored, meta, cwd);
+  const result = {
+    task_id: taskId,
+    verdict: {
+      ...stored,
+      summary: stored.summary ?? null,
+      branch: mergeReadiness.branch,
+      branch_head_sha: mergeReadiness.branch_head_sha,
+      reviewed_branch_head_sha: mergeReadiness.reviewed_branch_head_sha,
+    },
+    merge_readiness: mergeReadiness,
+  };
   emitSuccess(
     "verdict",
-    { task_id: taskId, verdict: stored },
-    JSON.stringify(stored, null, 2) + "\n",
+    result,
+    JSON.stringify(result, null, 2) + "\n",
     { json: options.json, startedAt },
   );
 }
@@ -5187,6 +5292,7 @@ async function handleVerdictsPending(argv) {
     );
   }
 
+  const cwd = resolveCommandCwd(options);
   const pendingVerdicts = new Set(["approved", "needs-attention", "must-fix"]);
   const tasks = listTasks();
   const pending = [];
@@ -5198,12 +5304,21 @@ async function handleVerdictsPending(argv) {
       continue;
     }
     if (pendingVerdicts.has(verdict.verdict)) {
+      const mergeReadiness = buildVerdictMergeReadiness(taskId, verdict, meta, cwd);
       pending.push({
         task_id: taskId,
         verdict: verdict.verdict,
         summary: verdict.summary ?? null,
         decided_at: verdict.decided_at,
-        branch: meta?.worktree?.branch ?? null,
+        branch: mergeReadiness.branch,
+        branch_head_sha: mergeReadiness.branch_head_sha,
+        reviewed_branch_head_sha: mergeReadiness.reviewed_branch_head_sha,
+        current_branch_head_sha: mergeReadiness.current_branch_head_sha,
+        merge_ready: mergeReadiness.merge_ready,
+        merge_blocked_by: mergeReadiness.merge_blocked_by,
+        merge_blockers: mergeReadiness.merge_blockers,
+        merge_block_reason: mergeReadiness.merge_block_reason,
+        next_action: mergeReadiness.next_action,
       });
     }
   }
@@ -5214,7 +5329,7 @@ async function handleVerdictsPending(argv) {
       : pending
           .map(
             (p) =>
-              `${p.task_id}  ${p.verdict}  ${p.branch ?? "(no branch)"}  ${p.summary ?? ""}`,
+              `${p.task_id}  ${p.verdict}  ${p.branch ?? "(no branch)"}  ${p.merge_ready ? "merge-ready" : `blocked:${p.merge_blocked_by ?? "unknown"}`}  ${p.summary ?? ""}`,
           )
           .join("\n") + "\n";
 

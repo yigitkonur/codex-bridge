@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   createSubagentWorktree,
@@ -11,6 +12,9 @@ import {
   pruneWorktreeOnCancel,
   listSubagentWorktrees,
 } from "../src/lib/git.mjs";
+import { writeMeta } from "../src/lib/registry.mjs";
+
+const bridgePath = fileURLToPath(new URL("../src/codex-bridge.mjs", import.meta.url));
 
 function makeTempRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-git-"));
@@ -42,6 +46,36 @@ function cleanup(repo) {
   fs.rmSync(repo, { recursive: true, force: true });
   // Sibling dir for worktrees.
   fs.rmSync(defaultWorktreeRootForRepo(repo), { recursive: true, force: true });
+}
+
+function writeTaskMeta(registry, taskId, meta) {
+  const previous = process.env.CODEX_BRIDGE_REGISTRY;
+  process.env.CODEX_BRIDGE_REGISTRY = registry;
+  try {
+    writeMeta(taskId, meta);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_BRIDGE_REGISTRY;
+    else process.env.CODEX_BRIDGE_REGISTRY = previous;
+  }
+}
+
+function runBridge(args, { cwd, registry, input = undefined }) {
+  return spawnSync(process.execPath, [bridgePath, ...args], {
+    cwd,
+    input,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CODEX_BRIDGE_NO_UPDATE_CHECK: "1",
+      CODEX_BRIDGE_REGISTRY: registry,
+    },
+  });
+}
+
+function parseBridgeJson(result, expectedStatus = 0) {
+  assert.equal(result.status, expectedStatus, result.stderr || result.stdout);
+  assert.notEqual(result.stdout.trim(), "");
+  return JSON.parse(result.stdout);
 }
 
 test("createSubagentWorktree creates a worktree at the expected path", () => {
@@ -314,6 +348,134 @@ test("mergeSubagentBranch rejects a branch head that was not reviewed", () => {
     assert.ok(fs.existsSync(created.path));
   } finally {
     cleanup(repo);
+  }
+});
+
+test("bridge merge accepts public payload-stdin approval for the matching reviewed branch head", () => {
+  const repo = makeTempRepo();
+  const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-merge-registry-"));
+  try {
+    const taskId = "task-cli-merge";
+    const created = createSubagentWorktree({
+      cwd: repo,
+      taskId,
+      backend: "codex",
+    });
+    fs.writeFileSync(path.join(created.path, "cli-merged.txt"), "merged\n");
+    execSync("git add cli-merged.txt", { cwd: created.path });
+    execSync('git commit -m "cli work"', { cwd: created.path });
+    const branchSha = execSync(`git rev-parse ${created.branch}`, { cwd: repo }).toString().trim();
+    writeTaskMeta(registry, taskId, {
+      worktree: {
+        path: created.path,
+        branch: created.branch,
+        base_ref: "main",
+      },
+    });
+
+    const verdict = parseBridgeJson(
+      runBridge(["verdict", taskId, "--payload-stdin", "--json"], {
+        cwd: repo,
+        registry,
+        input: JSON.stringify({
+          verdict: "approved",
+          summary: "review approved current head",
+          branch_head_sha: branchSha,
+        }),
+      }),
+    );
+    assert.equal(verdict.result.verdict.branch_head_sha, branchSha);
+
+    const readBack = parseBridgeJson(runBridge(["verdict", taskId, "--json"], { cwd: repo, registry }));
+    assert.equal(readBack.result.merge_readiness.merge_ready, true);
+    assert.equal(readBack.result.merge_readiness.branch_head_sha, branchSha);
+    assert.equal(readBack.result.merge_readiness.current_branch_head_sha, branchSha);
+
+    const merged = parseBridgeJson(runBridge(["merge", taskId, "--json", "--no-tests"], { cwd: repo, registry }));
+    assert.equal(merged.result.reviewed_branch_head_sha, branchSha);
+    assert.equal(merged.result.merge.commit_sha, branchSha);
+    assert.ok(fs.existsSync(path.join(repo, "cli-merged.txt")));
+    assert.equal(fs.existsSync(created.path), false);
+  } finally {
+    cleanup(repo);
+    fs.rmSync(registry, { recursive: true, force: true });
+  }
+});
+
+test("bridge merge rejects stale public approvals and pending verdicts explain blockers", () => {
+  const repo = makeTempRepo();
+  const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-merge-drift-registry-"));
+  try {
+    const staleTaskId = "task-cli-stale";
+    const created = createSubagentWorktree({
+      cwd: repo,
+      taskId: staleTaskId,
+      backend: "codex",
+    });
+    fs.writeFileSync(path.join(created.path, "first.txt"), "first\n");
+    execSync("git add first.txt", { cwd: created.path });
+    execSync('git commit -m "first"', { cwd: created.path });
+    const reviewedSha = execSync(`git rev-parse ${created.branch}`, { cwd: repo }).toString().trim();
+    writeTaskMeta(registry, staleTaskId, {
+      worktree: {
+        path: created.path,
+        branch: created.branch,
+        base_ref: "main",
+      },
+    });
+    parseBridgeJson(
+      runBridge(["verdict", staleTaskId, "--payload-stdin", "--json"], {
+        cwd: repo,
+        registry,
+        input: JSON.stringify({
+          verdict: "approved",
+          summary: "approved before later commit",
+          reviewed_branch_head_sha: reviewedSha,
+        }),
+      }),
+    );
+    fs.writeFileSync(path.join(created.path, "second.txt"), "second\n");
+    execSync("git add second.txt", { cwd: created.path });
+    execSync('git commit -m "second"', { cwd: created.path });
+    const currentSha = execSync(`git rev-parse ${created.branch}`, { cwd: repo }).toString().trim();
+
+    const merge = runBridge(["merge", staleTaskId, "--json", "--no-tests"], { cwd: repo, registry });
+    assert.notEqual(merge.status, 0);
+    assert.match(`${merge.stdout}\n${merge.stderr}`, /MERGE_SHA_DRIFT|approved verdict reviewed/);
+
+    const attentionTaskId = "task-cli-attention";
+    const noShaTaskId = "task-cli-missing-sha";
+    writeTaskMeta(registry, attentionTaskId, {
+      worktree: { path: repo, branch: "main", base_ref: "main" },
+    });
+    writeTaskMeta(registry, noShaTaskId, {
+      worktree: { path: repo, branch: "main", base_ref: "main" },
+    });
+    parseBridgeJson(
+      runBridge(["verdict", attentionTaskId, "--set", "needs-attention", "--summary", "needs work", "--json"], {
+        cwd: repo,
+        registry,
+      }),
+    );
+    parseBridgeJson(
+      runBridge(["verdict", noShaTaskId, "--set", "approved", "--summary", "missing sha", "--json"], {
+        cwd: repo,
+        registry,
+      }),
+    );
+
+    const pending = parseBridgeJson(runBridge(["verdicts", "--pending", "--json"], { cwd: repo, registry }));
+    const byTask = new Map(pending.result.pending.map((entry) => [entry.task_id, entry]));
+    assert.equal(byTask.get(staleTaskId).merge_ready, false);
+    assert.equal(byTask.get(staleTaskId).merge_blocked_by, "head_drift");
+    assert.equal(byTask.get(staleTaskId).branch_head_sha, reviewedSha);
+    assert.equal(byTask.get(staleTaskId).reviewed_branch_head_sha, reviewedSha);
+    assert.equal(byTask.get(staleTaskId).current_branch_head_sha, currentSha);
+    assert.equal(byTask.get(attentionTaskId).merge_blocked_by, "missing_approval");
+    assert.equal(byTask.get(noShaTaskId).merge_blocked_by, "missing_branch_sha");
+  } finally {
+    cleanup(repo);
+    fs.rmSync(registry, { recursive: true, force: true });
   }
 });
 
