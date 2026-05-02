@@ -164,6 +164,82 @@ function parseBridgeError(result) {
   return payload.error;
 }
 
+function runGit(cwd, args) {
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function writeFakeCodex(binDir) {
+  fs.mkdirSync(binDir, { recursive: true });
+  const script = path.join(binDir, "codex");
+  fs.writeFileSync(
+    script,
+    `#!/usr/bin/env node
+import readline from "node:readline";
+
+const args = process.argv.slice(2);
+if (args[0] === "--version") {
+  process.stdout.write("codex test\\n");
+  process.exit(0);
+}
+if (args[0] === "app-server" && args[1] === "--help") {
+  process.stdout.write("codex app-server test\\n");
+  process.exit(0);
+}
+if (args[0] !== "app-server") {
+  process.stderr.write("unsupported fake codex invocation\\n");
+  process.exit(2);
+}
+
+const threadId = "019ddc92-d8e5-7ca2-b051-83ffffcc8af8";
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialized") {
+    return;
+  }
+  if (message.method === "initialize") {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: threadId, name: null } } });
+    return;
+  }
+  if (message.method === "review/start") {
+    send({
+      method: "item/completed",
+      params: {
+        threadId,
+        item: {
+          id: "review-item",
+          type: "exitedReviewMode",
+          status: "completed",
+          review: "No issues found. Looks good overall."
+        }
+      }
+    });
+    send({
+      id: message.id,
+      result: {
+        reviewThreadId: threadId,
+        turn: { id: "turn-review", status: "completed" }
+      }
+    });
+    return;
+  }
+  send({ id: message.id, result: {} });
+});
+`,
+    "utf8",
+  );
+  fs.chmodSync(script, 0o755);
+  return script;
+}
+
 const expectedCommands = [
   "adversarial-review.md",
   "auth-status.md",
@@ -444,6 +520,60 @@ test("review --task rejects an explicit --cwd outside the task worktree", () => 
   const error = parseBridgeError(result);
   assert.equal(error.code, "TASK_CWD_CONFLICT");
   assert.match(error.message, /--cwd points/);
+});
+
+test("review --task writes normalized review.json for the reviewed branch head", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-review-run-"));
+  const registry = path.join(tempRoot, "registry");
+  const repo = path.join(tempRoot, "repo");
+  const binDir = path.join(tempRoot, "bin");
+  fs.mkdirSync(repo, { recursive: true });
+  writeFakeCodex(binDir);
+
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "bridge@example.test"]);
+  runGit(repo, ["config", "user.name", "Codex Bridge Test"]);
+  fs.writeFileSync(path.join(repo, "README.md"), "base\n", "utf8");
+  runGit(repo, ["add", "README.md"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  runGit(repo, ["branch", "-M", "main"]);
+  runGit(repo, ["checkout", "-b", "subagent/codex/task-review"]);
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+
+  writeRegistryMeta(registry, "task-review", {
+    schema_version: "1.0",
+    task_id: "task-review",
+    worktree: {
+      path: repo,
+      branch: "subagent/codex/task-review",
+      base_ref: "main",
+    },
+  });
+
+  const result = runBridge(
+    "src/codex-bridge.mjs",
+    ["review", "--task", "task-review", "--json"],
+    {
+      env: {
+        CODEX_BRIDGE_REGISTRY: registry,
+        CODEX_BRIDGE_PLUGIN_DATA: path.join(tempRoot, "plugin-data"),
+        CODEX_COMPANION_APP_SERVER_ENDPOINT: `unix:${path.join(tempRoot, "missing-broker.sock")}`,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.review_result.task_id, "task-review");
+  assert.equal(payload.result.review_result.reviewed_branch_head_sha, head);
+
+  const reviewPath = path.join(registry, "task-review", "review.json");
+  const review = JSON.parse(fs.readFileSync(reviewPath, "utf8"));
+  assert.equal(review.task_id, "task-review");
+  assert.equal(review.review_kind, "native");
+  assert.equal(review.verdict, "approved");
+  assert.equal(review.reviewed_branch_head_sha, head);
+  assert.match(review.ts, /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => {

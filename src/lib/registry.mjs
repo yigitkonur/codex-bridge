@@ -19,7 +19,7 @@
 //     rewake.signal        — terminal-tag deposit (T22 wakes Claude)
 //
 // This v1 module ships the minimum API the rest of the stack needs:
-// writeMeta, readMeta, jobDir, existsTask, listTasks. Full lock /
+// writeMeta, readMeta, writeReview, readReview, jobDir, existsTask, listTasks. Full lock /
 // cleanup / compaction / iteration-chain helpers land in follow-ups
 // once the consumers (T16 brief, T18 --worktree-auto, T19 merge,
 // T20 verdict, T21 iterate) need them.
@@ -187,6 +187,29 @@ export function writeVerdict(taskId, verdict) {
     decided_at: new Date().toISOString(),
   };
   const target = path.join(dir, "verdict.json");
+  const tmp = `${target}.tmp.${tmpSuffix()}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  fs.renameSync(tmp, target);
+  return target;
+}
+
+export function readReview(taskId) {
+  const target = path.join(jobDir(taskId), "review.json");
+  return readRegistryJson(target);
+}
+
+export function writeReview(taskId, review) {
+  if (!review || typeof review !== "object" || Array.isArray(review)) {
+    throw new TypeError("writeReview(taskId, review): review must be an object");
+  }
+  const dir = ensureJobDir(taskId);
+  const payload = {
+    ...review,
+    schema_version: REGISTRY_SCHEMA_VERSION,
+    task_id: taskId,
+    ts: new Date().toISOString(),
+  };
+  const target = path.join(dir, "review.json");
   const tmp = `${target}.tmp.${tmpSuffix()}`;
   fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   fs.renameSync(tmp, target);

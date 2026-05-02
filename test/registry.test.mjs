@@ -14,7 +14,9 @@ import {
   writeMeta,
   readMeta,
   listTasks,
+  readReview,
   readVerdict,
+  writeReview,
   writeVerdict,
   appendEvent,
 } from "../src/lib/registry.mjs";
@@ -91,12 +93,14 @@ test("readMeta returns null for missing tasks", () => {
   });
 });
 
-test("readMeta and readVerdict throw on corrupt JSON", () => {
+test("readMeta, readReview, and readVerdict throw on corrupt JSON", () => {
   withTempRegistry(() => {
     const dir = ensureJobDir("task-corrupt");
     const metaPath = path.join(dir, "meta.json");
+    const reviewPath = path.join(dir, "review.json");
     const verdictPath = path.join(dir, "verdict.json");
     fs.writeFileSync(metaPath, "{ nope\n", "utf8");
+    fs.writeFileSync(reviewPath, "{ nope\n", "utf8");
     fs.writeFileSync(verdictPath, "{ nope\n", "utf8");
 
     assert.throws(() => readMeta("task-corrupt"), (error) => {
@@ -109,6 +113,14 @@ test("readMeta and readVerdict throw on corrupt JSON", () => {
       return true;
     });
 
+    assert.throws(() => readReview("task-corrupt"), (error) => {
+      assert.ok(error instanceof RegistryReadError);
+      assert.equal(error.code, "REGISTRY_READ_FAILED");
+      assert.equal(error.filePath, reviewPath);
+      assert.ok(error.cause instanceof SyntaxError);
+      return true;
+    });
+
     assert.throws(() => readVerdict("task-corrupt"), (error) => {
       assert.ok(error instanceof RegistryReadError);
       assert.equal(error.code, "REGISTRY_READ_FAILED");
@@ -116,6 +128,12 @@ test("readMeta and readVerdict throw on corrupt JSON", () => {
       assert.ok(error.cause instanceof SyntaxError);
       return true;
     });
+  });
+});
+
+test("readReview returns null when no review exists", () => {
+  withTempRegistry(() => {
+    assert.equal(readReview("task-no-review"), null);
   });
 });
 
@@ -195,6 +213,34 @@ test("writeVerdict + readVerdict round-trip", () => {
     assert.equal(round.summary, "two findings");
     assert.deepEqual(round.findings, ["a", "b"]);
     assert.match(round.decided_at, /^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+test("writeReview + readReview round-trip with registry-controlled fields", () => {
+  withTempRegistry(() => {
+    writeReview("task-r", {
+      schema_version: "bad",
+      task_id: "spoofed-task",
+      ts: "1999-01-01T00:00:00.000Z",
+      review_kind: "native",
+      verdict: "approved",
+      summary: "clean",
+      findings: [],
+      next_steps: [],
+      target: { mode: "branch", baseRef: "main" },
+      reviewed_branch_head_sha: "0123456789abcdef0123456789abcdef01234567",
+      raw_output: "No issues found.",
+    });
+    const round = readReview("task-r");
+    assert.equal(round.task_id, "task-r");
+    assert.equal(round.schema_version, REGISTRY_SCHEMA_VERSION);
+    assert.notEqual(round.ts, "1999-01-01T00:00:00.000Z");
+    assert.equal(round.review_kind, "native");
+    assert.equal(round.verdict, "approved");
+    assert.equal(round.summary, "clean");
+    assert.deepEqual(round.target, { mode: "branch", baseRef: "main" });
+    assert.equal(round.reviewed_branch_head_sha, "0123456789abcdef0123456789abcdef01234567");
+    assert.match(round.ts, /^\d{4}-\d{2}-\d{2}T/);
   });
 });
 

@@ -50,7 +50,15 @@ import {
   } from "./adapters/codex/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
-import { jobDir, listTasks, readMeta, readVerdict, writeMeta, writeVerdict } from "./lib/registry.mjs";
+import {
+  jobDir,
+  listTasks,
+  readMeta,
+  readVerdict,
+  writeMeta,
+  writeVerdict,
+  writeReview as writeRegistryReview
+} from "./lib/registry.mjs";
 import { loadBrief, renderBriefAsMarkdown } from "./lib/brief.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { buildAdversarialReviewPrompt } from "./lib/adversarial-review-prompt.mjs";
@@ -133,7 +141,7 @@ import {
   formatHandoffEvent,
   TERMINAL_TAGS,
   DEFAULT_MONITOR_EXCLUDE,
-  writeReview
+  writeReview as writeSessionReview
 } from "./lib/session-log.mjs";
 import {
   readPendingRequestById,
@@ -1690,17 +1698,21 @@ async function executeReviewRun(request) {
         targetLabel: target.label
       });
     }
+    const reviewResult = result.status === 0
+      ? normalizeNativeReviewResult({
+          reviewText: result.reviewText,
+          target,
+          task_id: request.taskId ?? null,
+          reviewed_branch_head_sha: request.reviewedBranchHeadSha ?? null,
+        })
+      : null;
+    if (request.taskId && reviewResult) {
+      writeRegistryReview(request.taskId, reviewResult);
+    }
     const payload = {
       review: reviewName,
       target,
-      review_result: result.status === 0
-        ? normalizeNativeReviewResult({
-            reviewText: result.reviewText,
-            target,
-            task_id: request.taskId ?? null,
-            reviewed_branch_head_sha: request.reviewedBranchHeadSha ?? null,
-          })
-        : null,
+      review_result: reviewResult,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       codex: {
@@ -1780,6 +1792,9 @@ async function executeReviewRun(request) {
         reviewed_branch_head_sha: request.reviewedBranchHeadSha ?? null,
       })
     : null;
+  if (request.taskId && normalizedReviewResult) {
+    writeRegistryReview(request.taskId, normalizedReviewResult);
+  }
   // Materialize session artifacts for the adversarial-review thread (obs 08):
   // .events + .ndjson for replay, .review.json for the structured findings
   // (finally gives `writeReview` a real caller — was phantom per obs 03).
@@ -1802,7 +1817,7 @@ async function executeReviewRun(request) {
     });
     if (parsed.parsed && !parsed.parseError) {
       try {
-        writeReview(advSession, parsed.parsed);
+        writeSessionReview(advSession, parsed.parsed);
       } catch {
         // Review JSON persistence failures must not fail the command.
       }
