@@ -14,6 +14,7 @@ import {
 } from "../../lib/session-log.mjs";
 import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "../../lib/config.mjs";
 import { extractUpstreamRequestId } from "../../lib/cli-errors.mjs";
+import { parseNativeReviewText } from "../../lib/review-result.mjs";
 
 // Default budgets. Runtime callers may override via `stageTimeoutMs` /
 // `totalTimeoutMs` on runAutoPipeline options, which in turn resolve from
@@ -655,85 +656,10 @@ function uniqueStrings(values) {
 }
 
 function parseReviewText(reviewText) {
-  const findings = parseNativeReviewFindings(reviewText);
-  if (findings.length > 0) {
-    return { verdict: "needs-attention", findings };
-  }
-
-  const lower = reviewText.toLowerCase();
-  const reviewTextWithoutNoIssuePhrases = lower
-    .replace(/\bno\s+(?:actionable\s+)?(?:issues?|findings?|problems?|concerns?)\b/g, "")
-    .replace(/\b(?:issues?|findings?|problems?|concerns?):\s*(?:none|n\/a)\b/g, "");
-  const explicitAttention =
-    lower.includes("needs-attention") ||
-    /\bneeds attention\b/.test(lower) ||
-    /\brequires attention\b/.test(lower);
-  const hasIssues =
-    explicitAttention ||
-    /\b(?:findings?|issues?|problems?|concerns?|regressions?)\b/.test(reviewTextWithoutNoIssuePhrases);
+  const parsed = parseNativeReviewText(reviewText);
   return {
-    verdict: hasIssues ? "needs-attention" : "approve",
-    findings: [],
-  };
-}
-
-function parseNativeReviewFindings(reviewText) {
-  const lines = reviewText.split(/\r?\n/);
-  const findings = [];
-  let current = null;
-
-  const flush = () => {
-    if (!current) return;
-    const recommendation = current.body
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join("\n");
-    findings.push({
-      severity: current.severity,
-      title: current.title,
-      file: current.file,
-      line_start: current.lineStart,
-      line_end: current.lineEnd,
-      recommendation,
-    });
-    current = null;
-  };
-
-  for (const line of lines) {
-    const header = parseNativeFindingHeader(line);
-    if (header) {
-      flush();
-      current = { ...header, body: [] };
-      continue;
-    }
-
-    if (current && (/^(?:\s{2,}|\t+)\S/.test(line) || line.trim() === "")) {
-      current.body.push(line);
-    }
-  }
-
-  flush();
-  return findings;
-}
-
-function parseNativeFindingHeader(line) {
-  const match = line.match(/^\s*[-*]\s+\[(P\d+)\]\s+(.+?)\s+(?:\u2014|\u2013|--|-)\s+(.+?):(\d+)(?:-(\d+))?\s*$/i);
-  if (!match) return null;
-
-  const lineStart = Number.parseInt(match[4], 10);
-  if (!Number.isInteger(lineStart) || lineStart < 1) return null;
-
-  const parsedLineEnd = match[5] ? Number.parseInt(match[5], 10) : lineStart;
-  const lineEnd = Number.isInteger(parsedLineEnd) && parsedLineEnd >= lineStart
-    ? parsedLineEnd
-    : lineStart;
-
-  return {
-    severity: match[1].toUpperCase(),
-    title: match[2].trim(),
-    file: match[3].trim(),
-    lineStart,
-    lineEnd,
+    verdict: parsed.verdict === "approved" ? "approve" : "needs-attention",
+    findings: parsed.findings,
   };
 }
 
