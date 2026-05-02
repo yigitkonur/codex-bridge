@@ -129,15 +129,15 @@ const COMMAND_COVERAGE = Object.freeze({
     baseline_gap: null
   },
   review: {
-    mutation: "review session artifacts, events, and registry job state",
-    success_tests: ["test/bridge-static.test.mjs", "test/adapter-routing.test.mjs"],
-    failure_tests: ["test/bridge-static.test.mjs"],
+    mutation: "review session artifacts, events, normalized review.json, and registry job state",
+    success_tests: ["test/bridge-static.test.mjs", "test/adapter-routing.test.mjs", "test/review-result.test.mjs", "test/registry.test.mjs", "test/plugin-surfaces.test.mjs"],
+    failure_tests: ["test/bridge-static.test.mjs", "test/plugin-surfaces.test.mjs"],
     baseline_gap: "No fully live review --json round-trip test without an authenticated Codex app-server; release smoke owns that proof."
   },
   "adversarial-review": {
     mutation: "adversarial review session artifacts, prompt output, and review JSON artifact",
-    success_tests: ["test/adversarial-review-prompt.test.mjs", "test/render-finding-validity.test.mjs"],
-    failure_tests: ["test/adversarial-review-prompt.test.mjs"],
+    success_tests: ["test/adversarial-review-prompt.test.mjs", "test/render-finding-validity.test.mjs", "test/review-result.test.mjs", "test/registry.test.mjs", "test/plugin-surfaces.test.mjs"],
+    failure_tests: ["test/adversarial-review-prompt.test.mjs", "test/plugin-surfaces.test.mjs"],
     baseline_gap: "No authenticated app-server review smoke in static tests; Phase 6 must cover live review behavior."
   },
   task: {

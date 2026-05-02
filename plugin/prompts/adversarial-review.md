@@ -55,6 +55,8 @@ Return only valid JSON matching the provided schema.
 Keep the output compact and specific.
 Use `needs-attention` if there is any material risk worth blocking on.
 Use `approve` only if you cannot support any substantive adversarial finding from the provided context.
+Return only the raw schema fields: `verdict`, `summary`, `findings`, and `next_steps`.
+Do not include bridge wrapper fields such as `schema_version`, `review_kind`, `target`, `task_id`, `reviewed_branch_head_sha`, or `raw_output`; the bridge adds those after validation under `result.review_result`.
 Every finding must include:
 - the affected file
 - `line_start` and `line_end`
