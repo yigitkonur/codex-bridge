@@ -870,6 +870,75 @@ test("auto-pipeline marks completion-check rejection incomplete instead of done"
   }
 });
 
+test("auto-pipeline marks invalid completion-check JSON incomplete instead of done", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const reviewCalls = [];
+    const turnCalls = [];
+    const stageMs = 5_000;
+
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-watchdog",
+      cwd: root,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: false,
+        post_task_prompt: "Confirm completion in JSON.",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: async (cwd, opts) => {
+        turnCalls.push({ cwd, opts: { ...opts } });
+        return {
+          status: 0,
+          threadId: opts.resumeThreadId ?? "thread-x",
+          turnId: "turn-x",
+          finalMessage: "Everything looks complete.",
+          reasoningSummary: "",
+          turn: { id: "turn-x", status: "completed" },
+          error: null,
+          stderr: "",
+          fileChanges: [],
+          touchedFiles: [],
+        };
+      },
+      runAppServerReview: makeReviewStub(reviewCalls),
+      jobId: "job-watchdog",
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: stageMs * 4,
+    });
+
+    assert.equal(reviewCalls.length, 0, "review must not run when auto_review is false");
+    assert.equal(turnCalls.length, 1, "expected one completion-check turn attempt");
+    assert.equal(result.complete, false);
+    assert.deepEqual(result.completedStages, ["diff", "check"]);
+    assert.equal(result.completionSummary, "completion-check invalid-json");
+    assert.equal(result.missingItems.length, 1);
+    assert.match(result.missingItems[0], /Completion check returned invalid JSON:/);
+    assert.match(result.missingItems[0], /return JSON matching the completion schema/);
+
+    const events = fs.readFileSync(session.eventsPath, "utf8");
+    assert.match(events, /\[PIPELINE:check:done\].*complete=false missing=1/);
+    assert.match(events, /\[INCOMPLETE\]/);
+    assert.match(events, /Completion check returned invalid JSON:/);
+    assert.doesNotMatch(events, /\[DONE\]/);
+
+    const entries = fs.readFileSync(session.ndjsonPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const completeEntry = entries.find((entry) => entry.tag === "PIPELINE_COMPLETE");
+    assert.equal(completeEntry?.data.complete, false);
+    assert.equal(completeEntry?.data.completionSummary, "completion-check invalid-json");
+    assert.deepEqual(completeEntry?.data.missingItems, result.missingItems);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("auto-pipeline source pins per-turn watchdog at the fix-stage call site", () => {
   // Keep a static pin alongside the runtime fix-stage tests: the fix-stage
   // runAppServerTurn options object must include both `turnTimeoutMs` and

@@ -338,12 +338,14 @@ export async function runAutoPipeline(options) {
         } else if (checkResult.finalMessage) {
           try {
             completionResult = JSON.parse(checkResult.finalMessage);
-          } catch {
-            // Not valid JSON — try to determine completeness heuristically
+          } catch (error) {
+            const parseMessage = error instanceof Error ? error.message : String(error);
             completionResult = {
-              complete: true,
-              missing_items: [],
-              summary: checkResult.finalMessage.slice(0, 200),
+              complete: false,
+              missing_items: [
+                `Completion check returned invalid JSON: ${parseMessage}. Re-run the check or return JSON matching the completion schema.`,
+              ],
+              summary: "completion-check invalid-json",
             };
           }
         } else {
