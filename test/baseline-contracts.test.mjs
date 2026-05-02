@@ -148,6 +148,9 @@ test("baseline contract report verifies static gate, generated surfaces, and com
   );
   assert.ok(Object.hasOwn(report.mutating_command_coverage, "verdict"));
   assert.ok(Object.hasOwn(report.mutating_command_coverage, "merge"));
+  assert.match(report.mutating_command_coverage.task.mutation, /auto-pipeline stage\/budget\/partial-completion proof/);
+  assert.ok(report.mutating_command_coverage.task.failure_tests.includes("test/auto-pipeline-turn-watchdog.test.mjs"));
+  assert.doesNotMatch(report.mutating_command_coverage.task.baseline_gap, /live review smoke was run/i);
 });
 
 test("baseline contract checker fails on stale generated bundles", () => {

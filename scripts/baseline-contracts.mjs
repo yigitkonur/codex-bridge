@@ -141,9 +141,9 @@ const COMMAND_COVERAGE = Object.freeze({
     baseline_gap: "No authenticated app-server review smoke in static tests; Phase 6 must cover live review behavior."
   },
   task: {
-    mutation: "workspace jobs, session logs/events, optional worktree changes, and registry artifacts",
+    mutation: "workspace jobs, session logs/events, optional worktree changes, registry artifacts, and auto-pipeline stage/budget/partial-completion proof",
     success_tests: ["test/bridge-static.test.mjs", "test/auto-pipeline-turn-watchdog.test.mjs", "test/job-control.test.mjs"],
-    failure_tests: ["test/bridge-static.test.mjs", "test/cli-errors.test.mjs"],
+    failure_tests: ["test/bridge-static.test.mjs", "test/auto-pipeline-turn-watchdog.test.mjs", "test/cli-errors.test.mjs"],
     baseline_gap: "Static tests use mocked/runtime slices; Phase 6 must cover real foreground/background Codex task smoke."
   },
   "task-worker": {
