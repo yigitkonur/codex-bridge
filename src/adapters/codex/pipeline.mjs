@@ -104,7 +104,7 @@ export async function runAutoPipeline(options) {
     checkPipelineTimeout();
 
     // Stage 2: Auto-review (if configured)
-    let reviewVerdict = "approve";
+    let reviewVerdict = "approved";
     let reviewFindings = [];
     let reviewFindingCount = 0;
     let unstructuredReviewAttention = false;
@@ -168,13 +168,14 @@ export async function runAutoPipeline(options) {
         completedStages.push("review");
         checkPipelineTimeout();
 
-        // Parse review findings from the review text
+        // Parse review findings from the shared native review parser so the
+        // task review and auto-pipeline paths use the same extraction rules.
         if (reviewResult.reviewText) {
-          const parsed = parseReviewText(reviewResult.reviewText);
+          const parsed = parseNativeReviewText(reviewResult.reviewText);
           reviewVerdict = parsed.verdict;
           reviewFindings = parsed.findings;
           reviewFindingCount = reviewFindings.length;
-          unstructuredReviewAttention = reviewVerdict !== "approve" && reviewFindingCount === 0;
+          unstructuredReviewAttention = reviewVerdict !== "approved" && reviewFindingCount === 0;
         }
         logEvent(session, formatPipelineEvent(session, {
           stage: "review",
@@ -653,14 +654,6 @@ function uniqueStrings(values) {
     unique.push(value);
   }
   return unique;
-}
-
-function parseReviewText(reviewText) {
-  const parsed = parseNativeReviewText(reviewText);
-  return {
-    verdict: parsed.verdict === "approved" ? "approve" : "needs-attention",
-    findings: parsed.findings,
-  };
 }
 
 // Map a `withTimeout` label into the canonical stage token that also appears

@@ -398,7 +398,7 @@ test("auto-pipeline keeps explicit no-issue native review wording clean", async 
       assert.deepEqual(result.completedStages, ["diff", "review"], `${name}: unexpected stages`);
 
       const events = fs.readFileSync(session.eventsPath, "utf8");
-      assert.match(events, /\[PIPELINE:review:done\].*verdict=approve findings=0/);
+      assert.match(events, /\[PIPELINE:review:done\].*verdict=approved findings=0/);
       assert.match(events, /\[DONE\]/);
       assert.doesNotMatch(events, /\[INCOMPLETE\]/);
     } finally {
@@ -455,7 +455,7 @@ test("auto-pipeline parses native review findings and runs the fix stage", async
     );
 
     const events = fs.readFileSync(session.eventsPath, "utf8");
-    assert.match(events, /\[PIPELINE:review:done\].*verdict=needs-attention findings=1/);
+    assert.match(events, /\[PIPELINE:review:done\].*verdict=must-fix findings=1/);
     assert.match(events, /\[PIPELINE:fix:done\]/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
