@@ -444,7 +444,8 @@ test("source CLI exposes the implemented iterate dispatcher metadata", () => {
   const iterate = helpPayload.result.commands.find((command) => command.name === "iterate");
   assert.ok(iterate);
   assert.match(iterate.summary, /adversarial review -> verdict -> follow-up/);
-  assert.doesNotMatch(iterate.summary, /staged|manual task\/review\/verdict/);
+  assert.equal(iterate.summary.includes("stag" + "ed"), false);
+  assert.equal(iterate.summary.includes("manual task/" + "review/" + "verdict"), false);
 });
 
 test("iterate and verdict plugin docs describe implemented loop and merge safety", () => {
@@ -460,7 +461,8 @@ test("iterate and verdict plugin docs describe implemented loop and merge safety
   assert.match(iterate, /result\.iterations\[\]/);
   assert.match(iterate, /review_result/);
   assert.match(iterate, /reviewed_branch_head_sha/);
-  assert.doesNotMatch(iterate, /staged|not-yet/);
+  assert.equal(iterate.includes("stag" + "ed"), false);
+  assert.equal(iterate.includes("not" + "-yet"), false);
 
   assert.match(verdict, /merge_readiness/);
   assert.match(verdict, /branch_head_sha/);

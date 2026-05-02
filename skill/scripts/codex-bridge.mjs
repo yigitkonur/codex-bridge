@@ -8816,6 +8816,36 @@ function loadBrief(arg, options = {}) {
     source
   };
 }
+function renderBriefAsMarkdown(brief) {
+  const lines = [];
+  lines.push("# Brief");
+  lines.push("");
+  lines.push("## Goal");
+  lines.push(brief.goal);
+  lines.push("");
+  lines.push("## Worker assignment");
+  lines.push(brief.worker_assignment);
+  if (brief.behavior_digest_seed) {
+    lines.push("");
+    lines.push("## What the orchestrator already knows");
+    lines.push(brief.behavior_digest_seed);
+  }
+  if (Array.isArray(brief.specific_concerns) && brief.specific_concerns.length > 0) {
+    lines.push("");
+    lines.push("## Specific concerns");
+    for (const c of brief.specific_concerns) lines.push(`- ${c}`);
+  }
+  if (Array.isArray(brief.acceptance_criteria) && brief.acceptance_criteria.length > 0) {
+    lines.push("");
+    lines.push("## Acceptance criteria");
+    for (const a of brief.acceptance_criteria) lines.push(`- [ ] ${a}`);
+  }
+  if (brief.parent_task_id) {
+    lines.push("");
+    lines.push(`Parent task: \`${brief.parent_task_id}\``);
+  }
+  return lines.join("\n");
+}
 
 // src/lib/adversarial-review-prompt.mjs
 var OPUS_CONCERN_MAX_LEN = 1e3;
@@ -10408,6 +10438,300 @@ function formatUpdateNotice(result) {
   return `codex-bridge ${result.latestVersion} is available (you have ${result.currentVersion}). Run \`npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y\` to update, or pass --apply to \`codex-bridge update\` to install automatically.`;
 }
 
+// src/lib/iterate-loop.mjs
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      code: error.code ?? null
+    };
+  }
+  if (error && typeof error === "object") {
+    return {
+      message: String(error.message ?? JSON.stringify(error)),
+      code: error.code ?? null
+    };
+  }
+  return { message: String(error), code: null };
+}
+function artifactsFrom(...values) {
+  return Object.assign(
+    {},
+    ...values.map((value) => value?.artifacts).filter((value) => value && typeof value === "object" && !Array.isArray(value))
+  );
+}
+function taskIdFrom(value) {
+  return value?.task_id ?? value?.taskId ?? value?.jobId ?? null;
+}
+function reviewResultFrom(value) {
+  return value?.review_result ?? value?.reviewResult ?? value;
+}
+function verdictFrom(value) {
+  return value?.verdict && typeof value.verdict === "object" ? value.verdict : value;
+}
+function mergeNextAction(taskId) {
+  return {
+    kind: "merge",
+    argv: ["merge", taskId],
+    description: "Merge the approved unchanged reviewed branch head."
+  };
+}
+function inspectNextAction(taskId, status) {
+  return {
+    kind: "inspect-artifacts",
+    argv: ["verdict", taskId, "--json"],
+    description: `${status} reached; inspect review and verdict artifacts before continuing.`
+  };
+}
+function failureResult({ status, max, iterations, taskId, iteration, step, error, artifacts }) {
+  return {
+    status,
+    incomplete: true,
+    iteration_max: max,
+    iterations,
+    current_task_id: taskId ?? null,
+    failed_iteration: iteration,
+    failed_step: step,
+    error: serializeError(error),
+    artifacts: artifacts ?? {},
+    next_action: taskId ? inspectNextAction(taskId, status) : null
+  };
+}
+async function callStep({ status, step, max, iterations, taskId, iteration, artifacts }, fn, arg) {
+  try {
+    return { ok: true, value: await fn(arg) };
+  } catch (error) {
+    return {
+      ok: false,
+      value: failureResult({
+        status,
+        max,
+        iterations,
+        taskId,
+        iteration,
+        step,
+        error,
+        artifacts
+      })
+    };
+  }
+}
+function buildIterateFollowupPrompt({ previousTaskId, reviewResult, verdict }) {
+  const findings = Array.isArray(reviewResult?.findings) ? reviewResult.findings : [];
+  return [
+    "Continue the existing codex-bridge task in the same worktree.",
+    `Previous task: ${previousTaskId}`,
+    `Review verdict: ${verdict}`,
+    `Review summary: ${reviewResult?.summary ?? "No summary provided."}`,
+    findings.length > 0 ? `Findings JSON:
+${JSON.stringify(findings, null, 2)}` : "Findings JSON:\n[]",
+    "Fix the review findings, preserve unrelated work, and leave artifacts for the next review iteration."
+  ].join("\n\n");
+}
+async function runIterateLoop(options = {}) {
+  const max = Number(options.max ?? 3);
+  if (!Number.isInteger(max) || max < 1) {
+    throw new TypeError(`runIterateLoop max must be a positive integer (got ${JSON.stringify(options.max)})`);
+  }
+  const deps = options.deps ?? {};
+  const iterations = [];
+  let taskId = options.taskId ?? null;
+  let taskState = null;
+  if (!taskId) {
+    if (typeof deps.startTask !== "function") {
+      throw new TypeError("runIterateLoop requires deps.startTask for prompt input");
+    }
+    const started = await callStep(
+      {
+        status: "task-failed",
+        step: "start-task",
+        max,
+        iterations,
+        taskId: null,
+        iteration: 1,
+        artifacts: {}
+      },
+      deps.startTask,
+      {
+        prompt: options.prompt,
+        iteration: 1,
+        write: true,
+        worktree_auto: true
+      }
+    );
+    if (!started.ok) return started.value;
+    taskState = started.value;
+    taskId = taskIdFrom(taskState);
+    if (!taskId) {
+      return failureResult({
+        status: "task-failed",
+        max,
+        iterations,
+        taskId: null,
+        iteration: 1,
+        step: "start-task",
+        error: new Error("startTask did not return task_id"),
+        artifacts: artifactsFrom(taskState)
+      });
+    }
+  }
+  if (typeof deps.readTaskCompletion !== "function") {
+    deps.readTaskCompletion = async ({ startedTask }) => startedTask ?? {};
+  }
+  if (typeof deps.runReview !== "function") {
+    throw new TypeError("runIterateLoop requires deps.runReview");
+  }
+  if (typeof deps.writeVerdict !== "function") {
+    throw new TypeError("runIterateLoop requires deps.writeVerdict");
+  }
+  if (typeof deps.startFollowup !== "function") {
+    throw new TypeError("runIterateLoop requires deps.startFollowup");
+  }
+  for (let iteration = 1; iteration <= max; iteration += 1) {
+    const taskCompletion = await callStep(
+      {
+        status: "task-failed",
+        step: "read-task-completion",
+        max,
+        iterations,
+        taskId,
+        iteration,
+        artifacts: artifactsFrom(taskState)
+      },
+      deps.readTaskCompletion,
+      { taskId, iteration, startedTask: taskState }
+    );
+    if (!taskCompletion.ok) return taskCompletion.value;
+    const review = await callStep(
+      {
+        status: "review-failed",
+        step: "run-review",
+        max,
+        iterations,
+        taskId,
+        iteration,
+        artifacts: artifactsFrom(taskState, taskCompletion.value)
+      },
+      deps.runReview,
+      { taskId, iteration, task: taskCompletion.value }
+    );
+    if (!review.ok) return review.value;
+    const reviewResult = reviewResultFrom(review.value);
+    const reviewedBranchHeadSha = reviewResult?.reviewed_branch_head_sha ?? reviewResult?.branch_head_sha ?? null;
+    const verdictWrite = await callStep(
+      {
+        status: "verdict-failed",
+        step: "write-verdict",
+        max,
+        iterations,
+        taskId,
+        iteration,
+        artifacts: artifactsFrom(taskState, taskCompletion.value, review.value)
+      },
+      deps.writeVerdict,
+      { taskId, iteration, reviewResult }
+    );
+    if (!verdictWrite.ok) return verdictWrite.value;
+    const verdict = verdictFrom(verdictWrite.value);
+    let verdictValue;
+    try {
+      verdictValue = mapReviewVerdictToTaskVerdict(verdict);
+    } catch (error) {
+      return failureResult({
+        status: "verdict-failed",
+        max,
+        iterations,
+        taskId,
+        iteration,
+        step: "normalize-verdict",
+        error,
+        artifacts: artifactsFrom(taskState, taskCompletion.value, review.value, verdictWrite.value)
+      });
+    }
+    const entry = {
+      iteration,
+      task_id: taskId,
+      review_result: reviewResult,
+      verdict,
+      reviewed_branch_head_sha: reviewedBranchHeadSha,
+      artifacts: artifactsFrom(taskState, taskCompletion.value, review.value, verdictWrite.value)
+    };
+    iterations.push(entry);
+    if (verdictValue === "approved") {
+      return {
+        status: "approved",
+        iteration_max: max,
+        iterations,
+        task_id: taskId,
+        reviewed_branch_head_sha: reviewedBranchHeadSha,
+        next_action: mergeNextAction(taskId)
+      };
+    }
+    if (iteration >= max) {
+      return {
+        status: "iteration-limit",
+        incomplete: true,
+        iteration_max: max,
+        iterations,
+        current_task_id: taskId,
+        reviewed_branch_head_sha: reviewedBranchHeadSha,
+        artifacts: entry.artifacts,
+        next_action: inspectNextAction(taskId, "iteration-limit")
+      };
+    }
+    const followupPrompt = buildIterateFollowupPrompt({
+      previousTaskId: taskId,
+      reviewResult,
+      verdict: verdictValue
+    });
+    const followup = await callStep(
+      {
+        status: "follow-up-failed",
+        step: "start-follow-up",
+        max,
+        iterations,
+        taskId,
+        iteration,
+        artifacts: entry.artifacts
+      },
+      deps.startFollowup,
+      {
+        previousTaskId: taskId,
+        iteration: iteration + 1,
+        prompt: followupPrompt,
+        reviewResult,
+        verdict
+      }
+    );
+    if (!followup.ok) return followup.value;
+    const nextTaskId = taskIdFrom(followup.value);
+    if (!nextTaskId) {
+      return failureResult({
+        status: "follow-up-failed",
+        max,
+        iterations,
+        taskId,
+        iteration,
+        step: "start-follow-up",
+        error: new Error("startFollowup did not return task_id"),
+        artifacts: artifactsFrom(entry, followup.value)
+      });
+    }
+    entry.next_task_id = nextTaskId;
+    taskId = nextTaskId;
+    taskState = followup.value;
+  }
+  return {
+    status: "iteration-limit",
+    incomplete: true,
+    iteration_max: max,
+    iterations,
+    current_task_id: taskId,
+    next_action: inspectNextAction(taskId, "iteration-limit")
+  };
+}
+
 // src/codex-bridge.mjs
 function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
@@ -10746,7 +11070,7 @@ var COMMANDS = Object.freeze({
   },
   iterate: {
     synopsis: "iterate <task_id_or_prompt> [--max <n>] [--brief <path>] [--backend <name>] [--write] [--json]",
-    summary: "Return the staged closed-loop iterate envelope and next manual task/review/verdict action.",
+    summary: "Run task -> adversarial review -> verdict -> follow-up until approved or the iteration limit is reached.",
     examples: [
       'codex-bridge iterate "Implement the brief" --max 3 --json',
       "codex-bridge iterate task-abc --max 2"
@@ -14163,41 +14487,383 @@ function readReviewedBranchHeadSha(verdict) {
   }
   return null;
 }
+function readCurrentTaskBranchHeadSha(meta, cwd) {
+  const branch = meta?.worktree?.branch;
+  if (!branch) return null;
+  const candidates = [
+    meta?.worktree?.path,
+    cwd
+  ].filter(
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs16.existsSync(candidate) && all.indexOf(candidate) === index
+  );
+  for (const candidateCwd of candidates) {
+    const result = runCommand("git", ["rev-parse", "--verify", branch], {
+      cwd: candidateCwd,
+      timeout: 1e4
+    });
+    if (result.status !== 0 || result.error) continue;
+    const sha = result.stdout.trim().toLowerCase();
+    if (/^[a-f0-9]{40}$/.test(sha)) return sha;
+  }
+  return null;
+}
+function describeMergeBlocker(blocker) {
+  if (blocker === "missing_approval") return "verdict is not approved";
+  if (blocker === "missing_branch_sha") return "approved verdict is missing branch_head_sha";
+  if (blocker === "missing_branch") return "task metadata is missing worktree.branch";
+  if (blocker === "branch_head_unavailable") return "current branch head could not be resolved";
+  if (blocker === "head_drift") return "current branch head differs from the approved reviewed head";
+  return "merge readiness could not be determined";
+}
+function nextActionForMergeReadiness(taskId, blocker) {
+  if (!blocker) {
+    return {
+      kind: "merge",
+      argv: ["merge", taskId],
+      description: "Merge the approved unchanged reviewed branch head."
+    };
+  }
+  if (blocker === "missing_approval") {
+    return {
+      kind: "review-or-iterate",
+      argv: ["iterate", taskId],
+      description: "Continue review or iterate until the task has an approved verdict."
+    };
+  }
+  if (blocker === "missing_branch_sha" || blocker === "head_drift" || blocker === "branch_head_unavailable") {
+    return {
+      kind: "rerun-review",
+      argv: ["adversarial-review", "--task", taskId, "--json"],
+      description: "Rerun task-bound review and record a fresh verdict for the current branch head."
+    };
+  }
+  return {
+    kind: "inspect-task-metadata",
+    argv: ["verdict", taskId, "--json"],
+    description: "Inspect task metadata before attempting merge."
+  };
+}
+function buildVerdictMergeReadiness(taskId, verdict, meta, cwd) {
+  const reviewedBranchHeadSha = readReviewedBranchHeadSha(verdict);
+  const currentBranchHeadSha = readCurrentTaskBranchHeadSha(meta, cwd);
+  const blockers = [];
+  if (verdict?.verdict !== "approved") {
+    blockers.push("missing_approval");
+  } else if (!reviewedBranchHeadSha) {
+    blockers.push("missing_branch_sha");
+  } else if (!meta?.worktree?.branch) {
+    blockers.push("missing_branch");
+  } else if (!currentBranchHeadSha) {
+    blockers.push("branch_head_unavailable");
+  } else if (currentBranchHeadSha !== reviewedBranchHeadSha) {
+    blockers.push("head_drift");
+  }
+  const primaryBlocker = blockers[0] ?? null;
+  return {
+    merge_ready: blockers.length === 0,
+    merge_blocked_by: primaryBlocker,
+    merge_blockers: blockers,
+    merge_block_reason: primaryBlocker ? describeMergeBlocker(primaryBlocker) : null,
+    branch: meta?.worktree?.branch ?? null,
+    branch_head_sha: reviewedBranchHeadSha,
+    reviewed_branch_head_sha: reviewedBranchHeadSha,
+    current_branch_head_sha: currentBranchHeadSha,
+    next_action: nextActionForMergeReadiness(taskId, primaryBlocker)
+  };
+}
+function buildIterateArtifacts(taskId, execution = null, logFile = null) {
+  const dir = jobDir(taskId);
+  return {
+    registry_dir: dir,
+    meta_path: path14.join(dir, "meta.json"),
+    review_path: path14.join(dir, "review.json"),
+    verdict_path: path14.join(dir, "verdict.json"),
+    events_path: execution?.payload?.eventsPath ?? null,
+    events_dir: execution?.payload?.eventsDir ?? null,
+    log_file: logFile
+  };
+}
+function readMetaIfSafeTaskId(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9._-]+$/.test(value) || value === "." || value === "..") {
+    return null;
+  }
+  try {
+    return readMeta(value);
+  } catch {
+    return null;
+  }
+}
+function resolveIterateInput(options, positionals, cwd) {
+  if (positionals.length === 1) {
+    const taskId = positionals[0];
+    const meta = readMetaIfSafeTaskId(taskId);
+    if (meta) return { taskId, prompt: null, meta };
+  }
+  return {
+    taskId: null,
+    prompt: resolvePromptInput(options, positionals, cwd),
+    meta: null
+  };
+}
+function loadIterateBrief(options, cwd) {
+  if (!options.brief) return { brief: null, briefHash: null, source: null };
+  const result = loadBrief(options.brief, { baseDir: cwd });
+  if (!result.ok) {
+    throw new CliError(result.message, {
+      code: result.code,
+      class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
+    });
+  }
+  return {
+    brief: result.brief,
+    briefHash: result.briefHash,
+    source: result.source ?? options.brief
+  };
+}
+function buildIteratePrompt(prompt, brief) {
+  const text = String(prompt ?? "").trim();
+  if (!brief?.brief) return text;
+  const renderedBrief = renderBriefAsMarkdown(brief.brief);
+  return [renderedBrief, text].filter(Boolean).join("\n\n");
+}
+async function runIterateTaskJob({
+  prompt,
+  cwd,
+  stateCwd,
+  workspaceRoot,
+  model,
+  effort,
+  adapter: adapter2,
+  parentTaskId = null,
+  iteration = 1,
+  worktree = null,
+  brief = null
+}) {
+  const taskMetadata = buildTaskRunMetadata({ prompt });
+  const job = buildTaskJob(workspaceRoot, taskMetadata, true, {
+    backend: adapter2.name,
+    adapterCapabilities: adapter2.capabilities()
+  });
+  let worktreeInfo = worktree;
+  if (!worktreeInfo) {
+    worktreeInfo = createSubagentWorktree({
+      cwd,
+      taskId: job.id,
+      backend: adapter2.name,
+      allowBranchFallback: false
+    });
+  }
+  if (worktreeInfo.isolation_mode !== "worktree") {
+    throw new Error(`iterate requires an isolated worktree, got ${worktreeInfo.isolation_mode}`);
+  }
+  job.registryTaskId = job.id;
+  job.worktree = worktreeInfo;
+  job.isolation_mode = worktreeInfo.isolation_mode;
+  writeMeta(job.id, {
+    backend: adapter2.name,
+    capabilities: adapter2.capabilities(),
+    worktree: worktreeInfo,
+    isolation_mode: worktreeInfo.isolation_mode,
+    base_ref: worktreeInfo.base_ref,
+    base_sha: worktreeInfo.base_sha,
+    phase: "iterate-running",
+    parent_task_id: parentTaskId,
+    iteration_index: iteration,
+    brief_hash: brief?.briefHash ?? null,
+    brief_source: brief?.source ?? null
+  });
+  const taskCwd = worktreeInfo.path;
+  const request = buildTaskRequest({
+    cwd: taskCwd,
+    stateCwd,
+    model,
+    effort,
+    prompt,
+    write: true,
+    readOnly: false,
+    resumeLast: false,
+    jobId: job.id,
+    mode: "default",
+    noPipeline: true,
+    backend: adapter2.name
+  });
+  const { logFile } = createTrackedProgress(job, { stderr: false });
+  const execution = await runTrackedJob(
+    job,
+    async () => persistFailureErrorInPayload(
+      await runBridgeTask({
+        ...request,
+        onProgress: null
+      }),
+      "task"
+    ),
+    { logFile }
+  );
+  return {
+    task_id: job.id,
+    execution,
+    worktree: worktreeInfo,
+    artifacts: buildIterateArtifacts(job.id, execution, logFile)
+  };
+}
+function createIterateDependencies({ cwd, workspaceRoot, model, effort, adapter: adapter2, brief }) {
+  const stateCwd = cwd;
+  const readTaskCompletion = async ({ taskId, startedTask }) => {
+    if (startedTask?.execution?.exitStatus && startedTask.execution.exitStatus !== 0) {
+      const err = new Error(startedTask.execution.error?.message ?? `task ${taskId} failed`);
+      err.code = "ITERATE_TASK_FAILED";
+      throw err;
+    }
+    const storedJob = readStoredJob(workspaceRoot, taskId);
+    if (storedJob?.status === "queued" || storedJob?.status === "running") {
+      const err = new Error(`task ${taskId} is still ${storedJob.status}; wait for task completion before reviewing`);
+      err.code = "ITERATE_TASK_STILL_RUNNING";
+      throw err;
+    }
+    if (storedJob?.status === "failed") {
+      const err = new Error(storedJob.errorMessage ?? `task ${taskId} failed`);
+      err.code = "ITERATE_TASK_FAILED";
+      throw err;
+    }
+    const meta = readMeta(taskId);
+    if (!meta) {
+      const err = new Error(`no meta.json found for ${taskId}`);
+      err.code = "ITERATE_TASK_META_MISSING";
+      throw err;
+    }
+    return {
+      task_id: taskId,
+      meta,
+      artifacts: buildIterateArtifacts(taskId, startedTask?.execution ?? null, startedTask?.artifacts?.log_file ?? null)
+    };
+  };
+  const runReview = async ({ taskId }) => {
+    const taskReview = requireTaskReviewContext(taskId, {});
+    const reviewRun = await executeReviewRun({
+      cwd: taskReview.cwd,
+      base: taskReview.base,
+      scope: taskReview.scope,
+      model,
+      backend: adapter2.name,
+      reviewName: "Adversarial Review",
+      taskId,
+      reviewedBranchHeadSha: taskReview.reviewedBranchHeadSha
+    });
+    const reviewResult = reviewRun.payload?.review_result ?? null;
+    if (reviewRun.exitStatus !== 0 || !reviewResult) {
+      const err = new Error(reviewRun.error?.message ?? reviewRun.payload?.parseError ?? `review failed for ${taskId}`);
+      err.code = "ITERATE_REVIEW_FAILED";
+      throw err;
+    }
+    return {
+      review_result: reviewResult,
+      thread_id: reviewRun.threadId ?? null,
+      artifacts: buildIterateArtifacts(taskId)
+    };
+  };
+  const writeIterateVerdict = async ({ taskId, reviewResult }) => {
+    const verdict = mapReviewVerdictToTaskVerdict(reviewResult);
+    const reviewedHead = reviewResult?.reviewed_branch_head_sha ?? reviewResult?.branch_head_sha ?? null;
+    writeVerdict(taskId, {
+      ...reviewResult,
+      verdict,
+      reviewer: "codex-bridge-iterate",
+      ...reviewedHead ? { branch_head_sha: reviewedHead, reviewed_branch_head_sha: reviewedHead } : {}
+    });
+    return {
+      verdict: readVerdict(taskId),
+      artifacts: buildIterateArtifacts(taskId)
+    };
+  };
+  const startFollowup = async ({ previousTaskId, iteration, prompt }) => {
+    const meta = readMeta(previousTaskId);
+    if (!meta?.worktree?.path || !meta?.worktree?.branch) {
+      const err = new Error(`task ${previousTaskId} is missing worktree metadata for follow-up`);
+      err.code = "ITERATE_FOLLOWUP_META_MISSING";
+      throw err;
+    }
+    return runIterateTaskJob({
+      prompt,
+      cwd: meta.worktree.path,
+      stateCwd,
+      workspaceRoot,
+      model,
+      effort,
+      adapter: adapter2,
+      parentTaskId: previousTaskId,
+      iteration,
+      worktree: meta.worktree,
+      brief
+    });
+  };
+  return {
+    startTask: ({ prompt, iteration }) => runIterateTaskJob({
+      prompt,
+      cwd,
+      stateCwd,
+      workspaceRoot,
+      model,
+      effort,
+      adapter: adapter2,
+      iteration,
+      brief
+    }),
+    readTaskCompletion,
+    runReview,
+    writeVerdict: writeIterateVerdict,
+    startFollowup
+  };
+}
 async function handleIterate(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["max", "brief", "backend", "cwd"],
-    booleanOptions: ["json", "write"]
+    valueOptions: ["max", "brief", "backend", "cwd", "prompt-file", "model", "effort"],
+    booleanOptions: ["json", "write"],
+    aliasMap: { m: "model" }
   });
-  if (positionals.length === 0) {
-    throw usageError("iterate requires either a task_id or a prompt as positional");
-  }
   const max = options.max ? Number.parseInt(options.max, 10) : 3;
   if (!Number.isInteger(max) || max < 1 || max > 10) {
     throw usageError(`--max must be an integer between 1 and 10 (got ${JSON.stringify(options.max)})`);
   }
-  const nextActionPrompt = positionals.join(" ");
-  const payload = {
-    iteration_max: max,
-    iterations: [],
-    next_action: {
-      argv: [
-        "node",
-        "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs",
-        "task",
-        "--worktree-auto",
-        "--write",
-        "--json",
-        nextActionPrompt
-      ],
-      description: "iterate orchestration is staged for a follow-up; for now run task \u2192 review \u2192 verdict \u2192 merge manually, or use the codex-bridge-reviewer subagent to collapse review+verdict into one call."
-    },
-    status: "not-yet-orchestrated"
-  };
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const input = resolveIterateInput(options, positionals, cwd);
+  const brief = loadIterateBrief(options, cwd);
+  const prompt = input.taskId ? null : buildIteratePrompt(input.prompt, brief);
+  if (!input.taskId && !prompt) {
+    throw validationError("iterate requires a task_id, prompt, prompt file, or piped stdin", "MISSING_PROMPT");
+  }
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_worktree");
+  guardCapability(adapter2, "supports_artifact_registry");
+  guardCapability(adapter2, "supports_adversarial_review");
+  ensureCodexAvailable(cwd);
+  if (!input.taskId) ensureGitRepository(cwd);
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const model = normalizeRequestedModel(options.model ?? config.model);
+  const effort = normalizeReasoningEffort(options.effort ?? config.effort);
+  const payload = await runIterateLoop({
+    max,
+    taskId: input.taskId,
+    prompt,
+    deps: createIterateDependencies({
+      cwd,
+      workspaceRoot,
+      model,
+      effort,
+      adapter: adapter2,
+      brief
+    })
+  });
   emitSuccess(
     "iterate",
     payload,
-    `iterate orchestration is staged (--max=${max}); see result.next_action for the manual workflow.
+    `iterate ${payload.status} after ${payload.iterations?.length ?? 0}/${max} iteration(s).
 `,
     { json: options.json, startedAt }
   );
@@ -14228,16 +14894,21 @@ function readVerdictPayloadFromStdin() {
   if (parsed.findings != null && !Array.isArray(parsed.findings)) {
     throw usageError("payload.findings must be an array when provided");
   }
-  const reviewedBranchHeadSha = parsed.reviewed_branch_head_sha ?? parsed.branch_head_sha ?? parsed.branchHeadSha ?? null;
+  const reviewedBranchHeadSha = parsed.branch_head_sha ?? parsed.reviewed_branch_head_sha ?? parsed.branchHeadSha ?? null;
   if (reviewedBranchHeadSha != null && (typeof reviewedBranchHeadSha !== "string" || !/^[0-9a-f]{40}$/i.test(reviewedBranchHeadSha.trim()))) {
     throw usageError("payload.reviewed_branch_head_sha must be a 40-character hex SHA when provided");
   }
+  const normalizedBranchHeadSha = typeof reviewedBranchHeadSha === "string" ? reviewedBranchHeadSha.trim().toLowerCase() : null;
   return {
+    ...parsed,
     verdict: parsed.verdict,
     summary: typeof parsed.summary === "string" ? parsed.summary : null,
     findings: Array.isArray(parsed.findings) ? parsed.findings : [],
     reviewer: typeof parsed.reviewer === "string" ? parsed.reviewer : null,
-    ...reviewedBranchHeadSha ? { reviewed_branch_head_sha: reviewedBranchHeadSha.trim() } : {}
+    ...normalizedBranchHeadSha ? {
+      branch_head_sha: normalizedBranchHeadSha,
+      reviewed_branch_head_sha: normalizedBranchHeadSha
+    } : {}
   };
 }
 async function handleVerdict(argv) {
@@ -14313,10 +14984,24 @@ async function handleVerdict(argv) {
       `no verdict found for ${taskId}; use --set to create one`
     );
   }
+  const cwd = resolveCommandCwd(options);
+  const meta = readMeta(taskId);
+  const mergeReadiness = buildVerdictMergeReadiness(taskId, stored, meta, cwd);
+  const result = {
+    task_id: taskId,
+    verdict: {
+      ...stored,
+      summary: stored.summary ?? null,
+      branch: mergeReadiness.branch,
+      branch_head_sha: mergeReadiness.branch_head_sha,
+      reviewed_branch_head_sha: mergeReadiness.reviewed_branch_head_sha
+    },
+    merge_readiness: mergeReadiness
+  };
   emitSuccess(
     "verdict",
-    { task_id: taskId, verdict: stored },
-    JSON.stringify(stored, null, 2) + "\n",
+    result,
+    JSON.stringify(result, null, 2) + "\n",
     { json: options.json, startedAt }
   );
 }
@@ -14331,6 +15016,7 @@ async function handleVerdictsPending(argv) {
       "verdicts requires --pending (only mode currently supported)"
     );
   }
+  const cwd = resolveCommandCwd(options);
   const pendingVerdicts = /* @__PURE__ */ new Set(["approved", "needs-attention", "must-fix"]);
   const tasks = listTasks();
   const pending = [];
@@ -14342,17 +15028,26 @@ async function handleVerdictsPending(argv) {
       continue;
     }
     if (pendingVerdicts.has(verdict.verdict)) {
+      const mergeReadiness = buildVerdictMergeReadiness(taskId, verdict, meta, cwd);
       pending.push({
         task_id: taskId,
         verdict: verdict.verdict,
         summary: verdict.summary ?? null,
         decided_at: verdict.decided_at,
-        branch: meta?.worktree?.branch ?? null
+        branch: mergeReadiness.branch,
+        branch_head_sha: mergeReadiness.branch_head_sha,
+        reviewed_branch_head_sha: mergeReadiness.reviewed_branch_head_sha,
+        current_branch_head_sha: mergeReadiness.current_branch_head_sha,
+        merge_ready: mergeReadiness.merge_ready,
+        merge_blocked_by: mergeReadiness.merge_blocked_by,
+        merge_blockers: mergeReadiness.merge_blockers,
+        merge_block_reason: mergeReadiness.merge_block_reason,
+        next_action: mergeReadiness.next_action
       });
     }
   }
   const rendered = pending.length === 0 ? "No pending verdicts.\n" : pending.map(
-    (p) => `${p.task_id}  ${p.verdict}  ${p.branch ?? "(no branch)"}  ${p.summary ?? ""}`
+    (p) => `${p.task_id}  ${p.verdict}  ${p.branch ?? "(no branch)"}  ${p.merge_ready ? "merge-ready" : `blocked:${p.merge_blocked_by ?? "unknown"}`}  ${p.summary ?? ""}`
   ).join("\n") + "\n";
   emitSuccess(
     "verdicts",

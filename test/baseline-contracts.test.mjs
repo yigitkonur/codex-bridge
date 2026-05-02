@@ -148,8 +148,13 @@ test("baseline contract report verifies static gate, generated surfaces, and com
   );
   assert.ok(Object.hasOwn(report.mutating_command_coverage, "verdict"));
   assert.ok(Object.hasOwn(report.mutating_command_coverage, "merge"));
+  assert.ok(Object.hasOwn(report.mutating_command_coverage, "iterate"));
   assert.match(report.mutating_command_coverage.task.mutation, /auto-pipeline stage\/budget\/partial-completion proof/);
   assert.ok(report.mutating_command_coverage.task.failure_tests.includes("test/auto-pipeline-turn-watchdog.test.mjs"));
+  assert.match(report.mutating_command_coverage.iterate.mutation, /closed-loop task, adversarial review, verdict persistence/);
+  assert.ok(report.mutating_command_coverage.iterate.success_tests.includes("test/iterate-loop.test.mjs"));
+  assert.equal(report.mutating_command_coverage.iterate.baseline_gap, null);
+  assert.equal(Object.hasOwn(report.baseline_gaps, "iterate"), false);
   assert.doesNotMatch(report.mutating_command_coverage.task.baseline_gap, /live review smoke was run/i);
 });
 

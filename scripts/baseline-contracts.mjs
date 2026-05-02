@@ -195,10 +195,10 @@ const COMMAND_COVERAGE = Object.freeze({
     baseline_gap: null
   },
   iterate: {
-    mutation: "staged orchestration envelope only in current implementation",
-    success_tests: ["test/plugin-surfaces.test.mjs"],
-    failure_tests: ["test/plugin-surfaces.test.mjs"],
-    baseline_gap: "Current command intentionally returns not-yet-orchestrated; Phase 3 owns full mutation coverage when implemented."
+    mutation: "closed-loop task, adversarial review, verdict persistence, same-worktree follow-up, approval, and iteration-limit orchestration",
+    success_tests: ["test/iterate-loop.test.mjs", "test/plugin-surfaces.test.mjs"],
+    failure_tests: ["test/iterate-loop.test.mjs", "test/plugin-surfaces.test.mjs"],
+    baseline_gap: null
   }
 });
 

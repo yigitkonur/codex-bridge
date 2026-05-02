@@ -1,6 +1,6 @@
 # Orchestration flow — one canonical loop
 
-The full plan→execute→review→merge loop, written for an Opus-driver. In v2.0.0, the dispatch, review, verdict, and merge commands are wired; the multi-round `iterate` automation is staged, so run the loop manually until it lands.
+The full plan→execute→review→merge loop, written for an Opus-driver. In v2.0.0, `iterate` can run the multi-round task → review → verdict → follow-up loop, while the lower-level task, review, verdict, and merge commands remain available for manual recovery.
 
 ## The loop
 
@@ -77,11 +77,13 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review \
   --cwd "<worktree.path>" --base "<worktree.base_ref>" --brief @brief.json
 ```
 
-`iterate` is present but not yet automated; today it returns a structured next-action stub for the manual loop:
+Prefer `iterate` when you want the bridge to own the review/verdict loop:
 
 ```
 /codex-bridge:iterate <task_id> --max 3 --brief @brief.json
 ```
+
+It returns `approved`, `iteration-limit`, or an explicit incomplete status such as `task-failed`, `review-failed`, `verdict-failed`, or `follow-up-failed`, with artifact pointers under `result.iterations[]`.
 
 ## Verdict and merge
 
