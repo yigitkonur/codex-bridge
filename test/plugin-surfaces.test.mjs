@@ -447,6 +447,32 @@ test("source CLI exposes the implemented iterate dispatcher metadata", () => {
   assert.doesNotMatch(iterate.summary, /staged|manual task\/review\/verdict/);
 });
 
+test("iterate and verdict plugin docs describe implemented loop and merge safety", () => {
+  const iterate = readText("plugin/commands/iterate.md");
+  const verdict = readText("plugin/commands/verdict.md");
+  const verdicts = readText("plugin/commands/verdicts.md");
+  const merge = readText("plugin/commands/merge.md");
+
+  assert.match(iterate, /The command owns the closed loop/);
+  for (const status of ["approved", "iteration-limit", "task-failed", "review-failed", "verdict-failed", "follow-up-failed"]) {
+    assert.match(iterate, new RegExp(status));
+  }
+  assert.match(iterate, /result\.iterations\[\]/);
+  assert.match(iterate, /review_result/);
+  assert.match(iterate, /reviewed_branch_head_sha/);
+  assert.doesNotMatch(iterate, /staged|not-yet/);
+
+  assert.match(verdict, /merge_readiness/);
+  assert.match(verdict, /branch_head_sha/);
+  assert.match(verdict, /review_id/);
+  assert.match(verdict, /review_kind/);
+  assert.match(verdict, /raw review fields/);
+  assert.match(verdicts, /merge_blocked_by/);
+  assert.match(verdicts, /blocked:<reason>/);
+  assert.match(merge, /MERGE_SHA_DRIFT/);
+  assert.match(merge, /--payload-stdin/);
+});
+
 test("review command metadata advertises task-bound review mode", () => {
   const help = runBridge("src/codex-bridge.mjs", ["help", "--json"]);
   assert.equal(help.status, 0, help.stderr || help.stdout);
@@ -1095,8 +1121,9 @@ test("reviewer subagent uses task-bound normalized review output and stdin verdi
   assert.match(reviewer, /result\.review_result\.reviewed_branch_head_sha/);
   assert.doesNotMatch(reviewer, /result\.result\.verdict/);
   assert.match(reviewer, /--payload-stdin/);
-  assert.match(reviewer, /reviewed_branch_head_sha/);
-  assert.match(reviewer, /single-quoted heredoc delimiter/);
+  assert.match(reviewer, /branch_head_sha/);
+  assert.match(reviewer, /Do not place summaries, findings, raw output, or review text in argv/);
+  assert.doesNotMatch(reviewer, /--set <verdict>/);
 });
 
 test("verdict stdin payload preserves untrusted review text as data", () => {

@@ -6,17 +6,24 @@ allowed-tools: Bash(node:*), Agent, Monitor, AskUserQuestion
 
 !`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" iterate "$ARGUMENTS"`
 
-The closed loop pattern is:
+The command owns the closed loop:
 
-1. `/codex-bridge:task --worktree-auto --write` — dispatch worker into a per-task worktree
-2. `/codex-bridge:review <task_id>` — run codex review on the worktree diff
-3. `/codex-bridge:verdict <task_id> --set <verdict>` — persist the reviewer's call
-4. If `verdict === "approved"`: `/codex-bridge:merge <task_id>` — ff-merge
-5. If `verdict === "needs-attention"` and `iteration < max`: re-dispatch task with the review findings folded into the brief, repeat from step 2
+1. Prompt input starts a write-enabled task in a new per-task worktree.
+2. Existing `<task_id>` input resumes from registry metadata for that task.
+3. Each iteration reads task artifacts, runs `adversarial-review --task <task_id> --json`, writes `verdict <task_id> --payload-stdin --json`, and records `review.json` / `verdict.json`.
+4. `approved` stops and returns `result.next_action.argv: ["merge", "<task_id>"]`.
+5. `needs-attention` and `must-fix` start a follow-up task in the same worktree while `iteration < max`.
+6. When `--max` is reached, the command returns `status: "iteration-limit"` and preserves the latest review/verdict artifact pointers.
 
-In v2.0.0 the iterate orchestration is **staged** — the slash command and dispatcher entry are wired but the multi-round loop runs as a follow-up. For today, the canonical workflow is:
+JSON statuses:
 
-- Run the steps manually as documented above, OR
-- Use the `codex-bridge-reviewer` subagent (`plugin/agents/codex-bridge-reviewer.md`) to collapse review+verdict into one subagent call. The reviewer agent stays out of the parent context — the only thing that comes back is the verdict line.
+- `approved` — review approved the current branch head; merge is the next action.
+- `iteration-limit` — the loop reached `--max` before approval.
+- `task-failed` — task launch or task artifact read failed.
+- `review-failed` — adversarial review failed or did not produce normalized `review_result`.
+- `verdict-failed` — verdict persistence failed.
+- `follow-up-failed` — review required another pass, but redispatch failed.
 
-Present the bridge's stdout verbatim. The bridge returns a structured envelope with `result.iteration_max`, `result.iterations` (empty until orchestration lands), and `result.next_action` pointing at the manual workflow command.
+Each `result.iterations[]` entry includes `iteration`, `task_id`, `review_result`, `verdict`, `reviewed_branch_head_sha`, artifact pointers, and `next_task_id` when a follow-up task was launched.
+
+Present the bridge's stdout verbatim. Do not build shell commands that embed review finding text; the bridge passes review-derived verdicts through JSON stdin payloads.
