@@ -93,6 +93,10 @@ export async function runAutoPipeline(options) {
   // nothing exposed the per-stage file set, so an orchestrator that saw
   // pipeline changes after a [DONE] had to blind-accept or diff by hand.
   let fixFilesTouched = [];
+  let reviewVerdict = "approved";
+  let reviewFindings = [];
+  let reviewFindingCount = 0;
+  let incompleteStage = null;
 
   try {
     // Stage 1: Capture initial git diff
@@ -104,9 +108,6 @@ export async function runAutoPipeline(options) {
     checkPipelineTimeout();
 
     // Stage 2: Auto-review (if configured)
-    let reviewVerdict = "approved";
-    let reviewFindings = [];
-    let reviewFindingCount = 0;
     let unstructuredReviewAttention = false;
 
     if (config.auto_review) {
@@ -130,8 +131,8 @@ export async function runAutoPipeline(options) {
         // Inner watchdog (idleTimeoutMs / turnTimeoutMs in captureTurn) can
         // fire before the outer `withTimeout` and resolve with `status: 1`
         // and an `error` field rather than throwing. Without this guard,
-        // `reviewText` is empty, parseReviewText is skipped, and the default
-        // `reviewVerdict = "approve"` would silently carry through to the
+        // `reviewText` is empty, shared parsing is skipped, and the default
+        // `reviewVerdict = "approved"` would silently carry through to the
         // completion check and `[DONE]` — masking a stalled/timed-out review
         // as a passing one.
         //
@@ -328,6 +329,7 @@ export async function runAutoPipeline(options) {
         // Treat a failed completion-check turn as "incomplete" with a
         // diagnostic item, rather than silently falling through to `complete`.
         if (checkResult.status !== 0) {
+          incompleteStage = "check";
           completionResult = {
             complete: false,
             missing_items: [
@@ -340,6 +342,7 @@ export async function runAutoPipeline(options) {
             completionResult = JSON.parse(checkResult.finalMessage);
           } catch (error) {
             const parseMessage = error instanceof Error ? error.message : String(error);
+            incompleteStage = "check";
             completionResult = {
               complete: false,
               missing_items: [
@@ -350,6 +353,7 @@ export async function runAutoPipeline(options) {
           }
         } else {
           // Turn succeeded but no final message — treat as inconclusive/incomplete.
+          incompleteStage = "check";
           completionResult = {
             complete: false,
             missing_items: ["Completion check produced no final message."],
@@ -371,6 +375,7 @@ export async function runAutoPipeline(options) {
         }
         const message = error instanceof Error ? error.message : String(error);
         const detail = message || "check failed";
+        incompleteStage = "check";
         completionResult = {
           complete: false,
           missing_items: [
@@ -394,6 +399,7 @@ export async function runAutoPipeline(options) {
       const existingMissingItems = Array.isArray(completionResult.missing_items)
         ? completionResult.missing_items
         : [];
+      incompleteStage ??= "review";
       completionResult = {
         complete: false,
         missing_items: existingMissingItems.includes(missingItem)
@@ -414,8 +420,12 @@ export async function runAutoPipeline(options) {
     const completionSummary = typeof completionResult.summary === "string"
       ? completionResult.summary
       : null;
+    const complete = Boolean(completionResult.complete);
+    const partial = !complete;
+    const failingStage = partial ? incompleteStage : null;
+    const completion = normalizeCompletionResult(completionResult, missingItems, completionSummary, complete);
 
-    if (completionResult.complete) {
+    if (complete) {
       logEvent(session, formatDoneEvent(session, {
         duration,
         diffStat: finalDiff.diffStat,
@@ -433,6 +443,7 @@ export async function runAutoPipeline(options) {
         diffPath: finalDiff.diffPath,
         verdict: reviewVerdict,
         findingCount: reviewFindingCount,
+        failingStage,
         missingItems,
         scriptPath,
         jobId,
@@ -444,9 +455,17 @@ export async function runAutoPipeline(options) {
     logNdjson(session, "PIPELINE_COMPLETE", null, {
       completedStages,
       duration,
-      complete: completionResult.complete,
+      complete,
+      partial,
+      failing_stage: failingStage,
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+      reviewVerdict,
+      reviewFindingCount,
+      fixFilesTouched,
       missingItems,
       completionSummary,
+      completion,
       touchedFiles: fixFilesTouched,
     });
 
@@ -459,14 +478,24 @@ export async function runAutoPipeline(options) {
     // closer matches the documented name.
     logEvent(session, formatPipelineEvent(session, {
       stage: "done",
-      detail: `stages=${completedStages.join(",")} complete=${Boolean(completionResult.complete)} touched=${fixFilesTouched.length}`
+      detail: `stages=${completedStages.join(",")} complete=${complete} partial=${partial}${
+        failingStage ? ` failing_stage=${failingStage}` : ""
+      } touched=${fixFilesTouched.length}`
     }));
 
     return {
-      complete: completionResult.complete,
+      complete,
+      partial,
       completedStages,
       duration,
       diff: finalDiff,
+      failing_stage: failingStage,
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+      reviewVerdict,
+      reviewFindingCount,
+      fixFilesTouched,
+      completion,
       missingItems,
       completionSummary,
       touchedFiles: fixFilesTouched,
@@ -531,6 +560,12 @@ export async function runAutoPipeline(options) {
       error: errorMessage,
       origin,
       failing_stage: failingStage,
+      partial: true,
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+      reviewVerdict,
+      reviewFindingCount,
+      fixFilesTouched,
       touchedFiles: fixFilesTouched,
     });
 
@@ -538,17 +573,46 @@ export async function runAutoPipeline(options) {
     // to render as [PIPELINE:failed] instead of the stale [PIPELINE:pipeline:failed].
     logEvent(session, formatPipelineEvent(session, {
       stage: "failed",
-      detail: `at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+      detail: `failing_stage=${failingStage ?? "unknown"} at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
 
+    const completion = normalizeCompletionResult(
+      { complete: false, missing_items: [], summary: null },
+      [],
+      null,
+      false
+    );
     return {
       complete: false,
+      partial: true,
       completedStages,
       duration,
       error: errorMessage,
+      diff: finalDiff,
+      failing_stage: failingStage,
+      stageTimeoutMs: stageMs,
+      totalTimeoutMs: totalMs,
+      reviewVerdict,
+      reviewFindingCount,
+      fixFilesTouched,
+      completion,
+      missingItems: [],
+      completionSummary: null,
       touchedFiles: fixFilesTouched,
     };
   }
+}
+
+function normalizeCompletionResult(completionResult, missingItems, completionSummary, complete) {
+  const source = completionResult && typeof completionResult === "object" && !Array.isArray(completionResult)
+    ? completionResult
+    : {};
+  return {
+    ...source,
+    complete,
+    missing_items: missingItems,
+    summary: completionSummary,
+  };
 }
 
 function buildFixPrompt(findings) {

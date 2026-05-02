@@ -200,6 +200,16 @@ test("auto-pipeline caps review, fix, and check deadlines by remaining total bud
 
     assert.equal(result.complete, true);
     assert.deepEqual(result.completedStages, ["diff", "review", "fix", "check"]);
+    assert.equal(result.partial, false);
+    assert.equal(result.failing_stage, null);
+    assert.equal(result.stageTimeoutMs, 5_000);
+    assert.equal(result.totalTimeoutMs, 12_000);
+    assert.equal(result.reviewVerdict, "must-fix");
+    assert.equal(result.reviewFindingCount, 1);
+    assert.deepEqual(result.fixFilesTouched, []);
+    assert.deepEqual(result.completion, { complete: true, missing_items: [], summary: "ok" });
+    assert.deepEqual(result.missingItems, []);
+    assert.equal(result.completionSummary, "ok");
     assert.equal(reviewCalls.length, 1, "expected one review call");
     assert.equal(turnCalls.length, 2, "expected fix and check turns");
     assert.deepEqual(
@@ -596,6 +606,14 @@ test("auto-pipeline treats failed fix turn status as terminal failure", async ()
     assert.equal(turnCalls.length, 1, "structured native finding must trigger one fix turn");
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff", "review"]);
+    assert.equal(result.partial, true);
+    assert.equal(result.failing_stage, "fix");
+    assert.equal(result.stageTimeoutMs, stageMs);
+    assert.equal(result.totalTimeoutMs, stageMs * 4);
+    assert.equal(result.reviewVerdict, "must-fix");
+    assert.equal(result.reviewFindingCount, 1);
+    assert.deepEqual(result.fixFilesTouched, []);
+    assert.equal(result.completion.complete, false);
     assert.match(result.error, /auto-fix failed \(status 1: fix turn did not complete\)\./);
 
     const events = fs.readFileSync(session.eventsPath, "utf8");
@@ -666,6 +684,14 @@ test("auto-pipeline treats failed review status as terminal failure", async () =
     assert.equal(turnCalls.length, 0, "failed native review must not continue to a fix turn");
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff"]);
+    assert.equal(result.partial, true);
+    assert.equal(result.failing_stage, "review");
+    assert.equal(result.stageTimeoutMs, stageMs);
+    assert.equal(result.totalTimeoutMs, stageMs * 4);
+    assert.equal(result.reviewVerdict, "approved");
+    assert.equal(result.reviewFindingCount, 0);
+    assert.deepEqual(result.fixFilesTouched, []);
+    assert.equal(result.completion.complete, false);
     assert.match(result.error, /auto-review failed \(status 1: review auth rejected\)\./);
 
     const events = fs.readFileSync(session.eventsPath, "utf8");
@@ -837,6 +863,20 @@ test("auto-pipeline marks completion-check rejection incomplete instead of done"
     assert.equal(turnCalls.length, 1, "expected one completion-check turn attempt");
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff", "check-failed"]);
+    assert.equal(result.partial, true);
+    assert.equal(result.failing_stage, "check");
+    assert.equal(result.stageTimeoutMs, stageMs);
+    assert.equal(result.totalTimeoutMs, stageMs * 4);
+    assert.equal(result.reviewVerdict, "approved");
+    assert.equal(result.reviewFindingCount, 0);
+    assert.deepEqual(result.fixFilesTouched, []);
+    assert.deepEqual(result.completion, {
+      complete: false,
+      missing_items: [
+        "Completion check failed before producing a result: completion check transport failed",
+      ],
+      summary: "completion-check failed",
+    });
     assert.deepEqual(result.missingItems, [
       "Completion check failed before producing a result: completion check transport failed",
     ]);
@@ -845,6 +885,7 @@ test("auto-pipeline marks completion-check rejection incomplete instead of done"
     const events = fs.readFileSync(session.eventsPath, "utf8");
     assert.match(events, /\[PIPELINE:check:failed\].*completion check transport failed/);
     assert.match(events, /\[INCOMPLETE\]/);
+    assert.match(events, /failing_stage: check/);
     assert.match(events, /Completion check failed before producing a result: completion check transport failed/);
     assert.doesNotMatch(events, /\[DONE\]/);
 
@@ -914,6 +955,13 @@ test("auto-pipeline marks invalid completion-check JSON incomplete instead of do
     assert.equal(turnCalls.length, 1, "expected one completion-check turn attempt");
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff", "check"]);
+    assert.equal(result.partial, true);
+    assert.equal(result.failing_stage, "check");
+    assert.equal(result.stageTimeoutMs, stageMs);
+    assert.equal(result.totalTimeoutMs, stageMs * 4);
+    assert.equal(result.reviewVerdict, "approved");
+    assert.equal(result.reviewFindingCount, 0);
+    assert.deepEqual(result.fixFilesTouched, []);
     assert.equal(result.completionSummary, "completion-check invalid-json");
     assert.equal(result.missingItems.length, 1);
     assert.match(result.missingItems[0], /Completion check returned invalid JSON:/);
@@ -922,6 +970,7 @@ test("auto-pipeline marks invalid completion-check JSON incomplete instead of do
     const events = fs.readFileSync(session.eventsPath, "utf8");
     assert.match(events, /\[PIPELINE:check:done\].*complete=false missing=1/);
     assert.match(events, /\[INCOMPLETE\]/);
+    assert.match(events, /failing_stage: check/);
     assert.match(events, /Completion check returned invalid JSON:/);
     assert.doesNotMatch(events, /\[DONE\]/);
 
@@ -932,7 +981,15 @@ test("auto-pipeline marks invalid completion-check JSON incomplete instead of do
       .map((line) => JSON.parse(line));
     const completeEntry = entries.find((entry) => entry.tag === "PIPELINE_COMPLETE");
     assert.equal(completeEntry?.data.complete, false);
+    assert.equal(completeEntry?.data.partial, true);
+    assert.equal(completeEntry?.data.failing_stage, "check");
+    assert.equal(completeEntry?.data.stageTimeoutMs, stageMs);
+    assert.equal(completeEntry?.data.totalTimeoutMs, stageMs * 4);
+    assert.equal(completeEntry?.data.reviewVerdict, "approved");
+    assert.equal(completeEntry?.data.reviewFindingCount, 0);
+    assert.deepEqual(completeEntry?.data.fixFilesTouched, []);
     assert.equal(completeEntry?.data.completionSummary, "completion-check invalid-json");
+    assert.deepEqual(completeEntry?.data.completion, result.completion);
     assert.deepEqual(completeEntry?.data.missingItems, result.missingItems);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -1021,6 +1078,10 @@ test("auto-pipeline clamps stage timeout to remaining total budget", async () =>
 
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff"]);
+    assert.equal(result.partial, true);
+    assert.equal(result.failing_stage, "pipeline-total");
+    assert.equal(result.stageTimeoutMs, stageMs);
+    assert.equal(result.totalTimeoutMs, totalMs);
     assert.match(result.error, /Auto-pipeline exceeded/);
     assert.ok(
       Date.now() - startedAt < 1_500,
@@ -1090,6 +1151,13 @@ test("auto-pipeline surfaces fix-stage nonzero status as fix failure", async () 
 
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff", "review"]);
+    assert.equal(result.partial, true);
+    assert.equal(result.failing_stage, "fix");
+    assert.equal(result.stageTimeoutMs, 5_000);
+    assert.equal(result.totalTimeoutMs, 20_000);
+    assert.equal(result.reviewVerdict, "must-fix");
+    assert.equal(result.reviewFindingCount, 1);
+    assert.deepEqual(result.fixFilesTouched, []);
     assert.match(result.error, /auto-fix failed \(status 1: auth denied\)/);
     assert.equal(turnCalls.length, 1, "completion check must not run after a fix-stage failure");
 

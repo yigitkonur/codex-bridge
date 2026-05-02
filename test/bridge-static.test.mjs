@@ -171,6 +171,29 @@ test("adapter canonical tag contract includes live auto-pipeline stages", () => 
   }
 });
 
+test("task pipeline envelope preserves partial-completion proof fields", () => {
+  const taskPipeline = bridge.match(/const pipelineResult = await runAutoPipeline[\s\S]*?return \{ \.\.\.result, session, pipeline: pipelineResult \};/)?.[0] ?? "";
+  assert.match(taskPipeline, /pipelineResult\.failing_stage/);
+  assert.match(taskPipeline, /setPhase\("incomplete"[\s\S]*\{ pipeline: pipelineResult, monitor \}/);
+  assert.match(taskPipeline, /setPhase\("done"[\s\S]*\{ pipeline: pipelineResult, monitor \}/);
+  assert.match(taskPipeline, /return \{ \.\.\.result, session, pipeline: pipelineResult \};/);
+
+  for (const field of [
+    "partial",
+    "failing_stage",
+    "stageTimeoutMs",
+    "totalTimeoutMs",
+    "reviewVerdict",
+    "reviewFindingCount",
+    "fixFilesTouched",
+    "completion",
+    "missingItems",
+    "completionSummary",
+  ]) {
+    assert.match(autoPipeline, new RegExp(`${field}(?:\\s*:|\\s*,)`), `pipeline result should expose ${field}`);
+  }
+});
+
 test("working-tree review empty check includes untracked files", () => {
   const review = bridge.match(/async function executeReviewRun[\s\S]*?async function executeTaskRun/)?.[0] ?? "";
   const workingTreeCheck = review.match(

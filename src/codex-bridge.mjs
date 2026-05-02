@@ -3590,9 +3590,10 @@ async function runBridgeTask(request) {
       // `unexpected-bridge-observations/03-pipeline-incomplete-next-action-misleads-orchestrator.md`.
       const pipelineErrored = Boolean(pipelineResult.error);
       const failedStage =
-        pipelineResult.completedStages?.length
+        pipelineResult.failing_stage
+        ?? (pipelineResult.completedStages?.length
           ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1]
-          : "diff";
+          : "diff");
       const nextAction = pipelineErrored
         ? {
             command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,

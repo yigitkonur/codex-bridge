@@ -594,13 +594,16 @@ export function formatHandoffEvent(session, { reason, origin, errorCode, upstrea
   return lines.join("\n");
 }
 
-export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, failingStage = null, missingItems, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
   const jobCwd = jobCommandCwd(cwd, stateCwd);
   const lines = [
     `[INCOMPLETE] ${session.threadId} | ${diffStat}`,
     `  diff: ${diffPath}`,
     `  review: ${verdict} (${findingCount} findings)`,
   ];
+  if (failingStage) {
+    lines.push(`  failing_stage: ${failingStage}`);
+  }
   if (missingItems && missingItems.length > 0) {
     lines.push("  missing:");
     for (const item of missingItems) {
