@@ -152,9 +152,11 @@ import {
 import { runAutoPipeline } from "./adapters/codex/pipeline.mjs";
 import { checkForUpdate, formatUpdateNotice, shouldAttemptApply, markApplyAttempted } from "./lib/update-check.mjs";
 import {
+  mapReviewVerdictToTaskVerdict,
   normalizeAdversarialReviewResult,
   normalizeNativeReviewResult
 } from "./lib/review-result.mjs";
+import { runIterateLoop } from "./lib/iterate-loop.mjs";
 
 // Hot-path auto-apply. On every non-json, non-update/version invocation the
 // bridge:
@@ -609,7 +611,7 @@ const COMMANDS = Object.freeze({
   },
   iterate: {
     synopsis: "iterate <task_id_or_prompt> [--max <n>] [--brief <path>] [--backend <name>] [--write] [--json]",
-    summary: "Return the staged closed-loop iterate envelope and next manual task/review/verdict action.",
+    summary: "Run task -> adversarial review -> verdict -> follow-up until approved or the iteration limit is reached.",
     examples: [
       'codex-bridge iterate "Implement the brief" --max 3 --json',
       "codex-bridge iterate task-abc --max 2"
@@ -5038,70 +5040,317 @@ function buildVerdictMergeReadiness(taskId, verdict, meta, cwd) {
   };
 }
 
+function buildIterateArtifacts(taskId, execution = null, logFile = null) {
+  const dir = jobDir(taskId);
+  return {
+    registry_dir: dir,
+    meta_path: path.join(dir, "meta.json"),
+    review_path: path.join(dir, "review.json"),
+    verdict_path: path.join(dir, "verdict.json"),
+    events_path: execution?.payload?.eventsPath ?? null,
+    events_dir: execution?.payload?.eventsDir ?? null,
+    log_file: logFile,
+  };
+}
+
+function readMetaIfSafeTaskId(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9._-]+$/.test(value) || value === "." || value === "..") {
+    return null;
+  }
+  try {
+    return readMeta(value);
+  } catch {
+    return null;
+  }
+}
+
+function resolveIterateInput(options, positionals, cwd) {
+  if (positionals.length === 1) {
+    const taskId = positionals[0];
+    const meta = readMetaIfSafeTaskId(taskId);
+    if (meta) return { taskId, prompt: null, meta };
+  }
+  return {
+    taskId: null,
+    prompt: resolvePromptInput(options, positionals, cwd),
+    meta: null,
+  };
+}
+
+function loadIterateBrief(options, cwd) {
+  if (!options.brief) return { brief: null, briefHash: null, source: null };
+  const result = loadBrief(options.brief, { baseDir: cwd });
+  if (!result.ok) {
+    throw new CliError(result.message, {
+      code: result.code,
+      class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+    });
+  }
+  return {
+    brief: result.brief,
+    briefHash: result.briefHash,
+    source: result.source ?? options.brief,
+  };
+}
+
+function buildIteratePrompt(prompt, brief) {
+  const text = String(prompt ?? "").trim();
+  if (!brief?.brief) return text;
+  const renderedBrief = renderBriefAsMarkdown(brief.brief);
+  return [renderedBrief, text].filter(Boolean).join("\n\n");
+}
+
+async function runIterateTaskJob({
+  prompt,
+  cwd,
+  stateCwd,
+  workspaceRoot,
+  model,
+  effort,
+  adapter,
+  parentTaskId = null,
+  iteration = 1,
+  worktree = null,
+  brief = null,
+}) {
+  const taskMetadata = buildTaskRunMetadata({ prompt });
+  const job = buildTaskJob(workspaceRoot, taskMetadata, true, {
+    backend: adapter.name,
+    adapterCapabilities: adapter.capabilities(),
+  });
+  let worktreeInfo = worktree;
+  if (!worktreeInfo) {
+    worktreeInfo = createSubagentWorktree({
+      cwd,
+      taskId: job.id,
+      backend: adapter.name,
+      allowBranchFallback: false,
+    });
+  }
+  if (worktreeInfo.isolation_mode !== "worktree") {
+    throw new Error(`iterate requires an isolated worktree, got ${worktreeInfo.isolation_mode}`);
+  }
+  job.registryTaskId = job.id;
+  job.worktree = worktreeInfo;
+  job.isolation_mode = worktreeInfo.isolation_mode;
+  writeMeta(job.id, {
+    backend: adapter.name,
+    capabilities: adapter.capabilities(),
+    worktree: worktreeInfo,
+    isolation_mode: worktreeInfo.isolation_mode,
+    base_ref: worktreeInfo.base_ref,
+    base_sha: worktreeInfo.base_sha,
+    phase: "iterate-running",
+    parent_task_id: parentTaskId,
+    iteration_index: iteration,
+    brief_hash: brief?.briefHash ?? null,
+    brief_source: brief?.source ?? null,
+  });
+
+  const taskCwd = worktreeInfo.path;
+  const request = buildTaskRequest({
+    cwd: taskCwd,
+    stateCwd,
+    model,
+    effort,
+    prompt,
+    write: true,
+    readOnly: false,
+    resumeLast: false,
+    jobId: job.id,
+    mode: "default",
+    noPipeline: true,
+    backend: adapter.name,
+  });
+  const { logFile } = createTrackedProgress(job, { stderr: false });
+  const execution = await runTrackedJob(
+    job,
+    async () =>
+      persistFailureErrorInPayload(
+        await runBridgeTask({
+          ...request,
+          onProgress: null,
+        }),
+        "task",
+      ),
+    { logFile },
+  );
+
+  return {
+    task_id: job.id,
+    execution,
+    worktree: worktreeInfo,
+    artifacts: buildIterateArtifacts(job.id, execution, logFile),
+  };
+}
+
+function createIterateDependencies({ cwd, workspaceRoot, model, effort, adapter, brief }) {
+  const stateCwd = cwd;
+  const readTaskCompletion = async ({ taskId, startedTask }) => {
+    if (startedTask?.execution?.exitStatus && startedTask.execution.exitStatus !== 0) {
+      const err = new Error(startedTask.execution.error?.message ?? `task ${taskId} failed`);
+      err.code = "ITERATE_TASK_FAILED";
+      throw err;
+    }
+    const storedJob = readStoredJob(workspaceRoot, taskId);
+    if (storedJob?.status === "queued" || storedJob?.status === "running") {
+      const err = new Error(`task ${taskId} is still ${storedJob.status}; wait for task completion before reviewing`);
+      err.code = "ITERATE_TASK_STILL_RUNNING";
+      throw err;
+    }
+    if (storedJob?.status === "failed") {
+      const err = new Error(storedJob.errorMessage ?? `task ${taskId} failed`);
+      err.code = "ITERATE_TASK_FAILED";
+      throw err;
+    }
+    const meta = readMeta(taskId);
+    if (!meta) {
+      const err = new Error(`no meta.json found for ${taskId}`);
+      err.code = "ITERATE_TASK_META_MISSING";
+      throw err;
+    }
+    return {
+      task_id: taskId,
+      meta,
+      artifacts: buildIterateArtifacts(taskId, startedTask?.execution ?? null, startedTask?.artifacts?.log_file ?? null),
+    };
+  };
+
+  const runReview = async ({ taskId }) => {
+    const taskReview = requireTaskReviewContext(taskId, {});
+    const reviewRun = await executeReviewRun({
+      cwd: taskReview.cwd,
+      base: taskReview.base,
+      scope: taskReview.scope,
+      model,
+      backend: adapter.name,
+      reviewName: "Adversarial Review",
+      taskId,
+      reviewedBranchHeadSha: taskReview.reviewedBranchHeadSha,
+    });
+    const reviewResult = reviewRun.payload?.review_result ?? null;
+    if (reviewRun.exitStatus !== 0 || !reviewResult) {
+      const err = new Error(reviewRun.error?.message ?? reviewRun.payload?.parseError ?? `review failed for ${taskId}`);
+      err.code = "ITERATE_REVIEW_FAILED";
+      throw err;
+    }
+    return {
+      review_result: reviewResult,
+      thread_id: reviewRun.threadId ?? null,
+      artifacts: buildIterateArtifacts(taskId),
+    };
+  };
+
+  const writeIterateVerdict = async ({ taskId, reviewResult }) => {
+    const verdict = mapReviewVerdictToTaskVerdict(reviewResult);
+    const reviewedHead = reviewResult?.reviewed_branch_head_sha ?? reviewResult?.branch_head_sha ?? null;
+    writeVerdict(taskId, {
+      ...reviewResult,
+      verdict,
+      reviewer: "codex-bridge-iterate",
+      ...(reviewedHead ? { branch_head_sha: reviewedHead, reviewed_branch_head_sha: reviewedHead } : {}),
+    });
+    return {
+      verdict: readVerdict(taskId),
+      artifacts: buildIterateArtifacts(taskId),
+    };
+  };
+
+  const startFollowup = async ({ previousTaskId, iteration, prompt }) => {
+    const meta = readMeta(previousTaskId);
+    if (!meta?.worktree?.path || !meta?.worktree?.branch) {
+      const err = new Error(`task ${previousTaskId} is missing worktree metadata for follow-up`);
+      err.code = "ITERATE_FOLLOWUP_META_MISSING";
+      throw err;
+    }
+    return runIterateTaskJob({
+      prompt,
+      cwd: meta.worktree.path,
+      stateCwd,
+      workspaceRoot,
+      model,
+      effort,
+      adapter,
+      parentTaskId: previousTaskId,
+      iteration,
+      worktree: meta.worktree,
+      brief,
+    });
+  };
+
+  return {
+    startTask: ({ prompt, iteration }) =>
+      runIterateTaskJob({
+        prompt,
+        cwd,
+        stateCwd,
+        workspaceRoot,
+        model,
+        effort,
+        adapter,
+        iteration,
+        brief,
+      }),
+    readTaskCompletion,
+    runReview,
+    writeVerdict: writeIterateVerdict,
+    startFollowup,
+  };
+}
+
 // iterate <prompt|task_id> — closed-loop dispatcher that runs task →
-// review → verdict and re-dispatches on needs-attention until either
+// review → verdict and re-dispatches on needs-attention/must-fix until either
 // approved or iteration_max is hit.
-//
-// v2.0.0 ships the dispatch surface: argument parsing, dispatcher entry,
-// envelope shape. The actual orchestration (spawning task --background,
-// polling for [DONE], running review, persisting verdict, re-briefing
-// from review findings) lands as a focused follow-up. The reviewer
-// agent (plugin/agents/codex-bridge-reviewer.md) is callable today and
-// covers the review→verdict half of the loop.
 async function handleIterate(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["max", "brief", "backend", "cwd"],
+    valueOptions: ["max", "brief", "backend", "cwd", "prompt-file", "model", "effort"],
     booleanOptions: ["json", "write"],
+    aliasMap: { m: "model" },
   });
-  if (positionals.length === 0) {
-    throw usageError("iterate requires either a task_id or a prompt as positional");
-  }
   const max = options.max ? Number.parseInt(options.max, 10) : 3;
   if (!Number.isInteger(max) || max < 1 || max > 10) {
     throw usageError(`--max must be an integer between 1 and 10 (got ${JSON.stringify(options.max)})`);
   }
-
-  // For v2.0.0, return a structured stub envelope so the slash command
-  // and dispatcher are exercised end-to-end. Manual workflow remains:
-  //   /codex-bridge:task --worktree-auto --write "..."
-  //   /codex-bridge:review <task_id> --json
-  //   /codex-bridge:verdict <task_id> --set <verdict>
-  //   /codex-bridge:merge <task_id>            # if approved
-  //   <repeat with --resume-last>              # if needs-attention
-  // The codex-bridge-reviewer agent (plugin/agents/codex-bridge-reviewer.md)
-  // collapses review+verdict into one subagent call.
-  //
-  // Emit the next-action as a structured argv array rather than a shell
-  // command string. The prompt can contain `$`, backticks, `!`, and
-  // newlines from review findings; embedding it into a shell-quoted
-  // string would either need precise POSIX-shell escaping or risk
-  // re-evaluation when the consumer copy-pastes. argv is unambiguously
-  // data and the consumer (Claude / a subagent) can rebuild the call
-  // safely.
-  const nextActionPrompt = positionals.join(" ");
-  const payload = {
-    iteration_max: max,
-    iterations: [],
-    next_action: {
-      argv: [
-        "node",
-        "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs",
-        "task",
-        "--worktree-auto",
-        "--write",
-        "--json",
-        nextActionPrompt,
-      ],
-      description:
-        "iterate orchestration is staged for a follow-up; for now run task → review → verdict → merge manually, or use the codex-bridge-reviewer subagent to collapse review+verdict into one call.",
-    },
-    status: "not-yet-orchestrated",
-  };
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const input = resolveIterateInput(options, positionals, cwd);
+  const brief = loadIterateBrief(options, cwd);
+  const prompt = input.taskId ? null : buildIteratePrompt(input.prompt, brief);
+  if (!input.taskId && !prompt) {
+    throw validationError("iterate requires a task_id, prompt, prompt file, or piped stdin", "MISSING_PROMPT");
+  }
+  const adapter = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
+  guardCapability(adapter, "supports_worktree");
+  guardCapability(adapter, "supports_artifact_registry");
+  guardCapability(adapter, "supports_adversarial_review");
+  ensureCodexAvailable(cwd);
+  if (!input.taskId) ensureGitRepository(cwd);
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const model = normalizeRequestedModel(options.model ?? config.model);
+  const effort = normalizeReasoningEffort(options.effort ?? config.effort);
+  const payload = await runIterateLoop({
+    max,
+    taskId: input.taskId,
+    prompt,
+    deps: createIterateDependencies({
+      cwd,
+      workspaceRoot,
+      model,
+      effort,
+      adapter,
+      brief,
+    }),
+  });
   emitSuccess(
     "iterate",
     payload,
-    `iterate orchestration is staged (--max=${max}); see result.next_action for the manual workflow.\n`,
+    `iterate ${payload.status} after ${payload.iterations?.length ?? 0}/${max} iteration(s).\n`,
     { json: options.json, startedAt },
   );
 }

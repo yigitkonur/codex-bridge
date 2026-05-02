@@ -437,18 +437,14 @@ test("bundled plugin CLI exposes the verdict command", () => {
   assert.equal(payload.result.verdict.verdict, "approved");
 });
 
-test("bundled plugin CLI exposes the staged iterate dispatcher", () => {
-  const help = runBridge("plugin/scripts/codex-bridge.mjs", ["help", "--json"]);
+test("source CLI exposes the implemented iterate dispatcher metadata", () => {
+  const help = runBridge("src/codex-bridge.mjs", ["help", "--json"]);
   assert.equal(help.status, 0, help.stderr || help.stdout);
   const helpPayload = JSON.parse(help.stdout);
-  assert.ok(helpPayload.result.commands.some((command) => command.name === "iterate"));
-
-  const result = runBridge("plugin/scripts/codex-bridge.mjs", ["iterate", "demo task", "--json"]);
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.command, "iterate");
-  assert.equal(payload.result.status, "not-yet-orchestrated");
-  assert.equal(payload.result.iteration_max, 3);
+  const iterate = helpPayload.result.commands.find((command) => command.name === "iterate");
+  assert.ok(iterate);
+  assert.match(iterate.summary, /adversarial review -> verdict -> follow-up/);
+  assert.doesNotMatch(iterate.summary, /staged|manual task\/review\/verdict/);
 });
 
 test("review command metadata advertises task-bound review mode", () => {
