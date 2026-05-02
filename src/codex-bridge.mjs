@@ -143,6 +143,10 @@ import {
 } from "./lib/pending-requests.mjs";
 import { runAutoPipeline } from "./adapters/codex/pipeline.mjs";
 import { checkForUpdate, formatUpdateNotice, shouldAttemptApply, markApplyAttempted } from "./lib/update-check.mjs";
+import {
+  normalizeAdversarialReviewResult,
+  normalizeNativeReviewResult
+} from "./lib/review-result.mjs";
 
 // Hot-path auto-apply. On every non-json, non-update/version invocation the
 // bridge:
@@ -576,21 +580,23 @@ const COMMANDS = Object.freeze({
     ]
   },
   review: {
-    synopsis: "review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json]",
-    summary: "Run a standalone code review using Codex's built-in reviewer.",
+    synopsis: "review [--backend <name>] [--task <task_id>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--json]",
+    summary: "Run a standalone code review using Codex's built-in reviewer. With --task, review the task worktree and bind the JSON review_result to the reviewed branch HEAD.",
     examples: [
       "codex-bridge review --scope working-tree",
-      "codex-bridge review --scope branch --base main"
+      "codex-bridge review --scope branch --base main",
+      "codex-bridge review --task task-mo5xxx --json"
     ]
   },
   "adversarial-review": {
-    synopsis: "adversarial-review [--backend <name>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--brief @<path>.json] [--concern <text>]... [--json] [focus text...]",
-    summary: "Run an adversarial review with a structured JSON result. --brief and --concern populate the {{OPUS_CONCERNS}} channel in the prompt — the orchestrator's privileged focus signal. Brief items precede flag items and are de-duped while preserving order.",
+    synopsis: "adversarial-review [--backend <name>] [--task <task_id>] [--scope auto|working-tree|branch] [--base <ref>] [-m <model>] [--brief @<path>.json] [--concern <text>]... [--json] [focus text...]",
+    summary: "Run an adversarial review with a structured JSON result. With --task, review the task worktree and bind the JSON review_result to the reviewed branch HEAD. --brief and --concern populate the {{OPUS_CONCERNS}} channel in the prompt — the orchestrator's privileged focus signal. Brief items precede flag items and are de-duped while preserving order.",
     examples: [
       'codex-bridge adversarial-review "focus on SQL injection risks"',
       "codex-bridge adversarial-review --scope branch --base main",
       "codex-bridge adversarial-review --brief @review-brief.json",
-      'codex-bridge adversarial-review --concern "Don\'t swallow non-retryable 4xx" --concern "Make timeout configurable"'
+      'codex-bridge adversarial-review --concern "Don\'t swallow non-retryable 4xx" --concern "Make timeout configurable"',
+      "codex-bridge adversarial-review --task task-mo5xxx --json"
     ]
   },
   iterate: {
@@ -1687,6 +1693,14 @@ async function executeReviewRun(request) {
     const payload = {
       review: reviewName,
       target,
+      review_result: result.status === 0
+        ? normalizeNativeReviewResult({
+            reviewText: result.reviewText,
+            target,
+            task_id: request.taskId ?? null,
+            reviewed_branch_head_sha: request.reviewedBranchHeadSha ?? null,
+          })
+        : null,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       codex: {
@@ -1711,7 +1725,7 @@ async function executeReviewRun(request) {
       turnId: result.turnId,
       payload,
       rendered,
-      summary: firstMeaningfulLine(result.reviewText, `${reviewName} completed.`),
+      summary: payload.review_result?.summary ?? firstMeaningfulLine(result.reviewText, `${reviewName} completed.`),
       jobTitle: `Codex ${reviewName}`,
       jobClass: "review",
       targetLabel: target.label,
@@ -1757,6 +1771,15 @@ async function executeReviewRun(request) {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr
   });
+  const normalizedReviewResult = result.status === 0 && parsed.parsed && !parsed.parseError
+    ? normalizeAdversarialReviewResult({
+        payload: parsed.parsed,
+        raw_output: parsed.rawOutput,
+        target,
+        task_id: request.taskId ?? null,
+        reviewed_branch_head_sha: request.reviewedBranchHeadSha ?? null,
+      })
+    : null;
   // Materialize session artifacts for the adversarial-review thread (obs 08):
   // .events + .ndjson for replay, .review.json for the structured findings
   // (finally gives `writeReview` a real caller — was phantom per obs 03).
@@ -1801,6 +1824,7 @@ async function executeReviewRun(request) {
       reasoning: result.reasoningSummary
     },
     result: parsed.parsed,
+    review_result: normalizedReviewResult,
     rawOutput: parsed.rawOutput,
     parseError: parsed.parseError,
     reasoningSummary: result.reasoningSummary
@@ -1949,6 +1973,74 @@ function buildReviewJobMetadata(reviewName, target) {
     kind: reviewName === "Adversarial Review" ? "adversarial-review" : "review",
     title: reviewName === "Review" ? "Codex Review" : `Codex ${reviewName}`,
     summary: `${reviewName} ${target.label}`
+  };
+}
+
+function safeRealPath(filePath) {
+  try {
+    return fs.realpathSync.native ? fs.realpathSync.native(filePath) : fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+function samePath(left, right) {
+  return safeRealPath(left) === safeRealPath(right);
+}
+
+function requireTaskReviewContext(taskId, options = {}) {
+  const meta = readMeta(taskId);
+  if (!meta) {
+    throw notFoundError(
+      `no meta.json found for ${taskId}; run task --worktree-auto before reviewing with --task`,
+      "TASK_NOT_FOUND",
+    );
+  }
+
+  const worktree = meta.worktree && typeof meta.worktree === "object" && !Array.isArray(meta.worktree)
+    ? meta.worktree
+    : {};
+  const worktreePath = worktree.path ?? meta.worktree_path ?? null;
+  if (typeof worktreePath !== "string" || worktreePath.trim() === "") {
+    throw validationError(
+      `meta.json for ${taskId} is missing worktree.path; refusing to review the caller cwd`,
+      "TASK_WORKTREE_PATH_MISSING",
+    );
+  }
+  const branch = worktree.branch ?? meta.branch ?? meta.worktree_branch ?? null;
+  if (typeof branch !== "string" || branch.trim() === "") {
+    throw validationError(
+      `meta.json for ${taskId} is missing worktree.branch; refusing to review an unbound target`,
+      "TASK_WORKTREE_BRANCH_MISSING",
+    );
+  }
+
+  const reviewCwd = path.resolve(worktreePath);
+  if (options.cwd && !samePath(path.resolve(process.cwd(), options.cwd), reviewCwd)) {
+    throw validationError(
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path.resolve(process.cwd(), options.cwd)}`,
+      "TASK_CWD_CONFLICT",
+      "Omit --cwd with --task, or pass the task worktree path recorded in meta.json.",
+    );
+  }
+
+  const head = runCommand("git", ["rev-parse", "--verify", "HEAD"], { cwd: reviewCwd });
+  if (head.error || head.status !== 0 || !head.stdout.trim()) {
+    const detail = head.error?.message ?? head.stderr.trim() ?? `git exited with status ${head.status}`;
+    throw validationError(
+      `could not resolve reviewed branch HEAD for ${taskId} in ${reviewCwd}: ${detail}`,
+      "TASK_REVIEW_HEAD_UNRESOLVED",
+    );
+  }
+
+  return {
+    taskId,
+    meta,
+    cwd: reviewCwd,
+    base: options.base ?? worktree.base_ref ?? meta.base_ref ?? null,
+    scope: options.scope ?? "branch",
+    branch: branch.trim(),
+    reviewedBranchHeadSha: head.stdout.trim(),
   };
 }
 
@@ -2365,7 +2457,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 async function handleReviewCommand(argv, config) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "backend", "brief"],
+    valueOptions: ["base", "scope", "model", "cwd", "backend", "brief", "task"],
     repeatableValueOptions: ["concern"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
@@ -2373,8 +2465,9 @@ async function handleReviewCommand(argv, config) {
     }
   });
 
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
+  const taskReview = options.task ? requireTaskReviewContext(options.task, options) : null;
+  const cwd = taskReview?.cwd ?? resolveCommandCwd(options);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const adapter = await resolveCommandAdapter({
     cwd,
     workspaceRoot,
@@ -2383,8 +2476,8 @@ async function handleReviewCommand(argv, config) {
   ensureCodexRuntimeAdapter(adapter);
   const focusText = positionals.join(" ").trim();
   const target = resolveReviewTarget(cwd, {
-    base: options.base,
-    scope: options.scope
+    base: taskReview?.base ?? options.base,
+    scope: taskReview?.scope ?? options.scope
   });
 
   // --brief and --concern populate the {{OPUS_CONCERNS}} channel in the
@@ -2423,14 +2516,16 @@ async function handleReviewCommand(argv, config) {
     (progress) =>
       executeReviewRun({
         cwd,
-        base: options.base,
-        scope: options.scope,
+        base: taskReview?.base ?? options.base,
+        scope: taskReview?.scope ?? options.scope,
         model: options.model,
         backend: options.backend ?? null,
         focusText,
         brief,
         opusConcerns,
         reviewName: config.reviewName,
+        taskId: taskReview?.taskId ?? null,
+        reviewedBranchHeadSha: taskReview?.reviewedBranchHeadSha ?? null,
         onProgress: progress
       }),
     {

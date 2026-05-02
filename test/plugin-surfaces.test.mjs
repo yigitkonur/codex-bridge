@@ -150,6 +150,20 @@ function writeEvents(jobsDir, id, text) {
   fs.writeFileSync(path.join(jobsDir, id, "events.jsonl"), text);
 }
 
+function writeRegistryMeta(registry, taskId, meta) {
+  const dir = path.join(registry, taskId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+}
+
+function parseBridgeError(result) {
+  assert.notEqual(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  return payload.error;
+}
+
 const expectedCommands = [
   "adversarial-review.md",
   "auth-status.md",
@@ -359,6 +373,77 @@ test("bundled plugin CLI exposes the staged iterate dispatcher", () => {
   assert.equal(payload.command, "iterate");
   assert.equal(payload.result.status, "not-yet-orchestrated");
   assert.equal(payload.result.iteration_max, 3);
+});
+
+test("review command metadata advertises task-bound review mode", () => {
+  const help = runBridge("src/codex-bridge.mjs", ["help", "--json"]);
+  assert.equal(help.status, 0, help.stderr || help.stdout);
+  const payload = JSON.parse(help.stdout);
+  const review = payload.result.commands.find((command) => command.name === "review");
+  const adversarial = payload.result.commands.find((command) => command.name === "adversarial-review");
+
+  assert.match(review.synopsis, /--task <task_id>/);
+  assert.match(review.summary, /review_result/);
+  assert.match(adversarial.synopsis, /--task <task_id>/);
+  assert.match(adversarial.summary, /review_result/);
+});
+
+test("review --task validates missing and malformed task metadata before review execution", () => {
+  const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-review-task-"));
+  const env = { CODEX_BRIDGE_REGISTRY: registry };
+
+  let result = runBridge("src/codex-bridge.mjs", ["review", "--task", "task-missing", "--json"], { env });
+  assert.equal(parseBridgeError(result).code, "TASK_NOT_FOUND");
+
+  writeRegistryMeta(registry, "task-no-worktree", {
+    schema_version: "1.0",
+    task_id: "task-no-worktree",
+    worktree: { branch: "subagent/codex/task-no-worktree" },
+  });
+  result = runBridge("src/codex-bridge.mjs", ["review", "--task", "task-no-worktree", "--json"], { env });
+  assert.equal(parseBridgeError(result).code, "TASK_WORKTREE_PATH_MISSING");
+
+  const reviewPath = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-review-target-"));
+  writeRegistryMeta(registry, "task-no-branch", {
+    schema_version: "1.0",
+    task_id: "task-no-branch",
+    worktree: { path: reviewPath },
+  });
+  result = runBridge("src/codex-bridge.mjs", ["review", "--task", "task-no-branch", "--json"], { env });
+  assert.equal(parseBridgeError(result).code, "TASK_WORKTREE_BRANCH_MISSING");
+
+  writeRegistryMeta(registry, "task-no-head", {
+    schema_version: "1.0",
+    task_id: "task-no-head",
+    worktree: {
+      path: reviewPath,
+      branch: "subagent/codex/task-no-head",
+    },
+  });
+  result = runBridge("src/codex-bridge.mjs", ["review", "--task", "task-no-head", "--json"], { env });
+  assert.equal(parseBridgeError(result).code, "TASK_REVIEW_HEAD_UNRESOLVED");
+});
+
+test("review --task rejects an explicit --cwd outside the task worktree", () => {
+  const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-review-task-"));
+  writeRegistryMeta(registry, "task-conflict", {
+    schema_version: "1.0",
+    task_id: "task-conflict",
+    worktree: {
+      path: rootPath,
+      branch: "main",
+    },
+  });
+
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-review-outside-"));
+  const result = runBridge(
+    "src/codex-bridge.mjs",
+    ["review", "--task", "task-conflict", "--cwd", outside, "--json"],
+    { env: { CODEX_BRIDGE_REGISTRY: registry } },
+  );
+  const error = parseBridgeError(result);
+  assert.equal(error.code, "TASK_CWD_CONFLICT");
+  assert.match(error.message, /--cwd points/);
 });
 
 test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => {
