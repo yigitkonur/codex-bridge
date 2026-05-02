@@ -34,8 +34,8 @@ src/adapters/
 7. Add a smoke test under `test/adapter-<name>.test.mjs`.
 8. Document config keys + env vars in your `README.md`.
 
-## Phase A status (v2.0.0)
+## Current status (v2.0.0)
 
-This abstraction ships as internal-only scaffolding in v2.0.0. T1 (this PR) introduces the registry and type contracts. T2–T5 will relocate the Codex protocol layer into `src/adapters/codex/`, implement lifecycle methods, and wire `selectAdapter()` through CLI handlers (landing in T5). During Phase 0 (T1–T6), CLI handlers continue to call `src/lib/codex.mjs` directly; the adapter system is not yet wired into the runtime.
+The Codex adapter is the only shipping backend. It implements the lifecycle methods used by the CLI for task dispatch, resume/send, respond, steer, cancel, result lookup, and event streaming. CLI handlers resolve the active backend through `selectAdapter()` / `resolveAdapterForRuntime()` before invoking Codex-specific runtime paths.
 
 Future versions will add real backends in this order: `noop` (test-only), `claude-cli`, `gemini`, `aider`, `ollama`. Each will land as a separate PR and a separate minor version bump.

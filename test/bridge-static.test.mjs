@@ -192,6 +192,47 @@ test("version json exposes backend adapter capability contract", () => {
   assert.match(version, /adapter_capabilities:\s*adapter\.capabilities\(\)/);
 });
 
+test("setup json exposes backend adapter capability contract", () => {
+  const setupReport = bridge.match(/async function buildSetupReport[\s\S]*?async function handleSetup/)?.[0] ?? "";
+  assert.match(setupReport, /const adapter = await resolveCommandAdapter/);
+  assert.match(setupReport, /active_backend:\s*adapter\.name/);
+  assert.match(setupReport, /adapter_capabilities:\s*adapter\.capabilities\(\)/);
+});
+
+test("task execution routes through backend adapter dispatch", () => {
+  const executeTask = bridge.match(/async function executeTaskRun[\s\S]*?function buildReviewJobMetadata/)?.[0] ?? "";
+  assert.match(executeTask, /const adapter = request\.adapter \?\? await resolveCommandAdapter/);
+  assert.match(executeTask, /adapter\.dispatch\(request\.prompt/);
+  assert.match(executeTask, /rawResult/);
+});
+
+test("resume, questions, steering, and cancel use adapter lifecycle methods", () => {
+  const send = bridge.match(/async function handleSend[\s\S]*?async function handleSteer/)?.[0] ?? "";
+  assert.match(send, /guardCapability\(adapter, "supports_resume"\)/);
+  assert.match(send, /adapter\.resume\(threadId, prompt/);
+  assert.doesNotMatch(send, /runAppServerTurn\(cwd, turnOptions\)/);
+
+  const steer = bridge.match(/async function handleSteer[\s\S]*?async function handleRespond/)?.[0] ?? "";
+  assert.match(steer, /guardCapability\(adapter, "supports_steering"\)/);
+  assert.match(steer, /adapter\.steer\(threadId, turnId, prompt/);
+  assert.doesNotMatch(steer, /withAppServer\(cwd/);
+
+  const respond = bridge.match(/async function handleRespond[\s\S]*?async function handleSummary/)?.[0] ?? "";
+  assert.match(respond, /guardCapability\(adapter, "supports_questions"\)/);
+  assert.match(respond, /adapter\.respond\(pending\.threadId, requestId, payload/);
+  assert.doesNotMatch(respond, /writeResponseFile/);
+
+  const cancel = bridge.match(/async function handleCancel[\s\S]*?function resolvePromptInput/)?.[0] ?? "";
+  assert.match(cancel, /adapter\.cancel\(job\.id/);
+});
+
+test("result command asks the selected adapter for normalized result", () => {
+  const result = bridge.match(/async function handleResult[\s\S]*?function waitForTerminalEvent/)?.[0] ?? "";
+  assert.match(result, /const adapter = await resolveCommandAdapter/);
+  assert.match(result, /adapter\.getResult\(job\.id, \{ cwd \}\)/);
+  assert.match(result, /adapterResult/);
+});
+
 test("background task writes job record before spawning worker", () => {
   const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
   const writeIdx = enqueue.indexOf("writeJobFile(job.workspaceRoot, job.id, queuedRecord)");
@@ -221,16 +262,25 @@ test("workspace-dirty recovery emits incomplete before generic error handling", 
   assert.match(errorBranch, /markTerminalEmitted\(\);\s*return \{ \.\.\.result, session, exitStatus: 0, error: null \};/);
 });
 
-test("worktree-auto keeps job state anchored to the launch workspace", { skip: "T18 forward-looking — bridge handleTask not yet refactored" }, () => {
+test("worktree-auto keeps job state anchored to the launch workspace", () => {
   const task = bridge.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
   assert.match(task, /const stateCwd = cwd;/);
-  assert.match(task, /const job = buildTaskJob\(workspaceRoot, taskMetadata, write\);/);
+  assert.match(task, /const job = buildTaskJob\(workspaceRoot, taskMetadata, write, \{/);
 });
 
-test("background task-worker receives the original workspace root", { skip: "T18 forward-looking — bridge handleTask not yet refactored" }, () => {
+test("background task-worker receives the original workspace root", () => {
   assert.match(bridge, /function spawnDetachedTaskWorker\(cwd, workspaceRoot, jobId, logFile = null\)/);
 });
 
-test("background task-worker reads queued jobs from original workspace root", { skip: "T26 stage forward-looking — workspace-root flag not yet wired" }, () => {});
+test("background task-worker reads queued jobs from original workspace root", () => {
+  const worker = bridge.match(/async function handleTaskWorker[\s\S]*?async function handleStatus/)?.[0] ?? "";
+  assert.match(worker, /const workspaceRoot = options\["workspace-root"\]/);
+  assert.match(worker, /readStoredJob\(workspaceRoot, options\["job-id"\]\)/);
+});
 
-test("worktree-auto exposes the returned task id as the registry id", { skip: "T26 stage forward-looking — taskId surface not yet refactored" }, () => {});
+test("worktree-auto exposes the returned task id as the registry id", () => {
+  const task = bridge.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
+  assert.match(task, /job\.registryTaskId = job\.id;/);
+  assert.match(enqueue, /registryTaskId: job\.registryTaskId \?\? null/);
+});

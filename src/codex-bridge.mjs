@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
-import { resolveAdapterForRuntime, selectAdapter } from "./adapters/index.mjs";
+import { guardCapability, resolveAdapterForRuntime } from "./adapters/index.mjs";
 import {
   CliError,
   emitError,
@@ -43,12 +43,10 @@ import {
     getCodexAuthStatus,
     getCodexAvailability,
     getSessionRuntimeStatus,
-    interruptAppServerTurn,
     parseStructuredOutput,
     readOutputSchema,
     runAppServerReview,
-    runAppServerTurn,
-    withAppServer
+    runAppServerTurn
   } from "./adapters/codex/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
@@ -139,7 +137,6 @@ import {
 } from "./lib/session-log.mjs";
 import {
   readPendingRequestById,
-  writeResponseFile,
   writePendingRequest,
   waitForResponse,
   clearPendingRequest,
@@ -566,12 +563,12 @@ const COMMANDS = Object.freeze({
     ]
   },
   steer: {
-    synopsis: "steer <thread-id> <turn-id> [prompt or file.md]",
+    synopsis: "steer <thread-id> <turn-id> [--backend <name>] [prompt or file.md]",
     summary: "Send mid-turn guidance to an active Codex turn. Not valid for review/compaction turns. Both ids are UUIDs.",
     examples: ['codex-bridge steer 019d9a86-1c8a-7f41-8032-6c76bbe730a1 019d9a86-2012-7152-bcc9-228a263d286a "Focus on auth first"']
   },
   respond: {
-    synopsis: "respond <request-id> (--question-id <qid> --answer <answer> | --json-payload <json>) [--json]",
+    synopsis: "respond <request-id> [--backend <name>] (--question-id <qid> --answer <answer> | --json-payload <json>) [--json]",
     summary: "Answer a [QUESTION] emitted by Codex (requestUserInput).",
     examples: [
       'codex-bridge respond req-xyz --question-id q1 --answer "jwt"',
@@ -1007,6 +1004,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const authStatus = await getCodexAuthStatus(cwd);
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
+  const adapter = await resolveCommandAdapter({ cwd, workspaceRoot });
 
   const nextSteps = [];
   if (!codexStatus.available) {
@@ -1030,6 +1028,8 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     npm: npmStatus,
     codex: codexStatus,
     auth: authStatus,
+    active_backend: adapter.name,
+    adapter_capabilities: adapter.capabilities(),
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
     reviewGateEnabled: reviewGate.enabled,
     reviewGateLockPath: reviewGate.lockPath,
@@ -1827,6 +1827,15 @@ async function executeReviewRun(request) {
 
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.stateCwd ?? request.cwd);
+  const adapter = request.adapter ?? await resolveCommandAdapter({
+    cwd: request.cwd,
+    workspaceRoot,
+    backend: request.backend ?? null,
+    metaBackend: request.metaBackend ?? null,
+    taskMetadata: request.taskMetadata ?? null,
+    subagentType: request.subagentType ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
   ensureCodexAvailable(request.cwd);
 
   const taskMetadata = buildTaskRunMetadata({
@@ -1865,24 +1874,34 @@ async function executeTaskRun(request) {
   // plan-mode developer instructions, the 120 s idle watchdog, and the
   // `[QUESTION]` event pipeline were all inert on the `task` path. Forward
   // explicitly so the runBridgeTask → executeTaskRun contract is real.
-  const result = await runAppServerTurn(request.cwd, {
-    resumeThreadId,
-    prompt: request.prompt,
-    defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
+  const dispatch = await adapter.dispatch(request.prompt, {
+    cwd: request.cwd,
+    jobId: request.jobId ?? null,
+    sessionDir: request.sessionDir ?? null,
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
-    sandboxPolicy: request.sandboxPolicy ?? null,
-    collaborationMode: request.collaborationMode ?? null,
-    turnTimeoutMs: request.turnTimeoutMs ?? null,
-    idleTimeoutMs: request.idleTimeoutMs ?? null,
-    onTurnStart: request.onTurnStart ?? null,
-    onItemCompleted: request.onItemCompleted ?? null,
-    onServerRequest: request.onServerRequest ?? null,
-    onProgress: request.onProgress,
-    persistThread: true,
-    threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
+    mode: request.write ? "default" : "read-only",
+    adapterOptions: {
+      turnOptions: {
+        resumeThreadId,
+        defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
+        model: request.model,
+        effort: request.effort,
+        sandbox: request.write ? "workspace-write" : "read-only",
+        sandboxPolicy: request.sandboxPolicy ?? null,
+        collaborationMode: request.collaborationMode ?? null,
+        turnTimeoutMs: request.turnTimeoutMs ?? null,
+        idleTimeoutMs: request.idleTimeoutMs ?? null,
+        onTurnStart: request.onTurnStart ?? null,
+        onItemCompleted: request.onItemCompleted ?? null,
+        onServerRequest: request.onServerRequest ?? null,
+        onProgress: request.onProgress,
+        persistThread: true,
+        threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
+      }
+    }
   });
+  const result = dispatch.rawResult ?? dispatch;
 
   const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.error?.message ?? result.stderr ?? "";
@@ -2023,6 +2042,8 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
     kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
     write,
+    backend: options.backend ?? null,
+    adapter_capabilities: options.adapterCapabilities ?? null,
     ...(options.worktree ? {
       registryTaskId: options.id ?? null,
       worktree: options.worktree,
@@ -2548,6 +2569,8 @@ async function runBridgeTask(request) {
 
   const bridgeRequest = {
     ...request,
+    adapter,
+    sessionDir,
     prompt: promptWithFooter,
     collaborationMode: isPlanMode
       ? buildCollaborationMode("plan", config, { developerInstructions })
@@ -3697,7 +3720,10 @@ async function handleTask(argv) {
   });
   ensureCodexRuntimeAdapter(adapter);
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, {
+    backend: adapter.name,
+    adapterCapabilities: adapter.capabilities(),
+  });
 
   // --worktree-auto isolates write-mode tasks inside a per-task worktree
   // at <repoRoot>/../.codex-bridge-worktrees/<job_id> on a branch named
@@ -3717,15 +3743,19 @@ async function handleTask(argv) {
       worktreeInfo = createSubagentWorktree({
         cwd,
         taskId: job.id,
-        backend: "codex",
+        backend: adapter.name,
         allowBranchFallback: false,
       });
       if (worktreeInfo.isolation_mode !== "worktree") {
         throw new Error(`expected isolated worktree, got ${worktreeInfo.isolation_mode}`);
       }
+      job.registryTaskId = job.id;
+      job.worktree = worktreeInfo;
+      job.isolation_mode = worktreeInfo.isolation_mode;
       try {
         writeMeta(job.id, {
-          backend: "codex",
+          backend: adapter.name,
+          capabilities: adapter.capabilities(),
           worktree: worktreeInfo,
           isolation_mode: worktreeInfo.isolation_mode,
           base_ref: worktreeInfo.base_ref,
@@ -3765,7 +3795,7 @@ async function handleTask(argv) {
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
-      backend: options.backend ?? null
+      backend: adapter.name
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -3796,7 +3826,7 @@ async function handleTask(argv) {
         pipelineTotalMs: pipelineTotalOverride,
         questionAnswerMs: questionTimeoutOverride,
         noPipeline,
-        backend: options.backend ?? null,
+        backend: adapter.name,
         // `--quiet` suppresses the stderr `[codex] …` progress stream so
         // agents don't pattern-match a thread UUID out of it. Monitor /
         // `events --follow` remain the canonical in-run observation surface.
@@ -4228,7 +4258,7 @@ function renderPruneOrphansReport(report) {
   return `${lines.join("\n")}\n`;
 }
 
-function handleResult(argv) {
+async function handleResult(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
@@ -4239,9 +4269,17 @@ function handleResult(argv) {
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
+  const adapter = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    metaBackend: storedJob?.backend ?? job.backend ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
+  const adapterResult = await adapter.getResult(job.id, { cwd });
   const payload = {
     job,
-    storedJob
+    storedJob,
+    adapterResult
   };
 
   emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
@@ -4702,14 +4740,20 @@ async function handleCancel(argv) {
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
+  const adapter = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    metaBackend: existing.backend ?? job.backend ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
 
-  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
+  const interrupt = await adapter.cancel(job.id, { cwd, threadId, turnId });
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,
       interrupt.interrupted
         ? `Requested Codex turn interrupt for ${turnId} on ${threadId}.`
-        : `Codex turn interrupt failed${interrupt.detail ? `: ${interrupt.detail}` : "."}`
+        : `Codex turn interrupt failed${interrupt.reason ? `: ${interrupt.reason}` : "."}`
     );
   }
 
@@ -5218,6 +5262,7 @@ async function handleSend(argv) {
     backend: options.backend ?? null,
   });
   ensureCodexRuntimeAdapter(adapter);
+  guardCapability(adapter, "supports_resume");
   const modeOverride = options.mode;
 
   const sessionDir = resolveSessionDir(config.session_dir);
@@ -5291,7 +5336,17 @@ async function handleSend(argv) {
   }
 
   ensureCodexAvailable(cwd);
-  const result = await runAppServerTurn(cwd, turnOptions);
+  const dispatch = await adapter.resume(threadId, prompt, {
+    cwd,
+    sessionDir,
+    model: config.model,
+    effort: turnOptions.effort,
+    mode: modeOverride ?? "default",
+    adapterOptions: {
+      turnOptions,
+    },
+  });
+  const result = dispatch.rawResult ?? dispatch;
 
   // Route failed Codex turns through emitError so exit code reflects the
   // failure class. Previously `send` emitted success + exit 0 even when the
@@ -5386,7 +5441,7 @@ async function handleSend(argv) {
 async function handleSteer(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
+    valueOptions: ["cwd", "backend"],
     booleanOptions: ["json"]
   });
 
@@ -5405,15 +5460,15 @@ async function handleSteer(argv) {
     throw validationError("steer requires a prompt", "MISSING_PROMPT");
   }
 
-  ensureCodexAvailable(cwd);
-
-  await withAppServer(cwd, async (client) => {
-    await client.request("turn/steer", {
-      threadId,
-      input: [{ type: "text", text: prompt }],
-      expectedTurnId: turnId,
-    });
+  const adapter = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot: resolveWorkspaceRoot(cwd),
+    backend: options.backend ?? null,
   });
+  ensureCodexRuntimeAdapter(adapter);
+  guardCapability(adapter, "supports_steering");
+  ensureCodexAvailable(cwd);
+  await adapter.steer(threadId, turnId, prompt, { cwd });
 
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
@@ -5431,7 +5486,7 @@ async function handleSteer(argv) {
 async function handleRespond(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["question-id", "answer", "json-payload", "cwd"],
+    valueOptions: ["question-id", "answer", "json-payload", "cwd", "backend"],
     booleanOptions: ["json"]
   });
 
@@ -5443,6 +5498,13 @@ async function handleRespond(argv) {
   const cwd = resolveCommandCwd(options);
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
+  const adapter = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot: resolveWorkspaceRoot(cwd),
+    backend: options.backend ?? null,
+  });
+  ensureCodexRuntimeAdapter(adapter);
+  guardCapability(adapter, "supports_questions");
 
   // Look up the pending request from disk (written by the worker process)
   const pending = readPendingRequestById(sessionDir, requestId);
@@ -5470,13 +5532,10 @@ async function handleRespond(argv) {
     }
   }
 
-  // Write response file — the worker process polls for this and sends
-  // the response on its own connection (which holds the original request)
-  writeResponseFile(sessionDir, pending.threadId, {
-    requestId: pending.internalId,
-    rpcRequestId: pending.rpcRequestId,
-    payload,
-  });
+  // The adapter writes the response file — the worker process polls for this
+  // and sends the response on its own connection, which holds the original
+  // app-server request.
+  await adapter.respond(pending.threadId, requestId, payload, { sessionDir });
 
   const session = findSession(sessionDir, pending.threadId);
   if (session) {

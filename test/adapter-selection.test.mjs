@@ -89,16 +89,17 @@ test("selectAdapter rejects the highest-precedence unknown backend", async () =>
   );
 });
 
-test("adapter capability gates and unimplemented verbs fail explicitly", async () => {
+test("adapter capability gates expose implemented optional verbs", async () => {
   const adapter = await selectAdapter({ defaultBackend: "codex" });
 
   assert.doesNotThrow(() => guardCapability(adapter, "supports_plan_mode"));
-  assert.throws(
-    () => adapter.dispatch("prompt", {}),
-    {
-      code: "NOT_IMPLEMENTED",
-    }
-  );
+  assert.doesNotThrow(() => guardCapability(adapter, "supports_resume"));
+  assert.doesNotThrow(() => guardCapability(adapter, "supports_questions"));
+  assert.doesNotThrow(() => guardCapability(adapter, "supports_steering"));
+  assert.equal(typeof adapter.dispatch, "function");
+  assert.equal(typeof adapter.resume, "function");
+  assert.equal(typeof adapter.respond, "function");
+  assert.equal(typeof adapter.steer, "function");
   assert.throws(
     () => guardCapability({ name: "limited", capabilities: () => ({ supports_steering: false }) }, "supports_steering"),
     {

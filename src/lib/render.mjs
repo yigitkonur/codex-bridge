@@ -231,6 +231,7 @@ export function renderSetupReport(report) {
     `- npm: ${report.npm.detail}`,
     `- codex: ${report.codex.detail}`,
     `- auth: ${report.auth.detail}`,
+    `- backend: ${report.active_backend ?? "unknown"}`,
     `- session runtime: ${report.sessionRuntime.label}`,
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,

@@ -105,7 +105,7 @@ const JSON_ENVELOPE_PROBES = Object.freeze([
   },
   {
     command: "setup --json",
-    expected: ["result.ready", "result.reviewGateLockPath", "result.reviewGateEnabled"],
+    expected: ["result.ready", "result.reviewGateLockPath", "result.reviewGateEnabled", "result.active_backend", "result.adapter_capabilities"],
     test: "test/baseline-contracts.test.mjs"
   },
   {

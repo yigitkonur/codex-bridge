@@ -16,14 +16,14 @@ export interface BackendAdapter {
   validateConfig(config: Record<string, unknown>): { valid: boolean; errors: string[] };
 
   dispatch(prompt: string | RenderedBrief, options: DispatchOptions): Promise<DispatchResult>;
-  streamEvents(jobId: string, signal?: AbortSignal): AsyncIterable<NormalizedEvent>;
-  getResult(jobId: string): Promise<NormalizedResult>;
-  cancel(jobId: string): Promise<{ ok: boolean; reason?: string }>;
+  streamEvents(jobId: string, options?: AdapterCommandOptions | AbortSignal): AsyncIterable<NormalizedEvent>;
+  getResult(jobId: string, options?: AdapterCommandOptions): Promise<NormalizedResult>;
+  cancel(jobId: string, options?: AdapterCommandOptions): Promise<{ ok: boolean; reason?: string; attempted?: boolean; interrupted?: boolean }>;
 
   // Optional verbs gated by capability flags.
-  respond?(jobId: string, requestId: string, answer: unknown): Promise<{ ok: boolean }>;
-  steer?(jobId: string, turnId: string, prompt: string): Promise<{ ok: boolean }>;
-  resume?(jobId: string, prompt: string, options: DispatchOptions): Promise<DispatchResult>;
+  respond?(jobId: string, requestId: string, answer: unknown, options?: AdapterCommandOptions): Promise<{ ok: boolean; threadId?: string; requestId?: string }>;
+  steer?(jobId: string, turnId: string, prompt: string, options?: AdapterCommandOptions): Promise<{ ok: boolean; threadId?: string; turnId?: string }>;
+  resume?(jobId: string, prompt: string, options: DispatchOptions & AdapterCommandOptions): Promise<DispatchResult>;
   setup?(): Promise<SetupReport>;
   authStatus?(): Promise<AuthStatus>;
 }
@@ -49,6 +49,17 @@ export interface DispatchResult {
   threadId: string;
   sessionDir: string;
   capabilities: CapabilitiesObject;
+  rawResult?: unknown;
+}
+
+export interface AdapterCommandOptions {
+  cwd?: string;
+  sessionDir?: string;
+  eventsPath?: string;
+  threadId?: string;
+  turnId?: string;
+  signal?: AbortSignal;
+  adapterOptions?: Record<string, unknown>;
 }
 
 export interface NormalizedEvent {

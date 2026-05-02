@@ -136,23 +136,16 @@ test("guardCapability only accepts boolean support flags", async () => {
   );
 });
 
-test("codex adapter under-declares optional lifecycle capabilities until handlers exist", async () => {
+test("codex adapter exposes optional lifecycle methods it advertises", async () => {
   _resetAdapterCache();
 
   const adapter = await selectAdapter({ backend: "codex" });
   const capabilities = adapter.capabilities();
 
   for (const [capability, method] of Object.entries(OPTIONAL_CAPABILITY_METHODS)) {
-    assert.equal(capabilities[capability], false);
-    assert.equal(adapter[method], undefined);
-    assert.throws(
-      () => guardCapability(adapter, capability),
-      (err) => {
-        assertBackendIncapable(err);
-        assert.match(err.message, new RegExp(capability));
-        return true;
-      },
-    );
+    assert.equal(capabilities[capability], true);
+    assert.equal(typeof adapter[method], "function");
+    assert.doesNotThrow(() => guardCapability(adapter, capability));
   }
 });
 

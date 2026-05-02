@@ -250,6 +250,8 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.equal(typeof setup.result.ready, "boolean");
     assert.equal(typeof setup.result.reviewGateEnabled, "boolean");
     assert.equal(typeof setup.result.reviewGateLockPath, "string");
+    assert.equal(setup.result.active_backend, "codex");
+    assert.equal(typeof setup.result.adapter_capabilities, "object");
 
     const status = parseEnvelope(runBridge(["status", "--json", "--cwd", fixture.workspace], fixture));
     assertExpectedProbe(report, "status --json", status);

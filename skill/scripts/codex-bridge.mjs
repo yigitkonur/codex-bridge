@@ -1,9 +1,9 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
-import fs15 from "node:fs";
+import fs16 from "node:fs";
 import os7 from "node:os";
-import path13 from "node:path";
-import process9 from "node:process";
+import path14 from "node:path";
+import process10 from "node:process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // package.json
@@ -748,53 +748,4496 @@ function splitRawArgumentString(raw) {
 }
 
 // src/adapters/index.mjs
-import process3 from "node:process";
+import process9 from "node:process";
 
 // src/adapters/codex/index.mjs
-var NOT_IMPLEMENTED = (verb) => () => {
-  const err = new Error(
-    `codex adapter '${verb}' not implemented yet (lands in T2-T5; bridge currently calls src/adapters/codex/codex.mjs directly)`
-  );
-  err.code = "NOT_IMPLEMENTED";
-  throw err;
-};
-var adapter = {
-  name: "codex",
-  displayName: "OpenAI Codex",
-  capabilities() {
-    return Object.freeze({
-      supports_plan_mode: true,
-      supports_questions: false,
-      supports_streaming: true,
-      supports_resume: false,
-      supports_steering: false,
-      supports_background: true,
-      supports_auto_pipeline: true,
-      supports_adversarial_review: true,
-      supports_worktree: true,
-      supports_artifact_registry: true,
-      input_modalities: ["text"],
-      output_modalities: ["text", "diff", "structured"],
-      max_prompt_chars: 512e3,
-      billing_model: "subscription",
-      auth_strategy: "oauth-cli",
-      transport: "json-rpc-unix-socket"
+import fs11 from "node:fs";
+import path9 from "node:path";
+import process8 from "node:process";
+
+// src/lib/fs.mjs
+import fs from "node:fs";
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+function isProbablyText(buffer) {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  for (const value of sample) {
+    if (value === 0) {
+      return false;
+    }
+  }
+  return true;
+}
+function readStdinIfPiped() {
+  if (process.stdin.isTTY) {
+    return "";
+  }
+  return fs.readFileSync(0, "utf8");
+}
+
+// src/adapters/codex/protocol.mjs
+import net2 from "node:net";
+import process6 from "node:process";
+import { spawn as spawn2 } from "node:child_process";
+import readline from "node:readline";
+
+// src/lib/broker-endpoint.mjs
+import path from "node:path";
+import process3 from "node:process";
+function sanitizePipeName(value) {
+  return String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "");
+}
+function createBrokerEndpoint(sessionDir, platform = process3.platform) {
+  if (platform === "win32") {
+    const pipeName = sanitizePipeName(`${path.win32.basename(sessionDir)}-codex-app-server`);
+    return `pipe:\\\\.\\pipe\\${pipeName}`;
+  }
+  return `unix:${path.join(sessionDir, "broker.sock")}`;
+}
+function parseBrokerEndpoint(endpoint) {
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    throw new Error("Missing broker endpoint.");
+  }
+  if (endpoint.startsWith("pipe:")) {
+    const pipePath = endpoint.slice("pipe:".length);
+    if (!pipePath) {
+      throw new Error("Broker pipe endpoint is missing its path.");
+    }
+    return { kind: "pipe", path: pipePath };
+  }
+  if (endpoint.startsWith("unix:")) {
+    const socketPath = endpoint.slice("unix:".length);
+    if (!socketPath) {
+      throw new Error("Broker Unix socket endpoint is missing its path.");
+    }
+    return { kind: "unix", path: socketPath };
+  }
+  throw new Error(`Unsupported broker endpoint: ${endpoint}`);
+}
+
+// src/lib/broker-lifecycle.mjs
+import fs5 from "node:fs";
+import net from "node:net";
+import os2 from "node:os";
+import path5 from "node:path";
+import process5 from "node:process";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// src/lib/process.mjs
+import { spawnSync } from "node:child_process";
+import process4 from "node:process";
+var DEFAULT_RUN_COMMAND_TIMEOUT_MS = 1e4;
+function resolveRunCommandTimeout(timeout) {
+  if (timeout == null) {
+    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  }
+  const parsed = Number(timeout);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  }
+  return Math.max(1, Math.floor(parsed));
+}
+function runCommand(command, args = [], options = {}) {
+  const spawnSyncImpl = options.spawnSync ?? spawnSync;
+  const result = spawnSyncImpl(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: "utf8",
+    input: options.input,
+    maxBuffer: options.maxBuffer,
+    stdio: options.stdio ?? "pipe",
+    shell: process4.platform === "win32" ? process4.env.SHELL || true : false,
+    timeout: resolveRunCommandTimeout(options.timeout),
+    windowsHide: true
+  });
+  const normalizedStatus = result.status != null ? result.status : result.signal ? 128 : 1;
+  return {
+    command,
+    args,
+    status: normalizedStatus,
+    signal: result.signal ?? null,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    error: result.error ?? null
+  };
+}
+function runCommandChecked(command, args = [], options = {}) {
+  const result = runCommand(command, args, options);
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(formatCommandFailure(result));
+  }
+  return result;
+}
+function binaryAvailable(command, versionArgs = ["--version"], options = {}) {
+  const result = runCommand(command, versionArgs, options);
+  if (result.error && /** @type {NodeJS.ErrnoException} */
+  result.error.code === "ENOENT") {
+    return { available: false, detail: "not found" };
+  }
+  if (result.error) {
+    return { available: false, detail: result.error.message };
+  }
+  if (result.status !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`;
+    return { available: false, detail };
+  }
+  return { available: true, detail: result.stdout.trim() || result.stderr.trim() || "ok" };
+}
+function looksLikeMissingProcessMessage(text) {
+  return /not found|no running instance|cannot find|does not exist|no such process/i.test(text);
+}
+function terminateProcessTree(pid, options = {}) {
+  if (!Number.isFinite(pid)) {
+    return { attempted: false, delivered: false, method: null };
+  }
+  const platform = options.platform ?? process4.platform;
+  const runCommandImpl = options.runCommandImpl ?? runCommand;
+  const killImpl = options.killImpl ?? process4.kill.bind(process4);
+  if (platform === "win32") {
+    const result = runCommandImpl("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      cwd: options.cwd,
+      env: options.env
     });
-  },
-  validateConfig(_config) {
-    return { valid: true, errors: [] };
-  },
-  dispatch: NOT_IMPLEMENTED("dispatch"),
-  streamEvents: NOT_IMPLEMENTED("streamEvents"),
-  getResult: NOT_IMPLEMENTED("getResult"),
-  cancel: NOT_IMPLEMENTED("cancel")
+    if (!result.error && result.status === 0) {
+      return { attempted: true, delivered: true, method: "taskkill", result };
+    }
+    const combinedOutput = `${result.stderr}
+${result.stdout}`.trim();
+    if (!result.error && looksLikeMissingProcessMessage(combinedOutput)) {
+      return { attempted: true, delivered: false, method: "taskkill", result };
+    }
+    if (result.error?.code === "ENOENT") {
+      try {
+        killImpl(pid);
+        return { attempted: true, delivered: true, method: "kill" };
+      } catch (error) {
+        if (error?.code === "ESRCH") {
+          return { attempted: true, delivered: false, method: "kill" };
+        }
+        throw error;
+      }
+    }
+    if (result.error) {
+      throw result.error;
+    }
+    throw new Error(formatCommandFailure(result));
+  }
+  try {
+    killImpl(-pid, "SIGTERM");
+    return { attempted: true, delivered: true, method: "process-group" };
+  } catch (error) {
+    if (error?.code !== "ESRCH") {
+      try {
+        killImpl(pid, "SIGTERM");
+        return { attempted: true, delivered: true, method: "process" };
+      } catch (innerError) {
+        if (innerError?.code === "ESRCH") {
+          return { attempted: true, delivered: false, method: "process" };
+        }
+        throw innerError;
+      }
+    }
+    return { attempted: true, delivered: false, method: "process-group" };
+  }
+}
+function formatCommandFailure(result) {
+  const parts = [`${result.command} ${result.args.join(" ")}`.trim()];
+  if (result.signal) {
+    parts.push(`signal=${result.signal}`);
+  } else {
+    parts.push(`exit=${result.status}`);
+  }
+  const stderr = (result.stderr || "").trim();
+  const stdout = (result.stdout || "").trim();
+  if (stderr) {
+    parts.push(stderr);
+  } else if (stdout) {
+    parts.push(stdout);
+  }
+  return parts.join(": ");
+}
+
+// src/lib/state.mjs
+import { createHash } from "node:crypto";
+import fs4 from "node:fs";
+import os from "node:os";
+import path4 from "node:path";
+
+// src/lib/official-plugin.mjs
+import { spawnSync as spawnSync2 } from "node:child_process";
+var OFFICIAL_PLUGIN_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ABSENT: "absent",
+  UNKNOWN: "unknown"
+});
+var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
+function stringValue(value) {
+  return typeof value === "string" ? value : "";
+}
+function normalizePathLike(value) {
+  return stringValue(value).replace(/\\/g, "/").toLowerCase();
+}
+function pluginEntryEnabled(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if ("enabled" in entry) return Boolean(entry.enabled);
+  if ("disabled" in entry) return !entry.disabled;
+  return true;
+}
+function summarizePluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: entry.id ?? null,
+    name: entry.name ?? null,
+    version: entry.version ?? null,
+    scope: entry.scope ?? null,
+    installPath: entry.installPath ?? entry.path ?? null,
+    enabled: pluginEntryEnabled(entry)
+  };
+}
+function isOfficialOpenAICodexPluginEntry(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const id = stringValue(entry.id).toLowerCase();
+  const name = stringValue(entry.name).toLowerCase();
+  const source = stringValue(entry.source).toLowerCase();
+  const installPath = normalizePathLike(entry.installPath ?? entry.path);
+  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
+  if (id === "codex@openai-codex") return true;
+  if (id === "codex" && authorName === "openai") return true;
+  if (name === "codex" && authorName === "openai") return true;
+  if (source.includes("openai/codex-plugin-cc")) return true;
+  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
+  if (installPath.includes("/openai-codex/codex/")) return true;
+  if (installPath.endsWith("/openai-codex/codex")) return true;
+  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
+  return false;
+}
+function detectOfficialOpenAICodexPluginFromEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: "Claude plugin list output was not an array.",
+      plugin: null
+    };
+  }
+  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
+  if (plugin) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
+      detail: "Official OpenAI Codex plugin is enabled.",
+      plugin: summarizePluginEntry(plugin)
+    };
+  }
+  return {
+    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
+    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
+    plugin: null
+  };
+}
+function extractPluginEntries(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
+  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
+  return null;
+}
+function detectOfficialOpenAICodexPluginUncached(options = {}) {
+  const spawn4 = options.spawnSync ?? spawnSync2;
+  const result = spawn4("claude", ["plugin", "list", "--json"], {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
+  });
+  if (result.error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
+      plugin: null
+    };
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
+      plugin: null
+    };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
+  } catch (error) {
+    return {
+      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
+      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
+      plugin: null
+    };
+  }
+}
+var DEFAULT_DETECT_CACHE_MS = 3e4;
+var cached = null;
+var cachedAt = 0;
+function detectOfficialOpenAICodexPlugin(options = {}) {
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
+  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
+    return cached;
+  }
+  const result = detectOfficialOpenAICodexPluginUncached(options);
+  cached = result;
+  cachedAt = Date.now();
+  return result;
+}
+
+// src/lib/git.mjs
+import fs3 from "node:fs";
+import path3 from "node:path";
+import { execFileSync as childExecFileSync } from "node:child_process";
+
+// src/lib/prompts.mjs
+import fs2 from "node:fs";
+import path2 from "node:path";
+function loadPromptTemplate(rootDir, name) {
+  const promptPath = path2.join(rootDir, "prompts", `${name}.md`);
+  return fs2.readFileSync(promptPath, "utf8");
+}
+function interpolateTemplate(template, variables, options = {}) {
+  const requiredKeys = options?.requiredKeys ?? null;
+  if (requiredKeys) {
+    const iterable = requiredKeys instanceof Set ? requiredKeys : new Set(requiredKeys);
+    for (const key of iterable) {
+      if (!Object.prototype.hasOwnProperty.call(variables, key)) {
+        throw new Error(`interpolateTemplate: missing required key '${key}'`);
+      }
+    }
+  }
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => {
+    return Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : "";
+  });
+}
+var PROMPT_VALUE_MAX_LEN = 200;
+function sanitizePromptValue(value, options = {}) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const requestedMaxLength = options?.maxLength;
+  const maxLength = Number.isInteger(requestedMaxLength) && requestedMaxLength >= 0 ? requestedMaxLength : PROMPT_VALUE_MAX_LEN;
+  const stripped = value.replace(/[\n\r<>]/g, " ");
+  const collapsed = stripped.replace(/\s+/g, " ");
+  if (collapsed.length <= maxLength) {
+    return collapsed;
+  }
+  return collapsed.slice(0, maxLength);
+}
+
+// src/lib/git.mjs
+var MAX_UNTRACKED_BYTES = 24 * 1024;
+var DEFAULT_INLINE_DIFF_MAX_FILES = 2;
+var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+var REGULAR_FILE_READ_FLAGS = fs3.constants.O_RDONLY | (fs3.constants.O_NOFOLLOW ?? 0) | (fs3.constants.O_NONBLOCK ?? 0);
+function git(cwd, args, options = {}) {
+  return runCommand("git", args, { cwd, ...options });
+}
+function gitChecked(cwd, args, options = {}) {
+  return runCommandChecked("git", args, { cwd, ...options });
+}
+function listUniqueFiles(...groups) {
+  return [...new Set(groups.flat().filter(Boolean))].sort();
+}
+function normalizeMaxInlineFiles(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_INLINE_DIFF_MAX_FILES;
+  }
+  return Math.floor(parsed);
+}
+function normalizeMaxInlineDiffBytes(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_INLINE_DIFF_MAX_BYTES;
+  }
+  return Math.floor(parsed);
+}
+function measureGitOutputBytes(cwd, args, maxBytes) {
+  const result = git(cwd, args, { maxBuffer: maxBytes + 1 });
+  if (result.error && /** @type {NodeJS.ErrnoException} */
+  result.error.code === "ENOBUFS") {
+    return maxBytes + 1;
+  }
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(formatCommandFailure(result));
+  }
+  return Buffer.byteLength(result.stdout, "utf8");
+}
+function measureCombinedGitOutputBytes(cwd, argSets, maxBytes) {
+  let totalBytes = 0;
+  for (const args of argSets) {
+    const remainingBytes = maxBytes - totalBytes;
+    if (remainingBytes < 0) {
+      return maxBytes + 1;
+    }
+    totalBytes += measureGitOutputBytes(cwd, args, remainingBytes);
+    if (totalBytes > maxBytes) {
+      return totalBytes;
+    }
+  }
+  return totalBytes;
+}
+function buildBranchComparison(cwd, baseRef) {
+  const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", baseRef]).stdout.trim();
+  return {
+    mergeBase,
+    commitRange: `${mergeBase}..HEAD`,
+    reviewRange: `${baseRef}...HEAD`
+  };
+}
+function ensureGitRepository(cwd) {
+  const result = git(cwd, ["rev-parse", "--show-toplevel"]);
+  const errorCode = result.error && "code" in result.error ? result.error.code : null;
+  if (errorCode === "ENOENT") {
+    throw new CliError("git is not installed. Install Git and retry.", {
+      class: "dependency_failed",
+      code: "GIT_NOT_INSTALLED",
+      retryable: false,
+      suggestion: "Install Git (e.g. `brew install git` or your distro's package) and retry."
+    });
+  }
+  if (result.status !== 0) {
+    throw new CliError("This command must run inside a Git repository.", {
+      class: "validation",
+      code: "NOT_A_GIT_REPO",
+      retryable: false,
+      suggestion: "Run from within a Git working tree, or pass --cwd to point at one."
+    });
+  }
+  return result.stdout.trim();
+}
+function getRepoRoot(cwd) {
+  return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
+}
+function detectDefaultBranch(cwd) {
+  const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
+  if (symbolic.status === 0) {
+    const remoteHead = symbolic.stdout.trim();
+    if (remoteHead.startsWith("refs/remotes/origin/")) {
+      const candidate = remoteHead.replace("refs/remotes/origin/", "");
+      const localCheck = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+      if (localCheck.status === 0) {
+        return candidate;
+      }
+      return `origin/${candidate}`;
+    }
+  }
+  const candidates = ["main", "master", "trunk"];
+  for (const candidate of candidates) {
+    const local = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+    if (local.status === 0) {
+      return candidate;
+    }
+    const remote = git(cwd, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]);
+    if (remote.status === 0) {
+      return `origin/${candidate}`;
+    }
+  }
+  throw new CliError("Unable to detect the repository default branch.", {
+    class: "not_found",
+    code: "DEFAULT_BRANCH_NOT_FOUND",
+    retryable: false,
+    suggestion: "Pass `--base <ref>` explicitly, or use `--scope working-tree`."
+  });
+}
+function getCurrentBranch(cwd) {
+  return gitChecked(cwd, ["branch", "--show-current"]).stdout.trim() || "HEAD";
+}
+function getWorkingTreeState(cwd) {
+  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
+  const unstaged = gitChecked(cwd, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
+  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard"]).stdout.trim().split("\n").filter(Boolean);
+  return {
+    staged,
+    unstaged,
+    untracked,
+    isDirty: staged.length > 0 || unstaged.length > 0 || untracked.length > 0
+  };
+}
+function resolveReviewTarget(cwd, options = {}) {
+  ensureGitRepository(cwd);
+  const requestedScope = options.scope ?? "auto";
+  const baseRef = options.base ?? null;
+  const state = getWorkingTreeState(cwd);
+  const supportedScopes = /* @__PURE__ */ new Set(["auto", "working-tree", "branch"]);
+  if (baseRef) {
+    return {
+      mode: "branch",
+      label: `branch diff against ${sanitizePromptValue(baseRef)}`,
+      baseRef,
+      explicit: true
+    };
+  }
+  if (requestedScope === "working-tree") {
+    return {
+      mode: "working-tree",
+      label: "working tree diff",
+      explicit: true
+    };
+  }
+  if (!supportedScopes.has(requestedScope)) {
+    throw new CliError(
+      `Unsupported review scope "${requestedScope}".`,
+      {
+        class: "validation",
+        code: "INVALID_SCOPE",
+        retryable: false,
+        suggestion: "Use one of: auto, working-tree, branch, or pass --base <ref>."
+      }
+    );
+  }
+  if (requestedScope === "branch") {
+    const detectedBase2 = detectDefaultBranch(cwd);
+    return {
+      mode: "branch",
+      label: `branch diff against ${sanitizePromptValue(detectedBase2)}`,
+      baseRef: detectedBase2,
+      explicit: true
+    };
+  }
+  if (state.isDirty) {
+    return {
+      mode: "working-tree",
+      label: "working tree diff",
+      explicit: false
+    };
+  }
+  const detectedBase = detectDefaultBranch(cwd);
+  return {
+    mode: "branch",
+    label: `branch diff against ${sanitizePromptValue(detectedBase)}`,
+    baseRef: detectedBase,
+    explicit: false
+  };
+}
+function formatSection(title, body) {
+  return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
+}
+function realpathSync(filePath) {
+  return fs3.realpathSync.native ? fs3.realpathSync.native(filePath) : fs3.realpathSync(filePath);
+}
+function isPathInside(parentPath, candidatePath) {
+  const relative = path3.relative(parentPath, candidatePath);
+  return relative === "" || !relative.startsWith("..") && !path3.isAbsolute(relative);
+}
+function readFileDescriptor(fd, size) {
+  const buffer = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const bytesRead = fs3.readSync(fd, buffer, offset, buffer.length - offset, offset);
+    if (bytesRead === 0) {
+      break;
+    }
+    offset += bytesRead;
+  }
+  return buffer.subarray(0, offset);
+}
+function formatUntrackedFile(cwd, relativePath) {
+  let repoRoot;
+  try {
+    repoRoot = realpathSync(cwd);
+  } catch {
+    return `### ${relativePath}
+(skipped: repository root is unreadable)`;
+  }
+  const absolutePath = path3.resolve(repoRoot, relativePath);
+  if (!isPathInside(repoRoot, absolutePath)) {
+    return `### ${relativePath}
+(skipped: path resolves outside repository)`;
+  }
+  let stat;
+  try {
+    stat = fs3.lstatSync(absolutePath);
+  } catch {
+    return `### ${relativePath}
+(skipped: broken symlink or unreadable file)`;
+  }
+  if (stat.isSymbolicLink()) {
+    return `### ${relativePath}
+(skipped: symlink)`;
+  }
+  if (stat.isDirectory()) {
+    return `### ${relativePath}
+(skipped: directory)`;
+  }
+  if (!stat.isFile()) {
+    return `### ${relativePath}
+(skipped: non-regular file)`;
+  }
+  let resolvedPath;
+  try {
+    resolvedPath = realpathSync(absolutePath);
+  } catch {
+    return `### ${relativePath}
+(skipped: broken symlink or unreadable file)`;
+  }
+  if (!isPathInside(repoRoot, resolvedPath)) {
+    return `### ${relativePath}
+(skipped: path resolves outside repository)`;
+  }
+  let fd;
+  let buffer;
+  try {
+    fd = fs3.openSync(resolvedPath, REGULAR_FILE_READ_FLAGS);
+    const readStat = fs3.fstatSync(fd);
+    if (!readStat.isFile()) {
+      return `### ${relativePath}
+(skipped: non-regular file)`;
+    }
+    if (readStat.size > MAX_UNTRACKED_BYTES) {
+      return `### ${relativePath}
+(skipped: ${readStat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    }
+    buffer = readFileDescriptor(fd, readStat.size);
+  } catch {
+    return `### ${relativePath}
+(skipped: broken symlink or unreadable file)`;
+  } finally {
+    if (fd !== void 0) {
+      try {
+        fs3.closeSync(fd);
+      } catch {
+      }
+    }
+  }
+  if (!isProbablyText(buffer)) {
+    return `### ${relativePath}
+(skipped: binary file)`;
+  }
+  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+}
+function collectWorkingTreeContext(cwd, state, options = {}) {
+  const includeDiff = options.includeDiff !== false;
+  const status = gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim();
+  const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
+  let parts;
+  if (includeDiff) {
+    const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    parts = [
+      formatSection("Git Status", status),
+      formatSection("Staged Diff", stagedDiff),
+      formatSection("Unstaged Diff", unstagedDiff),
+      formatSection("Untracked Files", untrackedBody)
+    ];
+  } else {
+    const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
+    const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
+    const untrackedBody = state.untracked.join("\n");
+    parts = [
+      formatSection("Git Status", status),
+      formatSection("Staged Diff Stat", stagedStat),
+      formatSection("Unstaged Diff Stat", unstagedStat),
+      formatSection("Changed Files", changedFiles.join("\n")),
+      formatSection("Untracked Files", untrackedBody)
+    ];
+  }
+  return {
+    mode: "working-tree",
+    summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
+    content: parts.join("\n"),
+    changedFiles
+  };
+}
+function collectBranchContext(cwd, baseRef, options = {}) {
+  const includeDiff = options.includeDiff !== false;
+  const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
+  const currentBranch = getCurrentBranch(cwd);
+  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
+  const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
+  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
+  return {
+    mode: "branch",
+    summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,
+    content: includeDiff ? [
+      formatSection("Commit Log", logOutput),
+      formatSection("Diff Stat", diffStat),
+      formatSection(
+        "Branch Diff",
+        gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
+      )
+    ].join("\n") : [
+      formatSection("Commit Log", logOutput),
+      formatSection("Diff Stat", diffStat),
+      formatSection("Changed Files", changedFiles.join("\n"))
+    ].join("\n"),
+    changedFiles,
+    comparison
+  };
+}
+function buildAdversarialCollectionGuidance(options = {}) {
+  if (options.includeDiff !== false) {
+    return "Use the repository context below as primary evidence.";
+  }
+  return "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.";
+}
+function collectReviewContext(cwd, target, options = {}) {
+  const repoRoot = getRepoRoot(cwd);
+  const currentBranch = getCurrentBranch(repoRoot);
+  const maxInlineFiles = normalizeMaxInlineFiles(options.maxInlineFiles);
+  const maxInlineDiffBytes = normalizeMaxInlineDiffBytes(options.maxInlineDiffBytes);
+  let details;
+  let includeDiff;
+  let diffBytes;
+  if (target.mode === "working-tree") {
+    const state = getWorkingTreeState(repoRoot);
+    diffBytes = measureCombinedGitOutputBytes(
+      repoRoot,
+      [
+        ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"],
+        ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]
+      ],
+      maxInlineDiffBytes
+    );
+    includeDiff = options.includeDiff ?? (listUniqueFiles(state.staged, state.unstaged, state.untracked).length <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
+    details = collectWorkingTreeContext(repoRoot, state, { includeDiff });
+  } else {
+    const comparison = buildBranchComparison(repoRoot, target.baseRef);
+    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean).length;
+    diffBytes = measureGitOutputBytes(
+      repoRoot,
+      ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange],
+      maxInlineDiffBytes
+    );
+    includeDiff = options.includeDiff ?? (fileCount <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
+    details = collectBranchContext(repoRoot, target.baseRef, { includeDiff, comparison });
+  }
+  return {
+    cwd: repoRoot,
+    repoRoot,
+    branch: currentBranch,
+    target,
+    fileCount: details.changedFiles.length,
+    diffBytes,
+    inputMode: includeDiff ? "inline-diff" : "self-collect",
+    collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff }),
+    ...details
+  };
+}
+function runGit(cwd, args, opts = {}) {
+  if (!Array.isArray(args)) {
+    throw new TypeError("runGit: args must be an array of git arguments (no shell strings)");
+  }
+  const { swallowStderr, ...rest } = opts;
+  return childExecFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", swallowStderr ? "pipe" : "inherit"],
+    ...rest
+  });
+}
+function tryRunGit(cwd, args, options = {}) {
+  const result = git(cwd, args, options);
+  if (result.error || result.status !== 0) {
+    return { ok: false, result };
+  }
+  return { ok: true, stdout: result.stdout, result };
+}
+function defaultWorktreeRoot(repoRoot) {
+  return path3.resolve(repoRoot, "..", ".codex-bridge-worktrees");
+}
+function assertSafeTaskId(taskId, caller) {
+  if (!taskId || typeof taskId !== "string") {
+    throw new Error(`${caller}: taskId is required`);
+  }
+  if (taskId === "." || taskId === ".." || !/^[A-Za-z0-9._-]+$/.test(taskId)) {
+    throw new Error(
+      `${caller}: taskId must be a safe path segment: ${JSON.stringify(taskId)}`
+    );
+  }
+}
+function buildBranchName({ taskId, backend, branchPrefix }) {
+  const prefix = branchPrefix ?? "subagent";
+  const back = backend ?? "codex";
+  return `${prefix}/${back}/${taskId}`;
+}
+function assertSafeBranchName(cwd, branch, caller) {
+  const result = tryRunGit(cwd, ["check-ref-format", "--branch", branch]);
+  if (!result.ok) {
+    throw new Error(
+      `${caller}: branch name is invalid: ${JSON.stringify(branch)}`
+    );
+  }
+}
+function branchExists(cwd, branch) {
+  return tryRunGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).ok;
+}
+function currentCheckoutRef(cwd) {
+  const symbolic = tryRunGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (symbolic.ok) return symbolic.stdout.trim();
+  return runGit(cwd, ["rev-parse", "HEAD"]).trim();
+}
+function createSubagentWorktree({
+  cwd,
+  taskId,
+  backend = "codex",
+  baseRef,
+  branchPrefix = "subagent",
+  worktreeRoot,
+  allowBranchFallback = true
+}) {
+  assertSafeTaskId(taskId, "createSubagentWorktree");
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  const currentBranch = getCurrentBranch(cwd);
+  const resolvedBaseRef = baseRef ?? (currentBranch !== "HEAD" ? currentBranch : null) ?? detectDefaultBranch(cwd) ?? "HEAD";
+  const baseSha = runGit(repoRoot, [
+    "rev-parse",
+    "--verify",
+    "--end-of-options",
+    `${resolvedBaseRef}^{commit}`
+  ], { swallowStderr: true }).trim();
+  const branch = buildBranchName({ taskId, backend, branchPrefix });
+  assertSafeBranchName(repoRoot, branch, "createSubagentWorktree");
+  const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
+  const wtPath = path3.join(root, taskId);
+  const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+  if (branchExists(repoRoot, branch)) {
+    throw new Error(
+      `createSubagentWorktree: branch ${branch} already exists; remove or rename before retrying`
+    );
+  }
+  try {
+    fs3.mkdirSync(root, { recursive: true });
+    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha], {
+      swallowStderr: true
+    });
+    return {
+      isolation_mode: "worktree",
+      path: wtPath,
+      branch,
+      base_ref: resolvedBaseRef,
+      base_sha: baseSha,
+      created_at: createdAt
+    };
+  } catch (err) {
+    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    const partialBranchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
+    if (partialBranchSha.ok && partialBranchSha.stdout.trim() === baseSha) {
+      tryRunGit(repoRoot, ["branch", "-D", branch]);
+    }
+    if (!allowBranchFallback) {
+      throw new Error(
+        `createSubagentWorktree: worktree creation failed and branch fallback is disabled: ${err.message ?? err}`
+      );
+    }
+    if (getWorkingTreeState(repoRoot).isDirty) {
+      throw new Error(
+        "createSubagentWorktree: worktree creation failed and branch-only fallback is unsafe with a dirty working tree"
+      );
+    }
+    const previousRef = currentCheckoutRef(repoRoot);
+    try {
+      runGit(repoRoot, ["checkout", "-b", branch, baseSha], { swallowStderr: true });
+    } catch (innerErr) {
+      throw new Error(
+        `createSubagentWorktree: worktree fallback also failed: ${innerErr.message ?? innerErr}`
+      );
+    }
+    return {
+      isolation_mode: "branch-only",
+      path: cwd,
+      branch,
+      base_ref: resolvedBaseRef,
+      base_sha: baseSha,
+      created_at: createdAt,
+      previous_ref: previousRef,
+      fallback_reason: err.message ?? String(err)
+    };
+  }
+}
+function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
+  assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  let wtPath = null;
+  if (typeof explicitPath === "string" && explicitPath.length > 0) {
+    wtPath = explicitPath;
+  } else if (typeof worktreeRoot === "string" && worktreeRoot.length > 0) {
+    wtPath = path3.join(worktreeRoot, taskId);
+  } else if (branch) {
+    const registered = listSubagentWorktrees(repoRoot).find((w) => w.branch === branch);
+    if (registered) {
+      wtPath = registered.path;
+    }
+  }
+  if (!wtPath) {
+    wtPath = path3.join(defaultWorktreeRoot(repoRoot), taskId);
+  }
+  const wtPathResolved = path3.resolve(wtPath);
+  const repoRootResolved = path3.resolve(repoRoot);
+  const isMainWorktree = wtPathResolved === repoRootResolved;
+  if (!isMainWorktree && fs3.existsSync(wtPath)) {
+    runGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
+    if (fs3.existsSync(wtPath)) {
+      throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
+    }
+  }
+  if (branch) {
+    assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
+    if (branchExists(repoRoot, branch)) {
+      if (getCurrentBranch(repoRoot) === branch) {
+        if (!previousRef) {
+          throw new Error(
+            `pruneWorktreeOnCancel: cannot delete checked-out branch without previousRef: ${branch}`
+          );
+        }
+        runGit(repoRoot, ["checkout", previousRef]);
+      }
+      runGit(repoRoot, ["branch", "-D", branch]);
+      if (branchExists(repoRoot, branch)) {
+        throw new Error(`pruneWorktreeOnCancel: branch still exists after delete: ${branch}`);
+      }
+    }
+  }
+  return { pruned: !fs3.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
+}
+function mergeSubagentBranch({
+  cwd,
+  taskId,
+  branch,
+  baseRef = "main",
+  expectedBranchSha,
+  worktreePath,
+  runTests = true
+}) {
+  if (!taskId) throw new Error("mergeSubagentBranch: taskId is required");
+  if (!branch) throw new Error("mergeSubagentBranch: branch is required");
+  if (!expectedBranchSha) {
+    throw new Error("mergeSubagentBranch: expectedBranchSha is required");
+  }
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  if (typeof baseRef !== "string" || /[\s;|&`$()<>"'\\]/.test(baseRef)) {
+    throw new Error(`mergeSubagentBranch: unsafe baseRef: ${JSON.stringify(baseRef)}`);
+  }
+  assertSafeBranchName(repoRoot, branch, "mergeSubagentBranch");
+  try {
+    runGit(repoRoot, ["fetch", "--no-tags", "origin", baseRef], {
+      swallowStderr: true,
+      timeout: 3e4
+    });
+  } catch {
+  }
+  const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
+  if (dirty.ok && dirty.stdout.trim().length > 0) {
+    const err = new Error(
+      `repo is dirty; commit or stash before merging. Status: ${dirty.stdout.trim()}`
+    );
+    err.kind = "precondition";
+    throw err;
+  }
+  const expectedSha = String(expectedBranchSha).trim().toLowerCase();
+  const taskWorktreePath = worktreePath ?? path3.join(defaultWorktreeRoot(repoRoot), taskId);
+  if (taskWorktreePath && fs3.existsSync(taskWorktreePath) && path3.resolve(taskWorktreePath) !== repoRoot) {
+    const taskDirty = tryRunGit(taskWorktreePath, ["status", "--porcelain", "--untracked-files=all"]);
+    if (taskDirty.ok && taskDirty.stdout.trim().length > 0) {
+      const err = new Error(
+        `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.stdout.trim()}`
+      );
+      err.kind = "precondition";
+      throw err;
+    }
+  }
+  const branchShaResult = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
+  const branchSha = branchShaResult.ok ? branchShaResult.stdout.trim().toLowerCase() : "";
+  if (!branchSha) {
+    const err = new Error(`branch ${branch} does not exist`);
+    err.kind = "precondition";
+    throw err;
+  }
+  if (branchSha !== expectedSha) {
+    const err = new Error(
+      `branch ${branch} is at ${branchSha}, but approved verdict reviewed ${expectedSha}; rerun review before merging`
+    );
+    err.kind = "sha_drift";
+    throw err;
+  }
+  runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
+  const remoteTipResult = tryRunGit(repoRoot, ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}`]);
+  const remoteTip = remoteTipResult.ok ? remoteTipResult.stdout.trim() : null;
+  if (remoteTip) {
+    try {
+      runGit(repoRoot, ["merge", "--ff-only", `refs/remotes/origin/${baseRef}`], { swallowStderr: true });
+    } catch {
+      const err = new Error(
+        `local ${baseRef} has diverged from origin/${baseRef}; reconcile before merging`
+      );
+      err.kind = "precondition";
+      throw err;
+    }
+  }
+  try {
+    runGit(repoRoot, ["merge", "--ff-only", branch], { swallowStderr: true });
+  } catch (err) {
+    const wrapped = new Error(
+      `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`
+    );
+    wrapped.kind = "conflict";
+    throw wrapped;
+  }
+  const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true }).toString().trim();
+  pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
+  return {
+    strategy: "ff",
+    commit_sha: commitSha,
+    base_ref: baseRef,
+    branch,
+    tests_passed: runTests ? null : false
+    // null = not yet measured; false = skipped
+  };
+}
+function listSubagentWorktrees(cwd) {
+  ensureGitRepository(cwd);
+  const repoRoot = getRepoRoot(cwd);
+  const out = tryRunGit(repoRoot, ["worktree", "list", "--porcelain"]);
+  if (!out.ok) return [];
+  const entries = [];
+  let current = null;
+  for (const line of out.stdout.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      if (current) entries.push(current);
+      current = { path: line.slice("worktree ".length), branch: null, head: null, locked: false };
+    } else if (line.startsWith("HEAD ") && current) {
+      current.head = line.slice("HEAD ".length);
+    } else if (line.startsWith("branch ") && current) {
+      const ref = line.slice("branch ".length);
+      current.branch = ref.replace(/^refs\/heads\//, "");
+    } else if (line === "locked" && current) {
+      current.locked = true;
+    }
+  }
+  if (current) entries.push(current);
+  return entries.filter(
+    (e) => e.path.includes(".codex-bridge-worktrees/") || e.branch && e.branch.startsWith("subagent/")
+  );
+}
+
+// src/lib/workspace.mjs
+function resolveWorkspaceRoot(cwd) {
+  try {
+    return ensureGitRepository(cwd);
+  } catch {
+    return cwd;
+  }
+}
+
+// src/lib/state.mjs
+var STATE_VERSION = 1;
+var BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
+var LEGACY_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+var FALLBACK_STATE_ROOT_DIR = path4.join(os.tmpdir(), "codex-companion");
+var STATE_FILE_NAME = "state.json";
+var STATE_LOCK_FILE_NAME = "state.lock";
+var JOBS_DIR_NAME = "jobs";
+var MAX_JOBS = 50;
+var LOCK_TIMEOUT_MS = 5e3;
+var STALE_LOCK_MS = 3e4;
+function nowIso() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function defaultState() {
+  return {
+    version: STATE_VERSION,
+    config: {
+      stopReviewGate: false
+    },
+    jobs: []
+  };
+}
+function resolveStateDir(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  let canonicalWorkspaceRoot = workspaceRoot;
+  try {
+    canonicalWorkspaceRoot = fs4.realpathSync.native(workspaceRoot);
+  } catch {
+    canonicalWorkspaceRoot = workspaceRoot;
+  }
+  const slugSource = path4.basename(workspaceRoot) || "workspace";
+  const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
+  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[LEGACY_PLUGIN_DATA_ENV];
+  const stateRoot = pluginDataDir ? path4.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+  return path4.join(stateRoot, `${slug}-${hash}`);
+}
+function resolveStateFile(cwd) {
+  return path4.join(resolveStateDir(cwd), STATE_FILE_NAME);
+}
+function resolveStateLockFile(cwd) {
+  return path4.join(resolveStateDir(cwd), STATE_LOCK_FILE_NAME);
+}
+function resolveJobsDir(cwd) {
+  return path4.join(resolveStateDir(cwd), JOBS_DIR_NAME);
+}
+function ensureStateDir(cwd) {
+  fs4.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+}
+function sleepSync(ms) {
+  const buffer = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
+}
+function acquireStateLock(cwd) {
+  ensureStateDir(cwd);
+  const lockFile = resolveStateLockFile(cwd);
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      const fd = fs4.openSync(lockFile, "wx");
+      fs4.writeFileSync(fd, `${process.pid}
+${(/* @__PURE__ */ new Date()).toISOString()}
+`, "utf8");
+      let ownedIno = null;
+      try {
+        ownedIno = fs4.fstatSync(fd).ino;
+      } catch {
+      }
+      return () => {
+        try {
+          fs4.closeSync(fd);
+        } catch {
+        }
+        try {
+          if (ownedIno !== null) {
+            const stat = fs4.statSync(lockFile);
+            if (stat.ino !== ownedIno) {
+              return;
+            }
+          }
+          fs4.unlinkSync(lockFile);
+        } catch (releaseError) {
+          if (releaseError?.code !== "ENOENT") {
+          }
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const stat = fs4.statSync(lockFile);
+        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+          fs4.unlinkSync(lockFile);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - startedAt > LOCK_TIMEOUT_MS) {
+        throw new Error(`Timed out waiting for state lock: ${lockFile}`);
+      }
+      sleepSync(50);
+    }
+  }
+}
+function pidIsAlive(pid) {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err && err.code === "ESRCH") return false;
+    return true;
+  }
+}
+function reapOrphans(jobs) {
+  if (!Array.isArray(jobs) || jobs.length === 0) return { jobs, reaped: 0 };
+  let changed = 0;
+  const reaped = jobs.map((job) => {
+    if (!job || job.status !== "running" && job.status !== "queued") return job;
+    if (pidIsAlive(job.pid)) return job;
+    changed++;
+    return {
+      ...job,
+      status: "orphaned",
+      phase: "orphaned",
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      errorMessage: job.errorMessage ?? `Backing process (pid ${job.pid ?? "?"}) no longer alive \u2014 reaped on load.`
+    };
+  });
+  return { jobs: reaped, reaped: changed };
+}
+function loadState(cwd) {
+  const stateFile = resolveStateFile(cwd);
+  if (!fs4.existsSync(stateFile)) {
+    return defaultState();
+  }
+  try {
+    const parsed = JSON.parse(fs4.readFileSync(stateFile, "utf8"));
+    const rawJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+    return {
+      ...defaultState(),
+      ...parsed,
+      config: {
+        ...defaultState().config,
+        ...parsed.config ?? {}
+      },
+      jobs: rawJobs
+    };
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return defaultState();
+    }
+    let renamedPath = null;
+    try {
+      const candidate = `${stateFile}.corrupt-${Date.now()}`;
+      fs4.renameSync(stateFile, candidate);
+      renamedPath = candidate;
+    } catch (renameError) {
+      if (renameError && renameError.code !== "ENOENT" && renameError.code !== "EXDEV") {
+      }
+    }
+    process.emitWarning(
+      `State file at ${stateFile} was corrupt (${error?.message ?? error}); preserved at ${renamedPath ?? "<unable to rename>"}`,
+      "CodexBridgeStateWarning"
+    );
+    return defaultState();
+  }
+}
+function isActiveJob(job) {
+  return job?.status === "queued" || job?.status === "running";
+}
+function sortJobsNewestFirst(jobs) {
+  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
+function pruneJobs(jobs) {
+  const sortedJobs = sortJobsNewestFirst(jobs);
+  const activeJobs = sortedJobs.filter(isActiveJob);
+  const terminalJobs = sortedJobs.filter((job) => !isActiveJob(job)).slice(0, MAX_JOBS);
+  return sortJobsNewestFirst([...activeJobs, ...terminalJobs]);
+}
+function removeFileIfExists(filePath) {
+  if (filePath && fs4.existsSync(filePath)) {
+    fs4.unlinkSync(filePath);
+  }
+}
+function writeJsonFileAtomic(filePath, payload) {
+  fs4.mkdirSync(path4.dirname(filePath), { recursive: true });
+  const tempPath = path4.join(
+    path4.dirname(filePath),
+    `.${path4.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  const fd = fs4.openSync(tempPath, "w");
+  try {
+    fs4.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+    fs4.fsyncSync(fd);
+  } finally {
+    fs4.closeSync(fd);
+  }
+  try {
+    fs4.renameSync(tempPath, filePath);
+  } catch (renameError) {
+    try {
+      fs4.unlinkSync(tempPath);
+    } catch (cleanupError) {
+      if (cleanupError?.code !== "ENOENT") {
+      }
+    }
+    throw renameError;
+  }
+}
+function saveStateUnlocked(cwd, state) {
+  const previousJobs = loadState(cwd).jobs;
+  ensureStateDir(cwd);
+  const { jobs: reapedJobs } = reapOrphans(state.jobs ?? []);
+  const nextJobs = pruneJobs(reapedJobs);
+  const nextState = {
+    version: STATE_VERSION,
+    config: {
+      ...defaultState().config,
+      ...state.config ?? {}
+    },
+    jobs: nextJobs
+  };
+  const retainedIds = new Set(nextJobs.map((job) => job.id));
+  for (const job of previousJobs) {
+    if (retainedIds.has(job.id)) {
+      continue;
+    }
+    removeJobFile(resolveJobFile(cwd, job.id));
+    removeFileIfExists(job.logFile);
+  }
+  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
+  return nextState;
+}
+function updateState(cwd, mutate) {
+  const release = acquireStateLock(cwd);
+  try {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveStateUnlocked(cwd, state);
+  } finally {
+    release();
+  }
+}
+function generateJobId(prefix = "job") {
+  const random = Math.random().toString(36).slice(2, 8);
+  return `${prefix}-${Date.now().toString(36)}-${random}`;
+}
+function upsertJob(cwd, jobPatch) {
+  return updateState(cwd, (state) => {
+    const timestamp2 = nowIso();
+    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
+    if (existingIndex === -1) {
+      state.jobs.unshift({
+        createdAt: timestamp2,
+        updatedAt: timestamp2,
+        ...jobPatch
+      });
+      return;
+    }
+    state.jobs[existingIndex] = {
+      ...state.jobs[existingIndex],
+      ...jobPatch,
+      updatedAt: timestamp2
+    };
+  });
+}
+function listJobs(cwd, options = {}) {
+  const jobs = loadState(cwd).jobs;
+  if (options && options.raw) {
+    return jobs;
+  }
+  const { jobs: reapedJobs } = reapOrphans(jobs);
+  return reapedJobs;
+}
+function setConfig(cwd, key, value) {
+  return updateState(cwd, (state) => {
+    state.config = {
+      ...state.config,
+      [key]: value
+    };
+  });
+}
+function getConfig(cwd) {
+  return loadState(cwd).config;
+}
+function writeJobFile(cwd, jobId, payload) {
+  ensureStateDir(cwd);
+  const jobFile = resolveJobFile(cwd, jobId);
+  fs4.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+  return jobFile;
+}
+function readJobFile(jobFile) {
+  return JSON.parse(fs4.readFileSync(jobFile, "utf8"));
+}
+function removeJobFile(jobFile) {
+  if (fs4.existsSync(jobFile)) {
+    fs4.unlinkSync(jobFile);
+  }
+}
+function resolveJobLogFile(cwd, jobId) {
+  ensureStateDir(cwd);
+  return path4.join(resolveJobsDir(cwd), `${jobId}.log`);
+}
+function resolveJobFile(cwd, jobId) {
+  ensureStateDir(cwd);
+  return path4.join(resolveJobsDir(cwd), `${jobId}.json`);
+}
+
+// src/lib/broker-lifecycle.mjs
+var BROKER_STATE_FILE = "broker.json";
+function createBrokerSessionDir(prefix = "cxc-") {
+  return fs5.mkdtempSync(path5.join(os2.tmpdir(), prefix));
+}
+function connectToEndpoint(endpoint) {
+  const target = parseBrokerEndpoint(endpoint);
+  return net.createConnection({ path: target.path });
+}
+async function waitForBrokerEndpoint(endpoint, timeoutMs = 2e3) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ready = await new Promise((resolve) => {
+      const socket = connectToEndpoint(endpoint);
+      socket.on("connect", () => {
+        socket.end();
+        resolve(true);
+      });
+      socket.on("error", () => resolve(false));
+    });
+    if (ready) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
+}
+function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process5.env }) {
+  const logFd = fs5.openSync(logFile, "a");
+  const child = spawn(process5.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
+    cwd,
+    env,
+    detached: true,
+    stdio: ["ignore", logFd, logFd]
+  });
+  child.unref();
+  fs5.closeSync(logFd);
+  return child;
+}
+function resolveBrokerStateFile(cwd) {
+  return path5.join(resolveStateDir(cwd), BROKER_STATE_FILE);
+}
+function loadBrokerSession(cwd) {
+  const stateFile = resolveBrokerStateFile(cwd);
+  if (!fs5.existsSync(stateFile)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs5.readFileSync(stateFile, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function saveBrokerSession(cwd, session) {
+  const stateDir = resolveStateDir(cwd);
+  fs5.mkdirSync(stateDir, { recursive: true });
+  fs5.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}
+`, "utf8");
+}
+function clearBrokerSession(cwd) {
+  const stateFile = resolveBrokerStateFile(cwd);
+  if (fs5.existsSync(stateFile)) {
+    fs5.unlinkSync(stateFile);
+  }
+}
+async function isBrokerEndpointReady(endpoint) {
+  if (!endpoint) {
+    return false;
+  }
+  try {
+    return await waitForBrokerEndpoint(endpoint, 150);
+  } catch {
+    return false;
+  }
+}
+function isSourceBrokerLifecycleUrl(moduleUrl) {
+  try {
+    const modulePath = fileURLToPath(moduleUrl);
+    return path5.basename(modulePath) === "broker-lifecycle.mjs" && path5.basename(path5.dirname(modulePath)) === "lib" && path5.basename(path5.dirname(path5.dirname(modulePath))) === "src";
+  } catch {
+    return false;
+  }
+}
+function readBrokerLogTail(logFile, maxChars = 4e3) {
+  try {
+    const log = fs5.readFileSync(logFile, "utf8").trim();
+    if (!log) {
+      return "";
+    }
+    return log.length > maxChars ? log.slice(-maxChars) : log;
+  } catch {
+    return "";
+  }
+}
+function createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs }) {
+  const logTail = readBrokerLogTail(logFile);
+  const detail = logTail ? ` Broker log:
+${logTail}` : " No broker log output was captured.";
+  const error = new Error(
+    `Codex app-server broker failed to start within ${timeoutMs}ms at ${endpoint} using ${scriptPath}.${detail}`
+  );
+  error.code = "BROKER_START_FAILED";
+  return error;
+}
+function resolveBrokerScriptPath({ moduleUrl = import.meta.url, existsSync = fs5.existsSync } = {}) {
+  const pluginBroker = new URL("./app-server-broker.mjs", moduleUrl);
+  const bundledBroker = new URL("../app-server-broker.mjs", moduleUrl);
+  const sourceBroker = new URL("../adapters/codex/broker.mjs", moduleUrl);
+  const candidates = isSourceBrokerLifecycleUrl(moduleUrl) ? [sourceBroker, pluginBroker, bundledBroker] : [pluginBroker, bundledBroker, sourceBroker];
+  for (const url of candidates) {
+    const p = fileURLToPath(url);
+    if (existsSync(p)) return p;
+  }
+  throw new Error(
+    `Could not locate broker script. Tried:
+  ${candidates.map((url) => fileURLToPath(url)).join("\n  ")}`
+  );
+}
+async function ensureBrokerSession(cwd, options = {}) {
+  const existing = loadBrokerSession(cwd);
+  if (existing && await isBrokerEndpointReady(existing.endpoint)) {
+    return existing;
+  }
+  if (existing) {
+    teardownBrokerSession({
+      endpoint: existing.endpoint ?? null,
+      pidFile: existing.pidFile ?? null,
+      logFile: existing.logFile ?? null,
+      sessionDir: existing.sessionDir ?? null,
+      pid: existing.pid ?? null,
+      killProcess: options.killProcess ?? null
+    });
+    clearBrokerSession(cwd);
+  }
+  const sessionDir = createBrokerSessionDir();
+  const endpointFactory = options.createBrokerEndpoint ?? createBrokerEndpoint;
+  const endpoint = endpointFactory(sessionDir, options.platform);
+  const pidFile = path5.join(sessionDir, "broker.pid");
+  const logFile = path5.join(sessionDir, "broker.log");
+  const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
+  const timeoutMs = options.timeoutMs ?? 2e3;
+  const child = spawnBrokerProcess({
+    scriptPath,
+    cwd,
+    endpoint,
+    pidFile,
+    logFile,
+    env: options.env ?? process5.env
+  });
+  const ready = await waitForBrokerEndpoint(endpoint, timeoutMs);
+  if (!ready) {
+    const startFailure = createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs });
+    teardownBrokerSession({
+      endpoint,
+      pidFile,
+      logFile,
+      sessionDir,
+      pid: child.pid ?? null,
+      killProcess: options.killProcess ?? terminateProcessTree
+    });
+    throw startFailure;
+  }
+  const session = {
+    endpoint,
+    pidFile,
+    logFile,
+    sessionDir,
+    pid: child.pid ?? null
+  };
+  saveBrokerSession(cwd, session);
+  return session;
+}
+function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
+  if (Number.isFinite(pid) && killProcess) {
+    try {
+      killProcess(pid);
+    } catch {
+    }
+  }
+  if (pidFile && fs5.existsSync(pidFile)) {
+    fs5.unlinkSync(pidFile);
+  }
+  if (logFile && fs5.existsSync(logFile)) {
+    fs5.unlinkSync(logFile);
+  }
+  if (endpoint) {
+    try {
+      const target = parseBrokerEndpoint(endpoint);
+      if (target.kind === "unix" && fs5.existsSync(target.path)) {
+        fs5.unlinkSync(target.path);
+      }
+    } catch {
+    }
+  }
+  const resolvedSessionDir = sessionDir ?? (pidFile ? path5.dirname(pidFile) : logFile ? path5.dirname(logFile) : null);
+  if (resolvedSessionDir && fs5.existsSync(resolvedSessionDir)) {
+    try {
+      fs5.rmdirSync(resolvedSessionDir);
+    } catch {
+    }
+  }
+}
+
+// src/adapters/codex/protocol.mjs
+var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
+var BROKER_BUSY_RPC_CODE = -32001;
+var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
+var APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5e3;
+var SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS = 150;
+var DEFAULT_CLIENT_INFO = {
+  title: "Codex Bridge",
+  name: "codex_bridge",
+  version: "1.0.0"
 };
-var codex_default = adapter;
+var DEFAULT_CAPABILITIES = {
+  experimentalApi: true,
+  optOutNotificationMethods: [
+    "item/agentMessage/delta",
+    "item/reasoning/summaryTextDelta",
+    "item/reasoning/summaryPartAdded",
+    "item/reasoning/textDelta"
+  ]
+};
+function buildJsonRpcError(code, message, data) {
+  return data === void 0 ? { code, message } : { code, message, data };
+}
+function createProtocolError(message, data) {
+  const error = (
+    /** @type {ProtocolError} */
+    new Error(message)
+  );
+  error.data = data;
+  if (data?.code !== void 0) {
+    error.rpcCode = data.code;
+  }
+  return error;
+}
+function timeoutError(message) {
+  const error = new Error(message);
+  error.code = "ETIMEDOUT";
+  return error;
+}
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(timeoutError(message)), ms);
+      timer.unref?.();
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+function serverRequestError(method) {
+  return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
+}
+async function loadReadySavedBrokerEndpoint(cwd) {
+  const brokerSession = loadBrokerSession(cwd);
+  if (!brokerSession) {
+    return null;
+  }
+  const endpoint = brokerSession.endpoint ?? null;
+  try {
+    if (endpoint && await waitForBrokerEndpoint(endpoint, SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS)) {
+      return endpoint;
+    }
+  } catch {
+  }
+  clearBrokerSession(cwd);
+  return null;
+}
+var AppServerClientBase = class {
+  constructor(cwd, options = {}) {
+    this.cwd = cwd;
+    this.options = options;
+    this.pending = /* @__PURE__ */ new Map();
+    this.nextId = 1;
+    this.stderr = "";
+    this.closed = false;
+    this.transportClosed = false;
+    this.exitError = null;
+    this.notificationHandler = null;
+    this.lineBuffer = "";
+    this.transport = "unknown";
+    this.serverRequestHandler = null;
+    this.listeners = /* @__PURE__ */ new Map();
+    this.exitPromise = new Promise((resolve) => {
+      this.resolveExit = resolve;
+    });
+    this.transportExitPromise = new Promise((resolve) => {
+      this.resolveTransportExit = resolve;
+    });
+  }
+  setNotificationHandler(handler) {
+    this.notificationHandler = handler;
+  }
+  on(eventName, handler) {
+    if (!this.listeners.has(eventName)) {
+      this.listeners.set(eventName, /* @__PURE__ */ new Set());
+    }
+    this.listeners.get(eventName).add(handler);
+    return this;
+  }
+  off(eventName, handler) {
+    this.listeners.get(eventName)?.delete(handler);
+    return this;
+  }
+  emit(eventName, payload) {
+    for (const handler of this.listeners.get(eventName) ?? []) {
+      try {
+        handler(payload);
+      } catch {
+      }
+    }
+  }
+  /**
+   * @template {AppServerMethod} M
+   * @param {M} method
+   * @param {import("./protocol").AppServerRequestParams<M>} params
+   * @param {{ signal?: AbortSignal }} [options]
+   * @returns {Promise<import("./protocol").AppServerResponse<M>>}
+   */
+  request(method, params, options = {}) {
+    if (this.closed) {
+      throw new Error("codex app-server client is closed.");
+    }
+    const signal = options.signal ?? null;
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error("request aborted"));
+    }
+    const id = this.nextId;
+    this.nextId += 1;
+    return new Promise((resolve, reject) => {
+      let abortHandler = null;
+      const cleanupAbort = () => {
+        if (signal && abortHandler) {
+          signal.removeEventListener("abort", abortHandler);
+          abortHandler = null;
+        }
+      };
+      const wrappedResolve = (value) => {
+        cleanupAbort();
+        resolve(value);
+      };
+      const wrappedReject = (error) => {
+        cleanupAbort();
+        reject(error);
+      };
+      this.pending.set(id, { resolve: wrappedResolve, reject: wrappedReject, method });
+      if (signal) {
+        abortHandler = () => {
+          if (this.pending.get(id)) {
+            this.pending.delete(id);
+          }
+          cleanupAbort();
+          reject(signal.reason ?? new Error("request aborted"));
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+      try {
+        this.sendMessage({ id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        cleanupAbort();
+        reject(error);
+      }
+    });
+  }
+  notify(method, params = {}) {
+    if (this.closed) {
+      return;
+    }
+    this.sendMessage({ method, params });
+  }
+  handleChunk(chunk) {
+    this.lineBuffer += chunk;
+    let newlineIndex = this.lineBuffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = this.lineBuffer.slice(0, newlineIndex);
+      this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
+      this.handleLine(line);
+      newlineIndex = this.lineBuffer.indexOf("\n");
+    }
+  }
+  handleLine(line) {
+    if (!line.trim()) {
+      return;
+    }
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch (error) {
+      this.handleExit(
+        createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }),
+        { transportExited: false }
+      );
+      return;
+    }
+    if (message.id !== void 0 && message.method) {
+      this.handleServerRequest(message);
+      return;
+    }
+    if (message.id !== void 0) {
+      const pending = this.pending.get(message.id);
+      if (!pending) {
+        return;
+      }
+      this.pending.delete(message.id);
+      if (message.error) {
+        pending.reject(createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error));
+      } else {
+        pending.resolve(message.result ?? {});
+      }
+      return;
+    }
+    if (message.method && this.notificationHandler) {
+      this.notificationHandler(
+        /** @type {AppServerNotification} */
+        message
+      );
+    }
+  }
+  handleServerRequest(message) {
+    const method = message.method;
+    if (this.serverRequestHandler) {
+      message._client = this;
+      Promise.resolve(this.serverRequestHandler(message)).catch((error) => {
+        this.rejectServerRequest(
+          message.id,
+          buildJsonRpcError(-32e3, error?.message ?? `Server request handler failed for ${method}.`)
+        );
+      });
+      return;
+    }
+    this.rejectServerRequest(message.id, serverRequestError(method));
+  }
+  setServerRequestHandler(handler) {
+    this.serverRequestHandler = handler;
+  }
+  resolveServerRequest(id, result) {
+    this.sendMessage({ id, result: result ?? {} });
+  }
+  rejectServerRequest(id, error) {
+    this.sendMessage({ id, error });
+  }
+  handleExit(error, { transportExited = true } = {}) {
+    if (transportExited && !this.transportClosed) {
+      this.transportClosed = true;
+      this.resolveTransportExit(void 0);
+    }
+    if (this.exitResolved) {
+      return;
+    }
+    this.exitResolved = true;
+    this.exitError = error ?? null;
+    this.closed = true;
+    for (const pending of this.pending.values()) {
+      pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
+    }
+    this.pending.clear();
+    this.emit("exit", this.exitError);
+    this.resolveExit(void 0);
+  }
+  sendMessage(_message) {
+    throw new Error("sendMessage must be implemented by subclasses.");
+  }
+};
+var SpawnedCodexAppServerClient = class extends AppServerClientBase {
+  constructor(cwd, options = {}) {
+    super(cwd, options);
+    this.transport = "direct";
+  }
+  async initialize() {
+    this.proc = spawn2("codex", ["app-server"], {
+      cwd: this.cwd,
+      env: this.options.env ?? process6.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: process6.platform === "win32" ? process6.env.SHELL || true : false,
+      windowsHide: true
+    });
+    this.proc.stdout.setEncoding("utf8");
+    this.proc.stderr.setEncoding("utf8");
+    this.proc.stderr.on("data", (chunk) => {
+      this.stderr += chunk;
+    });
+    this.proc.on("error", (error) => {
+      this.handleExit(error);
+    });
+    this.proc.on("exit", (code, signal) => {
+      const detail = code === 0 ? null : createProtocolError(`codex app-server exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`);
+      this.handleExit(detail);
+    });
+    this.readline = readline.createInterface({ input: this.proc.stdout });
+    this.readline.on("line", (line) => {
+      this.handleLine(line);
+    });
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server."
+    );
+    this.notify("initialized", {});
+  }
+  async close() {
+    if (this.transportClosed) {
+      await this.transportExitPromise;
+      return;
+    }
+    this.closed = true;
+    if (this.readline) {
+      this.readline.close();
+    }
+    if (this.proc && !this.proc.killed) {
+      this.proc.stdin.end();
+      setTimeout(() => {
+        if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
+          if (process6.platform === "win32") {
+            try {
+              terminateProcessTree(this.proc.pid);
+            } catch {
+            }
+          } else {
+            this.proc.kill("SIGTERM");
+          }
+        }
+      }, 50).unref?.();
+    }
+    try {
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
+    } catch (error) {
+      if (this.proc && this.proc.exitCode === null) {
+        if (process6.platform === "win32") {
+          try {
+            terminateProcessTree(this.proc.pid);
+          } catch {
+          }
+        } else {
+          this.proc.kill("SIGKILL");
+        }
+      }
+      this.handleExit(error);
+    }
+  }
+  sendMessage(message) {
+    const line = `${JSON.stringify(message)}
+`;
+    const stdin = this.proc?.stdin;
+    if (!stdin) {
+      throw new Error("codex app-server stdin is not available.");
+    }
+    if (stdin.destroyed || !stdin.writable) {
+      throw new Error("codex app-server stdin is closed.");
+    }
+    stdin.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
+  }
+};
+var BrokerCodexAppServerClient = class extends AppServerClientBase {
+  constructor(cwd, options = {}) {
+    super(cwd, options);
+    this.transport = "broker";
+    this.endpoint = options.brokerEndpoint;
+  }
+  async initialize() {
+    await withTimeout(new Promise((resolve, reject) => {
+      const target = parseBrokerEndpoint(this.endpoint);
+      this.socket = net2.createConnection({ path: target.path });
+      this.socket.setEncoding("utf8");
+      this.socket.on("connect", resolve);
+      this.socket.on("data", (chunk) => {
+        this.handleChunk(chunk);
+      });
+      this.socket.on("error", (error) => {
+        if (!this.exitResolved) {
+          reject(error);
+        }
+        this.handleExit(error);
+      });
+      this.socket.on("close", () => {
+        this.handleExit(this.exitError);
+      });
+    }), APP_SERVER_INITIALIZE_TIMEOUT_MS, "Timed out connecting to codex app-server broker.");
+    await withTimeout(
+      this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      }),
+      APP_SERVER_INITIALIZE_TIMEOUT_MS,
+      "Timed out initializing codex app-server broker connection."
+    );
+    this.notify("initialized", {});
+  }
+  async close() {
+    if (this.transportClosed) {
+      await this.transportExitPromise;
+      return;
+    }
+    this.closed = true;
+    if (this.socket) {
+      this.socket.end();
+    }
+    try {
+      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
+    } catch (error) {
+      this.socket?.destroy();
+      this.handleExit(error);
+    }
+  }
+  sendMessage(message) {
+    const line = `${JSON.stringify(message)}
+`;
+    const socket = this.socket;
+    if (!socket) {
+      throw new Error("codex app-server broker connection is not connected.");
+    }
+    if (socket.destroyed || !socket.writable) {
+      throw new Error("codex app-server broker connection is closed.");
+    }
+    socket.write(line, (error) => {
+      if (error) {
+        this.handleExit(error);
+      }
+    });
+  }
+};
+var CodexAppServerClient = class {
+  static async connect(cwd, options = {}) {
+    let brokerEndpoint = null;
+    let brokerEndpointSource = null;
+    if (!options.disableBroker) {
+      const explicitBrokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process6.env[BROKER_ENDPOINT_ENV] ?? null;
+      if (explicitBrokerEndpoint) {
+        brokerEndpoint = explicitBrokerEndpoint;
+        brokerEndpointSource = "explicit";
+      }
+      if (!brokerEndpoint && options.reuseExistingBroker) {
+        brokerEndpoint = await loadReadySavedBrokerEndpoint(cwd);
+        if (brokerEndpoint) {
+          brokerEndpointSource = "saved";
+        }
+      }
+      if (!brokerEndpoint && !options.reuseExistingBroker) {
+        const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
+        brokerEndpoint = brokerSession?.endpoint ?? null;
+        if (brokerEndpoint) {
+          brokerEndpointSource = "managed";
+        }
+      }
+    }
+    const createBrokerClient = options._createBrokerClient ?? ((clientCwd, clientOptions) => new BrokerCodexAppServerClient(clientCwd, clientOptions));
+    const createDirectClient = options._createDirectClient ?? ((clientCwd, clientOptions) => new SpawnedCodexAppServerClient(clientCwd, clientOptions));
+    const client = brokerEndpoint ? createBrokerClient(cwd, { ...options, brokerEndpoint }) : createDirectClient(cwd, options);
+    try {
+      await client.initialize();
+    } catch (error) {
+      await client.close().catch(() => {
+      });
+      if (brokerEndpointSource === "saved") {
+        clearBrokerSession(cwd);
+        const fallbackClient = createDirectClient(cwd, options);
+        try {
+          await fallbackClient.initialize();
+        } catch (fallbackError) {
+          await fallbackClient.close().catch(() => {
+          });
+          throw fallbackError;
+        }
+        return fallbackClient;
+      }
+      throw error;
+    }
+    return client;
+  }
+};
+
+// src/adapters/codex/codex.mjs
+var SERVICE_NAME = "claude_code_codex_plugin";
+var TASK_THREAD_PREFIX = "Codex Companion Task";
+var TURN_INTERRUPT_GRACE_MS = 3e4;
+var DEFAULT_CONTINUE_PROMPT = "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
+function cleanCodexStderr(stderr) {
+  return stderr.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line && !line.startsWith("WARNING: proceeding, even though we could not update PATH:")).join("\n");
+}
+function buildThreadParams(cwd, options = {}) {
+  return {
+    cwd,
+    model: options.model ?? null,
+    approvalPolicy: "never",
+    sandbox: options.sandbox ?? "read-only",
+    serviceName: SERVICE_NAME,
+    ephemeral: options.ephemeral ?? false,
+    experimentalRawEvents: false
+  };
+}
+function buildResumeParams(threadId, cwd, options = {}) {
+  return {
+    threadId,
+    cwd,
+    model: options.model ?? null,
+    approvalPolicy: "never",
+    sandbox: options.sandbox ?? "read-only"
+  };
+}
+function buildTurnInput(prompt) {
+  return [{ type: "text", text: prompt, text_elements: [] }];
+}
+function shorten(text, limit = 72) {
+  const normalized = String(text ?? "").trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 3)}...`;
+}
+function looksLikeVerificationCommand(command) {
+  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
+    command
+  );
+}
+function buildTaskThreadName(prompt) {
+  const excerpt = shorten(prompt, 56);
+  return excerpt ? `${TASK_THREAD_PREFIX}: ${excerpt}` : TASK_THREAD_PREFIX;
+}
+function extractThreadId(message) {
+  return message?.params?.threadId ?? null;
+}
+function extractTurnId(message) {
+  if (message?.params?.turnId) {
+    return message.params.turnId;
+  }
+  if (message?.params?.turn?.id) {
+    return message.params.turn.id;
+  }
+  return null;
+}
+function collectTouchedFiles(fileChanges) {
+  const paths = /* @__PURE__ */ new Set();
+  for (const fileChange of fileChanges) {
+    for (const change of fileChange.changes ?? []) {
+      if (change.path) {
+        paths.add(change.path);
+      }
+    }
+  }
+  return [...paths];
+}
+function normalizeReasoningText(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim();
+}
+function extractReasoningSections(value) {
+  if (!value) {
+    return [];
+  }
+  if (typeof value === "string") {
+    const normalized = normalizeReasoningText(value);
+    return normalized ? [normalized] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => extractReasoningSections(entry));
+  }
+  if (typeof value === "object") {
+    if (typeof value.text === "string") {
+      return extractReasoningSections(value.text);
+    }
+    if ("summary" in value) {
+      return extractReasoningSections(value.summary);
+    }
+    if ("content" in value) {
+      return extractReasoningSections(value.content);
+    }
+    if ("parts" in value) {
+      return extractReasoningSections(value.parts);
+    }
+  }
+  return [];
+}
+function mergeReasoningSections(existingSections, nextSections) {
+  const merged = [];
+  for (const section of [...existingSections, ...nextSections]) {
+    const normalized = normalizeReasoningText(section);
+    if (!normalized || merged.includes(normalized)) {
+      continue;
+    }
+    merged.push(normalized);
+  }
+  return merged;
+}
+function emitProgress(onProgress, message, phase = null, extra = {}) {
+  if (!onProgress || !message) {
+    return;
+  }
+  if (!phase && Object.keys(extra).length === 0) {
+    onProgress(message);
+    return;
+  }
+  onProgress({ message, phase, ...extra });
+}
+function emitLogEvent(onProgress, options = {}) {
+  if (!onProgress) {
+    return;
+  }
+  onProgress({
+    message: options.message ?? "",
+    phase: options.phase ?? null,
+    stderrMessage: options.stderrMessage ?? null,
+    logTitle: options.logTitle ?? null,
+    logBody: options.logBody ?? null
+  });
+}
+function labelForThread(state, threadId) {
+  if (!threadId || threadId === state.rootThreadId || threadId === state.threadId) {
+    return null;
+  }
+  return state.threadLabels.get(threadId) ?? threadId;
+}
+function registerThread(state, threadId, options = {}) {
+  if (!threadId) {
+    return;
+  }
+  state.threadIds.add(threadId);
+  const label = options.threadName ?? options.name ?? options.agentNickname ?? options.agentRole ?? state.threadLabels.get(threadId) ?? null;
+  if (label) {
+    state.threadLabels.set(threadId, label);
+  }
+}
+function describeStartedItem(state, item) {
+  switch (item.type) {
+    case "enteredReviewMode":
+      return { message: `Reviewer started: ${item.review}`, phase: "reviewing" };
+    case "commandExecution":
+      return {
+        message: `Running command: ${shorten(item.command, 96)}`,
+        phase: looksLikeVerificationCommand(item.command) ? "verifying" : "running"
+      };
+    case "fileChange":
+      return { message: `Applying ${item.changes.length} file change(s).`, phase: "editing" };
+    case "mcpToolCall":
+      return { message: `Calling ${item.server}/${item.tool}.`, phase: "investigating" };
+    case "dynamicToolCall":
+      return { message: `Running tool: ${item.tool}.`, phase: "investigating" };
+    case "collabAgentToolCall": {
+      const subagents = (item.receiverThreadIds ?? []).map((threadId) => labelForThread(state, threadId) ?? threadId);
+      const summary = subagents.length > 0 ? `Starting subagent ${subagents.join(", ")} via collaboration tool: ${item.tool}.` : `Starting collaboration tool: ${item.tool}.`;
+      return { message: summary, phase: "investigating" };
+    }
+    case "webSearch":
+      return { message: `Searching: ${shorten(item.query, 96)}`, phase: "investigating" };
+    default:
+      return null;
+  }
+}
+function describeCompletedItem(state, item) {
+  switch (item.type) {
+    case "commandExecution": {
+      const exitCode = item.exitCode ?? "?";
+      const statusLabel = item.status === "completed" ? "completed" : item.status;
+      return {
+        message: `Command ${statusLabel}: ${shorten(item.command, 96)} (exit ${exitCode})`,
+        phase: looksLikeVerificationCommand(item.command) ? "verifying" : "running"
+      };
+    }
+    case "fileChange":
+      return { message: `File changes ${item.status}.`, phase: "editing" };
+    case "mcpToolCall":
+      return { message: `Tool ${item.server}/${item.tool} ${item.status}.`, phase: "investigating" };
+    case "dynamicToolCall":
+      return { message: `Tool ${item.tool} ${item.status}.`, phase: "investigating" };
+    case "collabAgentToolCall": {
+      const subagents = (item.receiverThreadIds ?? []).map((threadId) => labelForThread(state, threadId) ?? threadId);
+      const summary = subagents.length > 0 ? `Subagent ${subagents.join(", ")} ${item.status}.` : `Collaboration tool ${item.tool} ${item.status}.`;
+      return { message: summary, phase: "investigating" };
+    }
+    case "exitedReviewMode":
+      return { message: "Reviewer finished.", phase: "finalizing" };
+    default:
+      return null;
+  }
+}
+function createTurnCaptureState(threadId, options = {}) {
+  let resolveCompletion;
+  let rejectCompletion;
+  const completion = new Promise((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  return {
+    threadId,
+    rootThreadId: threadId,
+    threadIds: /* @__PURE__ */ new Set([threadId]),
+    threadTurnIds: /* @__PURE__ */ new Map(),
+    threadLabels: /* @__PURE__ */ new Map(),
+    turnId: null,
+    bufferedNotifications: [],
+    completion,
+    resolveCompletion,
+    rejectCompletion,
+    finalTurn: null,
+    completed: false,
+    finalAnswerSeen: false,
+    completionTimer: null,
+    pendingCollaborations: /* @__PURE__ */ new Set(),
+    activeSubagentTurns: /* @__PURE__ */ new Set(),
+    lastAgentMessage: "",
+    reviewText: "",
+    planDetected: false,
+    planText: "",
+    reasoningSummary: [],
+    error: null,
+    messages: [],
+    fileChanges: [],
+    commandExecutions: [],
+    pendingServerRequests: 0,
+    onProgress: options.onProgress ?? null,
+    onItemCompleted: typeof options.onItemCompleted === "function" ? options.onItemCompleted : null
+  };
+}
+function clearCompletionTimer(state) {
+  if (state.completionTimer) {
+    clearTimeout(state.completionTimer);
+    state.completionTimer = null;
+  }
+}
+function completeTurn(state, turn = null, options = {}) {
+  if (state.completed) {
+    return;
+  }
+  clearCompletionTimer(state);
+  state.completed = true;
+  if (turn) {
+    state.finalTurn = turn;
+    if (!state.turnId) {
+      state.turnId = turn.id;
+    }
+  } else if (!state.finalTurn) {
+    state.finalTurn = {
+      id: state.turnId ?? "inferred-turn",
+      status: options.inferredStatus ?? "completed"
+    };
+  }
+  if (options.inferred) {
+    emitProgress(state.onProgress, "Turn completion inferred after the main thread finished and subagent work drained.", "finalizing");
+  }
+  state.resolveCompletion(state);
+}
+function scheduleInferredCompletion(state) {
+  if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+    return;
+  }
+  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+    return;
+  }
+  clearCompletionTimer(state);
+  state.completionTimer = setTimeout(() => {
+    state.completionTimer = null;
+    if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+      return;
+    }
+    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+      return;
+    }
+    completeTurn(state, null, { inferred: true });
+  }, 250);
+  state.completionTimer.unref?.();
+}
+function belongsToTurn(state, message) {
+  const messageThreadId = extractThreadId(message);
+  if (!messageThreadId || !state.threadIds.has(messageThreadId)) {
+    return false;
+  }
+  const trackedTurnId = state.threadTurnIds.get(messageThreadId) ?? null;
+  const messageTurnId = extractTurnId(message);
+  return trackedTurnId === null || messageTurnId === null || messageTurnId === trackedTurnId;
+}
+function recordItem(state, item, lifecycle, threadId = null) {
+  if (item.type === "collabAgentToolCall") {
+    if (!threadId || threadId === state.threadId) {
+      if (lifecycle === "started" || item.status === "inProgress") {
+        state.pendingCollaborations.add(item.id);
+      } else if (lifecycle === "completed") {
+        state.pendingCollaborations.delete(item.id);
+        scheduleInferredCompletion(state);
+      }
+    }
+    for (const receiverThreadId of item.receiverThreadIds ?? []) {
+      registerThread(state, receiverThreadId);
+    }
+  }
+  if (item.type === "agentMessage") {
+    state.messages.push({
+      lifecycle,
+      phase: item.phase ?? null,
+      text: item.text ?? ""
+    });
+    if (item.text) {
+      if (!threadId || threadId === state.threadId) {
+        state.lastAgentMessage = item.text;
+        if (lifecycle === "completed" && item.phase === "final_answer") {
+          state.finalAnswerSeen = true;
+          scheduleInferredCompletion(state);
+        }
+      }
+      if (lifecycle === "completed") {
+        const sourceLabel = labelForThread(state, threadId);
+        emitLogEvent(state.onProgress, {
+          message: sourceLabel ? `Subagent ${sourceLabel}: ${shorten(item.text, 96)}` : `Assistant message captured: ${shorten(item.text, 96)}`,
+          stderrMessage: null,
+          phase: item.phase === "final_answer" ? "finalizing" : null,
+          logTitle: sourceLabel ? `Subagent ${sourceLabel} message` : "Assistant message",
+          logBody: item.text
+        });
+      }
+    }
+    return;
+  }
+  if (item.type === "plan" && lifecycle === "completed") {
+    state.planDetected = true;
+    state.planText = item.text ?? "";
+    emitLogEvent(state.onProgress, {
+      message: `Plan proposed: ${shorten(item.text ?? "", 96)}`,
+      stderrMessage: null,
+      phase: "plan_ready",
+      logTitle: "Proposed plan",
+      logBody: item.text ?? ""
+    });
+    return;
+  }
+  if (item.type === "exitedReviewMode") {
+    state.reviewText = item.review ?? "";
+    if (lifecycle === "completed" && item.review) {
+      emitLogEvent(state.onProgress, {
+        message: "Review output captured.",
+        stderrMessage: null,
+        phase: "finalizing",
+        logTitle: "Review output",
+        logBody: item.review
+      });
+    }
+    return;
+  }
+  if (item.type === "reasoning" && lifecycle === "completed") {
+    const nextSections = extractReasoningSections(item.summary);
+    state.reasoningSummary = mergeReasoningSections(state.reasoningSummary, nextSections);
+    if (nextSections.length > 0) {
+      const sourceLabel = labelForThread(state, threadId);
+      emitLogEvent(state.onProgress, {
+        message: sourceLabel ? `Subagent ${sourceLabel} reasoning: ${shorten(nextSections[0], 96)}` : `Reasoning summary captured: ${shorten(nextSections[0], 96)}`,
+        stderrMessage: null,
+        logTitle: sourceLabel ? `Subagent ${sourceLabel} reasoning summary` : "Reasoning summary",
+        logBody: nextSections.map((section) => `- ${section}`).join("\n")
+      });
+    }
+    return;
+  }
+  if (item.type === "fileChange" && lifecycle === "completed") {
+    state.fileChanges.push(item);
+    return;
+  }
+  if (item.type === "commandExecution" && lifecycle === "completed") {
+    state.commandExecutions.push(item);
+  }
+}
+function applyTurnNotification(state, message) {
+  switch (message.method) {
+    case "thread/started":
+      registerThread(state, message.params.thread.id, {
+        threadName: message.params.thread.name,
+        name: message.params.thread.name,
+        agentNickname: message.params.thread.agentNickname,
+        agentRole: message.params.thread.agentRole
+      });
+      break;
+    case "thread/name/updated":
+      registerThread(state, message.params.threadId, {
+        threadName: message.params.threadName ?? null
+      });
+      break;
+    case "turn/started":
+      registerThread(state, message.params.threadId);
+      state.threadTurnIds.set(message.params.threadId, message.params.turn.id);
+      if ((message.params.threadId ?? null) === state.threadId && !state.turnId) {
+        state.turnId = message.params.turn.id;
+      }
+      if ((message.params.threadId ?? null) !== state.threadId) {
+        state.activeSubagentTurns.add(message.params.threadId);
+      }
+      emitProgress(
+        state.onProgress,
+        `Turn started (${message.params.turn.id}).`,
+        "starting",
+        (message.params.threadId ?? null) === state.threadId ? {
+          threadId: message.params.threadId ?? null,
+          turnId: message.params.turn.id ?? null
+        } : {}
+      );
+      break;
+    case "item/started":
+      recordItem(state, message.params.item, "started", message.params.threadId ?? null);
+      {
+        const update = describeStartedItem(state, message.params.item);
+        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+      }
+      break;
+    case "item/completed":
+      recordItem(state, message.params.item, "completed", message.params.threadId ?? null);
+      {
+        const update = describeCompletedItem(state, message.params.item);
+        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+      }
+      if (typeof state.onItemCompleted === "function") {
+        try {
+          state.onItemCompleted(message.params.item, { threadId: message.params.threadId ?? null });
+        } catch (err) {
+          emitProgress(state.onProgress, `onItemCompleted threw: ${err?.message ?? err}`, null);
+        }
+      }
+      break;
+    case "error": {
+      const err = message.params.error ?? {};
+      const willRetry = message.params.will_retry ?? message.params.willRetry ?? false;
+      const codexErrorInfo = err.codexErrorInfo ?? err.codex_error_info ?? null;
+      state.error = err;
+      state.lastErrorInfo = { codexErrorInfo, willRetry };
+      if (!willRetry) {
+        emitProgress(state.onProgress, `Codex error: ${err.message} [${codexErrorInfo ?? "unknown"}]`, "failed");
+      }
+      break;
+    }
+    case "serverRequest/resolved":
+      emitProgress(state.onProgress, `Server request resolved: ${message.params.requestId}`, "confirmed");
+      break;
+    case "turn/completed":
+      if ((message.params.threadId ?? null) !== state.threadId) {
+        state.activeSubagentTurns.delete(message.params.threadId);
+        scheduleInferredCompletion(state);
+        break;
+      }
+      emitProgress(
+        state.onProgress,
+        `Turn ${message.params.turn.status === "completed" ? "completed" : message.params.turn.status}.`,
+        "finalizing"
+      );
+      {
+        const completedTurn = message.params.turn;
+        if (completedTurn?.status !== "completed" && completedTurn?.error) {
+          state.error = { ...state.error ?? {}, ...completedTurn.error };
+        }
+        completeTurn(state, completedTurn);
+      }
+      break;
+    default:
+      break;
+  }
+}
+function routeTurnNotification(state, message, previousHandler) {
+  if (message.method === "thread/started" || message.method === "thread/name/updated") {
+    applyTurnNotification(state, message);
+    return;
+  }
+  if (!belongsToTurn(state, message)) {
+    if (previousHandler) {
+      previousHandler(message);
+    }
+    return;
+  }
+  applyTurnNotification(state, message);
+}
+function flushBufferedNotifications(state, previousHandler) {
+  if (state.bufferedNotifications.length === 0 || !state.turnId) {
+    return;
+  }
+  const buffered = state.bufferedNotifications.splice(0);
+  for (const message of buffered) {
+    routeTurnNotification(state, message, previousHandler);
+    if (state.completed) {
+      break;
+    }
+  }
+}
+async function captureTurn(client, threadId, startRequest, options = {}) {
+  const state = createTurnCaptureState(threadId, options);
+  const previousHandler = client.notificationHandler;
+  const idleTimeoutMs = Number(options.idleTimeoutMs) > 0 ? Number(options.idleTimeoutMs) : 0;
+  const turnTimeoutMs = Number(options.turnTimeoutMs) > 0 ? Number(options.turnTimeoutMs) : 0;
+  let lastNotificationAt = Date.now();
+  let idleInterval = null;
+  let turnTimer = null;
+  let interruptGraceTimer = null;
+  const turnAbort = new AbortController();
+  const markActivity = () => {
+    lastNotificationAt = Date.now();
+  };
+  markActivity.startServerRequest = () => {
+    state.pendingServerRequests += 1;
+    markActivity();
+    let finished = false;
+    return () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      state.pendingServerRequests = Math.max(0, state.pendingServerRequests - 1);
+      markActivity();
+    };
+  };
+  if (typeof options.onActivityMarkerReady === "function") {
+    options.onActivityMarkerReady(markActivity);
+  }
+  if (idleTimeoutMs > 0) {
+    const checkIntervalMs = Math.min(5e3, idleTimeoutMs);
+    idleInterval = setInterval(() => {
+      if (state.completed) {
+        return;
+      }
+      if (state.pendingServerRequests > 0) {
+        markActivity();
+        return;
+      }
+      const elapsed = Date.now() - lastNotificationAt;
+      if (elapsed >= idleTimeoutMs) {
+        clearInterval(idleInterval);
+        idleInterval = null;
+        const seconds = Math.round(idleTimeoutMs / 1e3);
+        state.error = { message: `No events received for ${seconds}s (idle timeout).` };
+        emitProgress(state.onProgress, state.error.message, "failed");
+        if (typeof options.onIdleTimeout === "function") {
+          try {
+            options.onIdleTimeout({ threadId: state.threadId, turnId: state.turnId, elapsedMs: elapsed });
+          } catch {
+          }
+        }
+        completeTurn(state, null, { inferredStatus: "failed" });
+      }
+    }, checkIntervalMs);
+    idleInterval.unref?.();
+  }
+  if (turnTimeoutMs > 0) {
+    turnTimer = setTimeout(() => {
+      if (state.completed) {
+        return;
+      }
+      const message = `Turn timed out after ${turnTimeoutMs}ms.`;
+      state.error = { message, code: "TurnTimeout" };
+      emitProgress(state.onProgress, message, "failed");
+      const interruptTurnId = state.turnId ?? state.threadTurnIds.get(state.threadId) ?? null;
+      if (interruptTurnId) {
+        try {
+          Promise.resolve(client.request("turn/interrupt", { threadId: state.threadId, turnId: interruptTurnId })).catch((error) => {
+            emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
+            if (!state.completed) {
+              completeTurn(state, null, { inferredStatus: "failed" });
+            }
+          });
+        } catch (error) {
+          emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
+          completeTurn(state, null, { inferredStatus: "failed" });
+          return;
+        }
+        const interruptGraceMs = Number(options.interruptGraceMs) > 0 ? Number(options.interruptGraceMs) : TURN_INTERRUPT_GRACE_MS;
+        interruptGraceTimer = setTimeout(() => {
+          if (state.completed) {
+            return;
+          }
+          emitProgress(
+            state.onProgress,
+            `turn/interrupt did not produce turn/completed within ${interruptGraceMs}ms.`,
+            "failed"
+          );
+          completeTurn(state, null, { inferredStatus: "failed" });
+        }, interruptGraceMs);
+        interruptGraceTimer.unref?.();
+        return;
+      }
+      emitProgress(
+        state.onProgress,
+        "turn timeout fired before turn id known; upstream turn may continue running",
+        null
+      );
+      completeTurn(state, null, { inferredStatus: "failed" });
+    }, turnTimeoutMs);
+    turnTimer.unref?.();
+  }
+  client.setNotificationHandler((message) => {
+    lastNotificationAt = Date.now();
+    if (!state.turnId) {
+      const messageThreadId = extractThreadId(message);
+      if (messageThreadId === state.threadId && (message.method === "turn/started" || message.method === "turn/completed")) {
+        applyTurnNotification(state, message);
+        flushBufferedNotifications(state, previousHandler);
+        return;
+      }
+      state.bufferedNotifications.push(message);
+      return;
+    }
+    routeTurnNotification(state, message, previousHandler);
+  });
+  const onExit = () => {
+    if (state.completed) {
+      return;
+    }
+    const bufferedTerminal = state.bufferedNotifications.find(
+      (message) => message?.method === "turn/completed" && (message?.params?.threadId ?? null) === state.threadId
+    );
+    if (bufferedTerminal) {
+      applyTurnNotification(state, bufferedTerminal);
+      if (state.completed) {
+        return;
+      }
+    }
+    state.error = { message: "Codex app-server exited unexpectedly" };
+    completeTurn(state, null, { inferredStatus: "failed" });
+  };
+  if (client.on) client.on("exit", onExit);
+  try {
+    const response = await Promise.race([
+      startRequest(turnAbort.signal),
+      state.completion.then(() => null)
+    ]);
+    if (!response) {
+      turnAbort.abort(new Error("captureTurn: state.completion won the race"));
+      return await state.completion;
+    }
+    markActivity();
+    if (state.completed) {
+      return await state.completion;
+    }
+    options.onResponse?.(response, state);
+    const responseTurnId = response.turn?.id ?? null;
+    if (responseTurnId && state.turnId && state.turnId !== responseTurnId) {
+      state.error = {
+        message: `turn/start response turn id ${responseTurnId} did not match streamed turn id ${state.turnId}.`,
+        code: "ProtocolDrift"
+      };
+      completeTurn(state, null, { inferredStatus: "failed" });
+      return await state.completion;
+    }
+    state.turnId = state.turnId ?? responseTurnId;
+    if (state.turnId) {
+      state.threadTurnIds.set(state.threadId, state.turnId);
+    }
+    flushBufferedNotifications(state, previousHandler);
+    if (response.turn?.status && response.turn.status !== "inProgress") {
+      completeTurn(state, response.turn);
+    }
+    return await state.completion;
+  } finally {
+    clearCompletionTimer(state);
+    if (idleInterval) {
+      clearInterval(idleInterval);
+      idleInterval = null;
+    }
+    if (turnTimer) {
+      clearTimeout(turnTimer);
+      turnTimer = null;
+    }
+    if (interruptGraceTimer) {
+      clearTimeout(interruptGraceTimer);
+      interruptGraceTimer = null;
+    }
+    if (typeof options.onActivityMarkerReady === "function") {
+      options.onActivityMarkerReady(null);
+    }
+    client.setNotificationHandler(previousHandler ?? null);
+    if (client.off) client.off("exit", onExit);
+    else if (client.removeListener) client.removeListener("exit", onExit);
+  }
+}
+async function withAppServer(cwd, fn) {
+  let client = null;
+  try {
+    client = await CodexAppServerClient.connect(cwd);
+    const result = await fn(client);
+    await client.close();
+    return result;
+  } catch (error) {
+    const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
+    const shouldRetryDirect = client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE || brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED");
+    if (client) {
+      await client.close().catch(() => {
+      });
+      client = null;
+    }
+    if (!shouldRetryDirect) {
+      throw error;
+    }
+    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+    try {
+      return await fn(directClient);
+    } finally {
+      await directClient.close();
+    }
+  }
+}
+async function startThread(client, cwd, options = {}) {
+  const response = await client.request("thread/start", buildThreadParams(cwd, options));
+  const threadId = response.thread.id;
+  if (options.threadName) {
+    try {
+      await client.request("thread/name/set", { threadId, name: options.threadName });
+    } catch (err) {
+      const msg = String(err?.message ?? err ?? "");
+      if (!msg.includes("unknown variant") && !msg.includes("unknown method")) {
+        throw err;
+      }
+    }
+  }
+  return response;
+}
+async function resumeThread(client, threadId, cwd, options = {}) {
+  return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
+}
+function buildResultStatus(turnState) {
+  if (turnState.error?.code === "TurnTimeout") {
+    return 1;
+  }
+  return turnState.finalTurn?.status === "completed" ? 0 : 1;
+}
+var BUILTIN_PROVIDER_LABELS = /* @__PURE__ */ new Map([
+  ["openai", "OpenAI"],
+  ["ollama", "Ollama"],
+  ["lmstudio", "LM Studio"]
+]);
+function normalizeProviderId(value) {
+  const providerId = typeof value === "string" ? value.trim() : "";
+  return providerId || null;
+}
+function formatProviderLabel(providerId, providerConfig = null) {
+  const configuredName = typeof providerConfig?.name === "string" ? providerConfig.name.trim() : "";
+  if (configuredName) {
+    return configuredName;
+  }
+  if (!providerId) {
+    return "The active provider";
+  }
+  return BUILTIN_PROVIDER_LABELS.get(providerId) ?? providerId;
+}
+function buildAuthStatus(fields = {}) {
+  return {
+    available: true,
+    loggedIn: false,
+    detail: "not authenticated",
+    source: "unknown",
+    authMethod: null,
+    verified: null,
+    requiresOpenaiAuth: null,
+    provider: null,
+    ...fields
+  };
+}
+function resolveProviderConfig(configResponse) {
+  const config = configResponse?.config;
+  if (!config || typeof config !== "object") {
+    return {
+      providerId: null,
+      providerConfig: null
+    };
+  }
+  const providerId = normalizeProviderId(config.model_provider);
+  const providers = config.model_providers && typeof config.model_providers === "object" && !Array.isArray(config.model_providers) ? config.model_providers : null;
+  const providerConfig = providerId && providers?.[providerId] && typeof providers[providerId] === "object" ? providers[providerId] : null;
+  return {
+    providerId,
+    providerConfig
+  };
+}
+function buildAppServerAuthStatus(accountResponse, configResponse) {
+  const account = accountResponse?.account ?? null;
+  const requiresOpenaiAuth = typeof accountResponse?.requiresOpenaiAuth === "boolean" ? accountResponse.requiresOpenaiAuth : null;
+  const { providerId, providerConfig } = resolveProviderConfig(configResponse);
+  const providerLabel = formatProviderLabel(providerId, providerConfig);
+  if (account?.type === "chatgpt") {
+    const email = typeof account.email === "string" && account.email.trim() ? account.email.trim() : null;
+    return buildAuthStatus({
+      loggedIn: true,
+      detail: email ? `ChatGPT login active for ${email}` : "ChatGPT login active",
+      source: "app-server",
+      authMethod: "chatgpt",
+      verified: true,
+      requiresOpenaiAuth,
+      provider: providerId
+    });
+  }
+  if (account?.type === "apiKey") {
+    return buildAuthStatus({
+      loggedIn: true,
+      detail: "API key configured (unverified)",
+      source: "app-server",
+      authMethod: "apiKey",
+      verified: false,
+      requiresOpenaiAuth,
+      provider: providerId
+    });
+  }
+  if (requiresOpenaiAuth === false) {
+    return buildAuthStatus({
+      loggedIn: true,
+      detail: `${providerLabel} is configured and does not require OpenAI authentication`,
+      source: "app-server",
+      requiresOpenaiAuth,
+      provider: providerId
+    });
+  }
+  return buildAuthStatus({
+    loggedIn: false,
+    detail: `${providerLabel} requires OpenAI authentication`,
+    source: "app-server",
+    requiresOpenaiAuth,
+    provider: providerId
+  });
+}
+async function getCodexAuthStatusFromClient(client, cwd) {
+  try {
+    const accountResponse = await client.request("account/read", { refreshToken: false });
+    const configResponse = await client.request("config/read", {
+      includeLayers: false,
+      cwd
+    });
+    return buildAppServerAuthStatus(accountResponse, configResponse);
+  } catch (error) {
+    return buildAuthStatus({
+      loggedIn: false,
+      detail: error instanceof Error ? error.message : String(error),
+      source: "app-server"
+    });
+  }
+}
+function getCodexAvailability(cwd) {
+  const versionStatus = binaryAvailable("codex", ["--version"], { cwd });
+  if (!versionStatus.available) {
+    return versionStatus;
+  }
+  const appServerStatus = binaryAvailable("codex", ["app-server", "--help"], { cwd });
+  if (!appServerStatus.available) {
+    return {
+      available: false,
+      detail: `${versionStatus.detail}; advanced runtime unavailable: ${appServerStatus.detail}`
+    };
+  }
+  return {
+    available: true,
+    detail: `${versionStatus.detail}; advanced runtime available`
+  };
+}
+function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
+  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
+  if (endpoint) {
+    return {
+      mode: "shared",
+      label: "shared session",
+      detail: "This Claude session is configured to reuse one shared Codex runtime.",
+      endpoint
+    };
+  }
+  return {
+    mode: "direct",
+    label: "direct startup",
+    detail: "No shared Codex runtime is active yet. The first review or task command will start one on demand.",
+    endpoint: null
+  };
+}
+async function getCodexAuthStatus(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    return {
+      available: false,
+      loggedIn: false,
+      detail: availability.detail,
+      source: "availability",
+      authMethod: null,
+      verified: null,
+      requiresOpenaiAuth: null,
+      provider: null
+    };
+  }
+  let client = null;
+  try {
+    client = await CodexAppServerClient.connect(cwd, {
+      env: options.env,
+      reuseExistingBroker: true
+    });
+    return await getCodexAuthStatusFromClient(client, cwd);
+  } catch (error) {
+    return buildAuthStatus({
+      loggedIn: false,
+      detail: error instanceof Error ? error.message : String(error),
+      source: "app-server"
+    });
+  } finally {
+    if (client) {
+      await client.close().catch(() => {
+      });
+    }
+  }
+}
+async function interruptAppServerTurn(cwd, { threadId, turnId }) {
+  if (!threadId || !turnId) {
+    return {
+      attempted: false,
+      interrupted: false,
+      transport: null,
+      detail: "missing threadId or turnId"
+    };
+  }
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    return {
+      attempted: false,
+      interrupted: false,
+      transport: null,
+      detail: availability.detail
+    };
+  }
+  let client = null;
+  try {
+    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
+    await client.request("turn/interrupt", { threadId, turnId });
+    return {
+      attempted: true,
+      interrupted: true,
+      transport: client.transport,
+      detail: `Interrupted ${turnId} on ${threadId}.`
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      interrupted: false,
+      transport: client?.transport ?? null,
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    await client?.close().catch(() => {
+    });
+  }
+}
+async function runAppServerReview(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
+  }
+  return withAppServer(cwd, async (client) => {
+    emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
+    const thread = await startThread(client, cwd, {
+      model: options.model,
+      sandbox: "read-only",
+      ephemeral: true,
+      threadName: options.threadName
+    });
+    const sourceThreadId = thread.thread.id;
+    emitProgress(options.onProgress, `Thread ready (${sourceThreadId}).`, "starting", {
+      threadId: sourceThreadId
+    });
+    const delivery = options.delivery ?? "inline";
+    const turnState = await captureTurn(
+      client,
+      sourceThreadId,
+      (signal) => client.request("review/start", {
+        threadId: sourceThreadId,
+        delivery,
+        target: options.target
+      }, { signal }),
+      {
+        onProgress: options.onProgress,
+        idleTimeoutMs: options.idleTimeoutMs ?? null,
+        turnTimeoutMs: options.turnTimeoutMs ?? null,
+        onResponse(response, state) {
+          if (response.reviewThreadId) {
+            state.threadIds.add(response.reviewThreadId);
+            if (delivery === "detached") {
+              state.threadId = response.reviewThreadId;
+            }
+          }
+        }
+      }
+    );
+    return {
+      status: buildResultStatus(turnState),
+      threadId: turnState.threadId,
+      sourceThreadId,
+      turnId: turnState.turnId,
+      reviewText: turnState.reviewText,
+      reasoningSummary: turnState.reasoningSummary,
+      turn: turnState.finalTurn,
+      error: turnState.error,
+      stderr: cleanCodexStderr(client.stderr)
+    };
+  });
+}
+async function runAppServerTurn(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
+  }
+  return withAppServer(cwd, async (client) => {
+    let threadId;
+    let markServerRequestActivity = null;
+    if (options.onServerRequest) {
+      client.setServerRequestHandler(async (message) => {
+        const finishServerRequest = typeof markServerRequestActivity?.startServerRequest === "function" ? markServerRequestActivity.startServerRequest() : null;
+        markServerRequestActivity?.();
+        try {
+          return await options.onServerRequest(message);
+        } finally {
+          finishServerRequest?.();
+        }
+      });
+    }
+    if (options.resumeThreadId) {
+      emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
+      const response = await resumeThread(client, options.resumeThreadId, cwd, {
+        model: options.model,
+        sandbox: options.sandbox,
+        ephemeral: false
+      });
+      threadId = response.thread.id;
+    } else {
+      emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
+      const response = await startThread(client, cwd, {
+        model: options.model,
+        sandbox: options.sandbox,
+        ephemeral: options.persistThread ? false : true,
+        threadName: options.persistThread ? options.threadName : options.threadName ?? null
+      });
+      threadId = response.thread.id;
+    }
+    emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
+      threadId
+    });
+    const prompt = options.prompt?.trim() || options.defaultPrompt || "";
+    if (!prompt) {
+      throw new CliError("A prompt is required for this Codex run.", {
+        class: "validation",
+        code: "MISSING_PROMPT",
+        retryable: false
+      });
+    }
+    const turnParams = {
+      threadId,
+      input: buildTurnInput(prompt),
+      model: options.model ?? null,
+      effort: options.effort ?? null,
+      outputSchema: options.outputSchema ?? null
+    };
+    if (options.collaborationMode) {
+      turnParams.collaborationMode = options.collaborationMode;
+    }
+    if (options.sandboxPolicy) {
+      turnParams.sandboxPolicy = options.sandboxPolicy;
+    }
+    if (typeof options.onTurnStart === "function") {
+      try {
+        options.onTurnStart({
+          threadId,
+          turnParams,
+          promptLength: prompt.length,
+          promptPreview: prompt.slice(0, 200)
+        });
+      } catch (err) {
+        emitProgress(
+          options.onProgress,
+          `onTurnStart threw: ${err?.message ?? err}`,
+          null
+        );
+      }
+    }
+    const turnPromise = captureTurn(
+      client,
+      threadId,
+      (signal) => client.request("turn/start", turnParams, { signal }),
+      {
+        onProgress: options.onProgress,
+        idleTimeoutMs: options.idleTimeoutMs ?? null,
+        turnTimeoutMs: options.turnTimeoutMs ?? null,
+        onActivityMarkerReady(marker) {
+          markServerRequestActivity = marker;
+        },
+        onIdleTimeout: options.onIdleTimeout ?? null,
+        onItemCompleted: options.onItemCompleted ?? null
+      }
+    );
+    const turnState = await turnPromise;
+    return {
+      status: buildResultStatus(turnState),
+      threadId,
+      turnId: turnState.turnId,
+      finalMessage: turnState.lastAgentMessage,
+      reasoningSummary: turnState.reasoningSummary,
+      turn: turnState.finalTurn,
+      error: turnState.error,
+      stderr: cleanCodexStderr(client.stderr),
+      fileChanges: turnState.fileChanges,
+      touchedFiles: collectTouchedFiles(turnState.fileChanges),
+      commandExecutions: turnState.commandExecutions,
+      planDetected: turnState.planDetected,
+      planText: turnState.planText
+    };
+  });
+}
+async function findLatestTaskThread(cwd) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
+      class: "dependency_failed",
+      code: "CODEX_UNAVAILABLE",
+      retryable: false,
+      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
+    });
+  }
+  return withAppServer(cwd, async (client) => {
+    const response = await client.request("thread/list", {
+      cwd,
+      limit: 20,
+      sortKey: "updated_at",
+      sourceKinds: ["appServer"],
+      searchTerm: TASK_THREAD_PREFIX
+    });
+    return response.data.find((thread) => typeof thread.name === "string" && thread.name.startsWith(TASK_THREAD_PREFIX)) ?? null;
+  });
+}
+function buildPersistentTaskThreadName(prompt) {
+  return buildTaskThreadName(prompt);
+}
+function parseStructuredOutput(rawOutput, fallback = {}) {
+  if (!rawOutput) {
+    return {
+      parsed: null,
+      parseError: fallback.failureMessage ?? "Codex did not return a final structured message.",
+      rawOutput: rawOutput ?? "",
+      ...fallback
+    };
+  }
+  try {
+    return {
+      parsed: JSON.parse(rawOutput),
+      parseError: null,
+      rawOutput,
+      ...fallback
+    };
+  } catch (error) {
+    return {
+      parsed: null,
+      parseError: error.message,
+      rawOutput,
+      ...fallback
+    };
+  }
+}
+function readOutputSchema(schemaPath) {
+  return readJsonFile(schemaPath);
+}
+
+// src/lib/pending-requests.mjs
+import fs6 from "node:fs";
+import path6 from "node:path";
+var DEFAULT_QUESTION_TIMEOUT_MS = 3e5;
+var POLL_INTERVAL_MS = 500;
+function writePendingRequest(sessionDir, threadId, entry) {
+  const filePath = path6.join(sessionDir, `${threadId}.pending.json`);
+  fs6.writeFileSync(filePath, JSON.stringify(entry, null, 2));
+  return filePath;
+}
+function readPendingRequestById(sessionDir, requestId) {
+  let files;
+  try {
+    files = fs6.readdirSync(sessionDir).filter((f) => f.endsWith(".pending.json"));
+  } catch {
+    return null;
+  }
+  for (const file of files) {
+    try {
+      const content = JSON.parse(fs6.readFileSync(path6.join(sessionDir, file), "utf8"));
+      if (content.internalId === requestId) {
+        return content;
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+function clearPendingRequest(sessionDir, threadId) {
+  const filePath = path6.join(sessionDir, `${threadId}.pending.json`);
+  try {
+    fs6.unlinkSync(filePath);
+  } catch {
+  }
+}
+function writeResponseFile(sessionDir, threadId, payload) {
+  const filePath = path6.join(sessionDir, `${threadId}.response.json`);
+  fs6.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+  return filePath;
+}
+function readResponseFile(sessionDir, threadId) {
+  const filePath = path6.join(sessionDir, `${threadId}.response.json`);
+  try {
+    const content = JSON.parse(fs6.readFileSync(filePath, "utf8"));
+    fs6.unlinkSync(filePath);
+    return content;
+  } catch {
+    return null;
+  }
+}
+function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIMEOUT_MS, expectedRequestId = null) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      const response = readResponseFile(sessionDir, threadId);
+      if (response) {
+        if (expectedRequestId && response.requestId && response.requestId !== expectedRequestId) {
+        } else {
+          resolve(response);
+          return;
+        }
+      }
+      if (Date.now() >= deadline) {
+        resolve(null);
+        return;
+      }
+      setTimeout(check, POLL_INTERVAL_MS);
+    };
+    check();
+  });
+}
+
+// src/lib/session-log.mjs
+import fs7 from "node:fs";
+import path7 from "node:path";
+import os3 from "node:os";
+import { spawnSync as spawnSync3 } from "node:child_process";
+var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
+function resolveSessionDir(configDir) {
+  const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os3.homedir());
+  fs7.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+function initSession(sessionDir, threadId) {
+  fs7.mkdirSync(sessionDir, { recursive: true });
+  const ndjsonPath = path7.join(sessionDir, `${threadId}.ndjson`);
+  const eventsPath = path7.join(sessionDir, `${threadId}.events`);
+  fs7.writeFileSync(ndjsonPath, "", { flag: "a" });
+  fs7.writeFileSync(eventsPath, "", { flag: "a" });
+  return { ndjsonPath, eventsPath, sessionDir, threadId };
+}
+function findSession(sessionDir, threadId) {
+  const ndjsonPath = path7.join(sessionDir, `${threadId}.ndjson`);
+  const eventsPath = path7.join(sessionDir, `${threadId}.events`);
+  if (!fs7.existsSync(ndjsonPath)) {
+    return null;
+  }
+  return { ndjsonPath, eventsPath, sessionDir, threadId };
+}
+function logNdjson(session, tag, method, data) {
+  const entry = {
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    tag,
+    method: method ?? null,
+    threadId: session.threadId,
+    data: data ?? {}
+  };
+  try {
+    fs7.appendFileSync(session.ndjsonPath, JSON.stringify(entry) + "\n");
+  } catch {
+  }
+}
+function logEvent(session, formattedBlock) {
+  try {
+    fs7.appendFileSync(session.eventsPath, formattedBlock + "\n");
+  } catch {
+  }
+}
+function writeDiff(session, diffContent) {
+  const diffPath = path7.join(session.sessionDir, `${session.threadId}.diff`);
+  try {
+    fs7.writeFileSync(diffPath, diffContent);
+  } catch {
+  }
+  return diffPath;
+}
+function writePlan(session, planText) {
+  const planPath = path7.join(session.sessionDir, `${session.threadId}.plan.md`);
+  try {
+    fs7.writeFileSync(planPath, planText);
+  } catch {
+  }
+  return planPath;
+}
+function writeReview(session, reviewData) {
+  const reviewPath = path7.join(session.sessionDir, `${session.threadId}.review.json`);
+  try {
+    fs7.writeFileSync(reviewPath, JSON.stringify(reviewData, null, 2));
+  } catch {
+  }
+  return reviewPath;
+}
+function captureGitSnapshot(cwd) {
+  const isoTimestamp = (/* @__PURE__ */ new Date()).toISOString();
+  try {
+    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+    if (headResult.status !== 0 || !headResult.stdout) {
+      return { headSha: null, porcelain: null, isoTimestamp };
+    }
+    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
+    return {
+      headSha: headResult.stdout.trim(),
+      porcelain: statusResult.status === 0 ? statusResult.stdout ?? "" : "",
+      isoTimestamp
+    };
+  } catch {
+    return { headSha: null, porcelain: null, isoTimestamp };
+  }
+}
+function diffGitSnapshot(cwd, snapshot) {
+  if (!snapshot || !snapshot.headSha) {
+    return { commits: [], currentHeadSha: null, lastOkHeadSha: null, dirtyFiles: [], launchedAtIso: snapshot?.isoTimestamp ?? null };
+  }
+  let commits = [];
+  let currentHeadSha = null;
+  let dirtyFiles = [];
+  try {
+    const logResult = spawnSync3(
+      "git",
+      ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
+      { cwd, encoding: "utf8", timeout: 1e4 }
+    );
+    if (logResult.status === 0 && logResult.stdout) {
+      commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    }
+    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+    if (headResult.status === 0 && headResult.stdout) {
+      currentHeadSha = headResult.stdout.trim();
+    }
+    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
+    if (statusResult.status === 0 && statusResult.stdout) {
+      dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    }
+  } catch {
+  }
+  return {
+    commits,
+    currentHeadSha,
+    lastOkHeadSha: snapshot.headSha,
+    dirtyFiles,
+    launchedAtIso: snapshot.isoTimestamp ?? null
+  };
+}
+function captureGitDiff(cwd, session) {
+  const numstatResult = spawnSync3("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+  const fullResult = spawnSync3("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+  const untrackedFiles = getUntrackedFileStats(cwd);
+  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles);
+  const diffPath = writeDiff(session, diffContent);
+  const numstatOutput = numstatResult.stdout || "";
+  const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
+  const summary = summarizeNumstat(files);
+  return { diffStat: summary, files: files.map(formatFileStat), diffPath };
+}
+function getUntrackedFileStats(cwd) {
+  try {
+    const result = spawnSync3(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      { cwd, encoding: "utf8", timeout: 1e4 }
+    );
+    if (result.status !== 0 || !result.stdout) {
+      return [];
+    }
+    return result.stdout.split("\0").filter(Boolean).map((fileName) => buildUntrackedFileStat(cwd, fileName)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+function buildUntrackedFileStat(cwd, fileName) {
+  const absolutePath = resolveInsideCwd(cwd, fileName);
+  if (!absolutePath) {
+    return null;
+  }
+  let sizeBytes = null;
+  let adds = 0;
+  try {
+    const stat = fs7.lstatSync(absolutePath);
+    sizeBytes = stat.size;
+    if (stat.isFile() && stat.size <= MAX_UNTRACKED_STAT_BYTES) {
+      const content = fs7.readFileSync(absolutePath);
+      if (!looksBinary(content)) {
+        adds = countTextLines(content);
+      }
+    }
+  } catch {
+  }
+  return {
+    fileName: displayGitPath(fileName),
+    adds,
+    dels: 0,
+    status: "A",
+    untracked: true,
+    sizeBytes
+  };
+}
+function resolveInsideCwd(cwd, fileName) {
+  const root = path7.resolve(cwd);
+  const absolutePath = path7.resolve(root, fileName);
+  if (absolutePath !== root && !absolutePath.startsWith(root + path7.sep)) {
+    return null;
+  }
+  return absolutePath;
+}
+function looksBinary(content) {
+  return content.subarray(0, Math.min(content.length, 8e3)).includes(0);
+}
+function countTextLines(content) {
+  if (content.length === 0) {
+    return 0;
+  }
+  const text = content.toString("utf8");
+  const newlineCount = text.split("\n").length - 1;
+  return text.endsWith("\n") ? newlineCount : newlineCount + 1;
+}
+function displayGitPath(fileName) {
+  return fileName.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
+}
+function appendUntrackedDiffMarkers(diffContent, untrackedFiles) {
+  if (untrackedFiles.length === 0) {
+    return diffContent;
+  }
+  const marker = formatUntrackedDiffMarkers(untrackedFiles);
+  if (!diffContent) {
+    return marker;
+  }
+  return `${diffContent}${diffContent.endsWith("\n") ? "" : "\n"}${marker}`;
+}
+function formatUntrackedDiffMarkers(untrackedFiles) {
+  const lines = ["# Untracked files omitted from git diff HEAD:"];
+  for (const file of untrackedFiles) {
+    const size = Number.isFinite(file.sizeBytes) ? `, ${file.sizeBytes} bytes` : "";
+    lines.push(`diff --git a/${file.fileName} b/${file.fileName}`);
+    lines.push("new file mode 100644");
+    lines.push("--- /dev/null");
+    lines.push(`+++ b/${file.fileName}`);
+    lines.push("@@ untracked file @@");
+    lines.push(`+<untracked file: ${file.fileName}${size}; content omitted from session diff>`);
+  }
+  return `${lines.join("\n")}
+`;
+}
+function parseGitNumstat(output) {
+  const files = [];
+  for (const line of output.split("\n")) {
+    const match = line.match(/^(\d+|-)\t(\d+|-)\t(.+)/);
+    if (match) {
+      const adds = match[1] === "-" ? 0 : parseInt(match[1]);
+      const dels = match[2] === "-" ? 0 : parseInt(match[2]);
+      const fileName = match[3].trim();
+      files.push({ fileName, adds, dels });
+    }
+  }
+  return files;
+}
+function formatFileStat({ fileName, adds, dels, status = null }) {
+  const prefix = fileName.includes("=>") ? "R" : "M";
+  if (status) {
+    return `${status} ${fileName} (+${adds} -${dels})`;
+  }
+  return `${prefix} ${fileName} (+${adds} -${dels})`;
+}
+function summarizeNumstat(files) {
+  const totalAdds = files.reduce((sum, f) => sum + f.adds, 0);
+  const totalDels = files.reduce((sum, f) => sum + f.dels, 0);
+  return `${files.length} files | +${totalAdds} -${totalDels}`;
+}
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+function formatCwdFlag(cwd) {
+  return cwd ? ` --cwd ${shellQuote(cwd)}` : "";
+}
+function commandPrefix(scriptPath, subcommand, cwd = null) {
+  return `node ${shellQuote(scriptPath)} ${subcommand}${formatCwdFlag(cwd)}`;
+}
+function resultActionLine(scriptPath, jobId, indent = "    detail: ", cwd = null) {
+  return jobId ? `${indent}${commandPrefix(scriptPath, "result", cwd)} ${jobId}` : `${indent}${commandPrefix(scriptPath, "result", cwd)}    # rerun with the specific job id from status`;
+}
+function cancelActionLine(scriptPath, jobId, indent = "    cancel: ", cwd = null) {
+  return jobId ? `${indent}${commandPrefix(scriptPath, "cancel", cwd)} ${jobId}` : `${indent}${commandPrefix(scriptPath, "cancel", cwd)}    # rerun with the specific job id from status`;
+}
+function jobCommandCwd(cwd, stateCwd) {
+  return stateCwd ?? cwd;
+}
+function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const lines = [
+    `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
+    `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
+    `  diff: ${diffPath}`
+  ];
+  if (files && files.length > 0) {
+    lines.push("  files:");
+    for (const f of files.slice(0, 20)) {
+      lines.push(`    ${f}`);
+    }
+  }
+  lines.push("  actions:");
+  lines.push(`    review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`);
+  lines.push(`    revise: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<message>"`);
+  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", jobCwd));
+  return lines.join("\n");
+}
+function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage, cwd = null, stateCwd = null }) {
+  const lines = ["  actions:"];
+  const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  if (origin === "upstream:response-chain-lost") {
+    lines.push(
+      `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
+      `    inspect:  git log --oneline <launch-iso>..HEAD    # audit what committed before the chain loss`,
+      resultActionLine(scriptPath, jobId, "    log:     ", jobCwd),
+      see("response-chain-lost")
+    );
+    return lines;
+  }
+  if (origin === "upstream:auth") {
+    lines.push(
+      "    reauth:  run `codex login` (or reauth your upstream proxy if one is in the path)",
+      "    do-not:  retry the same thread \u2014 auth is deterministic; the 401 will repeat",
+      resultActionLine(scriptPath, jobId, "    log:    ", jobCwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
+      see("upstream-auth-401")
+    );
+    return lines;
+  }
+  if (origin === "upstream:invalid-request") {
+    lines.push(
+      `    inspect: ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
+      `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<fixed prompt>"`,
+      see("upstream-invalid-request")
+    );
+    return lines;
+  }
+  if (origin === "idle") {
+    lines.push(
+      `    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
+      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
+      see("idle-timeout")
+    );
+    return lines;
+  }
+  if (origin === "upstream:compact-proxy") {
+    lines.push(
+      "    narrow:  split the task, or trim required-reads before resending (the upstream compact proxy ran out of budget mid-turn)",
+      `    resume:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<shorter follow-up>"`,
+      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
+      see("compact-proxy-502")
+    );
+    return lines;
+  }
+  if (origin === "upstream:transport") {
+    lines.push(
+      `    retry:   ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
+      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
+      see("upstream-transport-drop")
+    );
+    return lines;
+  }
+  if (typeof origin === "string" && origin.startsWith("pipeline:")) {
+    const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
+    lines.push(
+      `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
+      `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
+      see("pipeline-stage-timeout")
+    );
+    return lines;
+  }
+  if (typeof origin === "string" && origin.startsWith("bridge")) {
+    lines.push(
+      resultActionLine(scriptPath, jobId, "    log:    ", jobCwd),
+      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
+      see("bridge-unhandled-exit")
+    );
+    return lines;
+  }
+  if (errorCode === "Unauthorized") {
+    lines.push(
+      "    login:  codex login",
+      `    retry:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
+      see("unauthorized")
+    );
+    return lines;
+  }
+  if (errorCode === "ContextWindowExceeded") {
+    lines.push(
+      `    new:    ${commandPrefix(scriptPath, "task", cwd)} "<shorter prompt>"    # context window full; do not retry the same turn`,
+      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
+      see("context-window-exceeded")
+    );
+    return lines;
+  }
+  if (errorCode === "SandboxError") {
+    lines.push(
+      "    policy: set config.sandbox_policy: danger-full-access (or re-run with --write)",
+      `    retry:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
+      see("sandbox-denial")
+    );
+    return lines;
+  }
+  lines.push(
+    `    retry: ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
+    resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
+    cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd)
+  );
+  return lines;
+}
+function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null, cwd = null, stateCwd = null }) {
+  const lines = [
+    `[ERROR] ${session.threadId} failed | ${errorCode}`,
+    `  ${message}`,
+    `  origin: ${origin}`
+  ];
+  if (failingStage) {
+    lines.push(`  failing_stage: ${failingStage}`);
+  }
+  if (upstreamRequestId) {
+    lines.push(`  upstream_request_id: ${upstreamRequestId}`);
+  }
+  lines.push(`  phase: ${phase || "unknown"}`);
+  lines.push(...buildActionsBlock({
+    origin,
+    errorCode,
+    scriptPath,
+    threadId: session.threadId,
+    jobId,
+    failingStage,
+    cwd,
+    stateCwd
+  }));
+  return lines.join("\n");
+}
+function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null, cwd = null, stateCwd = null }) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const lines = [`[PARTIAL] ${session.threadId} commits=[${commits.join(",")}]`];
+  if (currentHeadSha) lines.push(`  current_head: ${currentHeadSha}`);
+  if (lastOkHeadSha) lines.push(`  last_ok_head: ${lastOkHeadSha}`);
+  if (launchedAtIso) lines.push(`  launched_at: ${launchedAtIso}`);
+  if (dirtyFiles && dirtyFiles.length > 0) {
+    lines.push("  dirty:");
+    for (const f of dirtyFiles.slice(0, 20)) {
+      lines.push(`    - ${f}`);
+    }
+    if (dirtyFiles.length > 20) lines.push(`    ... and ${dirtyFiles.length - 20} more`);
+  }
+  if (scriptPath && jobId) {
+    lines.push(`  inspect: ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId}`);
+  }
+  return lines.join("\n");
+}
+function formatRetryingEvent(session, { attempt, maxAttempts, backoffMs, origin, strategy, errorCode, reason = null }) {
+  const lines = [
+    `[RETRYING] ${session.threadId} attempt ${attempt}/${maxAttempts} | origin=${origin} | strategy=${strategy} | backoff=${backoffMs}ms`
+  ];
+  if (errorCode) lines.push(`  last_error: ${errorCode}`);
+  if (reason) lines.push(`  reason: ${reason}`);
+  return lines.join("\n");
+}
+function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath, cwd = null, stateCwd = null }) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const lines = [
+    `[HANDOFF] ${session.threadId} reason=${reason} | origin=${origin}${errorCode ? ` | code=${errorCode}` : ""}`
+  ];
+  if (upstreamRequestId) lines.push(`  upstream_request_id: ${upstreamRequestId}`);
+  if (sessionInfo?.jobId) lines.push(`  job_id: ${sessionInfo.jobId}`);
+  if (sessionInfo?.threadId) lines.push(`  thread_id: ${sessionInfo.threadId}`);
+  if (artifacts) {
+    lines.push("  artifacts:");
+    if (artifacts.eventsPath) lines.push(`    events: ${artifacts.eventsPath}`);
+    if (artifacts.workerErrPath) lines.push(`    worker_err: ${artifacts.workerErrPath}`);
+    if (artifacts.diffPath) lines.push(`    diff: ${artifacts.diffPath}`);
+    if (artifacts.planPath) lines.push(`    plan: ${artifacts.planPath}`);
+    if (artifacts.reviewPath) lines.push(`    review: ${artifacts.reviewPath}`);
+  }
+  if (partial && Array.isArray(partial.commits) && partial.commits.length > 0) {
+    lines.push(`  partial: commits=[${partial.commits.join(",")}] head=${partial.currentHeadSha ?? "?"} since=${partial.launchedAtIso ?? "?"}`);
+  }
+  if (prompt?.promptFilePath) {
+    lines.push(`  prompt_file: ${prompt.promptFilePath}`);
+  }
+  if (retries && retries.length > 0) {
+    lines.push(`  retries: ${retries.length} attempts logged`);
+  }
+  lines.push("  next:");
+  if (scriptPath && sessionInfo?.jobId) {
+    lines.push(`    read:     ${commandPrefix(scriptPath, "result", jobCwd)} ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
+  }
+  if (partial?.lastOkHeadSha || partial?.currentHeadSha) {
+    lines.push(`    audit:    git log --oneline ${partial.lastOkHeadSha ?? partial.currentHeadSha}..HEAD`);
+  }
+  lines.push(`    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default --prompt-file <rebased prompt>    # seed with last commit + remaining scope`);
+  lines.push("    see: skill/references/orchestration-flows.md#recovering-from-upstream-state-loss");
+  return lines.join("\n");
+}
+function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const lines = [
+    `[INCOMPLETE] ${session.threadId} | ${diffStat}`,
+    `  diff: ${diffPath}`,
+    `  review: ${verdict} (${findingCount} findings)`
+  ];
+  if (missingItems && missingItems.length > 0) {
+    lines.push("  missing:");
+    for (const item of missingItems) {
+      lines.push(`    - ${item}`);
+    }
+  }
+  lines.push("  actions:");
+  lines.push(`    fix:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "Complete the missing items"`);
+  lines.push(`    new:  ${commandPrefix(scriptPath, "task", cwd)} --write "..."`);
+  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", jobCwd));
+  return lines.join("\n");
+}
+function formatQuestionEvent(session, { requestId, questions, scriptPath, cwd = null }) {
+  const lines = [`[QUESTION] ${session.threadId} ${requestId}`];
+  for (const q of questions || []) {
+    lines.push(`  "${q.question}"`);
+    if (q.options && q.options.length > 0) {
+      const letters = "abcdefghijklmnopqrstuvwxyz";
+      for (let i = 0; i < q.options.length; i++) {
+        const opt = q.options[i];
+        lines.push(`  (${letters[i]}) ${opt.label} \u2014 ${opt.description}`);
+      }
+      if (q.isOther) {
+        lines.push("  [other: custom answer allowed]");
+      }
+    }
+    lines.push("respond:");
+    if (q.options && q.options.length > 0) {
+      for (const opt of q.options) {
+        lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer ${shellQuote(opt.label)}`);
+      }
+    } else {
+      lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "<answer>"`);
+    }
+  }
+  return lines.join("\n");
+}
+function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPath, cwd = null }) {
+  const lines = [`[PLAN] ${session.threadId} ${turnId}`];
+  lines.push(`  ${planTitle || "(untitled plan)"}`);
+  if (steps && steps.length > 0) {
+    for (const step of steps.slice(0, 10)) {
+      lines.push(`  ${step.number ?? "-"}. [ ] ${step.text}`);
+    }
+    if (steps.length > 10) {
+      lines.push(`  ... and ${steps.length - 10} more steps`);
+    }
+  }
+  lines.push(`  plan: ${planPath}`);
+  lines.push("actions:");
+  lines.push(`  approve: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} --mode default "Implement the plan."`);
+  lines.push(`  revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<revision instructions>"`);
+  return lines.join("\n");
+}
+function formatConfirmedEvent(session, { requestId }) {
+  return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
+}
+function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null, cwd = null }) {
+  const lines = [
+    `[HEARTBEAT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | pid=${pid ?? "?"}`
+  ];
+  const itemLine = lastItem ? `  lastItem: ${lastItem}${Number.isFinite(lastItemAgeMs) ? ` (age ${fmtSeconds(lastItemAgeMs)})` : ""}` : "  lastItem: (none yet)";
+  lines.push(itemLine);
+  if (Number.isFinite(budgetRemainingMs) && budgetRemainingMs > 0) {
+    lines.push(`  budget: ${fmtSeconds(budgetRemainingMs)} remaining`);
+  }
+  if (scriptPath && jobId) {
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
+  }
+  return lines.join("\n");
+}
+function fmtSeconds(ms) {
+  const s = Math.max(0, Math.round(ms / 1e3));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m${String(rem).padStart(2, "0")}s`;
+}
+var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE"]);
+var TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE)\]/m;
+var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT"]);
+function formatTailCommand({ scriptPath, jobId, timeoutMs = 18e5, exclude = DEFAULT_MONITOR_EXCLUDE, cwd = null }) {
+  const excludeClause = exclude && exclude.length > 0 ? ` --exclude ${Array.from(exclude).join(",")}` : "";
+  return `${commandPrefix(scriptPath, "events", cwd)} ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
+}
+function formatCheckpointEvent(session, {
+  elapsedMs,
+  phase,
+  intervalMs,
+  pid,
+  jobId = null,
+  lastAssistantMessage = null,
+  tools = [],
+  commits = [],
+  diffStat = null,
+  filesChangedSinceStart = null,
+  scriptPath = null,
+  cwd = null
+}) {
+  const head = `[CHECKPOINT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | interval=${fmtSeconds(intervalMs)} | pid=${pid ?? "?"}`;
+  const lines = [head];
+  if (lastAssistantMessage) {
+    const MAX_ASSISTANT_MESSAGE_CHARS = 8e3;
+    const raw = String(lastAssistantMessage).trim();
+    if (raw) {
+      const truncated = raw.length > MAX_ASSISTANT_MESSAGE_CHARS ? raw.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + `
+\u2026 (truncated, ${raw.length - MAX_ASSISTANT_MESSAGE_CHARS} more chars)` : raw;
+      lines.push("  assistant:");
+      for (const line of truncated.split("\n")) {
+        lines.push(`    ${line}`);
+      }
+    } else {
+      lines.push("  assistant: (no new assistant message this interval)");
+    }
+  } else {
+    lines.push("  assistant: (no new assistant message this interval)");
+  }
+  lines.push(`  tools (${tools.length}):`);
+  if (tools.length === 0) {
+    lines.push("    (none)");
+  } else {
+    for (const t of tools) {
+      lines.push(`    - ${t.type}${t.summary ? `: ${t.summary}` : ""}`);
+    }
+  }
+  if (commits && commits.length > 0) {
+    lines.push(`  commits (${commits.length}):`);
+    for (const c of commits) {
+      lines.push(`    - ${c.sha} ${c.subject}`);
+    }
+  }
+  if (diffStat) {
+    lines.push(`  diff-since-last-checkpoint: ${diffStat}`);
+  }
+  if (filesChangedSinceStart) {
+    lines.push(`  files-changed-since-turn-start: ${filesChangedSinceStart}`);
+  }
+  if (scriptPath && jobId) {
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
+  }
+  return lines.join("\n");
+}
+function formatDirectivesEvent(session, {
+  mode,
+  effort,
+  sandbox,
+  approval = null,
+  quiet = false,
+  skipMetaSkills = false,
+  pipelineEnabled = [],
+  model = null
+}) {
+  const parts = [
+    `mode=${mode}`,
+    `effort=${effort}`,
+    `sandbox=${sandbox}`
+  ];
+  if (approval) parts.push(`approval=${approval}`);
+  parts.push(`quiet=${quiet ? "true" : "false"}`);
+  parts.push(`skip_meta_skills=${skipMetaSkills ? "true" : "false"}`);
+  parts.push(`pipeline=${Array.isArray(pipelineEnabled) && pipelineEnabled.length > 0 ? pipelineEnabled.join(",") : "none"}`);
+  if (model) parts.push(`model=${model}`);
+  return `[DIRECTIVES] ${session.threadId} | ${parts.join(" | ")}`;
+}
+function formatPipelineEvent(session, { stage, suffix, detail }) {
+  const head = suffix ? `PIPELINE:${stage}:${suffix}` : `PIPELINE:${stage}`;
+  const ts = (/* @__PURE__ */ new Date()).toISOString().slice(11, 19);
+  return detail ? `[${head}] ${ts} ${detail}` : `[${head}] ${ts}`;
+}
+function formatWarningEvent(session, { reason, family, threshold, sampleCommand, turnInterrupted }) {
+  const lines = [
+    `[WARNING] ${session.threadId} ${reason}`,
+    `  family: ${family}`,
+    `  threshold: ${threshold} consecutive failures`
+  ];
+  if (sampleCommand) lines.push(`  sample: ${sampleCommand.slice(0, 120)}`);
+  lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
+  return lines.join("\n");
+}
+
+// src/lib/job-control.mjs
+import fs9 from "node:fs";
+
+// src/lib/tracked-jobs.mjs
+import fs8 from "node:fs";
+import process7 from "node:process";
+var SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+function nowIso2() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function normalizeProgressEvent(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return {
+      message: String(value.message ?? "").trim(),
+      phase: typeof value.phase === "string" && value.phase.trim() ? value.phase.trim() : null,
+      threadId: typeof value.threadId === "string" && value.threadId.trim() ? value.threadId.trim() : null,
+      turnId: typeof value.turnId === "string" && value.turnId.trim() ? value.turnId.trim() : null,
+      stderrMessage: value.stderrMessage == null ? null : String(value.stderrMessage).trim(),
+      logTitle: typeof value.logTitle === "string" && value.logTitle.trim() ? value.logTitle.trim() : null,
+      logBody: value.logBody == null ? null : String(value.logBody).trimEnd()
+    };
+  }
+  return {
+    message: String(value ?? "").trim(),
+    phase: null,
+    threadId: null,
+    turnId: null,
+    stderrMessage: String(value ?? "").trim(),
+    logTitle: null,
+    logBody: null
+  };
+}
+function appendLogLine(logFile, message) {
+  const normalized = String(message ?? "").trim();
+  if (!logFile || !normalized) {
+    return;
+  }
+  fs8.appendFileSync(logFile, `[${nowIso2()}] ${normalized}
+`, "utf8");
+}
+function appendLogBlock(logFile, title, body) {
+  if (!logFile || !body) {
+    return;
+  }
+  fs8.appendFileSync(logFile, `
+[${nowIso2()}] ${title}
+${String(body).trimEnd()}
+`, "utf8");
+}
+function createJobLogFile(workspaceRoot, jobId, title) {
+  const logFile = resolveJobLogFile(workspaceRoot, jobId);
+  fs8.writeFileSync(logFile, "", "utf8");
+  if (title) {
+    appendLogLine(logFile, `Starting ${title}.`);
+  }
+  return logFile;
+}
+function createJobRecord(base, options = {}) {
+  const env = options.env ?? process7.env;
+  const sessionId = env[options.sessionIdEnv ?? SESSION_ID_ENV];
+  return {
+    ...base,
+    createdAt: nowIso2(),
+    ...sessionId ? { sessionId } : {}
+  };
+}
+function createJobProgressUpdater(workspaceRoot, jobId) {
+  let lastPhase = null;
+  let lastThreadId = null;
+  let lastTurnId = null;
+  return (event) => {
+    const normalized = normalizeProgressEvent(event);
+    const patch = { id: jobId };
+    let changed = false;
+    if (normalized.phase && normalized.phase !== lastPhase) {
+      lastPhase = normalized.phase;
+      patch.phase = normalized.phase;
+      changed = true;
+    }
+    if (normalized.threadId && normalized.threadId !== lastThreadId) {
+      lastThreadId = normalized.threadId;
+      patch.threadId = normalized.threadId;
+      changed = true;
+    }
+    if (normalized.turnId && normalized.turnId !== lastTurnId) {
+      lastTurnId = normalized.turnId;
+      patch.turnId = normalized.turnId;
+      changed = true;
+    }
+    if (!changed) {
+      return;
+    }
+    const jobFile = resolveJobFile(workspaceRoot, jobId);
+    if (!fs8.existsSync(jobFile)) {
+      return;
+    }
+    const storedJob = readJobFile(jobFile);
+    writeJobFile(workspaceRoot, jobId, {
+      ...storedJob,
+      ...patch
+    });
+    upsertJob(workspaceRoot, patch);
+  };
+}
+function createProgressReporter({ stderr = false, logFile = null, onEvent = null } = {}) {
+  if (!stderr && !logFile && !onEvent) {
+    return null;
+  }
+  return (eventOrMessage) => {
+    const event = normalizeProgressEvent(eventOrMessage);
+    const stderrMessage = event.stderrMessage ?? event.message;
+    if (stderr && stderrMessage) {
+      process7.stderr.write(`[codex] ${stderrMessage}
+`);
+    }
+    appendLogLine(logFile, event.message);
+    appendLogBlock(logFile, event.logTitle, event.logBody);
+    onEvent?.(event);
+  };
+}
+function readStoredJobOrNull(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs8.existsSync(jobFile)) {
+    return null;
+  }
+  return readJobFile(jobFile);
+}
+async function runTrackedJob(job, runner, options = {}) {
+  const runningRecord = {
+    ...job,
+    status: "running",
+    startedAt: nowIso2(),
+    phase: "starting",
+    pid: process7.pid,
+    logFile: options.logFile ?? job.logFile ?? null
+  };
+  writeJobFile(job.workspaceRoot, job.id, runningRecord);
+  upsertJob(job.workspaceRoot, runningRecord);
+  try {
+    const execution = await runner();
+    const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
+    const completedAt = nowIso2();
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...runningRecord,
+      status: completionStatus,
+      threadId: execution.threadId ?? null,
+      turnId: execution.turnId ?? null,
+      pid: null,
+      phase: completionStatus === "completed" ? "done" : "failed",
+      completedAt,
+      result: execution.payload,
+      rendered: execution.rendered
+    });
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: completionStatus,
+      threadId: execution.threadId ?? null,
+      turnId: execution.turnId ?? null,
+      summary: execution.summary,
+      phase: completionStatus === "completed" ? "done" : "failed",
+      pid: null,
+      completedAt
+    });
+    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    return execution;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+    const completedAt = nowIso2();
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...existing,
+      status: "failed",
+      phase: "failed",
+      errorMessage,
+      pid: null,
+      completedAt,
+      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
+    });
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      errorMessage,
+      completedAt
+    });
+    throw error;
+  }
+}
+
+// src/lib/job-control.mjs
+var DEFAULT_MAX_STATUS_JOBS = 8;
+var DEFAULT_MAX_PROGRESS_LINES = 4;
+function sortJobsNewestFirst2(jobs) {
+  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
+function getCurrentSessionId(options = {}) {
+  return options.env?.[SESSION_ID_ENV] ?? process.env[SESSION_ID_ENV] ?? null;
+}
+function filterJobsForCurrentSession(jobs, options = {}) {
+  const sessionId = getCurrentSessionId(options);
+  if (!sessionId) {
+    return jobs;
+  }
+  return jobs.filter((job) => job.sessionId === sessionId);
+}
+function getJobTypeLabel(job) {
+  if (typeof job.kindLabel === "string" && job.kindLabel) {
+    return job.kindLabel;
+  }
+  if (job.kind === "adversarial-review") {
+    return "adversarial-review";
+  }
+  if (job.jobClass === "review") {
+    return "review";
+  }
+  if (job.jobClass === "task") {
+    return "task";
+  }
+  if (job.kind === "review") {
+    return "review";
+  }
+  if (job.kind === "task") {
+    return "task";
+  }
+  return "job";
+}
+function stripLogPrefix(line) {
+  return line.replace(/^\[[^\]]+\]\s*/, "").trim();
+}
+function isProgressBlockTitle(line) {
+  return ["Final output", "Assistant message", "Reasoning summary", "Review output"].includes(line) || /^Subagent .+ message$/.test(line) || /^Subagent .+ reasoning summary$/.test(line);
+}
+function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_LINES) {
+  if (!logFile || !fs9.existsSync(logFile)) {
+    return [];
+  }
+  const lines = fs9.readFileSync(logFile, "utf8").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).filter((line) => line.startsWith("[")).map(stripLogPrefix).filter((line) => line && !isProgressBlockTitle(line));
+  return lines.slice(-maxLines);
+}
+function formatElapsedDuration(startValue, endValue = null) {
+  const start = Date.parse(startValue ?? "");
+  if (!Number.isFinite(start)) {
+    return null;
+  }
+  const end = endValue ? Date.parse(endValue) : Date.now();
+  if (!Number.isFinite(end) || end < start) {
+    return null;
+  }
+  const totalSeconds = Math.max(0, Math.round((end - start) / 1e3));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+function looksLikeVerificationCommand2(line) {
+  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
+    line
+  );
+}
+function inferLegacyJobPhase(job, progressPreview = []) {
+  switch (job.status) {
+    case "queued":
+      return "queued";
+    case "cancelled":
+      return "cancelled";
+    case "failed":
+      return "failed";
+    case "completed":
+      return "done";
+    default:
+      break;
+  }
+  for (let index = progressPreview.length - 1; index >= 0; index -= 1) {
+    const line = progressPreview[index].toLowerCase();
+    if (line.startsWith("starting codex") || line.startsWith("thread ready") || line.startsWith("turn started")) {
+      return "starting";
+    }
+    if (line.startsWith("reviewer started") || line.includes("review mode")) {
+      return "reviewing";
+    }
+    if (line.startsWith("searching:") || line.startsWith("calling ") || line.startsWith("running tool:")) {
+      return "investigating";
+    }
+    if (line.startsWith("starting collaboration tool:")) {
+      return "investigating";
+    }
+    if (line.startsWith("running command:")) {
+      return looksLikeVerificationCommand2(line) ? "verifying" : job.jobClass === "review" ? "reviewing" : "investigating";
+    }
+    if (line.startsWith("command completed:")) {
+      return looksLikeVerificationCommand2(line) ? "verifying" : "running";
+    }
+    if (line.startsWith("applying ") || line.startsWith("file changes ")) {
+      return "editing";
+    }
+    if (line.startsWith("turn completed")) {
+      return "finalizing";
+    }
+    if (line.startsWith("codex error:") || line.startsWith("failed:")) {
+      return "failed";
+    }
+  }
+  return job.jobClass === "review" ? "reviewing" : "running";
+}
+function enrichJob(job, options = {}) {
+  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const enriched = {
+    ...job,
+    kindLabel: getJobTypeLabel(job),
+    progressPreview: job.status === "queued" || job.status === "running" || job.status === "failed" ? readJobProgressPreview(job.logFile, maxProgressLines) : [],
+    elapsed: formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? null),
+    duration: job.status === "completed" || job.status === "failed" || job.status === "cancelled" ? formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? job.updatedAt) : null
+  };
+  return {
+    ...enriched,
+    phase: enriched.phase ?? inferLegacyJobPhase(enriched, enriched.progressPreview)
+  };
+}
+function readStoredJob(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs9.existsSync(jobFile)) {
+    return null;
+  }
+  return readJobFile(jobFile);
+}
+function matchJobReference(jobs, reference, predicate = () => true) {
+  const filtered = jobs.filter(predicate);
+  if (!reference) {
+    return filtered[0] ?? null;
+  }
+  const exact = filtered.find((job) => job.id === reference);
+  if (exact) {
+    return exact;
+  }
+  const byThread = filtered.find((job) => job.threadId && job.threadId === reference);
+  if (byThread) {
+    return byThread;
+  }
+  const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
+  if (prefixMatches.length === 1) {
+    return prefixMatches[0];
+  }
+  if (prefixMatches.length > 1) {
+    throw new CliError(`Job reference "${reference}" is ambiguous. Use a longer job id.`, {
+      class: "validation",
+      code: "AMBIGUOUS_JOB_REFERENCE",
+      retryable: false
+    });
+  }
+  throw new CliError(`No job found for "${reference}".`, {
+    class: "not_found",
+    code: "JOB_NOT_FOUND",
+    retryable: false,
+    suggestion: "Run `status` to list known jobs."
+  });
+}
+function isResultTerminalJob(job) {
+  return job.status === "completed" || job.status === "failed" || job.status === "cancelled" || job.status === "orphaned";
+}
+function buildStatusSnapshot(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getConfig(workspaceRoot);
+  const allJobs = listJobs(workspaceRoot);
+  const jobs = sortJobsNewestFirst2(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
+  const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
+  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const running = jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => enrichJob(job, { maxProgressLines }));
+  const latestFinishedRaw = jobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
+  const latestFinished = latestFinishedRaw ? enrichJob(latestFinishedRaw, { maxProgressLines }) : null;
+  const recent = (options.all ? jobs : jobs.slice(0, maxJobs)).filter((job) => job.status !== "queued" && job.status !== "running" && job.id !== latestFinished?.id).map((job) => enrichJob(job, { maxProgressLines }));
+  return {
+    workspaceRoot,
+    config,
+    sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
+    running,
+    latestFinished,
+    recent,
+    needsReview: Boolean(config.stopReviewGate)
+  };
+}
+function buildSingleJobSnapshot(cwd, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
+  const selected = matchJobReference(jobs, reference);
+  if (!selected) {
+    throw new CliError(`No job found for "${reference}".`, {
+      class: "not_found",
+      code: "JOB_NOT_FOUND",
+      retryable: false,
+      suggestion: "Run `status` to inspect known jobs."
+    });
+  }
+  return {
+    workspaceRoot,
+    job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
+  };
+}
+function resolveResultJob(cwd, reference) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst2(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+  if (reference) {
+    const activeMatch = jobs.find(
+      (job) => (job.status === "queued" || job.status === "running") && (job.id === reference || job.id.startsWith(reference) || job.threadId === reference)
+    );
+    if (activeMatch) {
+      throw new CliError(`Job ${activeMatch.id} is still ${activeMatch.status}.`, {
+        class: "conflict",
+        code: "JOB_NOT_FINISHED",
+        retryable: false,
+        suggestion: `Check \`status ${activeMatch.id} --wait\` and try again once it finishes.`
+      });
+    }
+  }
+  const selected = matchJobReference(
+    jobs,
+    reference,
+    isResultTerminalJob
+  );
+  if (selected) {
+    return { workspaceRoot, job: selected };
+  }
+  if (reference) {
+    throw new CliError(`No finished job found for "${reference}".`, {
+      class: "not_found",
+      code: "JOB_NOT_FOUND",
+      retryable: false,
+      suggestion: "Run `status` to inspect active jobs."
+    });
+  }
+  throw new CliError("No finished Codex jobs found for this repository yet.", {
+    class: "not_found",
+    code: "NO_FINISHED_JOBS",
+    retryable: false
+  });
+}
+function resolveCancelableJob(cwd, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
+  const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
+  if (reference) {
+    const selected = matchJobReference(activeJobs, reference);
+    if (!selected) {
+      throw new CliError(`No active job found for "${reference}".`, {
+        class: "not_found",
+        code: "ACTIVE_JOB_NOT_FOUND",
+        retryable: false
+      });
+    }
+    return { workspaceRoot, job: selected };
+  }
+  const sessionScopedActiveJobs = filterJobsForCurrentSession(activeJobs, options);
+  if (sessionScopedActiveJobs.length === 1) {
+    return { workspaceRoot, job: sessionScopedActiveJobs[0] };
+  }
+  if (sessionScopedActiveJobs.length > 1) {
+    throw new CliError("Multiple Codex jobs are active.", {
+      class: "validation",
+      code: "AMBIGUOUS_CANCEL",
+      retryable: false,
+      suggestion: "Pass a job id to `cancel`."
+    });
+  }
+  if (getCurrentSessionId(options)) {
+    throw new CliError("No active Codex jobs to cancel for this session.", {
+      class: "not_found",
+      code: "NO_ACTIVE_JOBS",
+      retryable: false
+    });
+  }
+  throw new CliError("No active Codex jobs to cancel.", {
+    class: "not_found",
+    code: "NO_ACTIVE_JOBS",
+    retryable: false
+  });
+}
 
 // src/lib/config.mjs
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
+import fs10 from "node:fs";
+import path8 from "node:path";
+import os4 from "node:os";
 
 // node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
@@ -3569,7 +8012,7 @@ var COMPLETION_CHECK_SCHEMA = {
 // src/lib/config.mjs
 function readConfigFile(filePath) {
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
+    const raw = fs10.readFileSync(filePath, "utf8");
     const doc = jsYaml.load(raw) ?? {};
     const bridge = doc.codex_bridge ?? doc;
     return typeof bridge === "object" && bridge !== null ? bridge : {};
@@ -3578,16 +8021,16 @@ function readConfigFile(filePath) {
   }
 }
 function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
-  const skillConfigPath = skillDir ? path.join(skillDir, "config.yaml") : path.join(os.homedir(), ".codex-bridge", "config.yaml");
-  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path.join(workspaceRoot, "config.yaml") : null;
-  const overrideConfigPath = overrideDir ? path.join(overrideDir, "config.yaml") : null;
+  const skillConfigPath = skillDir ? path8.join(skillDir, "config.yaml") : path8.join(os4.homedir(), ".codex-bridge", "config.yaml");
+  const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path8.join(workspaceRoot, "config.yaml") : null;
+  const overrideConfigPath = overrideDir ? path8.join(overrideDir, "config.yaml") : null;
   return { skillConfigPath, workspaceConfigPath, overrideConfigPath };
 }
 function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
   const { skillConfigPath, workspaceConfigPath, overrideConfigPath } = configPaths(skillDir, overrideDir, workspaceRoot);
   const skillLayer = readConfigFile(skillConfigPath);
-  const workspaceLayer = workspaceConfigPath && fs.existsSync(workspaceConfigPath) ? readConfigFile(workspaceConfigPath) : {};
-  const overrideLayer = overrideConfigPath && fs.existsSync(overrideConfigPath) ? readConfigFile(overrideConfigPath) : {};
+  const workspaceLayer = workspaceConfigPath && fs10.existsSync(workspaceConfigPath) ? readConfigFile(workspaceConfigPath) : {};
+  const overrideLayer = overrideConfigPath && fs10.existsSync(overrideConfigPath) ? readConfigFile(overrideConfigPath) : {};
   const mergedConfig = {
     ...DEFAULT_CONFIG,
     ...skillLayer,
@@ -3602,11 +8045,11 @@ function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
     mergedConfig,
     sources: {
       skillConfigPath,
-      skillConfigExists: fs.existsSync(skillConfigPath),
+      skillConfigExists: fs10.existsSync(skillConfigPath),
       workspaceConfigPath,
-      workspaceConfigExists: workspaceConfigPath ? fs.existsSync(workspaceConfigPath) : false,
+      workspaceConfigExists: workspaceConfigPath ? fs10.existsSync(workspaceConfigPath) : false,
       overrideConfigPath,
-      overrideConfigExists: overrideConfigPath ? fs.existsSync(overrideConfigPath) : false
+      overrideConfigExists: overrideConfigPath ? fs10.existsSync(overrideConfigPath) : false
     }
   };
 }
@@ -3616,6 +8059,209 @@ function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
 function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
 }
+
+// src/adapters/codex/index.mjs
+function buildCapabilities() {
+  return Object.freeze({
+    supports_plan_mode: true,
+    supports_questions: true,
+    supports_streaming: true,
+    supports_resume: true,
+    supports_steering: true,
+    supports_background: true,
+    supports_auto_pipeline: true,
+    supports_adversarial_review: true,
+    supports_worktree: true,
+    supports_artifact_registry: true,
+    input_modalities: ["text"],
+    output_modalities: ["text", "diff", "structured"],
+    max_prompt_chars: 512e3,
+    billing_model: "subscription",
+    auth_strategy: "oauth-cli",
+    transport: "json-rpc-unix-socket"
+  });
+}
+var defaultRuntime = Object.freeze({
+  async runTurn(cwd, options) {
+    return runAppServerTurn(cwd, options);
+  },
+  async steerTurn(cwd, { threadId, turnId, prompt }) {
+    await withAppServer(cwd, async (client) => {
+      await client.request("turn/steer", {
+        threadId,
+        input: [{ type: "text", text: prompt }],
+        expectedTurnId: turnId
+      });
+    });
+    return { ok: true, threadId, turnId };
+  },
+  async interruptTurn(cwd, { threadId, turnId }) {
+    return interruptAppServerTurn(cwd, { threadId, turnId });
+  }
+});
+var runtime = defaultRuntime;
+function normalizeAdapterOptions(options = {}) {
+  return options && typeof options === "object" && !Array.isArray(options) ? options : {};
+}
+function defaultSessionDirForCwd(cwd) {
+  const config = getConfig(cwd);
+  return resolveSessionDir(config.session_dir ?? DEFAULT_CONFIG.session_dir);
+}
+function buildTurnOptions(prompt, options) {
+  const adapterOptions = normalizeAdapterOptions(options.adapterOptions);
+  const turnOptions = {
+    ...normalizeAdapterOptions(adapterOptions.turnOptions)
+  };
+  if (options.resumeThreadId && !turnOptions.resumeThreadId) {
+    turnOptions.resumeThreadId = options.resumeThreadId;
+  }
+  if (options.model && !turnOptions.model) {
+    turnOptions.model = options.model;
+  }
+  if (options.effort && !turnOptions.effort) {
+    turnOptions.effort = options.effort;
+  }
+  if (Number(options.timeoutMs) > 0 && !turnOptions.turnTimeoutMs) {
+    turnOptions.turnTimeoutMs = Number(options.timeoutMs);
+  }
+  return {
+    ...turnOptions,
+    prompt
+  };
+}
+function eventTagForLine(line) {
+  const terminal = TERMINAL_TAG_REGEX.exec(line);
+  if (terminal) return terminal[1];
+  const generic = /^\[([^\]]+)\]/.exec(line);
+  return generic?.[1] ?? "ADAPTER:codex:event";
+}
+async function dispatch(prompt, options = {}) {
+  const normalized = normalizeAdapterOptions(options);
+  const cwd = normalized.cwd ?? process8.cwd();
+  const sessionDir = normalized.sessionDir ?? defaultSessionDirForCwd(cwd);
+  const result = await runtime.runTurn(cwd, buildTurnOptions(prompt, normalized));
+  return {
+    jobId: normalized.jobId ?? result.threadId ?? null,
+    threadId: result.threadId ?? null,
+    turnId: result.turnId ?? null,
+    sessionDir,
+    capabilities: buildCapabilities(),
+    status: result.status,
+    rawResult: result
+  };
+}
+async function resume(threadId, prompt, options = {}) {
+  const normalized = normalizeAdapterOptions(options);
+  return dispatch(prompt, {
+    ...normalized,
+    resumeThreadId: threadId,
+    adapterOptions: {
+      ...normalizeAdapterOptions(normalized.adapterOptions),
+      turnOptions: {
+        ...normalizeAdapterOptions(normalized.adapterOptions?.turnOptions),
+        resumeThreadId: threadId
+      }
+    }
+  });
+}
+async function steer(threadId, turnId, prompt, options = {}) {
+  const cwd = normalizeAdapterOptions(options).cwd ?? process8.cwd();
+  return runtime.steerTurn(cwd, { threadId, turnId, prompt });
+}
+async function respond(_threadOrJobId, requestId, answer, options = {}) {
+  const normalized = normalizeAdapterOptions(options);
+  if (!normalized.sessionDir) {
+    const err = new Error("codex adapter respond requires options.sessionDir");
+    err.code = "PENDING_REQUEST_SESSION_DIR_REQUIRED";
+    throw err;
+  }
+  const pending = readPendingRequestById(normalized.sessionDir, requestId);
+  if (!pending) {
+    const err = new Error(`No pending request found: ${requestId}.`);
+    err.code = "PENDING_REQUEST_NOT_FOUND";
+    throw err;
+  }
+  writeResponseFile(normalized.sessionDir, pending.threadId, {
+    requestId: pending.internalId,
+    rpcRequestId: pending.rpcRequestId,
+    payload: answer
+  });
+  return {
+    ok: true,
+    requestId,
+    threadId: pending.threadId
+  };
+}
+async function cancel(_jobId, options = {}) {
+  const normalized = normalizeAdapterOptions(options);
+  const result = await runtime.interruptTurn(normalized.cwd ?? process8.cwd(), {
+    threadId: normalized.threadId ?? null,
+    turnId: normalized.turnId ?? null
+  });
+  return {
+    ok: result.interrupted !== false,
+    attempted: Boolean(result.attempted),
+    interrupted: Boolean(result.interrupted),
+    reason: result.detail ?? null
+  };
+}
+async function getResult(jobId, options = {}) {
+  const normalized = normalizeAdapterOptions(options);
+  const cwd = normalized.cwd ?? process8.cwd();
+  const { workspaceRoot, job } = resolveResultJob(cwd, jobId);
+  const storedJob = readStoredJob(workspaceRoot, job.id);
+  const exitCode = job.status === "completed" ? 0 : 1;
+  return {
+    jobId: job.id,
+    threadId: job.threadId ?? storedJob?.threadId ?? null,
+    phase: job.phase ?? storedJob?.phase ?? job.status ?? "error",
+    exitCode,
+    terminalTag: job.status === "completed" ? "DONE" : job.status === "cancelled" ? "ERROR" : null,
+    summary: job.summary ?? storedJob?.summary ?? null,
+    artifacts: storedJob?.result?.artifacts ?? {},
+    raw: { job, storedJob }
+  };
+}
+async function* streamEvents(jobId, optionsOrSignal = {}) {
+  const options = optionsOrSignal instanceof AbortSignal ? { signal: optionsOrSignal } : normalizeAdapterOptions(optionsOrSignal);
+  const cwd = options.cwd ?? process8.cwd();
+  const snapshot = buildSingleJobSnapshot(cwd, jobId);
+  const threadId = snapshot.job.threadId;
+  if (!threadId) {
+    const err = new Error(`Job ${snapshot.job.id} has no thread id yet.`);
+    err.code = "JOB_HAS_NO_THREAD";
+    throw err;
+  }
+  const sessionDir = options.sessionDir ?? defaultSessionDirForCwd(cwd);
+  const eventsPath = options.eventsPath ?? path9.join(sessionDir, `${threadId}.events`);
+  const content = fs11.readFileSync(eventsPath, "utf8");
+  for (const line of content.split(/\r?\n/).filter(Boolean)) {
+    if (options.signal?.aborted) return;
+    yield {
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      tag: eventTagForLine(line),
+      origin: "bridge",
+      data: { line, eventsPath },
+      raw: line
+    };
+  }
+}
+var adapter = {
+  name: "codex",
+  displayName: "OpenAI Codex",
+  capabilities: buildCapabilities,
+  validateConfig(_config) {
+    return { valid: true, errors: [] };
+  },
+  dispatch,
+  streamEvents,
+  getResult,
+  cancel,
+  respond,
+  resume,
+  steer
+};
+var codex_default = adapter;
 
 // src/adapters/index.mjs
 var REQUIRED_FIELDS = ["name", "displayName"];
@@ -3752,7 +8398,7 @@ function metadataSubagentType(metadata) {
   return metadata.subagentType ?? metadata.subagent_type;
 }
 function buildAdapterSelectionOptions(options = {}) {
-  const env = options.env ?? process3.env;
+  const env = options.env ?? process9.env;
   const metadata = options.taskMetadata ?? options.metadata ?? null;
   const layers = options.configLayers ?? {};
   return {
@@ -3780,6 +8426,23 @@ async function resolveAdapterForRuntime(options = {}) {
     configLayers
   });
 }
+function guardCapability(adapter2, capability) {
+  const caps = adapter2.capabilities();
+  if (!capability.startsWith("supports_") || typeof caps[capability] !== "boolean") {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Capability '${capability}' is not a boolean support flag`,
+      { backend: adapter2.name, capability }
+    );
+  }
+  if (caps[capability] !== true) {
+    throw new AdapterError(
+      "BACKEND_INCAPABLE",
+      `Backend '${adapter2.name}' does not support capability '${capability}'`,
+      { backend: adapter2.name, capability }
+    );
+  }
+}
 
 // src/lib/thread-id.mjs
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -3787,3272 +8450,10 @@ function isThreadId(value) {
   return typeof value === "string" && UUID_RE.test(value.trim());
 }
 
-// src/lib/fs.mjs
-import fs2 from "node:fs";
-function readJsonFile(filePath) {
-  return JSON.parse(fs2.readFileSync(filePath, "utf8"));
-}
-function isProbablyText(buffer) {
-  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
-  for (const value of sample) {
-    if (value === 0) {
-      return false;
-    }
-  }
-  return true;
-}
-function readStdinIfPiped() {
-  if (process.stdin.isTTY) {
-    return "";
-  }
-  return fs2.readFileSync(0, "utf8");
-}
-
-// src/adapters/codex/protocol.mjs
-import net2 from "node:net";
-import process7 from "node:process";
-import { spawn as spawn2 } from "node:child_process";
-import readline from "node:readline";
-
-// src/lib/broker-endpoint.mjs
-import path2 from "node:path";
-import process4 from "node:process";
-function sanitizePipeName(value) {
-  return String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "");
-}
-function createBrokerEndpoint(sessionDir, platform = process4.platform) {
-  if (platform === "win32") {
-    const pipeName = sanitizePipeName(`${path2.win32.basename(sessionDir)}-codex-app-server`);
-    return `pipe:\\\\.\\pipe\\${pipeName}`;
-  }
-  return `unix:${path2.join(sessionDir, "broker.sock")}`;
-}
-function parseBrokerEndpoint(endpoint) {
-  if (typeof endpoint !== "string" || endpoint.length === 0) {
-    throw new Error("Missing broker endpoint.");
-  }
-  if (endpoint.startsWith("pipe:")) {
-    const pipePath = endpoint.slice("pipe:".length);
-    if (!pipePath) {
-      throw new Error("Broker pipe endpoint is missing its path.");
-    }
-    return { kind: "pipe", path: pipePath };
-  }
-  if (endpoint.startsWith("unix:")) {
-    const socketPath = endpoint.slice("unix:".length);
-    if (!socketPath) {
-      throw new Error("Broker Unix socket endpoint is missing its path.");
-    }
-    return { kind: "unix", path: socketPath };
-  }
-  throw new Error(`Unsupported broker endpoint: ${endpoint}`);
-}
-
-// src/lib/broker-lifecycle.mjs
-import fs6 from "node:fs";
-import net from "node:net";
-import os3 from "node:os";
-import path6 from "node:path";
-import process6 from "node:process";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-
-// src/lib/process.mjs
-import { spawnSync } from "node:child_process";
-import process5 from "node:process";
-var DEFAULT_RUN_COMMAND_TIMEOUT_MS = 1e4;
-function resolveRunCommandTimeout(timeout) {
-  if (timeout == null) {
-    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
-  }
-  const parsed = Number(timeout);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_RUN_COMMAND_TIMEOUT_MS;
-  }
-  return Math.max(1, Math.floor(parsed));
-}
-function runCommand(command, args = [], options = {}) {
-  const spawnSyncImpl = options.spawnSync ?? spawnSync;
-  const result = spawnSyncImpl(command, args, {
-    cwd: options.cwd,
-    env: options.env,
-    encoding: "utf8",
-    input: options.input,
-    maxBuffer: options.maxBuffer,
-    stdio: options.stdio ?? "pipe",
-    shell: process5.platform === "win32" ? process5.env.SHELL || true : false,
-    timeout: resolveRunCommandTimeout(options.timeout),
-    windowsHide: true
-  });
-  const normalizedStatus = result.status != null ? result.status : result.signal ? 128 : 1;
-  return {
-    command,
-    args,
-    status: normalizedStatus,
-    signal: result.signal ?? null,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    error: result.error ?? null
-  };
-}
-function runCommandChecked(command, args = [], options = {}) {
-  const result = runCommand(command, args, options);
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(formatCommandFailure(result));
-  }
-  return result;
-}
-function binaryAvailable(command, versionArgs = ["--version"], options = {}) {
-  const result = runCommand(command, versionArgs, options);
-  if (result.error && /** @type {NodeJS.ErrnoException} */
-  result.error.code === "ENOENT") {
-    return { available: false, detail: "not found" };
-  }
-  if (result.error) {
-    return { available: false, detail: result.error.message };
-  }
-  if (result.status !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`;
-    return { available: false, detail };
-  }
-  return { available: true, detail: result.stdout.trim() || result.stderr.trim() || "ok" };
-}
-function looksLikeMissingProcessMessage(text) {
-  return /not found|no running instance|cannot find|does not exist|no such process/i.test(text);
-}
-function terminateProcessTree(pid, options = {}) {
-  if (!Number.isFinite(pid)) {
-    return { attempted: false, delivered: false, method: null };
-  }
-  const platform = options.platform ?? process5.platform;
-  const runCommandImpl = options.runCommandImpl ?? runCommand;
-  const killImpl = options.killImpl ?? process5.kill.bind(process5);
-  if (platform === "win32") {
-    const result = runCommandImpl("taskkill", ["/PID", String(pid), "/T", "/F"], {
-      cwd: options.cwd,
-      env: options.env
-    });
-    if (!result.error && result.status === 0) {
-      return { attempted: true, delivered: true, method: "taskkill", result };
-    }
-    const combinedOutput = `${result.stderr}
-${result.stdout}`.trim();
-    if (!result.error && looksLikeMissingProcessMessage(combinedOutput)) {
-      return { attempted: true, delivered: false, method: "taskkill", result };
-    }
-    if (result.error?.code === "ENOENT") {
-      try {
-        killImpl(pid);
-        return { attempted: true, delivered: true, method: "kill" };
-      } catch (error) {
-        if (error?.code === "ESRCH") {
-          return { attempted: true, delivered: false, method: "kill" };
-        }
-        throw error;
-      }
-    }
-    if (result.error) {
-      throw result.error;
-    }
-    throw new Error(formatCommandFailure(result));
-  }
-  try {
-    killImpl(-pid, "SIGTERM");
-    return { attempted: true, delivered: true, method: "process-group" };
-  } catch (error) {
-    if (error?.code !== "ESRCH") {
-      try {
-        killImpl(pid, "SIGTERM");
-        return { attempted: true, delivered: true, method: "process" };
-      } catch (innerError) {
-        if (innerError?.code === "ESRCH") {
-          return { attempted: true, delivered: false, method: "process" };
-        }
-        throw innerError;
-      }
-    }
-    return { attempted: true, delivered: false, method: "process-group" };
-  }
-}
-function formatCommandFailure(result) {
-  const parts = [`${result.command} ${result.args.join(" ")}`.trim()];
-  if (result.signal) {
-    parts.push(`signal=${result.signal}`);
-  } else {
-    parts.push(`exit=${result.status}`);
-  }
-  const stderr = (result.stderr || "").trim();
-  const stdout = (result.stdout || "").trim();
-  if (stderr) {
-    parts.push(stderr);
-  } else if (stdout) {
-    parts.push(stdout);
-  }
-  return parts.join(": ");
-}
-
-// src/lib/state.mjs
-import { createHash } from "node:crypto";
-import fs5 from "node:fs";
-import os2 from "node:os";
-import path5 from "node:path";
-
-// src/lib/official-plugin.mjs
-import { spawnSync as spawnSync2 } from "node:child_process";
-var OFFICIAL_PLUGIN_STATUS = Object.freeze({
-  ACTIVE: "active",
-  ABSENT: "absent",
-  UNKNOWN: "unknown"
-});
-var CLAUDE_PLUGIN_LIST_TIMEOUT_MS = 3e3;
-function stringValue(value) {
-  return typeof value === "string" ? value : "";
-}
-function normalizePathLike(value) {
-  return stringValue(value).replace(/\\/g, "/").toLowerCase();
-}
-function pluginEntryEnabled(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  if ("enabled" in entry) return Boolean(entry.enabled);
-  if ("disabled" in entry) return !entry.disabled;
-  return true;
-}
-function summarizePluginEntry(entry) {
-  if (!entry || typeof entry !== "object") return null;
-  return {
-    id: entry.id ?? null,
-    name: entry.name ?? null,
-    version: entry.version ?? null,
-    scope: entry.scope ?? null,
-    installPath: entry.installPath ?? entry.path ?? null,
-    enabled: pluginEntryEnabled(entry)
-  };
-}
-function isOfficialOpenAICodexPluginEntry(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  const id = stringValue(entry.id).toLowerCase();
-  const name = stringValue(entry.name).toLowerCase();
-  const source = stringValue(entry.source).toLowerCase();
-  const installPath = normalizePathLike(entry.installPath ?? entry.path);
-  const authorName = stringValue(entry.author?.name ?? entry.author).toLowerCase();
-  if (id === "codex@openai-codex") return true;
-  if (id === "codex" && authorName === "openai") return true;
-  if (name === "codex" && authorName === "openai") return true;
-  if (source.includes("openai/codex-plugin-cc")) return true;
-  if (source.includes("openai-codex") && (id.includes("codex") || name === "codex")) return true;
-  if (installPath.includes("/openai-codex/codex/")) return true;
-  if (installPath.endsWith("/openai-codex/codex")) return true;
-  if (installPath.includes("/codex-plugin-cc/plugins/codex")) return true;
-  return false;
-}
-function detectOfficialOpenAICodexPluginFromEntries(entries) {
-  if (!Array.isArray(entries)) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: "Claude plugin list output was not an array.",
-      plugin: null
-    };
-  }
-  const plugin = entries.find((entry) => pluginEntryEnabled(entry) && isOfficialOpenAICodexPluginEntry(entry));
-  if (plugin) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.ACTIVE,
-      detail: "Official OpenAI Codex plugin is enabled.",
-      plugin: summarizePluginEntry(plugin)
-    };
-  }
-  return {
-    status: OFFICIAL_PLUGIN_STATUS.ABSENT,
-    detail: "Official OpenAI Codex plugin was not found in the enabled Claude plugin list.",
-    plugin: null
-  };
-}
-function extractPluginEntries(parsed) {
-  if (Array.isArray(parsed)) return parsed;
-  if (Array.isArray(parsed?.plugins)) return parsed.plugins;
-  if (Array.isArray(parsed?.result?.plugins)) return parsed.result.plugins;
-  return null;
-}
-function detectOfficialOpenAICodexPluginUncached(options = {}) {
-  const spawn4 = options.spawnSync ?? spawnSync2;
-  const result = spawn4("claude", ["plugin", "list", "--json"], {
-    cwd: options.cwd ?? process.cwd(),
-    env: options.env ?? process.env,
-    encoding: "utf8",
-    timeout: options.timeoutMs ?? CLAUDE_PLUGIN_LIST_TIMEOUT_MS
-  });
-  if (result.error) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: `Could not run \`claude plugin list --json\`: ${result.error.message}`,
-      plugin: null
-    };
-  }
-  if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || "").trim();
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: detail ? `\`claude plugin list --json\` exited with status ${result.status}: ${detail}` : `\`claude plugin list --json\` exited with status ${result.status}.`,
-      plugin: null
-    };
-  }
-  try {
-    const parsed = JSON.parse(result.stdout);
-    return detectOfficialOpenAICodexPluginFromEntries(extractPluginEntries(parsed));
-  } catch (error) {
-    return {
-      status: OFFICIAL_PLUGIN_STATUS.UNKNOWN,
-      detail: `Could not parse \`claude plugin list --json\`: ${error instanceof Error ? error.message : String(error)}`,
-      plugin: null
-    };
-  }
-}
-var DEFAULT_DETECT_CACHE_MS = 3e4;
-var cached = null;
-var cachedAt = 0;
-function detectOfficialOpenAICodexPlugin(options = {}) {
-  const maxAgeMs = options.maxAgeMs ?? DEFAULT_DETECT_CACHE_MS;
-  if (maxAgeMs > 0 && cached !== null && Date.now() - cachedAt < maxAgeMs) {
-    return cached;
-  }
-  const result = detectOfficialOpenAICodexPluginUncached(options);
-  cached = result;
-  cachedAt = Date.now();
-  return result;
-}
-
-// src/lib/git.mjs
-import fs4 from "node:fs";
-import path4 from "node:path";
-import { execFileSync as childExecFileSync } from "node:child_process";
-
-// src/lib/prompts.mjs
-import fs3 from "node:fs";
-import path3 from "node:path";
-function loadPromptTemplate(rootDir, name) {
-  const promptPath = path3.join(rootDir, "prompts", `${name}.md`);
-  return fs3.readFileSync(promptPath, "utf8");
-}
-function interpolateTemplate(template, variables, options = {}) {
-  const requiredKeys = options?.requiredKeys ?? null;
-  if (requiredKeys) {
-    const iterable = requiredKeys instanceof Set ? requiredKeys : new Set(requiredKeys);
-    for (const key of iterable) {
-      if (!Object.prototype.hasOwnProperty.call(variables, key)) {
-        throw new Error(`interpolateTemplate: missing required key '${key}'`);
-      }
-    }
-  }
-  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => {
-    return Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : "";
-  });
-}
-var PROMPT_VALUE_MAX_LEN = 200;
-function sanitizePromptValue(value, options = {}) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  const requestedMaxLength = options?.maxLength;
-  const maxLength = Number.isInteger(requestedMaxLength) && requestedMaxLength >= 0 ? requestedMaxLength : PROMPT_VALUE_MAX_LEN;
-  const stripped = value.replace(/[\n\r<>]/g, " ");
-  const collapsed = stripped.replace(/\s+/g, " ");
-  if (collapsed.length <= maxLength) {
-    return collapsed;
-  }
-  return collapsed.slice(0, maxLength);
-}
-
-// src/lib/git.mjs
-var MAX_UNTRACKED_BYTES = 24 * 1024;
-var DEFAULT_INLINE_DIFF_MAX_FILES = 2;
-var DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
-var REGULAR_FILE_READ_FLAGS = fs4.constants.O_RDONLY | (fs4.constants.O_NOFOLLOW ?? 0) | (fs4.constants.O_NONBLOCK ?? 0);
-function git(cwd, args, options = {}) {
-  return runCommand("git", args, { cwd, ...options });
-}
-function gitChecked(cwd, args, options = {}) {
-  return runCommandChecked("git", args, { cwd, ...options });
-}
-function listUniqueFiles(...groups) {
-  return [...new Set(groups.flat().filter(Boolean))].sort();
-}
-function normalizeMaxInlineFiles(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return DEFAULT_INLINE_DIFF_MAX_FILES;
-  }
-  return Math.floor(parsed);
-}
-function normalizeMaxInlineDiffBytes(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return DEFAULT_INLINE_DIFF_MAX_BYTES;
-  }
-  return Math.floor(parsed);
-}
-function measureGitOutputBytes(cwd, args, maxBytes) {
-  const result = git(cwd, args, { maxBuffer: maxBytes + 1 });
-  if (result.error && /** @type {NodeJS.ErrnoException} */
-  result.error.code === "ENOBUFS") {
-    return maxBytes + 1;
-  }
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(formatCommandFailure(result));
-  }
-  return Buffer.byteLength(result.stdout, "utf8");
-}
-function measureCombinedGitOutputBytes(cwd, argSets, maxBytes) {
-  let totalBytes = 0;
-  for (const args of argSets) {
-    const remainingBytes = maxBytes - totalBytes;
-    if (remainingBytes < 0) {
-      return maxBytes + 1;
-    }
-    totalBytes += measureGitOutputBytes(cwd, args, remainingBytes);
-    if (totalBytes > maxBytes) {
-      return totalBytes;
-    }
-  }
-  return totalBytes;
-}
-function buildBranchComparison(cwd, baseRef) {
-  const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", baseRef]).stdout.trim();
-  return {
-    mergeBase,
-    commitRange: `${mergeBase}..HEAD`,
-    reviewRange: `${baseRef}...HEAD`
-  };
-}
-function ensureGitRepository(cwd) {
-  const result = git(cwd, ["rev-parse", "--show-toplevel"]);
-  const errorCode = result.error && "code" in result.error ? result.error.code : null;
-  if (errorCode === "ENOENT") {
-    throw new CliError("git is not installed. Install Git and retry.", {
-      class: "dependency_failed",
-      code: "GIT_NOT_INSTALLED",
-      retryable: false,
-      suggestion: "Install Git (e.g. `brew install git` or your distro's package) and retry."
-    });
-  }
-  if (result.status !== 0) {
-    throw new CliError("This command must run inside a Git repository.", {
-      class: "validation",
-      code: "NOT_A_GIT_REPO",
-      retryable: false,
-      suggestion: "Run from within a Git working tree, or pass --cwd to point at one."
-    });
-  }
-  return result.stdout.trim();
-}
-function getRepoRoot(cwd) {
-  return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
-}
-function detectDefaultBranch(cwd) {
-  const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
-  if (symbolic.status === 0) {
-    const remoteHead = symbolic.stdout.trim();
-    if (remoteHead.startsWith("refs/remotes/origin/")) {
-      const candidate = remoteHead.replace("refs/remotes/origin/", "");
-      const localCheck = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
-      if (localCheck.status === 0) {
-        return candidate;
-      }
-      return `origin/${candidate}`;
-    }
-  }
-  const candidates = ["main", "master", "trunk"];
-  for (const candidate of candidates) {
-    const local = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
-    if (local.status === 0) {
-      return candidate;
-    }
-    const remote = git(cwd, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]);
-    if (remote.status === 0) {
-      return `origin/${candidate}`;
-    }
-  }
-  throw new CliError("Unable to detect the repository default branch.", {
-    class: "not_found",
-    code: "DEFAULT_BRANCH_NOT_FOUND",
-    retryable: false,
-    suggestion: "Pass `--base <ref>` explicitly, or use `--scope working-tree`."
-  });
-}
-function getCurrentBranch(cwd) {
-  return gitChecked(cwd, ["branch", "--show-current"]).stdout.trim() || "HEAD";
-}
-function getWorkingTreeState(cwd) {
-  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
-  const unstaged = gitChecked(cwd, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
-  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard"]).stdout.trim().split("\n").filter(Boolean);
-  return {
-    staged,
-    unstaged,
-    untracked,
-    isDirty: staged.length > 0 || unstaged.length > 0 || untracked.length > 0
-  };
-}
-function resolveReviewTarget(cwd, options = {}) {
-  ensureGitRepository(cwd);
-  const requestedScope = options.scope ?? "auto";
-  const baseRef = options.base ?? null;
-  const state = getWorkingTreeState(cwd);
-  const supportedScopes = /* @__PURE__ */ new Set(["auto", "working-tree", "branch"]);
-  if (baseRef) {
-    return {
-      mode: "branch",
-      label: `branch diff against ${sanitizePromptValue(baseRef)}`,
-      baseRef,
-      explicit: true
-    };
-  }
-  if (requestedScope === "working-tree") {
-    return {
-      mode: "working-tree",
-      label: "working tree diff",
-      explicit: true
-    };
-  }
-  if (!supportedScopes.has(requestedScope)) {
-    throw new CliError(
-      `Unsupported review scope "${requestedScope}".`,
-      {
-        class: "validation",
-        code: "INVALID_SCOPE",
-        retryable: false,
-        suggestion: "Use one of: auto, working-tree, branch, or pass --base <ref>."
-      }
-    );
-  }
-  if (requestedScope === "branch") {
-    const detectedBase2 = detectDefaultBranch(cwd);
-    return {
-      mode: "branch",
-      label: `branch diff against ${sanitizePromptValue(detectedBase2)}`,
-      baseRef: detectedBase2,
-      explicit: true
-    };
-  }
-  if (state.isDirty) {
-    return {
-      mode: "working-tree",
-      label: "working tree diff",
-      explicit: false
-    };
-  }
-  const detectedBase = detectDefaultBranch(cwd);
-  return {
-    mode: "branch",
-    label: `branch diff against ${sanitizePromptValue(detectedBase)}`,
-    baseRef: detectedBase,
-    explicit: false
-  };
-}
-function formatSection(title, body) {
-  return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
-}
-function realpathSync(filePath) {
-  return fs4.realpathSync.native ? fs4.realpathSync.native(filePath) : fs4.realpathSync(filePath);
-}
-function isPathInside(parentPath, candidatePath) {
-  const relative = path4.relative(parentPath, candidatePath);
-  return relative === "" || !relative.startsWith("..") && !path4.isAbsolute(relative);
-}
-function readFileDescriptor(fd, size) {
-  const buffer = Buffer.alloc(size);
-  let offset = 0;
-  while (offset < buffer.length) {
-    const bytesRead = fs4.readSync(fd, buffer, offset, buffer.length - offset, offset);
-    if (bytesRead === 0) {
-      break;
-    }
-    offset += bytesRead;
-  }
-  return buffer.subarray(0, offset);
-}
-function formatUntrackedFile(cwd, relativePath) {
-  let repoRoot;
-  try {
-    repoRoot = realpathSync(cwd);
-  } catch {
-    return `### ${relativePath}
-(skipped: repository root is unreadable)`;
-  }
-  const absolutePath = path4.resolve(repoRoot, relativePath);
-  if (!isPathInside(repoRoot, absolutePath)) {
-    return `### ${relativePath}
-(skipped: path resolves outside repository)`;
-  }
-  let stat;
-  try {
-    stat = fs4.lstatSync(absolutePath);
-  } catch {
-    return `### ${relativePath}
-(skipped: broken symlink or unreadable file)`;
-  }
-  if (stat.isSymbolicLink()) {
-    return `### ${relativePath}
-(skipped: symlink)`;
-  }
-  if (stat.isDirectory()) {
-    return `### ${relativePath}
-(skipped: directory)`;
-  }
-  if (!stat.isFile()) {
-    return `### ${relativePath}
-(skipped: non-regular file)`;
-  }
-  let resolvedPath;
-  try {
-    resolvedPath = realpathSync(absolutePath);
-  } catch {
-    return `### ${relativePath}
-(skipped: broken symlink or unreadable file)`;
-  }
-  if (!isPathInside(repoRoot, resolvedPath)) {
-    return `### ${relativePath}
-(skipped: path resolves outside repository)`;
-  }
-  let fd;
-  let buffer;
-  try {
-    fd = fs4.openSync(resolvedPath, REGULAR_FILE_READ_FLAGS);
-    const readStat = fs4.fstatSync(fd);
-    if (!readStat.isFile()) {
-      return `### ${relativePath}
-(skipped: non-regular file)`;
-    }
-    if (readStat.size > MAX_UNTRACKED_BYTES) {
-      return `### ${relativePath}
-(skipped: ${readStat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
-    }
-    buffer = readFileDescriptor(fd, readStat.size);
-  } catch {
-    return `### ${relativePath}
-(skipped: broken symlink or unreadable file)`;
-  } finally {
-    if (fd !== void 0) {
-      try {
-        fs4.closeSync(fd);
-      } catch {
-      }
-    }
-  }
-  if (!isProbablyText(buffer)) {
-    return `### ${relativePath}
-(skipped: binary file)`;
-  }
-  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
-}
-function collectWorkingTreeContext(cwd, state, options = {}) {
-  const includeDiff = options.includeDiff !== false;
-  const status = gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim();
-  const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
-  let parts;
-  if (includeDiff) {
-    const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
-    parts = [
-      formatSection("Git Status", status),
-      formatSection("Staged Diff", stagedDiff),
-      formatSection("Unstaged Diff", unstagedDiff),
-      formatSection("Untracked Files", untrackedBody)
-    ];
-  } else {
-    const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
-    const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
-    const untrackedBody = state.untracked.join("\n");
-    parts = [
-      formatSection("Git Status", status),
-      formatSection("Staged Diff Stat", stagedStat),
-      formatSection("Unstaged Diff Stat", unstagedStat),
-      formatSection("Changed Files", changedFiles.join("\n")),
-      formatSection("Untracked Files", untrackedBody)
-    ];
-  }
-  return {
-    mode: "working-tree",
-    summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
-    content: parts.join("\n"),
-    changedFiles
-  };
-}
-function collectBranchContext(cwd, baseRef, options = {}) {
-  const includeDiff = options.includeDiff !== false;
-  const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
-  const currentBranch = getCurrentBranch(cwd);
-  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
-  const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
-  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
-  return {
-    mode: "branch",
-    summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,
-    content: includeDiff ? [
-      formatSection("Commit Log", logOutput),
-      formatSection("Diff Stat", diffStat),
-      formatSection(
-        "Branch Diff",
-        gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
-      )
-    ].join("\n") : [
-      formatSection("Commit Log", logOutput),
-      formatSection("Diff Stat", diffStat),
-      formatSection("Changed Files", changedFiles.join("\n"))
-    ].join("\n"),
-    changedFiles,
-    comparison
-  };
-}
-function buildAdversarialCollectionGuidance(options = {}) {
-  if (options.includeDiff !== false) {
-    return "Use the repository context below as primary evidence.";
-  }
-  return "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.";
-}
-function collectReviewContext(cwd, target, options = {}) {
-  const repoRoot = getRepoRoot(cwd);
-  const currentBranch = getCurrentBranch(repoRoot);
-  const maxInlineFiles = normalizeMaxInlineFiles(options.maxInlineFiles);
-  const maxInlineDiffBytes = normalizeMaxInlineDiffBytes(options.maxInlineDiffBytes);
-  let details;
-  let includeDiff;
-  let diffBytes;
-  if (target.mode === "working-tree") {
-    const state = getWorkingTreeState(repoRoot);
-    diffBytes = measureCombinedGitOutputBytes(
-      repoRoot,
-      [
-        ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"],
-        ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]
-      ],
-      maxInlineDiffBytes
-    );
-    includeDiff = options.includeDiff ?? (listUniqueFiles(state.staged, state.unstaged, state.untracked).length <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
-    details = collectWorkingTreeContext(repoRoot, state, { includeDiff });
-  } else {
-    const comparison = buildBranchComparison(repoRoot, target.baseRef);
-    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean).length;
-    diffBytes = measureGitOutputBytes(
-      repoRoot,
-      ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange],
-      maxInlineDiffBytes
-    );
-    includeDiff = options.includeDiff ?? (fileCount <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
-    details = collectBranchContext(repoRoot, target.baseRef, { includeDiff, comparison });
-  }
-  return {
-    cwd: repoRoot,
-    repoRoot,
-    branch: currentBranch,
-    target,
-    fileCount: details.changedFiles.length,
-    diffBytes,
-    inputMode: includeDiff ? "inline-diff" : "self-collect",
-    collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff }),
-    ...details
-  };
-}
-function runGit(cwd, args, opts = {}) {
-  if (!Array.isArray(args)) {
-    throw new TypeError("runGit: args must be an array of git arguments (no shell strings)");
-  }
-  const { swallowStderr, ...rest } = opts;
-  return childExecFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", swallowStderr ? "pipe" : "inherit"],
-    ...rest
-  });
-}
-function tryRunGit(cwd, args, options = {}) {
-  const result = git(cwd, args, options);
-  if (result.error || result.status !== 0) {
-    return { ok: false, result };
-  }
-  return { ok: true, stdout: result.stdout, result };
-}
-function defaultWorktreeRoot(repoRoot) {
-  return path4.resolve(repoRoot, "..", ".codex-bridge-worktrees");
-}
-function assertSafeTaskId(taskId, caller) {
-  if (!taskId || typeof taskId !== "string") {
-    throw new Error(`${caller}: taskId is required`);
-  }
-  if (taskId === "." || taskId === ".." || !/^[A-Za-z0-9._-]+$/.test(taskId)) {
-    throw new Error(
-      `${caller}: taskId must be a safe path segment: ${JSON.stringify(taskId)}`
-    );
-  }
-}
-function buildBranchName({ taskId, backend, branchPrefix }) {
-  const prefix = branchPrefix ?? "subagent";
-  const back = backend ?? "codex";
-  return `${prefix}/${back}/${taskId}`;
-}
-function assertSafeBranchName(cwd, branch, caller) {
-  const result = tryRunGit(cwd, ["check-ref-format", "--branch", branch]);
-  if (!result.ok) {
-    throw new Error(
-      `${caller}: branch name is invalid: ${JSON.stringify(branch)}`
-    );
-  }
-}
-function branchExists(cwd, branch) {
-  return tryRunGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).ok;
-}
-function currentCheckoutRef(cwd) {
-  const symbolic = tryRunGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
-  if (symbolic.ok) return symbolic.stdout.trim();
-  return runGit(cwd, ["rev-parse", "HEAD"]).trim();
-}
-function createSubagentWorktree({
-  cwd,
-  taskId,
-  backend = "codex",
-  baseRef,
-  branchPrefix = "subagent",
-  worktreeRoot,
-  allowBranchFallback = true
-}) {
-  assertSafeTaskId(taskId, "createSubagentWorktree");
-  ensureGitRepository(cwd);
-  const repoRoot = getRepoRoot(cwd);
-  const currentBranch = getCurrentBranch(cwd);
-  const resolvedBaseRef = baseRef ?? (currentBranch !== "HEAD" ? currentBranch : null) ?? detectDefaultBranch(cwd) ?? "HEAD";
-  const baseSha = runGit(repoRoot, [
-    "rev-parse",
-    "--verify",
-    "--end-of-options",
-    `${resolvedBaseRef}^{commit}`
-  ], { swallowStderr: true }).trim();
-  const branch = buildBranchName({ taskId, backend, branchPrefix });
-  assertSafeBranchName(repoRoot, branch, "createSubagentWorktree");
-  const root = worktreeRoot ?? defaultWorktreeRoot(repoRoot);
-  const wtPath = path4.join(root, taskId);
-  const createdAt = (/* @__PURE__ */ new Date()).toISOString();
-  if (branchExists(repoRoot, branch)) {
-    throw new Error(
-      `createSubagentWorktree: branch ${branch} already exists; remove or rename before retrying`
-    );
-  }
-  try {
-    fs4.mkdirSync(root, { recursive: true });
-    runGit(repoRoot, ["worktree", "add", "-b", branch, wtPath, baseSha], {
-      swallowStderr: true
-    });
-    return {
-      isolation_mode: "worktree",
-      path: wtPath,
-      branch,
-      base_ref: resolvedBaseRef,
-      base_sha: baseSha,
-      created_at: createdAt
-    };
-  } catch (err) {
-    tryRunGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
-    const partialBranchSha = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
-    if (partialBranchSha.ok && partialBranchSha.stdout.trim() === baseSha) {
-      tryRunGit(repoRoot, ["branch", "-D", branch]);
-    }
-    if (!allowBranchFallback) {
-      throw new Error(
-        `createSubagentWorktree: worktree creation failed and branch fallback is disabled: ${err.message ?? err}`
-      );
-    }
-    if (getWorkingTreeState(repoRoot).isDirty) {
-      throw new Error(
-        "createSubagentWorktree: worktree creation failed and branch-only fallback is unsafe with a dirty working tree"
-      );
-    }
-    const previousRef = currentCheckoutRef(repoRoot);
-    try {
-      runGit(repoRoot, ["checkout", "-b", branch, baseSha], { swallowStderr: true });
-    } catch (innerErr) {
-      throw new Error(
-        `createSubagentWorktree: worktree fallback also failed: ${innerErr.message ?? innerErr}`
-      );
-    }
-    return {
-      isolation_mode: "branch-only",
-      path: cwd,
-      branch,
-      base_ref: resolvedBaseRef,
-      base_sha: baseSha,
-      created_at: createdAt,
-      previous_ref: previousRef,
-      fallback_reason: err.message ?? String(err)
-    };
-  }
-}
-function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
-  assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
-  ensureGitRepository(cwd);
-  const repoRoot = getRepoRoot(cwd);
-  let wtPath = null;
-  if (typeof explicitPath === "string" && explicitPath.length > 0) {
-    wtPath = explicitPath;
-  } else if (typeof worktreeRoot === "string" && worktreeRoot.length > 0) {
-    wtPath = path4.join(worktreeRoot, taskId);
-  } else if (branch) {
-    const registered = listSubagentWorktrees(repoRoot).find((w) => w.branch === branch);
-    if (registered) {
-      wtPath = registered.path;
-    }
-  }
-  if (!wtPath) {
-    wtPath = path4.join(defaultWorktreeRoot(repoRoot), taskId);
-  }
-  const wtPathResolved = path4.resolve(wtPath);
-  const repoRootResolved = path4.resolve(repoRoot);
-  const isMainWorktree = wtPathResolved === repoRootResolved;
-  if (!isMainWorktree && fs4.existsSync(wtPath)) {
-    runGit(repoRoot, ["worktree", "remove", "--force", wtPath]);
-    if (fs4.existsSync(wtPath)) {
-      throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
-    }
-  }
-  if (branch) {
-    assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
-    if (branchExists(repoRoot, branch)) {
-      if (getCurrentBranch(repoRoot) === branch) {
-        if (!previousRef) {
-          throw new Error(
-            `pruneWorktreeOnCancel: cannot delete checked-out branch without previousRef: ${branch}`
-          );
-        }
-        runGit(repoRoot, ["checkout", previousRef]);
-      }
-      runGit(repoRoot, ["branch", "-D", branch]);
-      if (branchExists(repoRoot, branch)) {
-        throw new Error(`pruneWorktreeOnCancel: branch still exists after delete: ${branch}`);
-      }
-    }
-  }
-  return { pruned: !fs4.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
-}
-function mergeSubagentBranch({
-  cwd,
-  taskId,
-  branch,
-  baseRef = "main",
-  expectedBranchSha,
-  worktreePath,
-  runTests = true
-}) {
-  if (!taskId) throw new Error("mergeSubagentBranch: taskId is required");
-  if (!branch) throw new Error("mergeSubagentBranch: branch is required");
-  if (!expectedBranchSha) {
-    throw new Error("mergeSubagentBranch: expectedBranchSha is required");
-  }
-  ensureGitRepository(cwd);
-  const repoRoot = getRepoRoot(cwd);
-  if (typeof baseRef !== "string" || /[\s;|&`$()<>"'\\]/.test(baseRef)) {
-    throw new Error(`mergeSubagentBranch: unsafe baseRef: ${JSON.stringify(baseRef)}`);
-  }
-  assertSafeBranchName(repoRoot, branch, "mergeSubagentBranch");
-  try {
-    runGit(repoRoot, ["fetch", "--no-tags", "origin", baseRef], {
-      swallowStderr: true,
-      timeout: 3e4
-    });
-  } catch {
-  }
-  const dirty = tryRunGit(repoRoot, ["status", "--porcelain"]);
-  if (dirty.ok && dirty.stdout.trim().length > 0) {
-    const err = new Error(
-      `repo is dirty; commit or stash before merging. Status: ${dirty.stdout.trim()}`
-    );
-    err.kind = "precondition";
-    throw err;
-  }
-  const expectedSha = String(expectedBranchSha).trim().toLowerCase();
-  const taskWorktreePath = worktreePath ?? path4.join(defaultWorktreeRoot(repoRoot), taskId);
-  if (taskWorktreePath && fs4.existsSync(taskWorktreePath) && path4.resolve(taskWorktreePath) !== repoRoot) {
-    const taskDirty = tryRunGit(taskWorktreePath, ["status", "--porcelain", "--untracked-files=all"]);
-    if (taskDirty.ok && taskDirty.stdout.trim().length > 0) {
-      const err = new Error(
-        `task worktree is dirty; refusing to prune unmerged changes. Status: ${taskDirty.stdout.trim()}`
-      );
-      err.kind = "precondition";
-      throw err;
-    }
-  }
-  const branchShaResult = tryRunGit(repoRoot, ["rev-parse", "--verify", branch]);
-  const branchSha = branchShaResult.ok ? branchShaResult.stdout.trim().toLowerCase() : "";
-  if (!branchSha) {
-    const err = new Error(`branch ${branch} does not exist`);
-    err.kind = "precondition";
-    throw err;
-  }
-  if (branchSha !== expectedSha) {
-    const err = new Error(
-      `branch ${branch} is at ${branchSha}, but approved verdict reviewed ${expectedSha}; rerun review before merging`
-    );
-    err.kind = "sha_drift";
-    throw err;
-  }
-  runGit(repoRoot, ["checkout", baseRef], { swallowStderr: true });
-  const remoteTipResult = tryRunGit(repoRoot, ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}`]);
-  const remoteTip = remoteTipResult.ok ? remoteTipResult.stdout.trim() : null;
-  if (remoteTip) {
-    try {
-      runGit(repoRoot, ["merge", "--ff-only", `refs/remotes/origin/${baseRef}`], { swallowStderr: true });
-    } catch {
-      const err = new Error(
-        `local ${baseRef} has diverged from origin/${baseRef}; reconcile before merging`
-      );
-      err.kind = "precondition";
-      throw err;
-    }
-  }
-  try {
-    runGit(repoRoot, ["merge", "--ff-only", branch], { swallowStderr: true });
-  } catch (err) {
-    const wrapped = new Error(
-      `ff-merge failed (branch is not a linear descendant of ${baseRef}); rebase ${branch} onto ${baseRef} or run /codex-bridge:iterate first`
-    );
-    wrapped.kind = "conflict";
-    throw wrapped;
-  }
-  const commitSha = runGit(repoRoot, ["rev-parse", "HEAD"], { swallowStderr: true }).toString().trim();
-  pruneWorktreeOnCancel({ cwd: repoRoot, taskId, branch });
-  return {
-    strategy: "ff",
-    commit_sha: commitSha,
-    base_ref: baseRef,
-    branch,
-    tests_passed: runTests ? null : false
-    // null = not yet measured; false = skipped
-  };
-}
-function listSubagentWorktrees(cwd) {
-  ensureGitRepository(cwd);
-  const repoRoot = getRepoRoot(cwd);
-  const out = tryRunGit(repoRoot, ["worktree", "list", "--porcelain"]);
-  if (!out.ok) return [];
-  const entries = [];
-  let current = null;
-  for (const line of out.stdout.split(/\r?\n/)) {
-    if (line.startsWith("worktree ")) {
-      if (current) entries.push(current);
-      current = { path: line.slice("worktree ".length), branch: null, head: null, locked: false };
-    } else if (line.startsWith("HEAD ") && current) {
-      current.head = line.slice("HEAD ".length);
-    } else if (line.startsWith("branch ") && current) {
-      const ref = line.slice("branch ".length);
-      current.branch = ref.replace(/^refs\/heads\//, "");
-    } else if (line === "locked" && current) {
-      current.locked = true;
-    }
-  }
-  if (current) entries.push(current);
-  return entries.filter(
-    (e) => e.path.includes(".codex-bridge-worktrees/") || e.branch && e.branch.startsWith("subagent/")
-  );
-}
-
-// src/lib/workspace.mjs
-function resolveWorkspaceRoot(cwd) {
-  try {
-    return ensureGitRepository(cwd);
-  } catch {
-    return cwd;
-  }
-}
-
-// src/lib/state.mjs
-var STATE_VERSION = 1;
-var BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
-var LEGACY_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
-var FALLBACK_STATE_ROOT_DIR = path5.join(os2.tmpdir(), "codex-companion");
-var STATE_FILE_NAME = "state.json";
-var STATE_LOCK_FILE_NAME = "state.lock";
-var JOBS_DIR_NAME = "jobs";
-var MAX_JOBS = 50;
-var LOCK_TIMEOUT_MS = 5e3;
-var STALE_LOCK_MS = 3e4;
-function nowIso() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-function defaultState() {
-  return {
-    version: STATE_VERSION,
-    config: {
-      stopReviewGate: false
-    },
-    jobs: []
-  };
-}
-function resolveStateDir(cwd) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  let canonicalWorkspaceRoot = workspaceRoot;
-  try {
-    canonicalWorkspaceRoot = fs5.realpathSync.native(workspaceRoot);
-  } catch {
-    canonicalWorkspaceRoot = workspaceRoot;
-  }
-  const slugSource = path5.basename(workspaceRoot) || "workspace";
-  const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
-  const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[BRIDGE_PLUGIN_DATA_ENV] || process.env[LEGACY_PLUGIN_DATA_ENV];
-  const stateRoot = pluginDataDir ? path5.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  return path5.join(stateRoot, `${slug}-${hash}`);
-}
-function resolveStateFile(cwd) {
-  return path5.join(resolveStateDir(cwd), STATE_FILE_NAME);
-}
-function resolveStateLockFile(cwd) {
-  return path5.join(resolveStateDir(cwd), STATE_LOCK_FILE_NAME);
-}
-function resolveJobsDir(cwd) {
-  return path5.join(resolveStateDir(cwd), JOBS_DIR_NAME);
-}
-function ensureStateDir(cwd) {
-  fs5.mkdirSync(resolveJobsDir(cwd), { recursive: true });
-}
-function sleepSync(ms) {
-  const buffer = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
-}
-function acquireStateLock(cwd) {
-  ensureStateDir(cwd);
-  const lockFile = resolveStateLockFile(cwd);
-  const startedAt = Date.now();
-  while (true) {
-    try {
-      const fd = fs5.openSync(lockFile, "wx");
-      fs5.writeFileSync(fd, `${process.pid}
-${(/* @__PURE__ */ new Date()).toISOString()}
-`, "utf8");
-      let ownedIno = null;
-      try {
-        ownedIno = fs5.fstatSync(fd).ino;
-      } catch {
-      }
-      return () => {
-        try {
-          fs5.closeSync(fd);
-        } catch {
-        }
-        try {
-          if (ownedIno !== null) {
-            const stat = fs5.statSync(lockFile);
-            if (stat.ino !== ownedIno) {
-              return;
-            }
-          }
-          fs5.unlinkSync(lockFile);
-        } catch (releaseError) {
-          if (releaseError?.code !== "ENOENT") {
-          }
-        }
-      };
-    } catch (error) {
-      if (error?.code !== "EEXIST") {
-        throw error;
-      }
-      try {
-        const stat = fs5.statSync(lockFile);
-        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
-          fs5.unlinkSync(lockFile);
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      if (Date.now() - startedAt > LOCK_TIMEOUT_MS) {
-        throw new Error(`Timed out waiting for state lock: ${lockFile}`);
-      }
-      sleepSync(50);
-    }
-  }
-}
-function pidIsAlive(pid) {
-  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    if (err && err.code === "ESRCH") return false;
-    return true;
-  }
-}
-function reapOrphans(jobs) {
-  if (!Array.isArray(jobs) || jobs.length === 0) return { jobs, reaped: 0 };
-  let changed = 0;
-  const reaped = jobs.map((job) => {
-    if (!job || job.status !== "running" && job.status !== "queued") return job;
-    if (pidIsAlive(job.pid)) return job;
-    changed++;
-    return {
-      ...job,
-      status: "orphaned",
-      phase: "orphaned",
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      errorMessage: job.errorMessage ?? `Backing process (pid ${job.pid ?? "?"}) no longer alive \u2014 reaped on load.`
-    };
-  });
-  return { jobs: reaped, reaped: changed };
-}
-function loadState(cwd) {
-  const stateFile = resolveStateFile(cwd);
-  if (!fs5.existsSync(stateFile)) {
-    return defaultState();
-  }
-  try {
-    const parsed = JSON.parse(fs5.readFileSync(stateFile, "utf8"));
-    const rawJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
-    return {
-      ...defaultState(),
-      ...parsed,
-      config: {
-        ...defaultState().config,
-        ...parsed.config ?? {}
-      },
-      jobs: rawJobs
-    };
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
-      return defaultState();
-    }
-    let renamedPath = null;
-    try {
-      const candidate = `${stateFile}.corrupt-${Date.now()}`;
-      fs5.renameSync(stateFile, candidate);
-      renamedPath = candidate;
-    } catch (renameError) {
-      if (renameError && renameError.code !== "ENOENT" && renameError.code !== "EXDEV") {
-      }
-    }
-    process.emitWarning(
-      `State file at ${stateFile} was corrupt (${error?.message ?? error}); preserved at ${renamedPath ?? "<unable to rename>"}`,
-      "CodexBridgeStateWarning"
-    );
-    return defaultState();
-  }
-}
-function isActiveJob(job) {
-  return job?.status === "queued" || job?.status === "running";
-}
-function sortJobsNewestFirst(jobs) {
-  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
-}
-function pruneJobs(jobs) {
-  const sortedJobs = sortJobsNewestFirst(jobs);
-  const activeJobs = sortedJobs.filter(isActiveJob);
-  const terminalJobs = sortedJobs.filter((job) => !isActiveJob(job)).slice(0, MAX_JOBS);
-  return sortJobsNewestFirst([...activeJobs, ...terminalJobs]);
-}
-function removeFileIfExists(filePath) {
-  if (filePath && fs5.existsSync(filePath)) {
-    fs5.unlinkSync(filePath);
-  }
-}
-function writeJsonFileAtomic(filePath, payload) {
-  fs5.mkdirSync(path5.dirname(filePath), { recursive: true });
-  const tempPath = path5.join(
-    path5.dirname(filePath),
-    `.${path5.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
-  );
-  const fd = fs5.openSync(tempPath, "w");
-  try {
-    fs5.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}
-`, "utf8");
-    fs5.fsyncSync(fd);
-  } finally {
-    fs5.closeSync(fd);
-  }
-  try {
-    fs5.renameSync(tempPath, filePath);
-  } catch (renameError) {
-    try {
-      fs5.unlinkSync(tempPath);
-    } catch (cleanupError) {
-      if (cleanupError?.code !== "ENOENT") {
-      }
-    }
-    throw renameError;
-  }
-}
-function saveStateUnlocked(cwd, state) {
-  const previousJobs = loadState(cwd).jobs;
-  ensureStateDir(cwd);
-  const { jobs: reapedJobs } = reapOrphans(state.jobs ?? []);
-  const nextJobs = pruneJobs(reapedJobs);
-  const nextState = {
-    version: STATE_VERSION,
-    config: {
-      ...defaultState().config,
-      ...state.config ?? {}
-    },
-    jobs: nextJobs
-  };
-  const retainedIds = new Set(nextJobs.map((job) => job.id));
-  for (const job of previousJobs) {
-    if (retainedIds.has(job.id)) {
-      continue;
-    }
-    removeJobFile(resolveJobFile(cwd, job.id));
-    removeFileIfExists(job.logFile);
-  }
-  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
-  return nextState;
-}
-function updateState(cwd, mutate) {
-  const release = acquireStateLock(cwd);
-  try {
-    const state = loadState(cwd);
-    mutate(state);
-    return saveStateUnlocked(cwd, state);
-  } finally {
-    release();
-  }
-}
-function generateJobId(prefix = "job") {
-  const random = Math.random().toString(36).slice(2, 8);
-  return `${prefix}-${Date.now().toString(36)}-${random}`;
-}
-function upsertJob(cwd, jobPatch) {
-  return updateState(cwd, (state) => {
-    const timestamp2 = nowIso();
-    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
-    if (existingIndex === -1) {
-      state.jobs.unshift({
-        createdAt: timestamp2,
-        updatedAt: timestamp2,
-        ...jobPatch
-      });
-      return;
-    }
-    state.jobs[existingIndex] = {
-      ...state.jobs[existingIndex],
-      ...jobPatch,
-      updatedAt: timestamp2
-    };
-  });
-}
-function listJobs(cwd, options = {}) {
-  const jobs = loadState(cwd).jobs;
-  if (options && options.raw) {
-    return jobs;
-  }
-  const { jobs: reapedJobs } = reapOrphans(jobs);
-  return reapedJobs;
-}
-function setConfig(cwd, key, value) {
-  return updateState(cwd, (state) => {
-    state.config = {
-      ...state.config,
-      [key]: value
-    };
-  });
-}
-function getConfig(cwd) {
-  return loadState(cwd).config;
-}
-function writeJobFile(cwd, jobId, payload) {
-  ensureStateDir(cwd);
-  const jobFile = resolveJobFile(cwd, jobId);
-  fs5.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}
-`, "utf8");
-  return jobFile;
-}
-function readJobFile(jobFile) {
-  return JSON.parse(fs5.readFileSync(jobFile, "utf8"));
-}
-function removeJobFile(jobFile) {
-  if (fs5.existsSync(jobFile)) {
-    fs5.unlinkSync(jobFile);
-  }
-}
-function resolveJobLogFile(cwd, jobId) {
-  ensureStateDir(cwd);
-  return path5.join(resolveJobsDir(cwd), `${jobId}.log`);
-}
-function resolveJobFile(cwd, jobId) {
-  ensureStateDir(cwd);
-  return path5.join(resolveJobsDir(cwd), `${jobId}.json`);
-}
-
-// src/lib/broker-lifecycle.mjs
-var BROKER_STATE_FILE = "broker.json";
-function createBrokerSessionDir(prefix = "cxc-") {
-  return fs6.mkdtempSync(path6.join(os3.tmpdir(), prefix));
-}
-function connectToEndpoint(endpoint) {
-  const target = parseBrokerEndpoint(endpoint);
-  return net.createConnection({ path: target.path });
-}
-async function waitForBrokerEndpoint(endpoint, timeoutMs = 2e3) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const ready = await new Promise((resolve) => {
-      const socket = connectToEndpoint(endpoint);
-      socket.on("connect", () => {
-        socket.end();
-        resolve(true);
-      });
-      socket.on("error", () => resolve(false));
-    });
-    if (ready) {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return false;
-}
-function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process6.env }) {
-  const logFd = fs6.openSync(logFile, "a");
-  const child = spawn(process6.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
-    cwd,
-    env,
-    detached: true,
-    stdio: ["ignore", logFd, logFd]
-  });
-  child.unref();
-  fs6.closeSync(logFd);
-  return child;
-}
-function resolveBrokerStateFile(cwd) {
-  return path6.join(resolveStateDir(cwd), BROKER_STATE_FILE);
-}
-function loadBrokerSession(cwd) {
-  const stateFile = resolveBrokerStateFile(cwd);
-  if (!fs6.existsSync(stateFile)) {
-    return null;
-  }
-  try {
-    return JSON.parse(fs6.readFileSync(stateFile, "utf8"));
-  } catch {
-    return null;
-  }
-}
-function saveBrokerSession(cwd, session) {
-  const stateDir = resolveStateDir(cwd);
-  fs6.mkdirSync(stateDir, { recursive: true });
-  fs6.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}
-`, "utf8");
-}
-function clearBrokerSession(cwd) {
-  const stateFile = resolveBrokerStateFile(cwd);
-  if (fs6.existsSync(stateFile)) {
-    fs6.unlinkSync(stateFile);
-  }
-}
-async function isBrokerEndpointReady(endpoint) {
-  if (!endpoint) {
-    return false;
-  }
-  try {
-    return await waitForBrokerEndpoint(endpoint, 150);
-  } catch {
-    return false;
-  }
-}
-function isSourceBrokerLifecycleUrl(moduleUrl) {
-  try {
-    const modulePath = fileURLToPath(moduleUrl);
-    return path6.basename(modulePath) === "broker-lifecycle.mjs" && path6.basename(path6.dirname(modulePath)) === "lib" && path6.basename(path6.dirname(path6.dirname(modulePath))) === "src";
-  } catch {
-    return false;
-  }
-}
-function readBrokerLogTail(logFile, maxChars = 4e3) {
-  try {
-    const log = fs6.readFileSync(logFile, "utf8").trim();
-    if (!log) {
-      return "";
-    }
-    return log.length > maxChars ? log.slice(-maxChars) : log;
-  } catch {
-    return "";
-  }
-}
-function createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs }) {
-  const logTail = readBrokerLogTail(logFile);
-  const detail = logTail ? ` Broker log:
-${logTail}` : " No broker log output was captured.";
-  const error = new Error(
-    `Codex app-server broker failed to start within ${timeoutMs}ms at ${endpoint} using ${scriptPath}.${detail}`
-  );
-  error.code = "BROKER_START_FAILED";
-  return error;
-}
-function resolveBrokerScriptPath({ moduleUrl = import.meta.url, existsSync = fs6.existsSync } = {}) {
-  const pluginBroker = new URL("./app-server-broker.mjs", moduleUrl);
-  const bundledBroker = new URL("../app-server-broker.mjs", moduleUrl);
-  const sourceBroker = new URL("../adapters/codex/broker.mjs", moduleUrl);
-  const candidates = isSourceBrokerLifecycleUrl(moduleUrl) ? [sourceBroker, pluginBroker, bundledBroker] : [pluginBroker, bundledBroker, sourceBroker];
-  for (const url of candidates) {
-    const p = fileURLToPath(url);
-    if (existsSync(p)) return p;
-  }
-  throw new Error(
-    `Could not locate broker script. Tried:
-  ${candidates.map((url) => fileURLToPath(url)).join("\n  ")}`
-  );
-}
-async function ensureBrokerSession(cwd, options = {}) {
-  const existing = loadBrokerSession(cwd);
-  if (existing && await isBrokerEndpointReady(existing.endpoint)) {
-    return existing;
-  }
-  if (existing) {
-    teardownBrokerSession({
-      endpoint: existing.endpoint ?? null,
-      pidFile: existing.pidFile ?? null,
-      logFile: existing.logFile ?? null,
-      sessionDir: existing.sessionDir ?? null,
-      pid: existing.pid ?? null,
-      killProcess: options.killProcess ?? null
-    });
-    clearBrokerSession(cwd);
-  }
-  const sessionDir = createBrokerSessionDir();
-  const endpointFactory = options.createBrokerEndpoint ?? createBrokerEndpoint;
-  const endpoint = endpointFactory(sessionDir, options.platform);
-  const pidFile = path6.join(sessionDir, "broker.pid");
-  const logFile = path6.join(sessionDir, "broker.log");
-  const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
-  const timeoutMs = options.timeoutMs ?? 2e3;
-  const child = spawnBrokerProcess({
-    scriptPath,
-    cwd,
-    endpoint,
-    pidFile,
-    logFile,
-    env: options.env ?? process6.env
-  });
-  const ready = await waitForBrokerEndpoint(endpoint, timeoutMs);
-  if (!ready) {
-    const startFailure = createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs });
-    teardownBrokerSession({
-      endpoint,
-      pidFile,
-      logFile,
-      sessionDir,
-      pid: child.pid ?? null,
-      killProcess: options.killProcess ?? terminateProcessTree
-    });
-    throw startFailure;
-  }
-  const session = {
-    endpoint,
-    pidFile,
-    logFile,
-    sessionDir,
-    pid: child.pid ?? null
-  };
-  saveBrokerSession(cwd, session);
-  return session;
-}
-function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
-  if (Number.isFinite(pid) && killProcess) {
-    try {
-      killProcess(pid);
-    } catch {
-    }
-  }
-  if (pidFile && fs6.existsSync(pidFile)) {
-    fs6.unlinkSync(pidFile);
-  }
-  if (logFile && fs6.existsSync(logFile)) {
-    fs6.unlinkSync(logFile);
-  }
-  if (endpoint) {
-    try {
-      const target = parseBrokerEndpoint(endpoint);
-      if (target.kind === "unix" && fs6.existsSync(target.path)) {
-        fs6.unlinkSync(target.path);
-      }
-    } catch {
-    }
-  }
-  const resolvedSessionDir = sessionDir ?? (pidFile ? path6.dirname(pidFile) : logFile ? path6.dirname(logFile) : null);
-  if (resolvedSessionDir && fs6.existsSync(resolvedSessionDir)) {
-    try {
-      fs6.rmdirSync(resolvedSessionDir);
-    } catch {
-    }
-  }
-}
-
-// src/adapters/codex/protocol.mjs
-var BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
-var BROKER_BUSY_RPC_CODE = -32001;
-var APP_SERVER_INITIALIZE_TIMEOUT_MS = 1e4;
-var APP_SERVER_SHUTDOWN_TIMEOUT_MS = 5e3;
-var SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS = 150;
-var DEFAULT_CLIENT_INFO = {
-  title: "Codex Bridge",
-  name: "codex_bridge",
-  version: "1.0.0"
-};
-var DEFAULT_CAPABILITIES = {
-  experimentalApi: true,
-  optOutNotificationMethods: [
-    "item/agentMessage/delta",
-    "item/reasoning/summaryTextDelta",
-    "item/reasoning/summaryPartAdded",
-    "item/reasoning/textDelta"
-  ]
-};
-function buildJsonRpcError(code, message, data) {
-  return data === void 0 ? { code, message } : { code, message, data };
-}
-function createProtocolError(message, data) {
-  const error = (
-    /** @type {ProtocolError} */
-    new Error(message)
-  );
-  error.data = data;
-  if (data?.code !== void 0) {
-    error.rpcCode = data.code;
-  }
-  return error;
-}
-function timeoutError(message) {
-  const error = new Error(message);
-  error.code = "ETIMEDOUT";
-  return error;
-}
-function withTimeout(promise, ms, message) {
-  let timer = null;
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(timeoutError(message)), ms);
-      timer.unref?.();
-    })
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-function serverRequestError(method) {
-  return buildJsonRpcError(-32601, `Unsupported server request: ${method}`);
-}
-async function loadReadySavedBrokerEndpoint(cwd) {
-  const brokerSession = loadBrokerSession(cwd);
-  if (!brokerSession) {
-    return null;
-  }
-  const endpoint = brokerSession.endpoint ?? null;
-  try {
-    if (endpoint && await waitForBrokerEndpoint(endpoint, SAVED_BROKER_ENDPOINT_PROBE_TIMEOUT_MS)) {
-      return endpoint;
-    }
-  } catch {
-  }
-  clearBrokerSession(cwd);
-  return null;
-}
-var AppServerClientBase = class {
-  constructor(cwd, options = {}) {
-    this.cwd = cwd;
-    this.options = options;
-    this.pending = /* @__PURE__ */ new Map();
-    this.nextId = 1;
-    this.stderr = "";
-    this.closed = false;
-    this.transportClosed = false;
-    this.exitError = null;
-    this.notificationHandler = null;
-    this.lineBuffer = "";
-    this.transport = "unknown";
-    this.serverRequestHandler = null;
-    this.listeners = /* @__PURE__ */ new Map();
-    this.exitPromise = new Promise((resolve) => {
-      this.resolveExit = resolve;
-    });
-    this.transportExitPromise = new Promise((resolve) => {
-      this.resolveTransportExit = resolve;
-    });
-  }
-  setNotificationHandler(handler) {
-    this.notificationHandler = handler;
-  }
-  on(eventName, handler) {
-    if (!this.listeners.has(eventName)) {
-      this.listeners.set(eventName, /* @__PURE__ */ new Set());
-    }
-    this.listeners.get(eventName).add(handler);
-    return this;
-  }
-  off(eventName, handler) {
-    this.listeners.get(eventName)?.delete(handler);
-    return this;
-  }
-  emit(eventName, payload) {
-    for (const handler of this.listeners.get(eventName) ?? []) {
-      try {
-        handler(payload);
-      } catch {
-      }
-    }
-  }
-  /**
-   * @template {AppServerMethod} M
-   * @param {M} method
-   * @param {import("./protocol").AppServerRequestParams<M>} params
-   * @param {{ signal?: AbortSignal }} [options]
-   * @returns {Promise<import("./protocol").AppServerResponse<M>>}
-   */
-  request(method, params, options = {}) {
-    if (this.closed) {
-      throw new Error("codex app-server client is closed.");
-    }
-    const signal = options.signal ?? null;
-    if (signal?.aborted) {
-      return Promise.reject(signal.reason ?? new Error("request aborted"));
-    }
-    const id = this.nextId;
-    this.nextId += 1;
-    return new Promise((resolve, reject) => {
-      let abortHandler = null;
-      const cleanupAbort = () => {
-        if (signal && abortHandler) {
-          signal.removeEventListener("abort", abortHandler);
-          abortHandler = null;
-        }
-      };
-      const wrappedResolve = (value) => {
-        cleanupAbort();
-        resolve(value);
-      };
-      const wrappedReject = (error) => {
-        cleanupAbort();
-        reject(error);
-      };
-      this.pending.set(id, { resolve: wrappedResolve, reject: wrappedReject, method });
-      if (signal) {
-        abortHandler = () => {
-          if (this.pending.get(id)) {
-            this.pending.delete(id);
-          }
-          cleanupAbort();
-          reject(signal.reason ?? new Error("request aborted"));
-        };
-        signal.addEventListener("abort", abortHandler, { once: true });
-      }
-      try {
-        this.sendMessage({ id, method, params });
-      } catch (error) {
-        this.pending.delete(id);
-        cleanupAbort();
-        reject(error);
-      }
-    });
-  }
-  notify(method, params = {}) {
-    if (this.closed) {
-      return;
-    }
-    this.sendMessage({ method, params });
-  }
-  handleChunk(chunk) {
-    this.lineBuffer += chunk;
-    let newlineIndex = this.lineBuffer.indexOf("\n");
-    while (newlineIndex !== -1) {
-      const line = this.lineBuffer.slice(0, newlineIndex);
-      this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
-      this.handleLine(line);
-      newlineIndex = this.lineBuffer.indexOf("\n");
-    }
-  }
-  handleLine(line) {
-    if (!line.trim()) {
-      return;
-    }
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch (error) {
-      this.handleExit(
-        createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }),
-        { transportExited: false }
-      );
-      return;
-    }
-    if (message.id !== void 0 && message.method) {
-      this.handleServerRequest(message);
-      return;
-    }
-    if (message.id !== void 0) {
-      const pending = this.pending.get(message.id);
-      if (!pending) {
-        return;
-      }
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error));
-      } else {
-        pending.resolve(message.result ?? {});
-      }
-      return;
-    }
-    if (message.method && this.notificationHandler) {
-      this.notificationHandler(
-        /** @type {AppServerNotification} */
-        message
-      );
-    }
-  }
-  handleServerRequest(message) {
-    const method = message.method;
-    if (this.serverRequestHandler) {
-      message._client = this;
-      Promise.resolve(this.serverRequestHandler(message)).catch((error) => {
-        this.rejectServerRequest(
-          message.id,
-          buildJsonRpcError(-32e3, error?.message ?? `Server request handler failed for ${method}.`)
-        );
-      });
-      return;
-    }
-    this.rejectServerRequest(message.id, serverRequestError(method));
-  }
-  setServerRequestHandler(handler) {
-    this.serverRequestHandler = handler;
-  }
-  resolveServerRequest(id, result) {
-    this.sendMessage({ id, result: result ?? {} });
-  }
-  rejectServerRequest(id, error) {
-    this.sendMessage({ id, error });
-  }
-  handleExit(error, { transportExited = true } = {}) {
-    if (transportExited && !this.transportClosed) {
-      this.transportClosed = true;
-      this.resolveTransportExit(void 0);
-    }
-    if (this.exitResolved) {
-      return;
-    }
-    this.exitResolved = true;
-    this.exitError = error ?? null;
-    this.closed = true;
-    for (const pending of this.pending.values()) {
-      pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
-    }
-    this.pending.clear();
-    this.emit("exit", this.exitError);
-    this.resolveExit(void 0);
-  }
-  sendMessage(_message) {
-    throw new Error("sendMessage must be implemented by subclasses.");
-  }
-};
-var SpawnedCodexAppServerClient = class extends AppServerClientBase {
-  constructor(cwd, options = {}) {
-    super(cwd, options);
-    this.transport = "direct";
-  }
-  async initialize() {
-    this.proc = spawn2("codex", ["app-server"], {
-      cwd: this.cwd,
-      env: this.options.env ?? process7.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: process7.platform === "win32" ? process7.env.SHELL || true : false,
-      windowsHide: true
-    });
-    this.proc.stdout.setEncoding("utf8");
-    this.proc.stderr.setEncoding("utf8");
-    this.proc.stderr.on("data", (chunk) => {
-      this.stderr += chunk;
-    });
-    this.proc.on("error", (error) => {
-      this.handleExit(error);
-    });
-    this.proc.on("exit", (code, signal) => {
-      const detail = code === 0 ? null : createProtocolError(`codex app-server exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`);
-      this.handleExit(detail);
-    });
-    this.readline = readline.createInterface({ input: this.proc.stdout });
-    this.readline.on("line", (line) => {
-      this.handleLine(line);
-    });
-    await withTimeout(
-      this.request("initialize", {
-        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-      }),
-      APP_SERVER_INITIALIZE_TIMEOUT_MS,
-      "Timed out initializing codex app-server."
-    );
-    this.notify("initialized", {});
-  }
-  async close() {
-    if (this.transportClosed) {
-      await this.transportExitPromise;
-      return;
-    }
-    this.closed = true;
-    if (this.readline) {
-      this.readline.close();
-    }
-    if (this.proc && !this.proc.killed) {
-      this.proc.stdin.end();
-      setTimeout(() => {
-        if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-          if (process7.platform === "win32") {
-            try {
-              terminateProcessTree(this.proc.pid);
-            } catch {
-            }
-          } else {
-            this.proc.kill("SIGTERM");
-          }
-        }
-      }, 50).unref?.();
-    }
-    try {
-      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out shutting down codex app-server.");
-    } catch (error) {
-      if (this.proc && this.proc.exitCode === null) {
-        if (process7.platform === "win32") {
-          try {
-            terminateProcessTree(this.proc.pid);
-          } catch {
-          }
-        } else {
-          this.proc.kill("SIGKILL");
-        }
-      }
-      this.handleExit(error);
-    }
-  }
-  sendMessage(message) {
-    const line = `${JSON.stringify(message)}
-`;
-    const stdin = this.proc?.stdin;
-    if (!stdin) {
-      throw new Error("codex app-server stdin is not available.");
-    }
-    if (stdin.destroyed || !stdin.writable) {
-      throw new Error("codex app-server stdin is closed.");
-    }
-    stdin.write(line, (error) => {
-      if (error) {
-        this.handleExit(error);
-      }
-    });
-  }
-};
-var BrokerCodexAppServerClient = class extends AppServerClientBase {
-  constructor(cwd, options = {}) {
-    super(cwd, options);
-    this.transport = "broker";
-    this.endpoint = options.brokerEndpoint;
-  }
-  async initialize() {
-    await withTimeout(new Promise((resolve, reject) => {
-      const target = parseBrokerEndpoint(this.endpoint);
-      this.socket = net2.createConnection({ path: target.path });
-      this.socket.setEncoding("utf8");
-      this.socket.on("connect", resolve);
-      this.socket.on("data", (chunk) => {
-        this.handleChunk(chunk);
-      });
-      this.socket.on("error", (error) => {
-        if (!this.exitResolved) {
-          reject(error);
-        }
-        this.handleExit(error);
-      });
-      this.socket.on("close", () => {
-        this.handleExit(this.exitError);
-      });
-    }), APP_SERVER_INITIALIZE_TIMEOUT_MS, "Timed out connecting to codex app-server broker.");
-    await withTimeout(
-      this.request("initialize", {
-        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-      }),
-      APP_SERVER_INITIALIZE_TIMEOUT_MS,
-      "Timed out initializing codex app-server broker connection."
-    );
-    this.notify("initialized", {});
-  }
-  async close() {
-    if (this.transportClosed) {
-      await this.transportExitPromise;
-      return;
-    }
-    this.closed = true;
-    if (this.socket) {
-      this.socket.end();
-    }
-    try {
-      await withTimeout(this.transportExitPromise, APP_SERVER_SHUTDOWN_TIMEOUT_MS, "Timed out closing codex app-server broker connection.");
-    } catch (error) {
-      this.socket?.destroy();
-      this.handleExit(error);
-    }
-  }
-  sendMessage(message) {
-    const line = `${JSON.stringify(message)}
-`;
-    const socket = this.socket;
-    if (!socket) {
-      throw new Error("codex app-server broker connection is not connected.");
-    }
-    if (socket.destroyed || !socket.writable) {
-      throw new Error("codex app-server broker connection is closed.");
-    }
-    socket.write(line, (error) => {
-      if (error) {
-        this.handleExit(error);
-      }
-    });
-  }
-};
-var CodexAppServerClient = class {
-  static async connect(cwd, options = {}) {
-    let brokerEndpoint = null;
-    let brokerEndpointSource = null;
-    if (!options.disableBroker) {
-      const explicitBrokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process7.env[BROKER_ENDPOINT_ENV] ?? null;
-      if (explicitBrokerEndpoint) {
-        brokerEndpoint = explicitBrokerEndpoint;
-        brokerEndpointSource = "explicit";
-      }
-      if (!brokerEndpoint && options.reuseExistingBroker) {
-        brokerEndpoint = await loadReadySavedBrokerEndpoint(cwd);
-        if (brokerEndpoint) {
-          brokerEndpointSource = "saved";
-        }
-      }
-      if (!brokerEndpoint && !options.reuseExistingBroker) {
-        const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
-        brokerEndpoint = brokerSession?.endpoint ?? null;
-        if (brokerEndpoint) {
-          brokerEndpointSource = "managed";
-        }
-      }
-    }
-    const createBrokerClient = options._createBrokerClient ?? ((clientCwd, clientOptions) => new BrokerCodexAppServerClient(clientCwd, clientOptions));
-    const createDirectClient = options._createDirectClient ?? ((clientCwd, clientOptions) => new SpawnedCodexAppServerClient(clientCwd, clientOptions));
-    const client = brokerEndpoint ? createBrokerClient(cwd, { ...options, brokerEndpoint }) : createDirectClient(cwd, options);
-    try {
-      await client.initialize();
-    } catch (error) {
-      await client.close().catch(() => {
-      });
-      if (brokerEndpointSource === "saved") {
-        clearBrokerSession(cwd);
-        const fallbackClient = createDirectClient(cwd, options);
-        try {
-          await fallbackClient.initialize();
-        } catch (fallbackError) {
-          await fallbackClient.close().catch(() => {
-          });
-          throw fallbackError;
-        }
-        return fallbackClient;
-      }
-      throw error;
-    }
-    return client;
-  }
-};
-
-// src/adapters/codex/codex.mjs
-var SERVICE_NAME = "claude_code_codex_plugin";
-var TASK_THREAD_PREFIX = "Codex Companion Task";
-var TURN_INTERRUPT_GRACE_MS = 3e4;
-var DEFAULT_CONTINUE_PROMPT = "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
-function cleanCodexStderr(stderr) {
-  return stderr.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line && !line.startsWith("WARNING: proceeding, even though we could not update PATH:")).join("\n");
-}
-function buildThreadParams(cwd, options = {}) {
-  return {
-    cwd,
-    model: options.model ?? null,
-    approvalPolicy: "never",
-    sandbox: options.sandbox ?? "read-only",
-    serviceName: SERVICE_NAME,
-    ephemeral: options.ephemeral ?? false,
-    experimentalRawEvents: false
-  };
-}
-function buildResumeParams(threadId, cwd, options = {}) {
-  return {
-    threadId,
-    cwd,
-    model: options.model ?? null,
-    approvalPolicy: "never",
-    sandbox: options.sandbox ?? "read-only"
-  };
-}
-function buildTurnInput(prompt) {
-  return [{ type: "text", text: prompt, text_elements: [] }];
-}
-function shorten(text, limit = 72) {
-  const normalized = String(text ?? "").trim().replace(/\s+/g, " ");
-  if (!normalized) {
-    return "";
-  }
-  if (normalized.length <= limit) {
-    return normalized;
-  }
-  return `${normalized.slice(0, limit - 3)}...`;
-}
-function looksLikeVerificationCommand(command) {
-  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
-    command
-  );
-}
-function buildTaskThreadName(prompt) {
-  const excerpt = shorten(prompt, 56);
-  return excerpt ? `${TASK_THREAD_PREFIX}: ${excerpt}` : TASK_THREAD_PREFIX;
-}
-function extractThreadId(message) {
-  return message?.params?.threadId ?? null;
-}
-function extractTurnId(message) {
-  if (message?.params?.turnId) {
-    return message.params.turnId;
-  }
-  if (message?.params?.turn?.id) {
-    return message.params.turn.id;
-  }
-  return null;
-}
-function collectTouchedFiles(fileChanges) {
-  const paths = /* @__PURE__ */ new Set();
-  for (const fileChange of fileChanges) {
-    for (const change of fileChange.changes ?? []) {
-      if (change.path) {
-        paths.add(change.path);
-      }
-    }
-  }
-  return [...paths];
-}
-function normalizeReasoningText(text) {
-  return String(text ?? "").replace(/\s+/g, " ").trim();
-}
-function extractReasoningSections(value) {
-  if (!value) {
-    return [];
-  }
-  if (typeof value === "string") {
-    const normalized = normalizeReasoningText(value);
-    return normalized ? [normalized] : [];
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => extractReasoningSections(entry));
-  }
-  if (typeof value === "object") {
-    if (typeof value.text === "string") {
-      return extractReasoningSections(value.text);
-    }
-    if ("summary" in value) {
-      return extractReasoningSections(value.summary);
-    }
-    if ("content" in value) {
-      return extractReasoningSections(value.content);
-    }
-    if ("parts" in value) {
-      return extractReasoningSections(value.parts);
-    }
-  }
-  return [];
-}
-function mergeReasoningSections(existingSections, nextSections) {
-  const merged = [];
-  for (const section of [...existingSections, ...nextSections]) {
-    const normalized = normalizeReasoningText(section);
-    if (!normalized || merged.includes(normalized)) {
-      continue;
-    }
-    merged.push(normalized);
-  }
-  return merged;
-}
-function emitProgress(onProgress, message, phase = null, extra = {}) {
-  if (!onProgress || !message) {
-    return;
-  }
-  if (!phase && Object.keys(extra).length === 0) {
-    onProgress(message);
-    return;
-  }
-  onProgress({ message, phase, ...extra });
-}
-function emitLogEvent(onProgress, options = {}) {
-  if (!onProgress) {
-    return;
-  }
-  onProgress({
-    message: options.message ?? "",
-    phase: options.phase ?? null,
-    stderrMessage: options.stderrMessage ?? null,
-    logTitle: options.logTitle ?? null,
-    logBody: options.logBody ?? null
-  });
-}
-function labelForThread(state, threadId) {
-  if (!threadId || threadId === state.rootThreadId || threadId === state.threadId) {
-    return null;
-  }
-  return state.threadLabels.get(threadId) ?? threadId;
-}
-function registerThread(state, threadId, options = {}) {
-  if (!threadId) {
-    return;
-  }
-  state.threadIds.add(threadId);
-  const label = options.threadName ?? options.name ?? options.agentNickname ?? options.agentRole ?? state.threadLabels.get(threadId) ?? null;
-  if (label) {
-    state.threadLabels.set(threadId, label);
-  }
-}
-function describeStartedItem(state, item) {
-  switch (item.type) {
-    case "enteredReviewMode":
-      return { message: `Reviewer started: ${item.review}`, phase: "reviewing" };
-    case "commandExecution":
-      return {
-        message: `Running command: ${shorten(item.command, 96)}`,
-        phase: looksLikeVerificationCommand(item.command) ? "verifying" : "running"
-      };
-    case "fileChange":
-      return { message: `Applying ${item.changes.length} file change(s).`, phase: "editing" };
-    case "mcpToolCall":
-      return { message: `Calling ${item.server}/${item.tool}.`, phase: "investigating" };
-    case "dynamicToolCall":
-      return { message: `Running tool: ${item.tool}.`, phase: "investigating" };
-    case "collabAgentToolCall": {
-      const subagents = (item.receiverThreadIds ?? []).map((threadId) => labelForThread(state, threadId) ?? threadId);
-      const summary = subagents.length > 0 ? `Starting subagent ${subagents.join(", ")} via collaboration tool: ${item.tool}.` : `Starting collaboration tool: ${item.tool}.`;
-      return { message: summary, phase: "investigating" };
-    }
-    case "webSearch":
-      return { message: `Searching: ${shorten(item.query, 96)}`, phase: "investigating" };
-    default:
-      return null;
-  }
-}
-function describeCompletedItem(state, item) {
-  switch (item.type) {
-    case "commandExecution": {
-      const exitCode = item.exitCode ?? "?";
-      const statusLabel = item.status === "completed" ? "completed" : item.status;
-      return {
-        message: `Command ${statusLabel}: ${shorten(item.command, 96)} (exit ${exitCode})`,
-        phase: looksLikeVerificationCommand(item.command) ? "verifying" : "running"
-      };
-    }
-    case "fileChange":
-      return { message: `File changes ${item.status}.`, phase: "editing" };
-    case "mcpToolCall":
-      return { message: `Tool ${item.server}/${item.tool} ${item.status}.`, phase: "investigating" };
-    case "dynamicToolCall":
-      return { message: `Tool ${item.tool} ${item.status}.`, phase: "investigating" };
-    case "collabAgentToolCall": {
-      const subagents = (item.receiverThreadIds ?? []).map((threadId) => labelForThread(state, threadId) ?? threadId);
-      const summary = subagents.length > 0 ? `Subagent ${subagents.join(", ")} ${item.status}.` : `Collaboration tool ${item.tool} ${item.status}.`;
-      return { message: summary, phase: "investigating" };
-    }
-    case "exitedReviewMode":
-      return { message: "Reviewer finished.", phase: "finalizing" };
-    default:
-      return null;
-  }
-}
-function createTurnCaptureState(threadId, options = {}) {
-  let resolveCompletion;
-  let rejectCompletion;
-  const completion = new Promise((resolve, reject) => {
-    resolveCompletion = resolve;
-    rejectCompletion = reject;
-  });
-  return {
-    threadId,
-    rootThreadId: threadId,
-    threadIds: /* @__PURE__ */ new Set([threadId]),
-    threadTurnIds: /* @__PURE__ */ new Map(),
-    threadLabels: /* @__PURE__ */ new Map(),
-    turnId: null,
-    bufferedNotifications: [],
-    completion,
-    resolveCompletion,
-    rejectCompletion,
-    finalTurn: null,
-    completed: false,
-    finalAnswerSeen: false,
-    completionTimer: null,
-    pendingCollaborations: /* @__PURE__ */ new Set(),
-    activeSubagentTurns: /* @__PURE__ */ new Set(),
-    lastAgentMessage: "",
-    reviewText: "",
-    planDetected: false,
-    planText: "",
-    reasoningSummary: [],
-    error: null,
-    messages: [],
-    fileChanges: [],
-    commandExecutions: [],
-    pendingServerRequests: 0,
-    onProgress: options.onProgress ?? null,
-    onItemCompleted: typeof options.onItemCompleted === "function" ? options.onItemCompleted : null
-  };
-}
-function clearCompletionTimer(state) {
-  if (state.completionTimer) {
-    clearTimeout(state.completionTimer);
-    state.completionTimer = null;
-  }
-}
-function completeTurn(state, turn = null, options = {}) {
-  if (state.completed) {
-    return;
-  }
-  clearCompletionTimer(state);
-  state.completed = true;
-  if (turn) {
-    state.finalTurn = turn;
-    if (!state.turnId) {
-      state.turnId = turn.id;
-    }
-  } else if (!state.finalTurn) {
-    state.finalTurn = {
-      id: state.turnId ?? "inferred-turn",
-      status: options.inferredStatus ?? "completed"
-    };
-  }
-  if (options.inferred) {
-    emitProgress(state.onProgress, "Turn completion inferred after the main thread finished and subagent work drained.", "finalizing");
-  }
-  state.resolveCompletion(state);
-}
-function scheduleInferredCompletion(state) {
-  if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
-    return;
-  }
-  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
-    return;
-  }
-  clearCompletionTimer(state);
-  state.completionTimer = setTimeout(() => {
-    state.completionTimer = null;
-    if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
-      return;
-    }
-    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
-      return;
-    }
-    completeTurn(state, null, { inferred: true });
-  }, 250);
-  state.completionTimer.unref?.();
-}
-function belongsToTurn(state, message) {
-  const messageThreadId = extractThreadId(message);
-  if (!messageThreadId || !state.threadIds.has(messageThreadId)) {
-    return false;
-  }
-  const trackedTurnId = state.threadTurnIds.get(messageThreadId) ?? null;
-  const messageTurnId = extractTurnId(message);
-  return trackedTurnId === null || messageTurnId === null || messageTurnId === trackedTurnId;
-}
-function recordItem(state, item, lifecycle, threadId = null) {
-  if (item.type === "collabAgentToolCall") {
-    if (!threadId || threadId === state.threadId) {
-      if (lifecycle === "started" || item.status === "inProgress") {
-        state.pendingCollaborations.add(item.id);
-      } else if (lifecycle === "completed") {
-        state.pendingCollaborations.delete(item.id);
-        scheduleInferredCompletion(state);
-      }
-    }
-    for (const receiverThreadId of item.receiverThreadIds ?? []) {
-      registerThread(state, receiverThreadId);
-    }
-  }
-  if (item.type === "agentMessage") {
-    state.messages.push({
-      lifecycle,
-      phase: item.phase ?? null,
-      text: item.text ?? ""
-    });
-    if (item.text) {
-      if (!threadId || threadId === state.threadId) {
-        state.lastAgentMessage = item.text;
-        if (lifecycle === "completed" && item.phase === "final_answer") {
-          state.finalAnswerSeen = true;
-          scheduleInferredCompletion(state);
-        }
-      }
-      if (lifecycle === "completed") {
-        const sourceLabel = labelForThread(state, threadId);
-        emitLogEvent(state.onProgress, {
-          message: sourceLabel ? `Subagent ${sourceLabel}: ${shorten(item.text, 96)}` : `Assistant message captured: ${shorten(item.text, 96)}`,
-          stderrMessage: null,
-          phase: item.phase === "final_answer" ? "finalizing" : null,
-          logTitle: sourceLabel ? `Subagent ${sourceLabel} message` : "Assistant message",
-          logBody: item.text
-        });
-      }
-    }
-    return;
-  }
-  if (item.type === "plan" && lifecycle === "completed") {
-    state.planDetected = true;
-    state.planText = item.text ?? "";
-    emitLogEvent(state.onProgress, {
-      message: `Plan proposed: ${shorten(item.text ?? "", 96)}`,
-      stderrMessage: null,
-      phase: "plan_ready",
-      logTitle: "Proposed plan",
-      logBody: item.text ?? ""
-    });
-    return;
-  }
-  if (item.type === "exitedReviewMode") {
-    state.reviewText = item.review ?? "";
-    if (lifecycle === "completed" && item.review) {
-      emitLogEvent(state.onProgress, {
-        message: "Review output captured.",
-        stderrMessage: null,
-        phase: "finalizing",
-        logTitle: "Review output",
-        logBody: item.review
-      });
-    }
-    return;
-  }
-  if (item.type === "reasoning" && lifecycle === "completed") {
-    const nextSections = extractReasoningSections(item.summary);
-    state.reasoningSummary = mergeReasoningSections(state.reasoningSummary, nextSections);
-    if (nextSections.length > 0) {
-      const sourceLabel = labelForThread(state, threadId);
-      emitLogEvent(state.onProgress, {
-        message: sourceLabel ? `Subagent ${sourceLabel} reasoning: ${shorten(nextSections[0], 96)}` : `Reasoning summary captured: ${shorten(nextSections[0], 96)}`,
-        stderrMessage: null,
-        logTitle: sourceLabel ? `Subagent ${sourceLabel} reasoning summary` : "Reasoning summary",
-        logBody: nextSections.map((section) => `- ${section}`).join("\n")
-      });
-    }
-    return;
-  }
-  if (item.type === "fileChange" && lifecycle === "completed") {
-    state.fileChanges.push(item);
-    return;
-  }
-  if (item.type === "commandExecution" && lifecycle === "completed") {
-    state.commandExecutions.push(item);
-  }
-}
-function applyTurnNotification(state, message) {
-  switch (message.method) {
-    case "thread/started":
-      registerThread(state, message.params.thread.id, {
-        threadName: message.params.thread.name,
-        name: message.params.thread.name,
-        agentNickname: message.params.thread.agentNickname,
-        agentRole: message.params.thread.agentRole
-      });
-      break;
-    case "thread/name/updated":
-      registerThread(state, message.params.threadId, {
-        threadName: message.params.threadName ?? null
-      });
-      break;
-    case "turn/started":
-      registerThread(state, message.params.threadId);
-      state.threadTurnIds.set(message.params.threadId, message.params.turn.id);
-      if ((message.params.threadId ?? null) === state.threadId && !state.turnId) {
-        state.turnId = message.params.turn.id;
-      }
-      if ((message.params.threadId ?? null) !== state.threadId) {
-        state.activeSubagentTurns.add(message.params.threadId);
-      }
-      emitProgress(
-        state.onProgress,
-        `Turn started (${message.params.turn.id}).`,
-        "starting",
-        (message.params.threadId ?? null) === state.threadId ? {
-          threadId: message.params.threadId ?? null,
-          turnId: message.params.turn.id ?? null
-        } : {}
-      );
-      break;
-    case "item/started":
-      recordItem(state, message.params.item, "started", message.params.threadId ?? null);
-      {
-        const update = describeStartedItem(state, message.params.item);
-        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
-      }
-      break;
-    case "item/completed":
-      recordItem(state, message.params.item, "completed", message.params.threadId ?? null);
-      {
-        const update = describeCompletedItem(state, message.params.item);
-        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
-      }
-      if (typeof state.onItemCompleted === "function") {
-        try {
-          state.onItemCompleted(message.params.item, { threadId: message.params.threadId ?? null });
-        } catch (err) {
-          emitProgress(state.onProgress, `onItemCompleted threw: ${err?.message ?? err}`, null);
-        }
-      }
-      break;
-    case "error": {
-      const err = message.params.error ?? {};
-      const willRetry = message.params.will_retry ?? message.params.willRetry ?? false;
-      const codexErrorInfo = err.codexErrorInfo ?? err.codex_error_info ?? null;
-      state.error = err;
-      state.lastErrorInfo = { codexErrorInfo, willRetry };
-      if (!willRetry) {
-        emitProgress(state.onProgress, `Codex error: ${err.message} [${codexErrorInfo ?? "unknown"}]`, "failed");
-      }
-      break;
-    }
-    case "serverRequest/resolved":
-      emitProgress(state.onProgress, `Server request resolved: ${message.params.requestId}`, "confirmed");
-      break;
-    case "turn/completed":
-      if ((message.params.threadId ?? null) !== state.threadId) {
-        state.activeSubagentTurns.delete(message.params.threadId);
-        scheduleInferredCompletion(state);
-        break;
-      }
-      emitProgress(
-        state.onProgress,
-        `Turn ${message.params.turn.status === "completed" ? "completed" : message.params.turn.status}.`,
-        "finalizing"
-      );
-      {
-        const completedTurn = message.params.turn;
-        if (completedTurn?.status !== "completed" && completedTurn?.error) {
-          state.error = { ...state.error ?? {}, ...completedTurn.error };
-        }
-        completeTurn(state, completedTurn);
-      }
-      break;
-    default:
-      break;
-  }
-}
-function routeTurnNotification(state, message, previousHandler) {
-  if (message.method === "thread/started" || message.method === "thread/name/updated") {
-    applyTurnNotification(state, message);
-    return;
-  }
-  if (!belongsToTurn(state, message)) {
-    if (previousHandler) {
-      previousHandler(message);
-    }
-    return;
-  }
-  applyTurnNotification(state, message);
-}
-function flushBufferedNotifications(state, previousHandler) {
-  if (state.bufferedNotifications.length === 0 || !state.turnId) {
-    return;
-  }
-  const buffered = state.bufferedNotifications.splice(0);
-  for (const message of buffered) {
-    routeTurnNotification(state, message, previousHandler);
-    if (state.completed) {
-      break;
-    }
-  }
-}
-async function captureTurn(client, threadId, startRequest, options = {}) {
-  const state = createTurnCaptureState(threadId, options);
-  const previousHandler = client.notificationHandler;
-  const idleTimeoutMs = Number(options.idleTimeoutMs) > 0 ? Number(options.idleTimeoutMs) : 0;
-  const turnTimeoutMs = Number(options.turnTimeoutMs) > 0 ? Number(options.turnTimeoutMs) : 0;
-  let lastNotificationAt = Date.now();
-  let idleInterval = null;
-  let turnTimer = null;
-  let interruptGraceTimer = null;
-  const turnAbort = new AbortController();
-  const markActivity = () => {
-    lastNotificationAt = Date.now();
-  };
-  markActivity.startServerRequest = () => {
-    state.pendingServerRequests += 1;
-    markActivity();
-    let finished = false;
-    return () => {
-      if (finished) {
-        return;
-      }
-      finished = true;
-      state.pendingServerRequests = Math.max(0, state.pendingServerRequests - 1);
-      markActivity();
-    };
-  };
-  if (typeof options.onActivityMarkerReady === "function") {
-    options.onActivityMarkerReady(markActivity);
-  }
-  if (idleTimeoutMs > 0) {
-    const checkIntervalMs = Math.min(5e3, idleTimeoutMs);
-    idleInterval = setInterval(() => {
-      if (state.completed) {
-        return;
-      }
-      if (state.pendingServerRequests > 0) {
-        markActivity();
-        return;
-      }
-      const elapsed = Date.now() - lastNotificationAt;
-      if (elapsed >= idleTimeoutMs) {
-        clearInterval(idleInterval);
-        idleInterval = null;
-        const seconds = Math.round(idleTimeoutMs / 1e3);
-        state.error = { message: `No events received for ${seconds}s (idle timeout).` };
-        emitProgress(state.onProgress, state.error.message, "failed");
-        if (typeof options.onIdleTimeout === "function") {
-          try {
-            options.onIdleTimeout({ threadId: state.threadId, turnId: state.turnId, elapsedMs: elapsed });
-          } catch {
-          }
-        }
-        completeTurn(state, null, { inferredStatus: "failed" });
-      }
-    }, checkIntervalMs);
-    idleInterval.unref?.();
-  }
-  if (turnTimeoutMs > 0) {
-    turnTimer = setTimeout(() => {
-      if (state.completed) {
-        return;
-      }
-      const message = `Turn timed out after ${turnTimeoutMs}ms.`;
-      state.error = { message, code: "TurnTimeout" };
-      emitProgress(state.onProgress, message, "failed");
-      const interruptTurnId = state.turnId ?? state.threadTurnIds.get(state.threadId) ?? null;
-      if (interruptTurnId) {
-        try {
-          Promise.resolve(client.request("turn/interrupt", { threadId: state.threadId, turnId: interruptTurnId })).catch((error) => {
-            emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
-            if (!state.completed) {
-              completeTurn(state, null, { inferredStatus: "failed" });
-            }
-          });
-        } catch (error) {
-          emitProgress(state.onProgress, `turn/interrupt after timeout failed: ${error?.message ?? error}`, null);
-          completeTurn(state, null, { inferredStatus: "failed" });
-          return;
-        }
-        const interruptGraceMs = Number(options.interruptGraceMs) > 0 ? Number(options.interruptGraceMs) : TURN_INTERRUPT_GRACE_MS;
-        interruptGraceTimer = setTimeout(() => {
-          if (state.completed) {
-            return;
-          }
-          emitProgress(
-            state.onProgress,
-            `turn/interrupt did not produce turn/completed within ${interruptGraceMs}ms.`,
-            "failed"
-          );
-          completeTurn(state, null, { inferredStatus: "failed" });
-        }, interruptGraceMs);
-        interruptGraceTimer.unref?.();
-        return;
-      }
-      emitProgress(
-        state.onProgress,
-        "turn timeout fired before turn id known; upstream turn may continue running",
-        null
-      );
-      completeTurn(state, null, { inferredStatus: "failed" });
-    }, turnTimeoutMs);
-    turnTimer.unref?.();
-  }
-  client.setNotificationHandler((message) => {
-    lastNotificationAt = Date.now();
-    if (!state.turnId) {
-      const messageThreadId = extractThreadId(message);
-      if (messageThreadId === state.threadId && (message.method === "turn/started" || message.method === "turn/completed")) {
-        applyTurnNotification(state, message);
-        flushBufferedNotifications(state, previousHandler);
-        return;
-      }
-      state.bufferedNotifications.push(message);
-      return;
-    }
-    routeTurnNotification(state, message, previousHandler);
-  });
-  const onExit = () => {
-    if (state.completed) {
-      return;
-    }
-    const bufferedTerminal = state.bufferedNotifications.find(
-      (message) => message?.method === "turn/completed" && (message?.params?.threadId ?? null) === state.threadId
-    );
-    if (bufferedTerminal) {
-      applyTurnNotification(state, bufferedTerminal);
-      if (state.completed) {
-        return;
-      }
-    }
-    state.error = { message: "Codex app-server exited unexpectedly" };
-    completeTurn(state, null, { inferredStatus: "failed" });
-  };
-  if (client.on) client.on("exit", onExit);
-  try {
-    const response = await Promise.race([
-      startRequest(turnAbort.signal),
-      state.completion.then(() => null)
-    ]);
-    if (!response) {
-      turnAbort.abort(new Error("captureTurn: state.completion won the race"));
-      return await state.completion;
-    }
-    markActivity();
-    if (state.completed) {
-      return await state.completion;
-    }
-    options.onResponse?.(response, state);
-    const responseTurnId = response.turn?.id ?? null;
-    if (responseTurnId && state.turnId && state.turnId !== responseTurnId) {
-      state.error = {
-        message: `turn/start response turn id ${responseTurnId} did not match streamed turn id ${state.turnId}.`,
-        code: "ProtocolDrift"
-      };
-      completeTurn(state, null, { inferredStatus: "failed" });
-      return await state.completion;
-    }
-    state.turnId = state.turnId ?? responseTurnId;
-    if (state.turnId) {
-      state.threadTurnIds.set(state.threadId, state.turnId);
-    }
-    flushBufferedNotifications(state, previousHandler);
-    if (response.turn?.status && response.turn.status !== "inProgress") {
-      completeTurn(state, response.turn);
-    }
-    return await state.completion;
-  } finally {
-    clearCompletionTimer(state);
-    if (idleInterval) {
-      clearInterval(idleInterval);
-      idleInterval = null;
-    }
-    if (turnTimer) {
-      clearTimeout(turnTimer);
-      turnTimer = null;
-    }
-    if (interruptGraceTimer) {
-      clearTimeout(interruptGraceTimer);
-      interruptGraceTimer = null;
-    }
-    if (typeof options.onActivityMarkerReady === "function") {
-      options.onActivityMarkerReady(null);
-    }
-    client.setNotificationHandler(previousHandler ?? null);
-    if (client.off) client.off("exit", onExit);
-    else if (client.removeListener) client.removeListener("exit", onExit);
-  }
-}
-async function withAppServer(cwd, fn) {
-  let client = null;
-  try {
-    client = await CodexAppServerClient.connect(cwd);
-    const result = await fn(client);
-    await client.close();
-    return result;
-  } catch (error) {
-    const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
-    const shouldRetryDirect = client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE || brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED");
-    if (client) {
-      await client.close().catch(() => {
-      });
-      client = null;
-    }
-    if (!shouldRetryDirect) {
-      throw error;
-    }
-    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
-    try {
-      return await fn(directClient);
-    } finally {
-      await directClient.close();
-    }
-  }
-}
-async function startThread(client, cwd, options = {}) {
-  const response = await client.request("thread/start", buildThreadParams(cwd, options));
-  const threadId = response.thread.id;
-  if (options.threadName) {
-    try {
-      await client.request("thread/name/set", { threadId, name: options.threadName });
-    } catch (err) {
-      const msg = String(err?.message ?? err ?? "");
-      if (!msg.includes("unknown variant") && !msg.includes("unknown method")) {
-        throw err;
-      }
-    }
-  }
-  return response;
-}
-async function resumeThread(client, threadId, cwd, options = {}) {
-  return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
-}
-function buildResultStatus(turnState) {
-  if (turnState.error?.code === "TurnTimeout") {
-    return 1;
-  }
-  return turnState.finalTurn?.status === "completed" ? 0 : 1;
-}
-var BUILTIN_PROVIDER_LABELS = /* @__PURE__ */ new Map([
-  ["openai", "OpenAI"],
-  ["ollama", "Ollama"],
-  ["lmstudio", "LM Studio"]
-]);
-function normalizeProviderId(value) {
-  const providerId = typeof value === "string" ? value.trim() : "";
-  return providerId || null;
-}
-function formatProviderLabel(providerId, providerConfig = null) {
-  const configuredName = typeof providerConfig?.name === "string" ? providerConfig.name.trim() : "";
-  if (configuredName) {
-    return configuredName;
-  }
-  if (!providerId) {
-    return "The active provider";
-  }
-  return BUILTIN_PROVIDER_LABELS.get(providerId) ?? providerId;
-}
-function buildAuthStatus(fields = {}) {
-  return {
-    available: true,
-    loggedIn: false,
-    detail: "not authenticated",
-    source: "unknown",
-    authMethod: null,
-    verified: null,
-    requiresOpenaiAuth: null,
-    provider: null,
-    ...fields
-  };
-}
-function resolveProviderConfig(configResponse) {
-  const config = configResponse?.config;
-  if (!config || typeof config !== "object") {
-    return {
-      providerId: null,
-      providerConfig: null
-    };
-  }
-  const providerId = normalizeProviderId(config.model_provider);
-  const providers = config.model_providers && typeof config.model_providers === "object" && !Array.isArray(config.model_providers) ? config.model_providers : null;
-  const providerConfig = providerId && providers?.[providerId] && typeof providers[providerId] === "object" ? providers[providerId] : null;
-  return {
-    providerId,
-    providerConfig
-  };
-}
-function buildAppServerAuthStatus(accountResponse, configResponse) {
-  const account = accountResponse?.account ?? null;
-  const requiresOpenaiAuth = typeof accountResponse?.requiresOpenaiAuth === "boolean" ? accountResponse.requiresOpenaiAuth : null;
-  const { providerId, providerConfig } = resolveProviderConfig(configResponse);
-  const providerLabel = formatProviderLabel(providerId, providerConfig);
-  if (account?.type === "chatgpt") {
-    const email = typeof account.email === "string" && account.email.trim() ? account.email.trim() : null;
-    return buildAuthStatus({
-      loggedIn: true,
-      detail: email ? `ChatGPT login active for ${email}` : "ChatGPT login active",
-      source: "app-server",
-      authMethod: "chatgpt",
-      verified: true,
-      requiresOpenaiAuth,
-      provider: providerId
-    });
-  }
-  if (account?.type === "apiKey") {
-    return buildAuthStatus({
-      loggedIn: true,
-      detail: "API key configured (unverified)",
-      source: "app-server",
-      authMethod: "apiKey",
-      verified: false,
-      requiresOpenaiAuth,
-      provider: providerId
-    });
-  }
-  if (requiresOpenaiAuth === false) {
-    return buildAuthStatus({
-      loggedIn: true,
-      detail: `${providerLabel} is configured and does not require OpenAI authentication`,
-      source: "app-server",
-      requiresOpenaiAuth,
-      provider: providerId
-    });
-  }
-  return buildAuthStatus({
-    loggedIn: false,
-    detail: `${providerLabel} requires OpenAI authentication`,
-    source: "app-server",
-    requiresOpenaiAuth,
-    provider: providerId
-  });
-}
-async function getCodexAuthStatusFromClient(client, cwd) {
-  try {
-    const accountResponse = await client.request("account/read", { refreshToken: false });
-    const configResponse = await client.request("config/read", {
-      includeLayers: false,
-      cwd
-    });
-    return buildAppServerAuthStatus(accountResponse, configResponse);
-  } catch (error) {
-    return buildAuthStatus({
-      loggedIn: false,
-      detail: error instanceof Error ? error.message : String(error),
-      source: "app-server"
-    });
-  }
-}
-function getCodexAvailability(cwd) {
-  const versionStatus = binaryAvailable("codex", ["--version"], { cwd });
-  if (!versionStatus.available) {
-    return versionStatus;
-  }
-  const appServerStatus = binaryAvailable("codex", ["app-server", "--help"], { cwd });
-  if (!appServerStatus.available) {
-    return {
-      available: false,
-      detail: `${versionStatus.detail}; advanced runtime unavailable: ${appServerStatus.detail}`
-    };
-  }
-  return {
-    available: true,
-    detail: `${versionStatus.detail}; advanced runtime available`
-  };
-}
-function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
-  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
-  if (endpoint) {
-    return {
-      mode: "shared",
-      label: "shared session",
-      detail: "This Claude session is configured to reuse one shared Codex runtime.",
-      endpoint
-    };
-  }
-  return {
-    mode: "direct",
-    label: "direct startup",
-    detail: "No shared Codex runtime is active yet. The first review or task command will start one on demand.",
-    endpoint: null
-  };
-}
-async function getCodexAuthStatus(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
-  if (!availability.available) {
-    return {
-      available: false,
-      loggedIn: false,
-      detail: availability.detail,
-      source: "availability",
-      authMethod: null,
-      verified: null,
-      requiresOpenaiAuth: null,
-      provider: null
-    };
-  }
-  let client = null;
-  try {
-    client = await CodexAppServerClient.connect(cwd, {
-      env: options.env,
-      reuseExistingBroker: true
-    });
-    return await getCodexAuthStatusFromClient(client, cwd);
-  } catch (error) {
-    return buildAuthStatus({
-      loggedIn: false,
-      detail: error instanceof Error ? error.message : String(error),
-      source: "app-server"
-    });
-  } finally {
-    if (client) {
-      await client.close().catch(() => {
-      });
-    }
-  }
-}
-async function interruptAppServerTurn(cwd, { threadId, turnId }) {
-  if (!threadId || !turnId) {
-    return {
-      attempted: false,
-      interrupted: false,
-      transport: null,
-      detail: "missing threadId or turnId"
-    };
-  }
-  const availability = getCodexAvailability(cwd);
-  if (!availability.available) {
-    return {
-      attempted: false,
-      interrupted: false,
-      transport: null,
-      detail: availability.detail
-    };
-  }
-  let client = null;
-  try {
-    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
-    await client.request("turn/interrupt", { threadId, turnId });
-    return {
-      attempted: true,
-      interrupted: true,
-      transport: client.transport,
-      detail: `Interrupted ${turnId} on ${threadId}.`
-    };
-  } catch (error) {
-    return {
-      attempted: true,
-      interrupted: false,
-      transport: client?.transport ?? null,
-      detail: error instanceof Error ? error.message : String(error)
-    };
-  } finally {
-    await client?.close().catch(() => {
-    });
-  }
-}
-async function runAppServerReview(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
-  if (!availability.available) {
-    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
-      class: "dependency_failed",
-      code: "CODEX_UNAVAILABLE",
-      retryable: false,
-      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
-    });
-  }
-  return withAppServer(cwd, async (client) => {
-    emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
-    const thread = await startThread(client, cwd, {
-      model: options.model,
-      sandbox: "read-only",
-      ephemeral: true,
-      threadName: options.threadName
-    });
-    const sourceThreadId = thread.thread.id;
-    emitProgress(options.onProgress, `Thread ready (${sourceThreadId}).`, "starting", {
-      threadId: sourceThreadId
-    });
-    const delivery = options.delivery ?? "inline";
-    const turnState = await captureTurn(
-      client,
-      sourceThreadId,
-      (signal) => client.request("review/start", {
-        threadId: sourceThreadId,
-        delivery,
-        target: options.target
-      }, { signal }),
-      {
-        onProgress: options.onProgress,
-        idleTimeoutMs: options.idleTimeoutMs ?? null,
-        turnTimeoutMs: options.turnTimeoutMs ?? null,
-        onResponse(response, state) {
-          if (response.reviewThreadId) {
-            state.threadIds.add(response.reviewThreadId);
-            if (delivery === "detached") {
-              state.threadId = response.reviewThreadId;
-            }
-          }
-        }
-      }
-    );
-    return {
-      status: buildResultStatus(turnState),
-      threadId: turnState.threadId,
-      sourceThreadId,
-      turnId: turnState.turnId,
-      reviewText: turnState.reviewText,
-      reasoningSummary: turnState.reasoningSummary,
-      turn: turnState.finalTurn,
-      error: turnState.error,
-      stderr: cleanCodexStderr(client.stderr)
-    };
-  });
-}
-async function runAppServerTurn(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
-  if (!availability.available) {
-    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
-      class: "dependency_failed",
-      code: "CODEX_UNAVAILABLE",
-      retryable: false,
-      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
-    });
-  }
-  return withAppServer(cwd, async (client) => {
-    let threadId;
-    let markServerRequestActivity = null;
-    if (options.onServerRequest) {
-      client.setServerRequestHandler(async (message) => {
-        const finishServerRequest = typeof markServerRequestActivity?.startServerRequest === "function" ? markServerRequestActivity.startServerRequest() : null;
-        markServerRequestActivity?.();
-        try {
-          return await options.onServerRequest(message);
-        } finally {
-          finishServerRequest?.();
-        }
-      });
-    }
-    if (options.resumeThreadId) {
-      emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
-      const response = await resumeThread(client, options.resumeThreadId, cwd, {
-        model: options.model,
-        sandbox: options.sandbox,
-        ephemeral: false
-      });
-      threadId = response.thread.id;
-    } else {
-      emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
-      const response = await startThread(client, cwd, {
-        model: options.model,
-        sandbox: options.sandbox,
-        ephemeral: options.persistThread ? false : true,
-        threadName: options.persistThread ? options.threadName : options.threadName ?? null
-      });
-      threadId = response.thread.id;
-    }
-    emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
-      threadId
-    });
-    const prompt = options.prompt?.trim() || options.defaultPrompt || "";
-    if (!prompt) {
-      throw new CliError("A prompt is required for this Codex run.", {
-        class: "validation",
-        code: "MISSING_PROMPT",
-        retryable: false
-      });
-    }
-    const turnParams = {
-      threadId,
-      input: buildTurnInput(prompt),
-      model: options.model ?? null,
-      effort: options.effort ?? null,
-      outputSchema: options.outputSchema ?? null
-    };
-    if (options.collaborationMode) {
-      turnParams.collaborationMode = options.collaborationMode;
-    }
-    if (options.sandboxPolicy) {
-      turnParams.sandboxPolicy = options.sandboxPolicy;
-    }
-    if (typeof options.onTurnStart === "function") {
-      try {
-        options.onTurnStart({
-          threadId,
-          turnParams,
-          promptLength: prompt.length,
-          promptPreview: prompt.slice(0, 200)
-        });
-      } catch (err) {
-        emitProgress(
-          options.onProgress,
-          `onTurnStart threw: ${err?.message ?? err}`,
-          null
-        );
-      }
-    }
-    const turnPromise = captureTurn(
-      client,
-      threadId,
-      (signal) => client.request("turn/start", turnParams, { signal }),
-      {
-        onProgress: options.onProgress,
-        idleTimeoutMs: options.idleTimeoutMs ?? null,
-        turnTimeoutMs: options.turnTimeoutMs ?? null,
-        onActivityMarkerReady(marker) {
-          markServerRequestActivity = marker;
-        },
-        onIdleTimeout: options.onIdleTimeout ?? null,
-        onItemCompleted: options.onItemCompleted ?? null
-      }
-    );
-    const turnState = await turnPromise;
-    return {
-      status: buildResultStatus(turnState),
-      threadId,
-      turnId: turnState.turnId,
-      finalMessage: turnState.lastAgentMessage,
-      reasoningSummary: turnState.reasoningSummary,
-      turn: turnState.finalTurn,
-      error: turnState.error,
-      stderr: cleanCodexStderr(client.stderr),
-      fileChanges: turnState.fileChanges,
-      touchedFiles: collectTouchedFiles(turnState.fileChanges),
-      commandExecutions: turnState.commandExecutions,
-      planDetected: turnState.planDetected,
-      planText: turnState.planText
-    };
-  });
-}
-async function findLatestTaskThread(cwd) {
-  const availability = getCodexAvailability(cwd);
-  if (!availability.available) {
-    throw new CliError("Codex CLI is not installed or is missing required runtime support.", {
-      class: "dependency_failed",
-      code: "CODEX_UNAVAILABLE",
-      retryable: false,
-      suggestion: "Install Codex with `npm install -g @openai/codex`, then rerun `codex-bridge setup`."
-    });
-  }
-  return withAppServer(cwd, async (client) => {
-    const response = await client.request("thread/list", {
-      cwd,
-      limit: 20,
-      sortKey: "updated_at",
-      sourceKinds: ["appServer"],
-      searchTerm: TASK_THREAD_PREFIX
-    });
-    return response.data.find((thread) => typeof thread.name === "string" && thread.name.startsWith(TASK_THREAD_PREFIX)) ?? null;
-  });
-}
-function buildPersistentTaskThreadName(prompt) {
-  return buildTaskThreadName(prompt);
-}
-function parseStructuredOutput(rawOutput, fallback = {}) {
-  if (!rawOutput) {
-    return {
-      parsed: null,
-      parseError: fallback.failureMessage ?? "Codex did not return a final structured message.",
-      rawOutput: rawOutput ?? "",
-      ...fallback
-    };
-  }
-  try {
-    return {
-      parsed: JSON.parse(rawOutput),
-      parseError: null,
-      rawOutput,
-      ...fallback
-    };
-  } catch (error) {
-    return {
-      parsed: null,
-      parseError: error.message,
-      rawOutput,
-      ...fallback
-    };
-  }
-}
-function readOutputSchema(schemaPath) {
-  return readJsonFile(schemaPath);
-}
-
 // src/lib/registry.mjs
-import fs7 from "node:fs";
-import os4 from "node:os";
-import path7 from "node:path";
+import fs12 from "node:fs";
+import os5 from "node:os";
+import path10 from "node:path";
 var REGISTRY_SCHEMA_VERSION = "1.0";
 var tmpCounter = 0;
 function tmpSuffix() {
@@ -7070,7 +8471,7 @@ var RegistryReadError = class extends Error {
 function registryRoot() {
   const override = process.env.CODEX_BRIDGE_REGISTRY;
   if (override && override.length > 0) return override;
-  return path7.join(os4.homedir(), ".codex-bridge", "jobs");
+  return path10.join(os5.homedir(), ".codex-bridge", "jobs");
 }
 function jobDir(taskId) {
   if (!taskId || typeof taskId !== "string") {
@@ -7086,18 +8487,18 @@ function jobDir(taskId) {
       `jobDir(taskId): taskId must not be "." or "..": ${JSON.stringify(taskId)}`
     );
   }
-  return path7.join(registryRoot(), taskId);
+  return path10.join(registryRoot(), taskId);
 }
 function existsTask(taskId) {
   try {
-    return fs7.existsSync(jobDir(taskId));
+    return fs12.existsSync(jobDir(taskId));
   } catch {
     return false;
   }
 }
 function ensureJobDir(taskId) {
   const dir = jobDir(taskId);
-  fs7.mkdirSync(dir, { recursive: true });
+  fs12.mkdirSync(dir, { recursive: true });
   return dir;
 }
 function writeMeta(taskId, meta) {
@@ -7111,21 +8512,21 @@ function writeMeta(taskId, meta) {
     task_id: taskId,
     written_at: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const target = path7.join(dir, "meta.json");
+  const target = path10.join(dir, "meta.json");
   const tmp = `${target}.tmp.${tmpSuffix()}`;
-  fs7.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
+  fs12.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
 `, "utf8");
-  fs7.renameSync(tmp, target);
+  fs12.renameSync(tmp, target);
   return target;
 }
 function readMeta(taskId) {
-  const target = path7.join(jobDir(taskId), "meta.json");
+  const target = path10.join(jobDir(taskId), "meta.json");
   return readRegistryJson(target);
 }
 function readRegistryJson(target) {
   let text;
   try {
-    text = fs7.readFileSync(target, "utf8");
+    text = fs12.readFileSync(target, "utf8");
   } catch (error) {
     if (error?.code === "ENOENT") {
       return null;
@@ -7147,9 +8548,9 @@ function readRegistryJson(target) {
 var TASK_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 function listTasks() {
   const root = registryRoot();
-  if (!fs7.existsSync(root)) return [];
+  if (!fs12.existsSync(root)) return [];
   try {
-    return fs7.readdirSync(root, { withFileTypes: true }).filter(
+    return fs12.readdirSync(root, { withFileTypes: true }).filter(
       (entry) => entry.isDirectory() && entry.name !== "." && entry.name !== ".." && TASK_ID_PATTERN.test(entry.name)
     ).map((entry) => entry.name).sort();
   } catch {
@@ -7157,7 +8558,7 @@ function listTasks() {
   }
 }
 function readVerdict(taskId) {
-  const target = path7.join(jobDir(taskId), "verdict.json");
+  const target = path10.join(jobDir(taskId), "verdict.json");
   return readRegistryJson(target);
 }
 function writeVerdict(taskId, verdict) {
@@ -7176,17 +8577,17 @@ function writeVerdict(taskId, verdict) {
     task_id: taskId,
     decided_at: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const target = path7.join(dir, "verdict.json");
+  const target = path10.join(dir, "verdict.json");
   const tmp = `${target}.tmp.${tmpSuffix()}`;
-  fs7.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
+  fs12.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
 `, "utf8");
-  fs7.renameSync(tmp, target);
+  fs12.renameSync(tmp, target);
   return target;
 }
 
 // src/lib/brief.mjs
-import fs8 from "node:fs";
-import path8 from "node:path";
+import fs13 from "node:fs";
+import path11 from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var BRIEF_SCHEMA_VERSION = "1.0";
 var VALID_BACKENDS = /* @__PURE__ */ new Set(["codex"]);
@@ -7351,12 +8752,12 @@ function loadBrief(arg, options = {}) {
   let source;
   if (arg.startsWith("@")) {
     const requestedPath = arg.slice(1);
-    const filePath = isString(options?.baseDir) && options.baseDir.length > 0 ? path8.resolve(options.baseDir, requestedPath) : path8.resolve(requestedPath);
-    if (!fs8.existsSync(filePath)) {
+    const filePath = isString(options?.baseDir) && options.baseDir.length > 0 ? path11.resolve(options.baseDir, requestedPath) : path11.resolve(requestedPath);
+    if (!fs13.existsSync(filePath)) {
       return fail(ERR.FILE_NOT_FOUND, `brief file not found: ${filePath}`);
     }
     try {
-      raw = fs8.readFileSync(filePath, "utf8");
+      raw = fs13.readFileSync(filePath, "utf8");
       source = filePath;
     } catch (err) {
       return fail(ERR.FILE_NOT_FOUND, `cannot read brief file: ${err.message}`);
@@ -7427,489 +8828,6 @@ function buildAdversarialReviewPrompt(rootDir, context, focusText, opusConcerns 
       ])
     }
   );
-}
-
-// src/lib/job-control.mjs
-import fs10 from "node:fs";
-
-// src/lib/tracked-jobs.mjs
-import fs9 from "node:fs";
-import process8 from "node:process";
-var SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
-function nowIso2() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-function normalizeProgressEvent(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return {
-      message: String(value.message ?? "").trim(),
-      phase: typeof value.phase === "string" && value.phase.trim() ? value.phase.trim() : null,
-      threadId: typeof value.threadId === "string" && value.threadId.trim() ? value.threadId.trim() : null,
-      turnId: typeof value.turnId === "string" && value.turnId.trim() ? value.turnId.trim() : null,
-      stderrMessage: value.stderrMessage == null ? null : String(value.stderrMessage).trim(),
-      logTitle: typeof value.logTitle === "string" && value.logTitle.trim() ? value.logTitle.trim() : null,
-      logBody: value.logBody == null ? null : String(value.logBody).trimEnd()
-    };
-  }
-  return {
-    message: String(value ?? "").trim(),
-    phase: null,
-    threadId: null,
-    turnId: null,
-    stderrMessage: String(value ?? "").trim(),
-    logTitle: null,
-    logBody: null
-  };
-}
-function appendLogLine(logFile, message) {
-  const normalized = String(message ?? "").trim();
-  if (!logFile || !normalized) {
-    return;
-  }
-  fs9.appendFileSync(logFile, `[${nowIso2()}] ${normalized}
-`, "utf8");
-}
-function appendLogBlock(logFile, title, body) {
-  if (!logFile || !body) {
-    return;
-  }
-  fs9.appendFileSync(logFile, `
-[${nowIso2()}] ${title}
-${String(body).trimEnd()}
-`, "utf8");
-}
-function createJobLogFile(workspaceRoot, jobId, title) {
-  const logFile = resolveJobLogFile(workspaceRoot, jobId);
-  fs9.writeFileSync(logFile, "", "utf8");
-  if (title) {
-    appendLogLine(logFile, `Starting ${title}.`);
-  }
-  return logFile;
-}
-function createJobRecord(base, options = {}) {
-  const env = options.env ?? process8.env;
-  const sessionId = env[options.sessionIdEnv ?? SESSION_ID_ENV];
-  return {
-    ...base,
-    createdAt: nowIso2(),
-    ...sessionId ? { sessionId } : {}
-  };
-}
-function createJobProgressUpdater(workspaceRoot, jobId) {
-  let lastPhase = null;
-  let lastThreadId = null;
-  let lastTurnId = null;
-  return (event) => {
-    const normalized = normalizeProgressEvent(event);
-    const patch = { id: jobId };
-    let changed = false;
-    if (normalized.phase && normalized.phase !== lastPhase) {
-      lastPhase = normalized.phase;
-      patch.phase = normalized.phase;
-      changed = true;
-    }
-    if (normalized.threadId && normalized.threadId !== lastThreadId) {
-      lastThreadId = normalized.threadId;
-      patch.threadId = normalized.threadId;
-      changed = true;
-    }
-    if (normalized.turnId && normalized.turnId !== lastTurnId) {
-      lastTurnId = normalized.turnId;
-      patch.turnId = normalized.turnId;
-      changed = true;
-    }
-    if (!changed) {
-      return;
-    }
-    const jobFile = resolveJobFile(workspaceRoot, jobId);
-    if (!fs9.existsSync(jobFile)) {
-      return;
-    }
-    const storedJob = readJobFile(jobFile);
-    writeJobFile(workspaceRoot, jobId, {
-      ...storedJob,
-      ...patch
-    });
-    upsertJob(workspaceRoot, patch);
-  };
-}
-function createProgressReporter({ stderr = false, logFile = null, onEvent = null } = {}) {
-  if (!stderr && !logFile && !onEvent) {
-    return null;
-  }
-  return (eventOrMessage) => {
-    const event = normalizeProgressEvent(eventOrMessage);
-    const stderrMessage = event.stderrMessage ?? event.message;
-    if (stderr && stderrMessage) {
-      process8.stderr.write(`[codex] ${stderrMessage}
-`);
-    }
-    appendLogLine(logFile, event.message);
-    appendLogBlock(logFile, event.logTitle, event.logBody);
-    onEvent?.(event);
-  };
-}
-function readStoredJobOrNull(workspaceRoot, jobId) {
-  const jobFile = resolveJobFile(workspaceRoot, jobId);
-  if (!fs9.existsSync(jobFile)) {
-    return null;
-  }
-  return readJobFile(jobFile);
-}
-async function runTrackedJob(job, runner, options = {}) {
-  const runningRecord = {
-    ...job,
-    status: "running",
-    startedAt: nowIso2(),
-    phase: "starting",
-    pid: process8.pid,
-    logFile: options.logFile ?? job.logFile ?? null
-  };
-  writeJobFile(job.workspaceRoot, job.id, runningRecord);
-  upsertJob(job.workspaceRoot, runningRecord);
-  try {
-    const execution = await runner();
-    const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
-    const completedAt = nowIso2();
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...runningRecord,
-      status: completionStatus,
-      threadId: execution.threadId ?? null,
-      turnId: execution.turnId ?? null,
-      pid: null,
-      phase: completionStatus === "completed" ? "done" : "failed",
-      completedAt,
-      result: execution.payload,
-      rendered: execution.rendered
-    });
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      status: completionStatus,
-      threadId: execution.threadId ?? null,
-      turnId: execution.turnId ?? null,
-      summary: execution.summary,
-      phase: completionStatus === "completed" ? "done" : "failed",
-      pid: null,
-      completedAt
-    });
-    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
-    return execution;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
-    const completedAt = nowIso2();
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...existing,
-      status: "failed",
-      phase: "failed",
-      errorMessage,
-      pid: null,
-      completedAt,
-      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
-    });
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      status: "failed",
-      phase: "failed",
-      pid: null,
-      errorMessage,
-      completedAt
-    });
-    throw error;
-  }
-}
-
-// src/lib/job-control.mjs
-var DEFAULT_MAX_STATUS_JOBS = 8;
-var DEFAULT_MAX_PROGRESS_LINES = 4;
-function sortJobsNewestFirst2(jobs) {
-  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
-}
-function getCurrentSessionId(options = {}) {
-  return options.env?.[SESSION_ID_ENV] ?? process.env[SESSION_ID_ENV] ?? null;
-}
-function filterJobsForCurrentSession(jobs, options = {}) {
-  const sessionId = getCurrentSessionId(options);
-  if (!sessionId) {
-    return jobs;
-  }
-  return jobs.filter((job) => job.sessionId === sessionId);
-}
-function getJobTypeLabel(job) {
-  if (typeof job.kindLabel === "string" && job.kindLabel) {
-    return job.kindLabel;
-  }
-  if (job.kind === "adversarial-review") {
-    return "adversarial-review";
-  }
-  if (job.jobClass === "review") {
-    return "review";
-  }
-  if (job.jobClass === "task") {
-    return "task";
-  }
-  if (job.kind === "review") {
-    return "review";
-  }
-  if (job.kind === "task") {
-    return "task";
-  }
-  return "job";
-}
-function stripLogPrefix(line) {
-  return line.replace(/^\[[^\]]+\]\s*/, "").trim();
-}
-function isProgressBlockTitle(line) {
-  return ["Final output", "Assistant message", "Reasoning summary", "Review output"].includes(line) || /^Subagent .+ message$/.test(line) || /^Subagent .+ reasoning summary$/.test(line);
-}
-function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_LINES) {
-  if (!logFile || !fs10.existsSync(logFile)) {
-    return [];
-  }
-  const lines = fs10.readFileSync(logFile, "utf8").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).filter((line) => line.startsWith("[")).map(stripLogPrefix).filter((line) => line && !isProgressBlockTitle(line));
-  return lines.slice(-maxLines);
-}
-function formatElapsedDuration(startValue, endValue = null) {
-  const start = Date.parse(startValue ?? "");
-  if (!Number.isFinite(start)) {
-    return null;
-  }
-  const end = endValue ? Date.parse(endValue) : Date.now();
-  if (!Number.isFinite(end) || end < start) {
-    return null;
-  }
-  const totalSeconds = Math.max(0, Math.round((end - start) / 1e3));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor(totalSeconds % 3600 / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-  return `${seconds}s`;
-}
-function looksLikeVerificationCommand2(line) {
-  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
-    line
-  );
-}
-function inferLegacyJobPhase(job, progressPreview = []) {
-  switch (job.status) {
-    case "queued":
-      return "queued";
-    case "cancelled":
-      return "cancelled";
-    case "failed":
-      return "failed";
-    case "completed":
-      return "done";
-    default:
-      break;
-  }
-  for (let index = progressPreview.length - 1; index >= 0; index -= 1) {
-    const line = progressPreview[index].toLowerCase();
-    if (line.startsWith("starting codex") || line.startsWith("thread ready") || line.startsWith("turn started")) {
-      return "starting";
-    }
-    if (line.startsWith("reviewer started") || line.includes("review mode")) {
-      return "reviewing";
-    }
-    if (line.startsWith("searching:") || line.startsWith("calling ") || line.startsWith("running tool:")) {
-      return "investigating";
-    }
-    if (line.startsWith("starting collaboration tool:")) {
-      return "investigating";
-    }
-    if (line.startsWith("running command:")) {
-      return looksLikeVerificationCommand2(line) ? "verifying" : job.jobClass === "review" ? "reviewing" : "investigating";
-    }
-    if (line.startsWith("command completed:")) {
-      return looksLikeVerificationCommand2(line) ? "verifying" : "running";
-    }
-    if (line.startsWith("applying ") || line.startsWith("file changes ")) {
-      return "editing";
-    }
-    if (line.startsWith("turn completed")) {
-      return "finalizing";
-    }
-    if (line.startsWith("codex error:") || line.startsWith("failed:")) {
-      return "failed";
-    }
-  }
-  return job.jobClass === "review" ? "reviewing" : "running";
-}
-function enrichJob(job, options = {}) {
-  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
-  const enriched = {
-    ...job,
-    kindLabel: getJobTypeLabel(job),
-    progressPreview: job.status === "queued" || job.status === "running" || job.status === "failed" ? readJobProgressPreview(job.logFile, maxProgressLines) : [],
-    elapsed: formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? null),
-    duration: job.status === "completed" || job.status === "failed" || job.status === "cancelled" ? formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? job.updatedAt) : null
-  };
-  return {
-    ...enriched,
-    phase: enriched.phase ?? inferLegacyJobPhase(enriched, enriched.progressPreview)
-  };
-}
-function readStoredJob(workspaceRoot, jobId) {
-  const jobFile = resolveJobFile(workspaceRoot, jobId);
-  if (!fs10.existsSync(jobFile)) {
-    return null;
-  }
-  return readJobFile(jobFile);
-}
-function matchJobReference(jobs, reference, predicate = () => true) {
-  const filtered = jobs.filter(predicate);
-  if (!reference) {
-    return filtered[0] ?? null;
-  }
-  const exact = filtered.find((job) => job.id === reference);
-  if (exact) {
-    return exact;
-  }
-  const byThread = filtered.find((job) => job.threadId && job.threadId === reference);
-  if (byThread) {
-    return byThread;
-  }
-  const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
-  if (prefixMatches.length === 1) {
-    return prefixMatches[0];
-  }
-  if (prefixMatches.length > 1) {
-    throw new CliError(`Job reference "${reference}" is ambiguous. Use a longer job id.`, {
-      class: "validation",
-      code: "AMBIGUOUS_JOB_REFERENCE",
-      retryable: false
-    });
-  }
-  throw new CliError(`No job found for "${reference}".`, {
-    class: "not_found",
-    code: "JOB_NOT_FOUND",
-    retryable: false,
-    suggestion: "Run `status` to list known jobs."
-  });
-}
-function isResultTerminalJob(job) {
-  return job.status === "completed" || job.status === "failed" || job.status === "cancelled" || job.status === "orphaned";
-}
-function buildStatusSnapshot(cwd, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getConfig(workspaceRoot);
-  const allJobs = listJobs(workspaceRoot);
-  const jobs = sortJobsNewestFirst2(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
-  const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
-  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
-  const running = jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => enrichJob(job, { maxProgressLines }));
-  const latestFinishedRaw = jobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
-  const latestFinished = latestFinishedRaw ? enrichJob(latestFinishedRaw, { maxProgressLines }) : null;
-  const recent = (options.all ? jobs : jobs.slice(0, maxJobs)).filter((job) => job.status !== "queued" && job.status !== "running" && job.id !== latestFinished?.id).map((job) => enrichJob(job, { maxProgressLines }));
-  return {
-    workspaceRoot,
-    config,
-    sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
-    running,
-    latestFinished,
-    recent,
-    needsReview: Boolean(config.stopReviewGate)
-  };
-}
-function buildSingleJobSnapshot(cwd, reference, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
-  const selected = matchJobReference(jobs, reference);
-  if (!selected) {
-    throw new CliError(`No job found for "${reference}".`, {
-      class: "not_found",
-      code: "JOB_NOT_FOUND",
-      retryable: false,
-      suggestion: "Run `status` to inspect known jobs."
-    });
-  }
-  return {
-    workspaceRoot,
-    job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
-  };
-}
-function resolveResultJob(cwd, reference) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst2(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
-  if (reference) {
-    const activeMatch = jobs.find(
-      (job) => (job.status === "queued" || job.status === "running") && (job.id === reference || job.id.startsWith(reference) || job.threadId === reference)
-    );
-    if (activeMatch) {
-      throw new CliError(`Job ${activeMatch.id} is still ${activeMatch.status}.`, {
-        class: "conflict",
-        code: "JOB_NOT_FINISHED",
-        retryable: false,
-        suggestion: `Check \`status ${activeMatch.id} --wait\` and try again once it finishes.`
-      });
-    }
-  }
-  const selected = matchJobReference(
-    jobs,
-    reference,
-    isResultTerminalJob
-  );
-  if (selected) {
-    return { workspaceRoot, job: selected };
-  }
-  if (reference) {
-    throw new CliError(`No finished job found for "${reference}".`, {
-      class: "not_found",
-      code: "JOB_NOT_FOUND",
-      retryable: false,
-      suggestion: "Run `status` to inspect active jobs."
-    });
-  }
-  throw new CliError("No finished Codex jobs found for this repository yet.", {
-    class: "not_found",
-    code: "NO_FINISHED_JOBS",
-    retryable: false
-  });
-}
-function resolveCancelableJob(cwd, reference, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
-  const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
-  if (reference) {
-    const selected = matchJobReference(activeJobs, reference);
-    if (!selected) {
-      throw new CliError(`No active job found for "${reference}".`, {
-        class: "not_found",
-        code: "ACTIVE_JOB_NOT_FOUND",
-        retryable: false
-      });
-    }
-    return { workspaceRoot, job: selected };
-  }
-  const sessionScopedActiveJobs = filterJobsForCurrentSession(activeJobs, options);
-  if (sessionScopedActiveJobs.length === 1) {
-    return { workspaceRoot, job: sessionScopedActiveJobs[0] };
-  }
-  if (sessionScopedActiveJobs.length > 1) {
-    throw new CliError("Multiple Codex jobs are active.", {
-      class: "validation",
-      code: "AMBIGUOUS_CANCEL",
-      retryable: false,
-      suggestion: "Pass a job id to `cancel`."
-    });
-  }
-  if (getCurrentSessionId(options)) {
-    throw new CliError("No active Codex jobs to cancel for this session.", {
-      class: "not_found",
-      code: "NO_ACTIVE_JOBS",
-      retryable: false
-    });
-  }
-  throw new CliError("No active Codex jobs to cancel.", {
-    class: "not_found",
-    code: "NO_ACTIVE_JOBS",
-    retryable: false
-  });
 }
 
 // src/lib/render.mjs
@@ -8116,6 +9034,7 @@ function renderSetupReport(report) {
     `- npm: ${report.npm.detail}`,
     `- codex: ${report.codex.detail}`,
     `- auth: ${report.auth.detail}`,
+    `- backend: ${report.active_backend ?? "unknown"}`,
     `- session runtime: ${report.sessionRuntime.label}`,
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
@@ -8388,748 +9307,15 @@ function renderCancelReport(job) {
 `;
 }
 
-// src/lib/session-log.mjs
-import fs11 from "node:fs";
-import path9 from "node:path";
-import os5 from "node:os";
-import { spawnSync as spawnSync3 } from "node:child_process";
-var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
-function resolveSessionDir(configDir) {
-  const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os5.homedir());
-  fs11.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-function initSession(sessionDir, threadId) {
-  fs11.mkdirSync(sessionDir, { recursive: true });
-  const ndjsonPath = path9.join(sessionDir, `${threadId}.ndjson`);
-  const eventsPath = path9.join(sessionDir, `${threadId}.events`);
-  fs11.writeFileSync(ndjsonPath, "", { flag: "a" });
-  fs11.writeFileSync(eventsPath, "", { flag: "a" });
-  return { ndjsonPath, eventsPath, sessionDir, threadId };
-}
-function findSession(sessionDir, threadId) {
-  const ndjsonPath = path9.join(sessionDir, `${threadId}.ndjson`);
-  const eventsPath = path9.join(sessionDir, `${threadId}.events`);
-  if (!fs11.existsSync(ndjsonPath)) {
-    return null;
-  }
-  return { ndjsonPath, eventsPath, sessionDir, threadId };
-}
-function logNdjson(session, tag, method, data) {
-  const entry = {
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    tag,
-    method: method ?? null,
-    threadId: session.threadId,
-    data: data ?? {}
-  };
-  try {
-    fs11.appendFileSync(session.ndjsonPath, JSON.stringify(entry) + "\n");
-  } catch {
-  }
-}
-function logEvent(session, formattedBlock) {
-  try {
-    fs11.appendFileSync(session.eventsPath, formattedBlock + "\n");
-  } catch {
-  }
-}
-function writeDiff(session, diffContent) {
-  const diffPath = path9.join(session.sessionDir, `${session.threadId}.diff`);
-  try {
-    fs11.writeFileSync(diffPath, diffContent);
-  } catch {
-  }
-  return diffPath;
-}
-function writePlan(session, planText) {
-  const planPath = path9.join(session.sessionDir, `${session.threadId}.plan.md`);
-  try {
-    fs11.writeFileSync(planPath, planText);
-  } catch {
-  }
-  return planPath;
-}
-function writeReview(session, reviewData) {
-  const reviewPath = path9.join(session.sessionDir, `${session.threadId}.review.json`);
-  try {
-    fs11.writeFileSync(reviewPath, JSON.stringify(reviewData, null, 2));
-  } catch {
-  }
-  return reviewPath;
-}
-function captureGitSnapshot(cwd) {
-  const isoTimestamp = (/* @__PURE__ */ new Date()).toISOString();
-  try {
-    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
-    if (headResult.status !== 0 || !headResult.stdout) {
-      return { headSha: null, porcelain: null, isoTimestamp };
-    }
-    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
-    return {
-      headSha: headResult.stdout.trim(),
-      porcelain: statusResult.status === 0 ? statusResult.stdout ?? "" : "",
-      isoTimestamp
-    };
-  } catch {
-    return { headSha: null, porcelain: null, isoTimestamp };
-  }
-}
-function diffGitSnapshot(cwd, snapshot) {
-  if (!snapshot || !snapshot.headSha) {
-    return { commits: [], currentHeadSha: null, lastOkHeadSha: null, dirtyFiles: [], launchedAtIso: snapshot?.isoTimestamp ?? null };
-  }
-  let commits = [];
-  let currentHeadSha = null;
-  let dirtyFiles = [];
-  try {
-    const logResult = spawnSync3(
-      "git",
-      ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
-      { cwd, encoding: "utf8", timeout: 1e4 }
-    );
-    if (logResult.status === 0 && logResult.stdout) {
-      commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
-    }
-    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
-    if (headResult.status === 0 && headResult.stdout) {
-      currentHeadSha = headResult.stdout.trim();
-    }
-    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
-    if (statusResult.status === 0 && statusResult.stdout) {
-      dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
-    }
-  } catch {
-  }
-  return {
-    commits,
-    currentHeadSha,
-    lastOkHeadSha: snapshot.headSha,
-    dirtyFiles,
-    launchedAtIso: snapshot.isoTimestamp ?? null
-  };
-}
-function captureGitDiff(cwd, session) {
-  const numstatResult = spawnSync3("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
-  const fullResult = spawnSync3("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
-  const untrackedFiles = getUntrackedFileStats(cwd);
-  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles);
-  const diffPath = writeDiff(session, diffContent);
-  const numstatOutput = numstatResult.stdout || "";
-  const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
-  const summary = summarizeNumstat(files);
-  return { diffStat: summary, files: files.map(formatFileStat), diffPath };
-}
-function getUntrackedFileStats(cwd) {
-  try {
-    const result = spawnSync3(
-      "git",
-      ["ls-files", "--others", "--exclude-standard", "-z"],
-      { cwd, encoding: "utf8", timeout: 1e4 }
-    );
-    if (result.status !== 0 || !result.stdout) {
-      return [];
-    }
-    return result.stdout.split("\0").filter(Boolean).map((fileName) => buildUntrackedFileStat(cwd, fileName)).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-function buildUntrackedFileStat(cwd, fileName) {
-  const absolutePath = resolveInsideCwd(cwd, fileName);
-  if (!absolutePath) {
-    return null;
-  }
-  let sizeBytes = null;
-  let adds = 0;
-  try {
-    const stat = fs11.lstatSync(absolutePath);
-    sizeBytes = stat.size;
-    if (stat.isFile() && stat.size <= MAX_UNTRACKED_STAT_BYTES) {
-      const content = fs11.readFileSync(absolutePath);
-      if (!looksBinary(content)) {
-        adds = countTextLines(content);
-      }
-    }
-  } catch {
-  }
-  return {
-    fileName: displayGitPath(fileName),
-    adds,
-    dels: 0,
-    status: "A",
-    untracked: true,
-    sizeBytes
-  };
-}
-function resolveInsideCwd(cwd, fileName) {
-  const root = path9.resolve(cwd);
-  const absolutePath = path9.resolve(root, fileName);
-  if (absolutePath !== root && !absolutePath.startsWith(root + path9.sep)) {
-    return null;
-  }
-  return absolutePath;
-}
-function looksBinary(content) {
-  return content.subarray(0, Math.min(content.length, 8e3)).includes(0);
-}
-function countTextLines(content) {
-  if (content.length === 0) {
-    return 0;
-  }
-  const text = content.toString("utf8");
-  const newlineCount = text.split("\n").length - 1;
-  return text.endsWith("\n") ? newlineCount : newlineCount + 1;
-}
-function displayGitPath(fileName) {
-  return fileName.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
-}
-function appendUntrackedDiffMarkers(diffContent, untrackedFiles) {
-  if (untrackedFiles.length === 0) {
-    return diffContent;
-  }
-  const marker = formatUntrackedDiffMarkers(untrackedFiles);
-  if (!diffContent) {
-    return marker;
-  }
-  return `${diffContent}${diffContent.endsWith("\n") ? "" : "\n"}${marker}`;
-}
-function formatUntrackedDiffMarkers(untrackedFiles) {
-  const lines = ["# Untracked files omitted from git diff HEAD:"];
-  for (const file of untrackedFiles) {
-    const size = Number.isFinite(file.sizeBytes) ? `, ${file.sizeBytes} bytes` : "";
-    lines.push(`diff --git a/${file.fileName} b/${file.fileName}`);
-    lines.push("new file mode 100644");
-    lines.push("--- /dev/null");
-    lines.push(`+++ b/${file.fileName}`);
-    lines.push("@@ untracked file @@");
-    lines.push(`+<untracked file: ${file.fileName}${size}; content omitted from session diff>`);
-  }
-  return `${lines.join("\n")}
-`;
-}
-function parseGitNumstat(output) {
-  const files = [];
-  for (const line of output.split("\n")) {
-    const match = line.match(/^(\d+|-)\t(\d+|-)\t(.+)/);
-    if (match) {
-      const adds = match[1] === "-" ? 0 : parseInt(match[1]);
-      const dels = match[2] === "-" ? 0 : parseInt(match[2]);
-      const fileName = match[3].trim();
-      files.push({ fileName, adds, dels });
-    }
-  }
-  return files;
-}
-function formatFileStat({ fileName, adds, dels, status = null }) {
-  const prefix = fileName.includes("=>") ? "R" : "M";
-  if (status) {
-    return `${status} ${fileName} (+${adds} -${dels})`;
-  }
-  return `${prefix} ${fileName} (+${adds} -${dels})`;
-}
-function summarizeNumstat(files) {
-  const totalAdds = files.reduce((sum, f) => sum + f.adds, 0);
-  const totalDels = files.reduce((sum, f) => sum + f.dels, 0);
-  return `${files.length} files | +${totalAdds} -${totalDels}`;
-}
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
-}
-function formatCwdFlag(cwd) {
-  return cwd ? ` --cwd ${shellQuote(cwd)}` : "";
-}
-function commandPrefix(scriptPath, subcommand, cwd = null) {
-  return `node ${shellQuote(scriptPath)} ${subcommand}${formatCwdFlag(cwd)}`;
-}
-function resultActionLine(scriptPath, jobId, indent = "    detail: ", cwd = null) {
-  return jobId ? `${indent}${commandPrefix(scriptPath, "result", cwd)} ${jobId}` : `${indent}${commandPrefix(scriptPath, "result", cwd)}    # rerun with the specific job id from status`;
-}
-function cancelActionLine(scriptPath, jobId, indent = "    cancel: ", cwd = null) {
-  return jobId ? `${indent}${commandPrefix(scriptPath, "cancel", cwd)} ${jobId}` : `${indent}${commandPrefix(scriptPath, "cancel", cwd)}    # rerun with the specific job id from status`;
-}
-function jobCommandCwd(cwd, stateCwd) {
-  return stateCwd ?? cwd;
-}
-function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
-  const jobCwd = jobCommandCwd(cwd, stateCwd);
-  const lines = [
-    `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
-    `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
-    `  diff: ${diffPath}`
-  ];
-  if (files && files.length > 0) {
-    lines.push("  files:");
-    for (const f of files.slice(0, 20)) {
-      lines.push(`    ${f}`);
-    }
-  }
-  lines.push("  actions:");
-  lines.push(`    review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`);
-  lines.push(`    revise: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<message>"`);
-  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", jobCwd));
-  return lines.join("\n");
-}
-function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, failingStage, cwd = null, stateCwd = null }) {
-  const lines = ["  actions:"];
-  const see = (anchor) => `    see: skill/references/error-recovery.md#${anchor}`;
-  const jobCwd = jobCommandCwd(cwd, stateCwd);
-  if (origin === "upstream:response-chain-lost") {
-    lines.push(
-      `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<prompt rebased on last good sha>"    # do NOT send on the dead thread`,
-      `    inspect:  git log --oneline <launch-iso>..HEAD    # audit what committed before the chain loss`,
-      resultActionLine(scriptPath, jobId, "    log:     ", jobCwd),
-      see("response-chain-lost")
-    );
-    return lines;
-  }
-  if (origin === "upstream:auth") {
-    lines.push(
-      "    reauth:  run `codex login` (or reauth your upstream proxy if one is in the path)",
-      "    do-not:  retry the same thread \u2014 auth is deterministic; the 401 will repeat",
-      resultActionLine(scriptPath, jobId, "    log:    ", jobCwd),
-      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
-      see("upstream-auth-401")
-    );
-    return lines;
-  }
-  if (origin === "upstream:invalid-request") {
-    lines.push(
-      `    inspect: ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # read the upstream error.message; rebuild the prompt`,
-      `    new-task: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default "<fixed prompt>"`,
-      see("upstream-invalid-request")
-    );
-    return lines;
-  }
-  if (origin === "idle") {
-    lines.push(
-      `    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
-      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
-      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
-      see("idle-timeout")
-    );
-    return lines;
-  }
-  if (origin === "upstream:compact-proxy") {
-    lines.push(
-      "    narrow:  split the task, or trim required-reads before resending (the upstream compact proxy ran out of budget mid-turn)",
-      `    resume:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<shorter follow-up>"`,
-      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
-      see("compact-proxy-502")
-    );
-    return lines;
-  }
-  if (origin === "upstream:transport") {
-    lines.push(
-      `    retry:   ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<same prompt>"    # workspace unchanged; prior reasoning is lost`,
-      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
-      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
-      see("upstream-transport-drop")
-    );
-    return lines;
-  }
-  if (typeof origin === "string" && origin.startsWith("pipeline:")) {
-    const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
-    lines.push(
-      `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
-      `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
-      see("pipeline-stage-timeout")
-    );
-    return lines;
-  }
-  if (typeof origin === "string" && origin.startsWith("bridge")) {
-    lines.push(
-      resultActionLine(scriptPath, jobId, "    log:    ", jobCwd),
-      cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd),
-      see("bridge-unhandled-exit")
-    );
-    return lines;
-  }
-  if (errorCode === "Unauthorized") {
-    lines.push(
-      "    login:  codex login",
-      `    retry:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
-      see("unauthorized")
-    );
-    return lines;
-  }
-  if (errorCode === "ContextWindowExceeded") {
-    lines.push(
-      `    new:    ${commandPrefix(scriptPath, "task", cwd)} "<shorter prompt>"    # context window full; do not retry the same turn`,
-      resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
-      see("context-window-exceeded")
-    );
-    return lines;
-  }
-  if (errorCode === "SandboxError") {
-    lines.push(
-      "    policy: set config.sandbox_policy: danger-full-access (or re-run with --write)",
-      `    retry:  ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
-      see("sandbox-denial")
-    );
-    return lines;
-  }
-  lines.push(
-    `    retry: ${commandPrefix(scriptPath, "send", cwd)} ${threadId} "<revised prompt>"`,
-    resultActionLine(scriptPath, jobId, "    log:   ", jobCwd),
-    cancelActionLine(scriptPath, jobId, "    cancel: ", jobCwd)
-  );
-  return lines;
-}
-function formatErrorEvent(session, { errorCode, message, phase, origin = "turn", failingStage = null, scriptPath, jobId = null, upstreamRequestId = null, cwd = null, stateCwd = null }) {
-  const lines = [
-    `[ERROR] ${session.threadId} failed | ${errorCode}`,
-    `  ${message}`,
-    `  origin: ${origin}`
-  ];
-  if (failingStage) {
-    lines.push(`  failing_stage: ${failingStage}`);
-  }
-  if (upstreamRequestId) {
-    lines.push(`  upstream_request_id: ${upstreamRequestId}`);
-  }
-  lines.push(`  phase: ${phase || "unknown"}`);
-  lines.push(...buildActionsBlock({
-    origin,
-    errorCode,
-    scriptPath,
-    threadId: session.threadId,
-    jobId,
-    failingStage,
-    cwd,
-    stateCwd
-  }));
-  return lines.join("\n");
-}
-function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null, cwd = null, stateCwd = null }) {
-  const jobCwd = jobCommandCwd(cwd, stateCwd);
-  const lines = [`[PARTIAL] ${session.threadId} commits=[${commits.join(",")}]`];
-  if (currentHeadSha) lines.push(`  current_head: ${currentHeadSha}`);
-  if (lastOkHeadSha) lines.push(`  last_ok_head: ${lastOkHeadSha}`);
-  if (launchedAtIso) lines.push(`  launched_at: ${launchedAtIso}`);
-  if (dirtyFiles && dirtyFiles.length > 0) {
-    lines.push("  dirty:");
-    for (const f of dirtyFiles.slice(0, 20)) {
-      lines.push(`    - ${f}`);
-    }
-    if (dirtyFiles.length > 20) lines.push(`    ... and ${dirtyFiles.length - 20} more`);
-  }
-  if (scriptPath && jobId) {
-    lines.push(`  inspect: ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId}`);
-  }
-  return lines.join("\n");
-}
-function formatRetryingEvent(session, { attempt, maxAttempts, backoffMs, origin, strategy, errorCode, reason = null }) {
-  const lines = [
-    `[RETRYING] ${session.threadId} attempt ${attempt}/${maxAttempts} | origin=${origin} | strategy=${strategy} | backoff=${backoffMs}ms`
-  ];
-  if (errorCode) lines.push(`  last_error: ${errorCode}`);
-  if (reason) lines.push(`  reason: ${reason}`);
-  return lines.join("\n");
-}
-function formatHandoffEvent(session, { reason, origin, errorCode, upstreamRequestId, session: sessionInfo, artifacts, partial, prompt, retries = [], scriptPath, cwd = null, stateCwd = null }) {
-  const jobCwd = jobCommandCwd(cwd, stateCwd);
-  const lines = [
-    `[HANDOFF] ${session.threadId} reason=${reason} | origin=${origin}${errorCode ? ` | code=${errorCode}` : ""}`
-  ];
-  if (upstreamRequestId) lines.push(`  upstream_request_id: ${upstreamRequestId}`);
-  if (sessionInfo?.jobId) lines.push(`  job_id: ${sessionInfo.jobId}`);
-  if (sessionInfo?.threadId) lines.push(`  thread_id: ${sessionInfo.threadId}`);
-  if (artifacts) {
-    lines.push("  artifacts:");
-    if (artifacts.eventsPath) lines.push(`    events: ${artifacts.eventsPath}`);
-    if (artifacts.workerErrPath) lines.push(`    worker_err: ${artifacts.workerErrPath}`);
-    if (artifacts.diffPath) lines.push(`    diff: ${artifacts.diffPath}`);
-    if (artifacts.planPath) lines.push(`    plan: ${artifacts.planPath}`);
-    if (artifacts.reviewPath) lines.push(`    review: ${artifacts.reviewPath}`);
-  }
-  if (partial && Array.isArray(partial.commits) && partial.commits.length > 0) {
-    lines.push(`  partial: commits=[${partial.commits.join(",")}] head=${partial.currentHeadSha ?? "?"} since=${partial.launchedAtIso ?? "?"}`);
-  }
-  if (prompt?.promptFilePath) {
-    lines.push(`  prompt_file: ${prompt.promptFilePath}`);
-  }
-  if (retries && retries.length > 0) {
-    lines.push(`  retries: ${retries.length} attempts logged`);
-  }
-  lines.push("  next:");
-  if (scriptPath && sessionInfo?.jobId) {
-    lines.push(`    read:     ${commandPrefix(scriptPath, "result", jobCwd)} ${sessionInfo.jobId} --json    # full handoff envelope under .error.handoff`);
-  }
-  if (partial?.lastOkHeadSha || partial?.currentHeadSha) {
-    lines.push(`    audit:    git log --oneline ${partial.lastOkHeadSha ?? partial.currentHeadSha}..HEAD`);
-  }
-  lines.push(`    relaunch: ${commandPrefix(scriptPath, "task", cwd)} --json --mode default --prompt-file <rebased prompt>    # seed with last commit + remaining scope`);
-  lines.push("    see: skill/references/orchestration-flows.md#recovering-from-upstream-state-loss");
-  return lines.join("\n");
-}
-function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCount, missingItems, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
-  const jobCwd = jobCommandCwd(cwd, stateCwd);
-  const lines = [
-    `[INCOMPLETE] ${session.threadId} | ${diffStat}`,
-    `  diff: ${diffPath}`,
-    `  review: ${verdict} (${findingCount} findings)`
-  ];
-  if (missingItems && missingItems.length > 0) {
-    lines.push("  missing:");
-    for (const item of missingItems) {
-      lines.push(`    - ${item}`);
-    }
-  }
-  lines.push("  actions:");
-  lines.push(`    fix:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "Complete the missing items"`);
-  lines.push(`    new:  ${commandPrefix(scriptPath, "task", cwd)} --write "..."`);
-  lines.push(resultActionLine(scriptPath, jobId, "    detail: ", jobCwd));
-  return lines.join("\n");
-}
-function formatQuestionEvent(session, { requestId, questions, scriptPath, cwd = null }) {
-  const lines = [`[QUESTION] ${session.threadId} ${requestId}`];
-  for (const q of questions || []) {
-    lines.push(`  "${q.question}"`);
-    if (q.options && q.options.length > 0) {
-      const letters = "abcdefghijklmnopqrstuvwxyz";
-      for (let i = 0; i < q.options.length; i++) {
-        const opt = q.options[i];
-        lines.push(`  (${letters[i]}) ${opt.label} \u2014 ${opt.description}`);
-      }
-      if (q.isOther) {
-        lines.push("  [other: custom answer allowed]");
-      }
-    }
-    lines.push("respond:");
-    if (q.options && q.options.length > 0) {
-      for (const opt of q.options) {
-        lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer ${shellQuote(opt.label)}`);
-      }
-    } else {
-      lines.push(`  ${commandPrefix(scriptPath, "respond", cwd)} ${requestId} --question-id ${q.id} --answer "<answer>"`);
-    }
-  }
-  return lines.join("\n");
-}
-function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPath, cwd = null }) {
-  const lines = [`[PLAN] ${session.threadId} ${turnId}`];
-  lines.push(`  ${planTitle || "(untitled plan)"}`);
-  if (steps && steps.length > 0) {
-    for (const step of steps.slice(0, 10)) {
-      lines.push(`  ${step.number ?? "-"}. [ ] ${step.text}`);
-    }
-    if (steps.length > 10) {
-      lines.push(`  ... and ${steps.length - 10} more steps`);
-    }
-  }
-  lines.push(`  plan: ${planPath}`);
-  lines.push("actions:");
-  lines.push(`  approve: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} --mode default "Implement the plan."`);
-  lines.push(`  revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<revision instructions>"`);
-  return lines.join("\n");
-}
-function formatConfirmedEvent(session, { requestId }) {
-  return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
-}
-function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null, cwd = null }) {
-  const lines = [
-    `[HEARTBEAT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | pid=${pid ?? "?"}`
-  ];
-  const itemLine = lastItem ? `  lastItem: ${lastItem}${Number.isFinite(lastItemAgeMs) ? ` (age ${fmtSeconds(lastItemAgeMs)})` : ""}` : "  lastItem: (none yet)";
-  lines.push(itemLine);
-  if (Number.isFinite(budgetRemainingMs) && budgetRemainingMs > 0) {
-    lines.push(`  budget: ${fmtSeconds(budgetRemainingMs)} remaining`);
-  }
-  if (scriptPath && jobId) {
-    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
-  }
-  return lines.join("\n");
-}
-function fmtSeconds(ms) {
-  const s = Math.max(0, Math.round(ms / 1e3));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return rem === 0 ? `${m}m` : `${m}m${String(rem).padStart(2, "0")}s`;
-}
-var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE"]);
-var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT"]);
-function formatTailCommand({ scriptPath, jobId, timeoutMs = 18e5, exclude = DEFAULT_MONITOR_EXCLUDE, cwd = null }) {
-  const excludeClause = exclude && exclude.length > 0 ? ` --exclude ${Array.from(exclude).join(",")}` : "";
-  return `${commandPrefix(scriptPath, "events", cwd)} ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
-}
-function formatCheckpointEvent(session, {
-  elapsedMs,
-  phase,
-  intervalMs,
-  pid,
-  jobId = null,
-  lastAssistantMessage = null,
-  tools = [],
-  commits = [],
-  diffStat = null,
-  filesChangedSinceStart = null,
-  scriptPath = null,
-  cwd = null
-}) {
-  const head = `[CHECKPOINT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | interval=${fmtSeconds(intervalMs)} | pid=${pid ?? "?"}`;
-  const lines = [head];
-  if (lastAssistantMessage) {
-    const MAX_ASSISTANT_MESSAGE_CHARS = 8e3;
-    const raw = String(lastAssistantMessage).trim();
-    if (raw) {
-      const truncated = raw.length > MAX_ASSISTANT_MESSAGE_CHARS ? raw.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + `
-\u2026 (truncated, ${raw.length - MAX_ASSISTANT_MESSAGE_CHARS} more chars)` : raw;
-      lines.push("  assistant:");
-      for (const line of truncated.split("\n")) {
-        lines.push(`    ${line}`);
-      }
-    } else {
-      lines.push("  assistant: (no new assistant message this interval)");
-    }
-  } else {
-    lines.push("  assistant: (no new assistant message this interval)");
-  }
-  lines.push(`  tools (${tools.length}):`);
-  if (tools.length === 0) {
-    lines.push("    (none)");
-  } else {
-    for (const t of tools) {
-      lines.push(`    - ${t.type}${t.summary ? `: ${t.summary}` : ""}`);
-    }
-  }
-  if (commits && commits.length > 0) {
-    lines.push(`  commits (${commits.length}):`);
-    for (const c of commits) {
-      lines.push(`    - ${c.sha} ${c.subject}`);
-    }
-  }
-  if (diffStat) {
-    lines.push(`  diff-since-last-checkpoint: ${diffStat}`);
-  }
-  if (filesChangedSinceStart) {
-    lines.push(`  files-changed-since-turn-start: ${filesChangedSinceStart}`);
-  }
-  if (scriptPath && jobId) {
-    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
-  }
-  return lines.join("\n");
-}
-function formatDirectivesEvent(session, {
-  mode,
-  effort,
-  sandbox,
-  approval = null,
-  quiet = false,
-  skipMetaSkills = false,
-  pipelineEnabled = [],
-  model = null
-}) {
-  const parts = [
-    `mode=${mode}`,
-    `effort=${effort}`,
-    `sandbox=${sandbox}`
-  ];
-  if (approval) parts.push(`approval=${approval}`);
-  parts.push(`quiet=${quiet ? "true" : "false"}`);
-  parts.push(`skip_meta_skills=${skipMetaSkills ? "true" : "false"}`);
-  parts.push(`pipeline=${Array.isArray(pipelineEnabled) && pipelineEnabled.length > 0 ? pipelineEnabled.join(",") : "none"}`);
-  if (model) parts.push(`model=${model}`);
-  return `[DIRECTIVES] ${session.threadId} | ${parts.join(" | ")}`;
-}
-function formatPipelineEvent(session, { stage, suffix, detail }) {
-  const head = suffix ? `PIPELINE:${stage}:${suffix}` : `PIPELINE:${stage}`;
-  const ts = (/* @__PURE__ */ new Date()).toISOString().slice(11, 19);
-  return detail ? `[${head}] ${ts} ${detail}` : `[${head}] ${ts}`;
-}
-function formatWarningEvent(session, { reason, family, threshold, sampleCommand, turnInterrupted }) {
-  const lines = [
-    `[WARNING] ${session.threadId} ${reason}`,
-    `  family: ${family}`,
-    `  threshold: ${threshold} consecutive failures`
-  ];
-  if (sampleCommand) lines.push(`  sample: ${sampleCommand.slice(0, 120)}`);
-  lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
-  return lines.join("\n");
-}
-
-// src/lib/pending-requests.mjs
-import fs12 from "node:fs";
-import path10 from "node:path";
-var DEFAULT_QUESTION_TIMEOUT_MS = 3e5;
-var POLL_INTERVAL_MS = 500;
-function writePendingRequest(sessionDir, threadId, entry) {
-  const filePath = path10.join(sessionDir, `${threadId}.pending.json`);
-  fs12.writeFileSync(filePath, JSON.stringify(entry, null, 2));
-  return filePath;
-}
-function readPendingRequestById(sessionDir, requestId) {
-  let files;
-  try {
-    files = fs12.readdirSync(sessionDir).filter((f) => f.endsWith(".pending.json"));
-  } catch {
-    return null;
-  }
-  for (const file of files) {
-    try {
-      const content = JSON.parse(fs12.readFileSync(path10.join(sessionDir, file), "utf8"));
-      if (content.internalId === requestId) {
-        return content;
-      }
-    } catch {
-    }
-  }
-  return null;
-}
-function clearPendingRequest(sessionDir, threadId) {
-  const filePath = path10.join(sessionDir, `${threadId}.pending.json`);
-  try {
-    fs12.unlinkSync(filePath);
-  } catch {
-  }
-}
-function writeResponseFile(sessionDir, threadId, payload) {
-  const filePath = path10.join(sessionDir, `${threadId}.response.json`);
-  fs12.writeFileSync(filePath, JSON.stringify(payload, null, 2));
-  return filePath;
-}
-function readResponseFile(sessionDir, threadId) {
-  const filePath = path10.join(sessionDir, `${threadId}.response.json`);
-  try {
-    const content = JSON.parse(fs12.readFileSync(filePath, "utf8"));
-    fs12.unlinkSync(filePath);
-    return content;
-  } catch {
-    return null;
-  }
-}
-function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIMEOUT_MS, expectedRequestId = null) {
-  return new Promise((resolve) => {
-    const deadline = Date.now() + timeoutMs;
-    const check = () => {
-      const response = readResponseFile(sessionDir, threadId);
-      if (response) {
-        if (expectedRequestId && response.requestId && response.requestId !== expectedRequestId) {
-        } else {
-          resolve(response);
-          return;
-        }
-      }
-      if (Date.now() >= deadline) {
-        resolve(null);
-        return;
-      }
-      setTimeout(check, POLL_INTERVAL_MS);
-    };
-    check();
-  });
-}
-
 // src/adapters/codex/pipeline.mjs
-import fs13 from "node:fs";
-import path11 from "node:path";
+import fs14 from "node:fs";
+import path12 from "node:path";
 var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;
 var STAGE_TIMEOUT_MS_DEFAULT = 3e5;
 function loadExecuteInstructions(rootDir) {
-  const p = path11.join(rootDir, "templates", "execute-instructions.md");
+  const p = path12.join(rootDir, "templates", "execute-instructions.md");
   try {
-    return fs13.readFileSync(p, "utf8");
+    return fs14.readFileSync(p, "utf8");
   } catch {
     return "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed.";
   }
@@ -9519,7 +9705,7 @@ function readCapturedDiffContent(diff) {
     return "";
   }
   try {
-    return fs13.readFileSync(diff.diffPath, "utf8");
+    return fs14.readFileSync(diff.diffPath, "utf8");
   } catch {
     return "";
   }
@@ -9714,8 +9900,8 @@ function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
 }
 
 // src/lib/update-check.mjs
-import fs14 from "node:fs";
-import path12 from "node:path";
+import fs15 from "node:fs";
+import path13 from "node:path";
 import os6 from "node:os";
 var DEFAULT_CACHE_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_FETCH_TIMEOUT_MS = 2500;
@@ -9724,12 +9910,12 @@ var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/relea
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
-  const root = pluginDataDir ? path12.join(pluginDataDir, "codex-bridge-update.json") : path12.join(os6.homedir(), ".codex-bridge", "update-cache.json");
+  const root = pluginDataDir ? path13.join(pluginDataDir, "codex-bridge-update.json") : path13.join(os6.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
   try {
-    const raw = fs14.readFileSync(cachePath(), "utf8");
+    const raw = fs15.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
     return parsed;
@@ -9740,8 +9926,8 @@ function readCache() {
 function writeCache(entry) {
   try {
     const p = cachePath();
-    fs14.mkdirSync(path12.dirname(p), { recursive: true });
-    fs14.writeFileSync(p, JSON.stringify(entry, null, 2));
+    fs15.mkdirSync(path13.dirname(p), { recursive: true });
+    fs15.writeFileSync(p, JSON.stringify(entry, null, 2));
     return true;
   } catch {
     return false;
@@ -9755,9 +9941,9 @@ function cacheLockPath() {
 }
 function removeStaleLock(lockPath, staleMs) {
   try {
-    const stat = fs14.statSync(lockPath);
+    const stat = fs15.statSync(lockPath);
     if (Date.now() - stat.mtimeMs <= staleMs) return false;
-    fs14.unlinkSync(lockPath);
+    fs15.unlinkSync(lockPath);
     return true;
   } catch (err) {
     return err?.code === "ENOENT";
@@ -9766,15 +9952,15 @@ function removeStaleLock(lockPath, staleMs) {
 function acquireCacheLock(staleMs) {
   const lockPath = cacheLockPath();
   try {
-    fs14.mkdirSync(path12.dirname(lockPath), { recursive: true });
+    fs15.mkdirSync(path13.dirname(lockPath), { recursive: true });
   } catch {
     return null;
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = fs14.openSync(lockPath, "wx");
+      const fd = fs15.openSync(lockPath, "wx");
       try {
-        fs14.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+        fs15.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
       } catch {
       }
       return { fd, lockPath };
@@ -9787,11 +9973,11 @@ function acquireCacheLock(staleMs) {
 }
 function releaseCacheLock(lock) {
   try {
-    fs14.closeSync(lock.fd);
+    fs15.closeSync(lock.fd);
   } catch {
   }
   try {
-    fs14.unlinkSync(lock.lockPath);
+    fs15.unlinkSync(lock.lockPath);
   } catch {
   }
 }
@@ -9938,7 +10124,7 @@ function formatUpdateNotice(result) {
 // src/codex-bridge.mjs
 function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
-    if (process9.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
+    if (process10.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
     if (detectJsonFlag(rawArgv)) return;
     if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
     if (subcommand === "version" || subcommand === "update") return;
@@ -9954,32 +10140,32 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path13.join(os7.homedir(), ".codex-bridge");
-    fs15.mkdirSync(logDir, { recursive: true });
-    const logFile = path13.join(logDir, "auto-update.log");
+    const logDir = path14.join(os7.homedir(), ".codex-bridge");
+    fs16.mkdirSync(logDir, { recursive: true });
+    const logFile = path14.join(logDir, "auto-update.log");
     try {
-      const stat = fs15.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs15.truncateSync(logFile, 0);
+      const stat = fs16.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs16.truncateSync(logFile, 0);
     } catch {
     }
-    const fd = fs15.openSync(logFile, "a");
+    const fd = fs16.openSync(logFile, "a");
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-      fs15.writeSync(fd, banner);
+      fs16.writeSync(fd, banner);
       const child = spawn3(
         "npx",
         ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
         {
           detached: true,
           stdio: ["ignore", fd, fd],
-          env: process9.env
+          env: process10.env
         }
       );
       child.on("error", () => {
         try {
-          fs15.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+          fs16.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
 `, "utf8");
         } catch {
         }
@@ -9987,19 +10173,19 @@ function spawnDetachedAutoApply(targetVersion) {
       child.unref();
     } finally {
       try {
-        fs15.closeSync(fd);
+        fs16.closeSync(fd);
       } catch {
       }
     }
   } catch {
   }
 }
-var SCRIPT_DIR = path13.dirname(fileURLToPath2(import.meta.url));
-var SCRIPT_PATH = path13.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs15.existsSync(path13.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path13.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path13.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path13.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path13.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var SCRIPT_DIR = path14.dirname(fileURLToPath2(import.meta.url));
+var SCRIPT_PATH = path14.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs16.existsSync(path14.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path14.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path14.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path14.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path14.join(ROOT_DIR, "templates", "plan-enforcement.md");
 function shellQuote2(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -10013,7 +10199,7 @@ var DEVELOPER_INSTRUCTIONS_FALLBACK = {
 function loadDeveloperInstructions(mode) {
   const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
   try {
-    return fs15.readFileSync(templatePath, "utf8");
+    return fs16.readFileSync(templatePath, "utf8");
   } catch {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
@@ -10051,7 +10237,7 @@ async function resolveCommandAdapter({
     metaBackend,
     taskMetadata,
     subagentType,
-    env: process9.env
+    env: process10.env
   });
 }
 function ensureCodexRuntimeAdapter(adapter2) {
@@ -10174,8 +10360,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path14 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path14}`.trim();
+      const path15 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path15}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -10239,12 +10425,12 @@ var COMMANDS = Object.freeze({
     ]
   },
   steer: {
-    synopsis: "steer <thread-id> <turn-id> [prompt or file.md]",
+    synopsis: "steer <thread-id> <turn-id> [--backend <name>] [prompt or file.md]",
     summary: "Send mid-turn guidance to an active Codex turn. Not valid for review/compaction turns. Both ids are UUIDs.",
     examples: ['codex-bridge steer 019d9a86-1c8a-7f41-8032-6c76bbe730a1 019d9a86-2012-7152-bcc9-228a263d286a "Focus on auth first"']
   },
   respond: {
-    synopsis: "respond <request-id> (--question-id <qid> --answer <answer> | --json-payload <json>) [--json]",
+    synopsis: "respond <request-id> [--backend <name>] (--question-id <qid> --answer <answer> | --json-payload <json>) [--json]",
     summary: "Answer a [QUESTION] emitted by Codex (requestUserInput).",
     examples: [
       'codex-bridge respond req-xyz --question-id q1 --answer "jwt"',
@@ -10485,17 +10671,17 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path13.resolve(process9.cwd(), options.cwd) : process9.cwd();
+  return options.cwd ? path14.resolve(process10.cwd(), options.cwd) : process10.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path13.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path14.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs15.existsSync(lockPath);
+  let lockExists = fs16.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -10506,7 +10692,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs15.writeFileSync(
+        fs16.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -10542,7 +10728,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs15.writeFileSync(
+      fs16.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -10555,7 +10741,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs15.rmSync(lockPath, { force: true });
+      fs16.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -10613,6 +10799,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const authStatus = await getCodexAuthStatus(cwd);
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
+  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -10634,7 +10821,9 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     npm: npmStatus,
     codex: codexStatus,
     auth: authStatus,
-    sessionRuntime: getSessionRuntimeStatus(process9.env, workspaceRoot),
+    active_backend: adapter2.name,
+    adapter_capabilities: adapter2.capabilities(),
+    sessionRuntime: getSessionRuntimeStatus(process10.env, workspaceRoot),
     reviewGateEnabled: reviewGate.enabled,
     reviewGateLockPath: reviewGate.lockPath,
     reviewGateLockExists: reviewGate.lockExists,
@@ -10729,7 +10918,7 @@ async function handleVersion(argv) {
   const payload = {
     version: BRIDGE_VERSION,
     schema_version: BRIDGE_SCHEMA_VERSION,
-    node_version: process9.version,
+    node_version: process10.version,
     codex: {
       available: codex.available,
       detail: codex.detail ?? null
@@ -11034,7 +11223,7 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 function getCurrentClaudeSessionId() {
-  return process9.env[SESSION_ID_ENV] ?? null;
+  return process10.env[SESSION_ID_ENV] ?? null;
 }
 function filterJobsForCurrentClaudeSession(jobs) {
   const sessionId = getCurrentClaudeSessionId();
@@ -11288,6 +11477,15 @@ async function executeReviewRun(request) {
 }
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.stateCwd ?? request.cwd);
+  const adapter2 = request.adapter ?? await resolveCommandAdapter({
+    cwd: request.cwd,
+    workspaceRoot,
+    backend: request.backend ?? null,
+    metaBackend: request.metaBackend ?? null,
+    taskMetadata: request.taskMetadata ?? null,
+    subagentType: request.subagentType ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
   ensureCodexAvailable(request.cwd);
   const taskMetadata = buildTaskRunMetadata({
     prompt: request.prompt,
@@ -11313,24 +11511,34 @@ async function executeTaskRun(request) {
       "MISSING_PROMPT"
     );
   }
-  const result = await runAppServerTurn(request.cwd, {
-    resumeThreadId,
-    prompt: request.prompt,
-    defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
+  const dispatch2 = await adapter2.dispatch(request.prompt, {
+    cwd: request.cwd,
+    jobId: request.jobId ?? null,
+    sessionDir: request.sessionDir ?? null,
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
-    sandboxPolicy: request.sandboxPolicy ?? null,
-    collaborationMode: request.collaborationMode ?? null,
-    turnTimeoutMs: request.turnTimeoutMs ?? null,
-    idleTimeoutMs: request.idleTimeoutMs ?? null,
-    onTurnStart: request.onTurnStart ?? null,
-    onItemCompleted: request.onItemCompleted ?? null,
-    onServerRequest: request.onServerRequest ?? null,
-    onProgress: request.onProgress,
-    persistThread: true,
-    threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
+    mode: request.write ? "default" : "read-only",
+    adapterOptions: {
+      turnOptions: {
+        resumeThreadId,
+        defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
+        model: request.model,
+        effort: request.effort,
+        sandbox: request.write ? "workspace-write" : "read-only",
+        sandboxPolicy: request.sandboxPolicy ?? null,
+        collaborationMode: request.collaborationMode ?? null,
+        turnTimeoutMs: request.turnTimeoutMs ?? null,
+        idleTimeoutMs: request.idleTimeoutMs ?? null,
+        onTurnStart: request.onTurnStart ?? null,
+        onItemCompleted: request.onItemCompleted ?? null,
+        onServerRequest: request.onServerRequest ?? null,
+        onProgress: request.onProgress,
+        persistThread: true,
+        threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
+      }
+    }
   });
+  const result = dispatch2.rawResult ?? dispatch2;
   const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.error?.message ?? result.stderr ?? "";
   const rendered = renderTaskResult(
@@ -11452,6 +11660,8 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
     kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
     write,
+    backend: options.backend ?? null,
+    adapter_capabilities: options.adapterCapabilities ?? null,
     ...options.worktree ? {
       registryTaskId: options.id ?? null,
       worktree: options.worktree,
@@ -11503,14 +11713,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path13.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path14.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs15.readFileSync(absPath, "utf8");
+    return fs16.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -11600,7 +11810,7 @@ async function runForegroundCommand(job, runner, options = {}) {
       emitError(errLike, { json: true, command });
     } else {
       if (execution.rendered) {
-        process9.stdout.write(execution.rendered);
+        process10.stdout.write(execution.rendered);
       }
       emitError(errLike, { json: false, command });
     }
@@ -11618,12 +11828,12 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs15.openSync(stderrPath, "a");
+      const stderrFd = fs16.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
   }
-  const child = spawn3(process9.execPath, [
+  const child = spawn3(process10.execPath, [
     scriptPath,
     "task-worker",
     "--cwd",
@@ -11634,7 +11844,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
     jobId
   ], {
     cwd,
-    env: process9.env,
+    env: process10.env,
     detached: true,
     stdio: stdioConfig,
     windowsHide: true
@@ -11642,7 +11852,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs15.closeSync(stdioConfig[2]);
+      fs16.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -11850,6 +12060,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   };
   const bridgeRequest = {
     ...request,
+    adapter: adapter2,
+    sessionDir,
     prompt: promptWithFooter,
     collaborationMode: isPlanMode ? buildCollaborationMode("plan", config, { developerInstructions }) : request.write ? buildCollaborationMode("default", config, { developerInstructions, effort: request.effort }) : null,
     // Always resolve through buildSandboxPolicy so `config.sandbox_policy`
@@ -12002,9 +12214,9 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     turnTimeoutMs: null
   };
   let heartbeatTimer = null;
-  const HEARTBEAT_INTERVAL_MS = Number(process9.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process9.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
-  const CHECKPOINT_INTERVAL_MS = Number(process9.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process9.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
-  const STALL_CHECKPOINT_THRESHOLD = Number(process9.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process9.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
+  const HEARTBEAT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
+  const CHECKPOINT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
+  const STALL_CHECKPOINT_THRESHOLD = Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
@@ -12087,7 +12299,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
             phase: heartbeatState.phase,
             lastItem: heartbeatState.lastItem,
             lastItemAgeMs: heartbeatState.lastItemAt ? now - heartbeatState.lastItemAt : null,
-            pid: process9.pid,
+            pid: process10.pid,
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
@@ -12129,7 +12341,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
               elapsedMs,
               phase: heartbeatState.phase,
               intervalMs,
-              pid: process9.pid,
+              pid: process10.pid,
               jobId: request.jobId ?? null,
               lastAssistantMessage: checkpointState.lastAssistantMessage,
               tools: toolsSnapshot,
@@ -12262,7 +12474,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = initSession(sessionDir, result.threadId);
-    const computedEventsPath = result.threadId ? path13.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path14.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -12336,10 +12548,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path13.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path13.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path13.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path13.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path14.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path14.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path14.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path14.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -12643,7 +12855,10 @@ async function handleTask(argv) {
     taskMetadata
   });
   ensureCodexRuntimeAdapter(adapter2);
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, {
+    backend: adapter2.name,
+    adapterCapabilities: adapter2.capabilities()
+  });
   let worktreeInfo = null;
   if (options["worktree-auto"]) {
     if (!write) {
@@ -12657,15 +12872,19 @@ async function handleTask(argv) {
       worktreeInfo = createSubagentWorktree({
         cwd,
         taskId: job.id,
-        backend: "codex",
+        backend: adapter2.name,
         allowBranchFallback: false
       });
       if (worktreeInfo.isolation_mode !== "worktree") {
         throw new Error(`expected isolated worktree, got ${worktreeInfo.isolation_mode}`);
       }
+      job.registryTaskId = job.id;
+      job.worktree = worktreeInfo;
+      job.isolation_mode = worktreeInfo.isolation_mode;
       try {
         writeMeta(job.id, {
-          backend: "codex",
+          backend: adapter2.name,
+          capabilities: adapter2.capabilities(),
           worktree: worktreeInfo,
           isolation_mode: worktreeInfo.isolation_mode,
           base_ref: worktreeInfo.base_ref,
@@ -12702,7 +12921,7 @@ async function handleTask(argv) {
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
-      backend: options.backend ?? null
+      backend: adapter2.name
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -12731,7 +12950,7 @@ async function handleTask(argv) {
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
-      backend: options.backend ?? null,
+      backend: adapter2.name,
       // `--quiet` suppresses the stderr `[codex] …` progress stream so
       // agents don't pattern-match a thread UUID out of it. Monitor /
       // `events --follow` remain the canonical in-run observation surface.
@@ -12748,7 +12967,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path13.resolve(process9.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path14.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -12860,7 +13079,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
   const onSigint = () => {
     interrupted = true;
   };
-  process9.on("SIGINT", onSigint);
+  process10.on("SIGINT", onSigint);
   try {
     while (true) {
       ticks += 1;
@@ -12880,14 +13099,14 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
         }))
       };
       if (json2) {
-        process9.stdout.write(`${JSON.stringify(tickEntry)}
+        process10.stdout.write(`${JSON.stringify(tickEntry)}
 `);
       } else {
-        process9.stdout.write(`\x1B[2J\x1B[H`);
-        process9.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
+        process10.stdout.write(`\x1B[2J\x1B[H`);
+        process10.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
 
 `);
-        process9.stdout.write(renderStatusReport(snapshot));
+        process10.stdout.write(renderStatusReport(snapshot));
       }
       if (activeCount === 0) {
         const summary = {
@@ -12909,7 +13128,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
       if (deadline && Date.now() >= deadline) {
         const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
         if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        else process9.stdout.write(`
+        else process10.stdout.write(`
 watch timed out after ${ticks} ticks with ${activeCount} active job(s).
 `);
         return;
@@ -12917,7 +13136,7 @@ watch timed out after ${ticks} ticks with ${activeCount} active job(s).
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   } finally {
-    process9.off("SIGINT", onSigint);
+    process10.off("SIGINT", onSigint);
   }
 }
 async function handleAwaitArtifact(argv) {
@@ -12934,7 +13153,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path13.isAbsolute(artifactPath) ? artifactPath : path13.resolve(cwd, artifactPath);
+  const resolvedPath = path14.isAbsolute(artifactPath) ? artifactPath : path14.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -12951,7 +13170,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs15.statSync(resolvedPath);
+      statInfo = fs16.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -12985,7 +13204,7 @@ async function handleAwaitArtifact(argv) {
         elapsedMs: Date.now() - startedAt
       };
       if (!statInfo) {
-        process9.exitCode = 7;
+        process10.exitCode = 7;
         emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
 `, {
           json: options.json,
@@ -13009,7 +13228,7 @@ async function handleAwaitArtifact(argv) {
         jobStatus,
         elapsedMs: Date.now() - startedAt
       };
-      process9.exitCode = 7;
+      process10.exitCode = 7;
       emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
 `, {
         json: options.json,
@@ -13036,7 +13255,7 @@ function pruneOrphanedJobs(cwd) {
     }
     let alive = false;
     try {
-      process9.kill(pid, 0);
+      process10.kill(pid, 0);
       alive = true;
     } catch (err) {
       if (err && err.code === "EPERM") {
@@ -13090,7 +13309,7 @@ function renderPruneOrphansReport(report) {
   return `${lines.join("\n")}
 `;
 }
-function handleResult(argv) {
+async function handleResult(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
@@ -13100,9 +13319,17 @@ function handleResult(argv) {
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    metaBackend: storedJob?.backend ?? job.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  const adapterResult = await adapter2.getResult(job.id, { cwd });
   const payload = {
     job,
-    storedJob
+    storedJob,
+    adapterResult
   };
   emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
     json: options.json,
@@ -13131,7 +13358,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs15.readFileSync(eventsPath, "utf8");
+        const data = fs16.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -13148,13 +13375,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs15.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs16.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs15.existsSync(eventsPath)) {
+              if (fs16.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -13166,12 +13393,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs15.existsSync(eventsPath)) {
+    if (fs16.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs15.existsSync(eventsPath)) {
+        if (fs16.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -13210,7 +13437,7 @@ async function handleWait(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
-  const eventsPath = path13.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -13275,7 +13502,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
-  const eventsPath = path13.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -13284,7 +13511,7 @@ async function handleEvents(argv) {
   const filter = parseTagList(options.filter);
   const exclude = parseTagList(options.exclude);
   const writeEventLine = (line) => {
-    if (!options.json) process9.stdout.write(line + "\n");
+    if (!options.json) process10.stdout.write(line + "\n");
   };
   const tagOf = (line) => {
     const m = /^\[([^\]]+)\]/.exec(line);
@@ -13306,8 +13533,8 @@ async function handleEvents(argv) {
   const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs15.existsSync(eventsPath)) {
-    initial = fs15.readFileSync(eventsPath, "utf8");
+  if (fs16.existsSync(eventsPath)) {
+    initial = fs16.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -13353,7 +13580,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs15.readFileSync(eventsPath, "utf8");
+        data = fs16.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -13375,13 +13602,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs15.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs16.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs15.existsSync(eventsPath)) {
+              if (fs16.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -13392,11 +13619,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs15.existsSync(eventsPath)) {
+    if (fs16.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs15.existsSync(eventsPath)) {
+        if (fs16.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -13478,15 +13705,21 @@ async function handleCancel(argv) {
   });
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process9.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process10.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
-  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    metaBackend: existing.backend ?? job.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  const interrupt = await adapter2.cancel(job.id, { cwd, threadId, turnId });
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,
-      interrupt.interrupted ? `Requested Codex turn interrupt for ${turnId} on ${threadId}.` : `Codex turn interrupt failed${interrupt.detail ? `: ${interrupt.detail}` : "."}`
+      interrupt.interrupted ? `Requested Codex turn interrupt for ${turnId} on ${threadId}.` : `Codex turn interrupt failed${interrupt.reason ? `: ${interrupt.reason}` : "."}`
     );
   }
   terminateProcessTree(job.pid ?? Number.NaN);
@@ -13527,13 +13760,13 @@ async function handleCancel(argv) {
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path13.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path14.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path13.resolve(cwd, positionals[0]);
+    const candidate = path14.resolve(cwd, positionals[0]);
     try {
-      if (fs15.existsSync(candidate) && fs15.statSync(candidate).isFile()) {
-        return fs15.readFileSync(candidate, "utf8");
+      if (fs16.existsSync(candidate) && fs16.statSync(candidate).isFile()) {
+        return fs16.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -13616,10 +13849,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict requires a task_id positional argument");
   }
   if (options.discard) {
-    const target = path13.join(jobDir(taskId), "verdict.json");
+    const target = path14.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs15.existsSync(target)) {
-      fs15.rmSync(target, { force: true });
+    if (fs16.existsSync(target)) {
+      fs16.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -13874,6 +14107,7 @@ async function handleSend(argv) {
     backend: options.backend ?? null
   });
   ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_resume");
   const modeOverride = options.mode;
   const sessionDir = resolveSessionDir(config.session_dir);
   const sendIsPlanMode = modeOverride === "plan";
@@ -13930,7 +14164,17 @@ async function handleSend(argv) {
     });
   }
   ensureCodexAvailable(cwd);
-  const result = await runAppServerTurn(cwd, turnOptions);
+  const dispatch2 = await adapter2.resume(threadId, prompt, {
+    cwd,
+    sessionDir,
+    model: config.model,
+    effort: turnOptions.effort,
+    mode: modeOverride ?? "default",
+    adapterOptions: {
+      turnOptions
+    }
+  });
+  const result = dispatch2.rawResult ?? dispatch2;
   if (result.status !== 0) {
     const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
     const session2 = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
@@ -14021,7 +14265,7 @@ async function handleSend(argv) {
 async function handleSteer(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
+    valueOptions: ["cwd", "backend"],
     booleanOptions: ["json"]
   });
   const [rawThreadId, turnId, ...promptParts] = positionals;
@@ -14037,14 +14281,15 @@ async function handleSteer(argv) {
   if (!prompt) {
     throw validationError("steer requires a prompt", "MISSING_PROMPT");
   }
-  ensureCodexAvailable(cwd);
-  await withAppServer(cwd, async (client) => {
-    await client.request("turn/steer", {
-      threadId,
-      input: [{ type: "text", text: prompt }],
-      expectedTurnId: turnId
-    });
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot: resolveWorkspaceRoot(cwd),
+    backend: options.backend ?? null
   });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_steering");
+  ensureCodexAvailable(cwd);
+  await adapter2.steer(threadId, turnId, prompt, { cwd });
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
   const session = findSession(sessionDir, threadId);
@@ -14060,7 +14305,7 @@ async function handleSteer(argv) {
 async function handleRespond(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["question-id", "answer", "json-payload", "cwd"],
+    valueOptions: ["question-id", "answer", "json-payload", "cwd", "backend"],
     booleanOptions: ["json"]
   });
   const requestId = positionals[0];
@@ -14070,6 +14315,13 @@ async function handleRespond(argv) {
   const cwd = resolveCommandCwd(options);
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir);
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot: resolveWorkspaceRoot(cwd),
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_questions");
   const pending = readPendingRequestById(sessionDir, requestId);
   if (!pending) {
     throw notFoundError(
@@ -14093,11 +14345,7 @@ async function handleRespond(argv) {
       payload = { decision: answer };
     }
   }
-  writeResponseFile(sessionDir, pending.threadId, {
-    requestId: pending.internalId,
-    rpcRequestId: pending.rpcRequestId,
-    payload
-  });
+  await adapter2.respond(pending.threadId, requestId, payload, { sessionDir });
   const session = findSession(sessionDir, pending.threadId);
   if (session) {
     logNdjson(session, "SERVER_RESPONSE", null, { requestId, payload });
@@ -14133,7 +14381,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs15.readFileSync(session.ndjsonPath, "utf8");
+    content = fs16.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -14220,35 +14468,35 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   verdicts: handleVerdictsPending,
   iterate: handleIterate
 });
-process9.on("SIGPIPE", () => {
+process10.on("SIGPIPE", () => {
 });
-process9.stdout.on("error", (err) => {
+process10.stdout.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
-process9.stderr.on("error", (err) => {
+process10.stderr.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path13.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs15.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path14.join(os7.homedir(), ".codex-bridge", "crashes");
+    fs16.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path13.join(crashDir, `${ts}-${process9.pid}.log`);
+    const file = path14.join(crashDir, `${ts}-${process10.pid}.log`);
     const payload = {
       kind,
       ts,
-      pid: process9.pid,
-      argv: process9.argv,
-      cwd: process9.cwd(),
-      nodeVersion: process9.version,
+      pid: process10.pid,
+      argv: process10.argv,
+      cwd: process10.cwd(),
+      nodeVersion: process10.version,
       bridgeVersion: package_default.version,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs15.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs16.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
-      process9.stderr.write(
+      process10.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
 `
       );
@@ -14257,17 +14505,17 @@ function writeCrashLog(kind, error) {
   } catch {
   }
 }
-process9.on("unhandledRejection", (reason) => {
+process10.on("unhandledRejection", (reason) => {
   writeCrashLog("unhandledRejection", reason);
-  process9.exitCode = process9.exitCode || 1;
+  process10.exitCode = process10.exitCode || 1;
 });
-process9.on("uncaughtException", (err) => {
+process10.on("uncaughtException", (err) => {
   writeCrashLog("uncaughtException", err);
-  process9.exit(process9.exitCode || 1);
+  process10.exit(process10.exitCode || 1);
 });
 async function main() {
   const startedAt = Date.now();
-  const rawArgv = process9.argv.slice(2);
+  const rawArgv = process10.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
   maybeTriggerAutoApply(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
@@ -14294,7 +14542,7 @@ async function main() {
   await handler(argv);
 }
 main().catch((error) => {
-  const rawArgv = process9.argv.slice(2);
+  const rawArgv = process10.argv.slice(2);
   const json2 = detectJsonFlag(rawArgv);
   const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
   emitError(error, { json: json2, command });
