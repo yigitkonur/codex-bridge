@@ -21,7 +21,7 @@ Repository Markdown outside `.planning/` is not used as roadmap evidence.
 - Decimal phases (2.1, 2.2): Urgent insertions, if needed later
 
 - [x] **Phase 1: Baseline Contracts And Generated Surface** - Maintainers can trust the static gate, generated-output map, JSON envelopes, and baseline coverage contracts. Completed 2026-04-30.
-- [ ] **Phase 2: Adapter And Delegation Runtime** - Users can delegate Codex work through backend-aware runtime paths and observe/control foreground and background sessions.
+- [x] **Phase 2: Adapter And Delegation Runtime** - Users can delegate Codex work through backend-aware runtime paths and observe/control foreground and background sessions. Completed 2026-05-01.
 - [ ] **Phase 3: Review Verdict And Iterate Loop** - Users can run reviews, track verdicts, enforce approved-head merge safety, and execute the closed-loop iterate workflow.
 - [ ] **Phase 4: Plugin And Hook Surface Hardening** - Maintainers can ship a consistent plugin layout with safe, bounded hook behavior.
 - [ ] **Phase 5: State Artifact And Recovery Resilience** - Users can trust workspace state, session logs, task artifacts, and recovery outcomes under failure.
@@ -63,10 +63,16 @@ Completion evidence:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 02-01: Adapter capability contract and backend precedence
-- [ ] 02-02: Runtime dispatch migration for supported Codex operations
-- [ ] 02-03: Foreground/background delegation envelopes and monitoring
-- [ ] 02-04: Resume/respond/steer and timeout/handoff contracts
+- [x] 02-01: Adapter capability contract and backend precedence
+- [x] 02-02: Runtime dispatch migration for supported Codex operations
+- [x] 02-03: Foreground/background delegation envelopes and monitoring
+- [x] 02-04: Resume/respond/steer and timeout/handoff contracts
+
+Completion evidence:
+- Implementation commit: `468a3e9 feat(adapter): route delegation through codex adapter`
+- Phase artifacts: `.planning/phases/02-adapter-and-delegation-runtime/`
+- Static gate: `npm run verify:static` passed on 2026-05-01
+- Runtime smoke: setup, foreground task, send/resume, background task, wait, result, events, and unsupported-backend probes passed on 2026-05-01
 
 ### Phase 3: Review Verdict And Iterate Loop
 **Goal**: Users can hand work to Codex, regain control through review and verdict gates, and continue the loop without manual assembly.
@@ -140,7 +146,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Baseline Contracts And Generated Surface | 3/3 | Complete | 2026-04-30 |
-| 2. Adapter And Delegation Runtime | 0/4 | Not started | - |
+| 2. Adapter And Delegation Runtime | 4/4 | Complete | 2026-05-01 |
 | 3. Review Verdict And Iterate Loop | 0/3 | Not started | - |
 | 4. Plugin And Hook Surface Hardening | 0/3 | Not started | - |
 | 5. State Artifact And Recovery Resilience | 0/3 | Not started | - |

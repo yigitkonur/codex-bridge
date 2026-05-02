@@ -28,15 +28,17 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 - ✓ Phase 1 added a machine-readable generated-surface inventory for authored sources that require `skill/` or `plugin/` output updates — validated in Phase 1.
 - ✓ Phase 1 added deterministic JSON envelope probes for help, config, version, status, result, wait, events, setup, and error output — validated in Phase 1.
 - ✓ Phase 1 added a mutating-command coverage map with success/failure test references and named baseline gaps — validated in Phase 1.
+- ✓ Phase 2 routes supported Codex task dispatch, resume, respond, steer, cancel, result, and event operations through the backend adapter lifecycle — validated in Phase 2.
+- ✓ Phase 2 exposes setup backend/capability state and keeps backend precedence covered across explicit backend, environment, task metadata, routing, config layers, and defaults — validated in Phase 2.
+- ✓ Phase 2 validates foreground task, send/resume, background task, wait, result, events, and unsupported-backend behavior with static tests plus authenticated smoke probes — validated in Phase 2.
 
 ### Active
 
-- [ ] Close the backend-adapter abstraction gap so runtime command dispatch, streaming, result, and cancellation no longer depend on direct Codex-only paths where the adapter contract advertises a future seam.
 - [ ] Finish the closed-loop iterate/reviewer/verdict workflow so task -> review -> verdict -> fix/merge can run end to end instead of returning staged manual instructions.
 - [ ] Promote the packaged plugin surface from alpha/scaffold status to a canonical, internally consistent v2 install surface, or explicitly keep it noncanonical with tests and metadata aligned.
 - [ ] Harden hook and monitor automation around real Claude plugin boundaries, including spoof-resistant monitor arming, Stop hook timeouts, and session/subagent wake-up paths.
-- [ ] Add authenticated runtime smoke coverage for app-server round trips that static Node tests cannot prove.
-- [ ] Use the Phase 1 baseline gate as the entry check for later runtime, plugin, state, and release changes.
+- [ ] Expand authenticated runtime smoke coverage to review and release-readiness flows that Phase 2 did not own.
+- [ ] Continue using `npm run verify:static` as the entry and exit check for runtime, plugin, state, and release changes.
 
 ### Out of Scope
 
@@ -73,6 +75,7 @@ The risk profile is mostly contract drift. Source changes can require generated 
 | Use coarse phases with research, plan checks, and verification | The project has high cross-surface contract risk, so fewer larger phases with strong verification are easier to keep coherent. | Ongoing |
 | Commit planning docs by default | GSD docs should travel with the project unless the user later opts out. | Ongoing |
 | Make baseline contracts executable | Later phases need a gate that fails on contract drift instead of a stale checklist. | Completed in Phase 1 |
+| Route supported runtime controls through the adapter | The backend abstraction must be real before adding review-loop or plugin hardening on top of it. | Completed in Phase 2 |
 
 ## Evolution
 
@@ -92,4 +95,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state.
 
 ---
-*Last updated: 2026-04-30 after Phase 1 completion*
+*Last updated: 2026-05-01 after Phase 2 completion*

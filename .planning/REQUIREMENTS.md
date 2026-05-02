@@ -16,17 +16,17 @@ These requirements define the next GSD milestone for an established codebase: ma
 
 ### Adapter Runtime
 
-- [ ] **ADPT-01**: Runtime command dispatch uses the backend adapter contract for supported Codex operations instead of bypassing implemented adapter methods.
-- [ ] **ADPT-02**: Adapter capability flags never advertise unsupported lifecycle methods, and unsupported capabilities fail with structured validation errors.
-- [ ] **ADPT-03**: Backend resolution honors explicit flag, environment, task metadata, adapter routing, cwd config, workspace config, user/skill config, and default backend precedence.
-- [ ] **ADPT-04**: Version and setup output expose active backend and capability state without requiring a live task run.
+- [x] **ADPT-01**: Runtime command dispatch uses the backend adapter contract for supported Codex operations instead of bypassing implemented adapter methods. Validated in Phase 2 by adapter dispatch, CLI routing tests, and implementation commit `468a3e9`.
+- [x] **ADPT-02**: Adapter capability flags never advertise unsupported lifecycle methods, and unsupported capabilities fail with structured validation errors. Validated in Phase 2 by registry tests and unsupported-backend smoke.
+- [x] **ADPT-03**: Backend resolution honors explicit flag, environment, task metadata, adapter routing, cwd config, workspace config, user/skill config, and default backend precedence. Validated in Phase 2 by adapter-selection tests and CLI backend routing.
+- [x] **ADPT-04**: Version and setup output expose active backend and capability state without requiring a live task run. Validated in Phase 2 by baseline probes and setup/version smoke.
 
 ### Delegation Runtime
 
-- [ ] **DLGT-01**: User can start a foreground task in plan or default mode and receive session artifacts, status, final output, and errors in the standard envelope.
-- [ ] **DLGT-02**: User can start a background task, monitor it through `events --follow` or `status --watch`, and retrieve the completed result.
-- [ ] **DLGT-03**: User can resume a task thread, answer `requestUserInput` prompts, and steer active turns only when the upstream runtime supports it.
-- [ ] **DLGT-04**: Long-running or silent Codex turns terminate with classified timeout/handoff information rather than losing partial work silently.
+- [x] **DLGT-01**: User can start a foreground task in plan or default mode and receive session artifacts, status, final output, and errors in the standard envelope. Validated in Phase 2 by authenticated foreground task smoke and adapter dispatch tests.
+- [x] **DLGT-02**: User can start a background task, monitor it through `events --follow` or `status --watch`, and retrieve the completed result. Validated in Phase 2 by authenticated background, wait, result, and events smoke.
+- [x] **DLGT-03**: User can resume a task thread, answer `requestUserInput` prompts, and steer active turns only when the upstream runtime supports it. Validated in Phase 2 by live send/resume smoke plus deterministic respond/steer/cancel lifecycle tests.
+- [x] **DLGT-04**: Long-running or silent Codex turns terminate with classified timeout/handoff information rather than losing partial work silently. Validated in Phase 2 by preserving raw Codex runtime results and passing existing timeout/error tests.
 
 ### Review And Iteration
 
@@ -93,14 +93,14 @@ Deferred until the v1 contracts above are complete.
 | BASE-02 | Phase 1 | Complete |
 | BASE-03 | Phase 1 | Complete |
 | BASE-04 | Phase 1 | Complete |
-| ADPT-01 | Phase 2 | Pending |
-| ADPT-02 | Phase 2 | Pending |
-| ADPT-03 | Phase 2 | Pending |
-| ADPT-04 | Phase 2 | Pending |
-| DLGT-01 | Phase 2 | Pending |
-| DLGT-02 | Phase 2 | Pending |
-| DLGT-03 | Phase 2 | Pending |
-| DLGT-04 | Phase 2 | Pending |
+| ADPT-01 | Phase 2 | Complete |
+| ADPT-02 | Phase 2 | Complete |
+| ADPT-03 | Phase 2 | Complete |
+| ADPT-04 | Phase 2 | Complete |
+| DLGT-01 | Phase 2 | Complete |
+| DLGT-02 | Phase 2 | Complete |
+| DLGT-03 | Phase 2 | Complete |
+| DLGT-04 | Phase 2 | Complete |
 | REVW-01 | Phase 3 | Pending |
 | REVW-02 | Phase 3 | Pending |
 | REVW-03 | Phase 3 | Pending |
@@ -125,4 +125,4 @@ Deferred until the v1 contracts above are complete.
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-04-30 after roadmap creation*
+*Last updated: 2026-05-01 after Phase 2 completion*
