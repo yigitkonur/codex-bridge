@@ -171,8 +171,13 @@ test("events with default --exclude HEARTBEAT preserves the rest of the tag voca
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
 
+    // Standard MDN escapeRegExp — matches every regex metachar including ]
+    // and \. Earlier inline form had a malformed character class (missing ]
+    // as a member, doubled trailing backslash) that happened to work for our
+    // test data but would mis-escape any tag containing brackets/backslashes.
+    const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     for (const tag of ["DIRECTIVES", "CHECKPOINT", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "WARNING", "INCOMPLETE"]) {
-      assert.match(result.stdout, new RegExp(`\\[${tag.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\]`), `${tag} should pass through`);
+      assert.match(result.stdout, new RegExp(`\\[${escapeRegExp(tag)}\\]`), `${tag} should pass through`);
     }
     assert.doesNotMatch(result.stdout, /\[HEARTBEAT\]/);
     assert.doesNotMatch(result.stdout, /noisy: should not appear/);

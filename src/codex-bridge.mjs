@@ -5251,9 +5251,10 @@ async function handleCancel(argv) {
   if (terminate.attempted && !terminate.delivered) {
     warnings.push(`process ${job.pid} was already gone (method=${terminate.method ?? "unknown"})`);
   }
-  if (!terminate.attempted && Number.isFinite(job.pid)) {
-    warnings.push(`process ${job.pid} not terminated (no signal sent)`);
-  }
+  // No `!terminate.attempted && Number.isFinite(job.pid)` branch: terminateProcessTree
+  // returns attempted=false only for a non-finite pid, so finite pids always
+  // attempt. Earlier draft included that branch — review-bot Devin and codex
+  // exec review both flagged it as dead code; removed for clarity.
 
   const completedAt = nowIso();
   const nextJob = {
@@ -5283,12 +5284,18 @@ async function handleCancel(argv) {
   // dispatch-time "Codex Resume" / "Codex Task" label which mismatched
   // `kindLabel` and confused agents during forensics. `job.title` is kept
   // under `dispatchTitle` for backward compat.
+  // Known kindLabel values come from `getJobTypeLabel` in src/lib/job-control.mjs:
+  //   "task" | "review" | "adversarial-review" | "rescue-review"
+  // Default falls back to a generic "Codex Job" so a future kindLabel that
+  // hasn't reached this map yet doesn't get silently labelled "Codex Task".
   const kindLabel = existing.kindLabel ?? job.kindLabel ?? job.jobClass ?? "task";
-  const normalizedTitle = kindLabel === "rescue-review"
-    ? "Codex Stop Gate Review"
-    : kindLabel === "review"
-      ? "Codex Review"
-      : "Codex Task";
+  const KIND_TITLE = {
+    "task": "Codex Task",
+    "review": "Codex Review",
+    "adversarial-review": "Codex Adversarial Review",
+    "rescue-review": "Codex Stop Gate Review",
+  };
+  const normalizedTitle = KIND_TITLE[kindLabel] ?? "Codex Job";
 
   const payload = {
     jobId: job.id,
@@ -5325,7 +5332,11 @@ async function handleCancel(argv) {
     }),
   };
 
-  emitSuccess("cancel", payload, renderCancelReport(nextJob), {
+  // Pass the normalized title into the human-readable render so JSON and
+  // text consumers see the same "Title:" line. Without this, --json reports
+  // "Codex Task" while the rendered report would still print the raw
+  // dispatch label ("Codex Resume", etc.) from the spread `nextJob`.
+  emitSuccess("cancel", payload, renderCancelReport({ ...nextJob, title: normalizedTitle }), {
     json: options.json,
     startedAt
   });

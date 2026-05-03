@@ -38,6 +38,8 @@ The bridge emits a fixed vocabulary on the `.events` stream. Treat unknown tags 
 | `[DIRECTIVES]` | bootstrap | Once at session start | Records mode/effort/sandbox/pipeline; informational |
 | `[PIPELINE:<stage>]` | pipeline | Stage entered | Stages: `diff`, `plan`, `execute`, `review`, `fix`, `check` |
 | `[PIPELINE:<stage>:done]` | pipeline | Stage completed | `check:done` carries `complete=…`/`missing_items=[…]` |
+| `[PIPELINE:review:failed]` | pipeline | Review stage failed (non-timeout) | Fix stage is skipped; inspect the review output |
+| `[PIPELINE:check:failed]` | pipeline | Check stage failed (non-timeout) | Pipeline already halted; inspect the check output |
 | `[PIPELINE:done]` / `[PIPELINE:failed]` | pipeline | Whole pipeline finished | Pair with the most recent terminal tag |
 | `[RETRYING]` | recovery | Bridge retrying transient failure | Watch `[HANDOFF]` / `[ERROR]` for exhaustion |
 | `[PARTIAL]` | recovery | Commits landed before failure | `error.partial.commits` lists shas |

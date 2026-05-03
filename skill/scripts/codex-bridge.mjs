@@ -14958,9 +14958,6 @@ async function handleCancel(argv) {
   if (terminate.attempted && !terminate.delivered) {
     warnings.push(`process ${job.pid} was already gone (method=${terminate.method ?? "unknown"})`);
   }
-  if (!terminate.attempted && Number.isFinite(job.pid)) {
-    warnings.push(`process ${job.pid} not terminated (no signal sent)`);
-  }
   const completedAt = nowIso2();
   const nextJob = {
     ...job,
@@ -14984,7 +14981,13 @@ async function handleCancel(argv) {
     completedAt
   });
   const kindLabel = existing.kindLabel ?? job.kindLabel ?? job.jobClass ?? "task";
-  const normalizedTitle = kindLabel === "rescue-review" ? "Codex Stop Gate Review" : kindLabel === "review" ? "Codex Review" : "Codex Task";
+  const KIND_TITLE = {
+    "task": "Codex Task",
+    "review": "Codex Review",
+    "adversarial-review": "Codex Adversarial Review",
+    "rescue-review": "Codex Stop Gate Review"
+  };
+  const normalizedTitle = KIND_TITLE[kindLabel] ?? "Codex Job";
   const payload = {
     jobId: job.id,
     status: "cancelled",
@@ -15019,7 +15022,7 @@ async function handleCancel(argv) {
       }
     })
   };
-  emitSuccess("cancel", payload, renderCancelReport(nextJob), {
+  emitSuccess("cancel", payload, renderCancelReport({ ...nextJob, title: normalizedTitle }), {
     json: options.json,
     startedAt
   });

@@ -79,6 +79,8 @@ Canonical source: `src/adapters/_interface/EVENT_VOCABULARY.md`. The table below
 | `[DIRECTIVES]` | bootstrap | Session start | Mode / effort / sandbox / pipeline summary |
 | `[PIPELINE:<stage>]` | pipeline | Stage entered | Stages: `diff`, `plan`, `execute`, `review`, `fix`, `check` |
 | `[PIPELINE:<stage>:done]` | pipeline | Stage completed | `check:done` carries `complete=…` / `missing_items=[…]` |
+| `[PIPELINE:review:failed]` | pipeline | Review stage failed (non-timeout) | Fix stage is skipped; inspect the review output |
+| `[PIPELINE:check:failed]` | pipeline | Check stage failed (non-timeout) | Pipeline already halted; inspect the check output |
 | `[PIPELINE:done]` / `[PIPELINE:failed]` | pipeline | Whole pipeline finished | Pair with most recent terminal tag |
 | `[RETRYING]` | recovery | Transient retry in flight | Watch for `[HANDOFF]` / `[ERROR]` exhaustion |
 | `[PARTIAL]` | recovery | Commits landed before failure | `error.partial.commits` has the shas |
