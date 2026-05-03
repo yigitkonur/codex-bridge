@@ -62,6 +62,32 @@ When `--json --follow` closes the stream, `events` emits a terminal envelope so 
 
 Events received with the default exclude-HEARTBEAT shape: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[CHECKPOINT]`, `[PIPELINE:*]`, `[PIPELINE:*:done]`, `[PIPELINE:done]` / `[PIPELINE:failed]`, `[WARNING]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]`, and any future tag the bridge adds. Typical volume: 1 CHECKPOINT every 5 min + a handful of interrupt tags per task.
 
+### Tag reference
+
+Canonical source: `src/adapters/_interface/EVENT_VOCABULARY.md`. The table below is the practical view for Monitor consumers; new tags pass through the default `--exclude HEARTBEAT` filter.
+
+| Tag | Category | Cadence / trigger | Action |
+|---|---|---|---|
+| `[DONE]` | terminal | Task finished successfully | Monitor self-closes; read result |
+| `[ERROR]` | terminal | Non-recoverable failure | Branch on `origin:`; see `error-recovery.md` |
+| `[INCOMPLETE]` | terminal | Partial completion | Read `[PIPELINE:check:done] missing_items=…` |
+| `[PLAN]` | interrupt | Plan-mode plan ready | `respond` approve / revise |
+| `[QUESTION]` | interrupt | Backend asked a clarifier | `respond` with the answer |
+| `[CONFIRMED]` | interrupt | Echo after `respond` | Informational |
+| `[CHECKPOINT]` | progress | Every ~5 min | Read for drift; act only if needed |
+| `[HEARTBEAT]` | progress | Every ~60 s | Excluded by default; pure liveness |
+| `[DIRECTIVES]` | bootstrap | Session start | Mode / effort / sandbox / pipeline summary |
+| `[PIPELINE:<stage>]` | pipeline | Stage entered | Stages: `diff`, `plan`, `execute`, `review`, `fix`, `check` |
+| `[PIPELINE:<stage>:done]` | pipeline | Stage completed | `check:done` carries `complete=…` / `missing_items=[…]` |
+| `[PIPELINE:done]` / `[PIPELINE:failed]` | pipeline | Whole pipeline finished | Pair with most recent terminal tag |
+| `[RETRYING]` | recovery | Transient retry in flight | Watch for `[HANDOFF]` / `[ERROR]` exhaustion |
+| `[PARTIAL]` | recovery | Commits landed before failure | `error.partial.commits` has the shas |
+| `[HANDOFF]` | recovery | Artifact + retry history | Reseed a fresh task |
+| `[WARNING]` | recovery | Circuit-breaker fired | Cancel if env can't proceed |
+| `[ADAPTER:<name>:<event>]` | adapter | Backend-specific | Informational unless adapter docs say otherwise |
+
+Continuation lines (indented under a header) inherit the header's filter decision, so an included `[CHECKPOINT]` ships with its body.
+
 ## Preset A-raw: `tail -f` fallback
 
 Use only when the bundled script isn't available (e.g. you're operating outside the skill's harness).

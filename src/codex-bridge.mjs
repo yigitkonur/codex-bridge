@@ -5233,8 +5233,27 @@ async function handleCancel(argv) {
     );
   }
 
-  terminateProcessTree(job.pid ?? Number.NaN);
+  // Capture the terminate result so the envelope can report whether the
+  // backing process was actually reaped vs. already gone vs. never had a
+  // pid. Field-report P1-10: cancel envelopes were ambiguous about which
+  // sub-step succeeded; normalize to explicit booleans plus a warnings list.
+  const terminate = terminateProcessTree(job.pid ?? Number.NaN);
   appendLogLine(job.logFile, "Cancelled by user.");
+
+  const warnings = [];
+  if (interrupt.attempted && !interrupt.interrupted) {
+    warnings.push(
+      interrupt.reason
+        ? `turn interrupt failed: ${interrupt.reason}`
+        : "turn interrupt failed (no reason returned)"
+    );
+  }
+  if (terminate.attempted && !terminate.delivered) {
+    warnings.push(`process ${job.pid} was already gone (method=${terminate.method ?? "unknown"})`);
+  }
+  if (!terminate.attempted && Number.isFinite(job.pid)) {
+    warnings.push(`process ${job.pid} not terminated (no signal sent)`);
+  }
 
   const completedAt = nowIso();
   const nextJob = {
@@ -5260,12 +5279,29 @@ async function handleCancel(argv) {
     completedAt
   });
 
+  // Resolve a stable display title from the registry kind, not the job's
+  // dispatch-time "Codex Resume" / "Codex Task" label which mismatched
+  // `kindLabel` and confused agents during forensics. `job.title` is kept
+  // under `dispatchTitle` for backward compat.
+  const kindLabel = existing.kindLabel ?? job.kindLabel ?? job.jobClass ?? "task";
+  const normalizedTitle = kindLabel === "rescue-review"
+    ? "Codex Stop Gate Review"
+    : kindLabel === "review"
+      ? "Codex Review"
+      : "Codex Task";
+
   const payload = {
     jobId: job.id,
     status: "cancelled",
-    title: job.title,
+    cancelled: true,
+    processTerminated: Boolean(terminate.delivered),
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted,
+    reason: "cancelled-by-user",
+    warnings,
+    title: normalizedTitle,
+    dispatchTitle: job.title ?? null,
+    kindLabel,
     recovery: buildRecovery({
       reason: "cancelled-by-user",
       retryable: false,
@@ -5282,6 +5318,9 @@ async function handleCancel(argv) {
         interruptAttempted: interrupt.attempted,
         interrupted: interrupt.interrupted,
         interruptReason: interrupt.reason ?? null,
+        terminateAttempted: terminate.attempted,
+        terminateDelivered: Boolean(terminate.delivered),
+        terminateMethod: terminate.method ?? null,
       },
     }),
   };
