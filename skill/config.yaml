@@ -95,3 +95,9 @@ codex_bridge:
   # pipeline_stage_ms: 300000     # Auto-pipeline per-stage cap — review / fix / check (5 min)
   # pipeline_total_ms: 900000     # Auto-pipeline total cap across all stages (15 min)
   # question_answer_ms: 300000    # requestUserInput wait before rejecting unanswered request (5 min)
+
+  # Cleanup/redaction controls. Cleanup only runs when explicitly requested
+  # through status --cleanup; these values define the default retention window.
+  artifact_retention_jobs: 50
+  artifact_retention_days: 30
+  redact_secrets: false

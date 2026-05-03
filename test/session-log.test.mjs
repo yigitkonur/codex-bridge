@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   captureGitDiff,
   formatDoneEvent,
+  formatHeartbeatEvent,
   formatPlanEvent,
   formatQuestionEvent,
   formatTailCommand,
@@ -16,7 +17,8 @@ import {
   logNdjson,
   readEvents,
   readNdjson,
-  resolveSessionDir
+  resolveSessionDir,
+  writeSessionAliases
 } from "../src/lib/session-log.mjs";
 
 const session = {
@@ -79,6 +81,37 @@ test("event action commands preserve originating cwd", () => {
     }),
     /events --cwd '\/tmp\/project with spaces' job-1 --follow/
   );
+});
+
+test("session aliases map task ids to thread artifact paths", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-alias-"));
+  const runtimeSession = initSession(dir, "019dec98-372f-7981-92e5-68c2da199012");
+  const alias = writeSessionAliases(runtimeSession, "task-abc123");
+  assert.equal(alias.jobId, "task-abc123");
+  assert.equal(alias.threadId, runtimeSession.threadId);
+  assert.equal(JSON.parse(fs.readFileSync(alias.aliasPath, "utf8")).eventsPath, runtimeSession.eventsPath);
+});
+
+test("secret redaction masks persisted event and ndjson text", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-redact-"));
+  const runtimeSession = { ...initSession(dir, "thread-redact"), redactSecrets: true };
+  logEvent(runtimeSession, "token=ghp_abcdefghijklmnopqrstuvwxyz123456");
+  logNdjson(runtimeSession, "TEST", null, { value: "api_key=sk-abcdefghijklmnopqrstuvwxyz123456" });
+  assert.doesNotMatch(fs.readFileSync(runtimeSession.eventsPath, "utf8"), /ghp_/);
+  assert.doesNotMatch(fs.readFileSync(runtimeSession.ndjsonPath, "utf8"), /sk-/);
+  assert.match(fs.readFileSync(runtimeSession.eventsPath, "utf8"), /REDACTED/);
+});
+
+test("heartbeat can surface compact assistant preview", () => {
+  const rendered = formatHeartbeatEvent(session, {
+    elapsedMs: 60_000,
+    phase: "execute",
+    lastItem: "agentMessage",
+    lastItemAgeMs: 5_000,
+    pid: 123,
+    assistantPreview: "I am editing the pipeline and then I will run tests.",
+  });
+  assert.match(rendered, /assistant: I am editing the pipeline/);
 });
 
 test("event action commands quote bridge script path", () => {

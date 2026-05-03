@@ -1,5 +1,5 @@
 ---
-description: Show effective Codex Bridge configuration
+description: Show effective Codex Bridge configuration and diagnostics
 argument-hint: "show [--json]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)

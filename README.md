@@ -179,9 +179,14 @@ these are the job controls.
 /codex-bridge:status
 /codex-bridge:events task-abc123 --follow
 /codex-bridge:wait task-abc123 --timeout-ms 1800000
+/codex-bridge:wait --any task-a task-b task-c --json
 /codex-bridge:result task-abc123
 /codex-bridge:cancel task-abc123
 ```
+
+`wait --any` is the fan-out/fan-in primitive: it returns the first terminal job
+with `winner.jobId`, `winner.threadId`, `winner.terminalTag`, and
+`winner.eventsPath`.
 
 events are written in a monitor-friendly format, so background work can be tailed without flooding the parent context.
 
@@ -257,7 +262,18 @@ inspect the effective config:
 /codex-bridge:config show
 ```
 
-the shipped defaults are intentionally agent-heavy: plan mode, `gpt-5.4`, `xhigh` effort, auto review on, danger-full-access sandbox, and meta-skill skipping.
+the shipped defaults are intentionally agent-heavy: plan mode, `gpt-5.4`, `xhigh` effort, auto review on, danger-full-access sandbox, and meta-skill skipping. `config show --json` also reports unknown keys and invalid values by source layer, so typos are visible instead of silently confusing a run.
+
+cleanup and forensics defaults:
+
+```text
+/codex-bridge:status --cleanup --dry-run --json
+/codex-bridge:status --cleanup --retention-days 30 --retention-jobs 50
+```
+
+session files also get a portable alias at
+`<session_dir>/by-task/<task_id>.json`, so a task id is enough to find the
+thread events, ndjson, and diff paths.
 
 ## hooks and safety
 

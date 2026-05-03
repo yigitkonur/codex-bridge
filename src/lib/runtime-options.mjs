@@ -87,6 +87,9 @@ const DEFAULT_CONFIG = {
   // decisions; make it configurable so a slow loop can widen the window
   // without silently coercing the turn into a no-op answer.
   question_answer_ms: 300_000,
+  artifact_retention_jobs: 50,
+  artifact_retention_days: 30,
+  redact_secrets: false,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 

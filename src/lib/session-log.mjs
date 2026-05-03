@@ -22,6 +22,36 @@ export function initSession(sessionDir, threadId) {
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
 
+export function writeSessionAliases(session, jobId) {
+  if (!session?.sessionDir || !session?.threadId || !jobId) return null;
+  const aliasDir = path.join(session.sessionDir, "by-task");
+  fs.mkdirSync(aliasDir, { recursive: true });
+  const payload = {
+    schema_version: "1.0",
+    jobId,
+    threadId: session.threadId,
+    eventsPath: session.eventsPath,
+    ndjsonPath: session.ndjsonPath,
+    diffPath: path.join(session.sessionDir, `${session.threadId}.diff`),
+  };
+  const aliasPath = path.join(aliasDir, `${jobId}.json`);
+  fs.writeFileSync(aliasPath, JSON.stringify(payload, null, 2) + "\n");
+  for (const [suffix, target] of Object.entries({
+    events: session.eventsPath,
+    ndjson: session.ndjsonPath,
+    diff: payload.diffPath,
+  })) {
+    const linkPath = path.join(aliasDir, `${jobId}.${suffix}`);
+    try {
+      fs.rmSync(linkPath, { force: true });
+      fs.symlinkSync(target, linkPath);
+    } catch {
+      // Symlinks are best-effort; the JSON alias above is portable.
+    }
+  }
+  return { ...payload, aliasPath };
+}
+
 export function findSession(sessionDir, threadId) {
   const ndjsonPath = path.join(sessionDir, `${threadId}.ndjson`);
   const eventsPath = path.join(sessionDir, `${threadId}.events`);
@@ -75,7 +105,7 @@ export function logNdjson(session, tag, method, data) {
     data: data ?? {},
   };
   try {
-    fs.appendFileSync(session.ndjsonPath, JSON.stringify(entry) + "\n");
+    fs.appendFileSync(session.ndjsonPath, redactText(JSON.stringify(entry), session) + "\n");
   } catch {
     // Logging failure must not kill the task
   }
@@ -83,10 +113,19 @@ export function logNdjson(session, tag, method, data) {
 
 export function logEvent(session, formattedBlock) {
   try {
-    fs.appendFileSync(session.eventsPath, formattedBlock + "\n");
+    fs.appendFileSync(session.eventsPath, redactText(formattedBlock, session) + "\n");
   } catch {
     // Logging failure must not kill the task
   }
+}
+
+function redactText(text, session) {
+  if (!session?.redactSecrets) return text;
+  return String(text)
+    .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED_OPENAI_KEY]")
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{20,}\b/g, "[REDACTED_SLACK_TOKEN]")
+    .replace(/((?:api[_-]?key|token|secret|password)\s*[:=]\s*)["']?[^"',\s}\\]+/gi, "$1[REDACTED]");
 }
 
 export function writeDiff(session, diffContent) {
@@ -705,7 +744,7 @@ export function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }
 
-export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null, cwd = null }) {
+export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null, cwd = null, assistantPreview = null }) {
   // Unconditional liveness pulse written to `.events` every ~60s during any
   // running turn. Purpose: an orchestrator tailing `events --follow` can never
   // go longer than the heartbeat interval without seeing *something* from the
@@ -727,6 +766,9 @@ export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, last
         }`
       : "  lastItem: (none yet)";
   lines.push(itemLine);
+  if (assistantPreview) {
+    lines.push(`  assistant: ${compactPreview(assistantPreview, 220)}`);
+  }
   if (Number.isFinite(budgetRemainingMs) && budgetRemainingMs > 0) {
     lines.push(`  budget: ${fmtSeconds(budgetRemainingMs)} remaining`);
   }
@@ -734,6 +776,11 @@ export function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, last
     lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
   }
   return lines.join("\n");
+}
+
+function compactPreview(value, maxLength) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 // Shared across formatHeartbeatEvent / formatCheckpointEvent. Same

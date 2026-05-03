@@ -25,6 +25,70 @@ function readConfigFile(filePath) {
   }
 }
 
+const CONFIG_SCHEMA = {
+  mode: { type: "enum", values: ["plan", "default"] },
+  model: { type: "string" },
+  effort: { type: "enum", values: ["none", "minimal", "low", "medium", "high", "xhigh"] },
+  auto_review: { type: "boolean" },
+  post_task_prompt: { type: "string" },
+  allow_questions: { type: "boolean" },
+  session_dir: { type: "string" },
+  sandbox_policy: { type: "enum", values: ["danger-full-access", "workspace-write", "read-only"] },
+  skip_meta_skills: { type: "boolean" },
+  command_failure_circuit_breaker: { type: "boolean" },
+  idle_timeout_ms: { type: "positive-number" },
+  turn_plan_ms: { type: "positive-number" },
+  turn_default_ms: { type: "positive-number" },
+  pipeline_stage_ms: { type: "positive-number" },
+  pipeline_total_ms: { type: "positive-number" },
+  question_answer_ms: { type: "positive-number" },
+  artifact_retention_jobs: { type: "positive-number" },
+  artifact_retention_days: { type: "positive-number" },
+  redact_secrets: { type: "boolean" },
+  prompt_footer: { type: "string" },
+  default_backend: { type: "string" },
+  adapter_routing: { type: "object" },
+};
+
+function validateConfigLayer(layer, source, pathValue) {
+  const diagnostics = [];
+  if (!layer || typeof layer !== "object") return diagnostics;
+  for (const [key, value] of Object.entries(layer)) {
+    const schema = CONFIG_SCHEMA[key];
+    if (!schema) {
+      diagnostics.push({
+        severity: "warning",
+        code: "CONFIG_UNKNOWN_KEY",
+        source,
+        path: pathValue,
+        key,
+        message: `Unknown config key '${key}' will be ignored by current runtime paths.`,
+      });
+      continue;
+    }
+    const typeOk =
+      schema.type === "string" ? typeof value === "string" :
+      schema.type === "boolean" ? typeof value === "boolean" :
+      schema.type === "object" ? value && typeof value === "object" && !Array.isArray(value) :
+      schema.type === "positive-number" ? Number(value) > 0 :
+      schema.type === "enum" ? typeof value === "string" && schema.values.includes(value) :
+      true;
+    if (!typeOk) {
+      diagnostics.push({
+        severity: "error",
+        code: "CONFIG_INVALID_VALUE",
+        source,
+        path: pathValue,
+        key,
+        message: schema.type === "enum"
+          ? `Invalid value for '${key}'; expected one of: ${schema.values.join(", ")}.`
+          : `Invalid value for '${key}'; expected ${schema.type}.`,
+      });
+    }
+  }
+  return diagnostics;
+}
+
 function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
   const skillConfigPath = skillDir
     ? path.join(skillDir, "config.yaml")
@@ -94,6 +158,11 @@ export function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = n
       overrideConfigExists:
         overrideConfigPath ? fs.existsSync(overrideConfigPath) : false,
     },
+    diagnostics: [
+      ...validateConfigLayer(skillLayer, "skill-dir", skillConfigPath),
+      ...validateConfigLayer(workspaceLayer, "workspace-root", workspaceConfigPath),
+      ...validateConfigLayer(overrideLayer, "cwd", overrideConfigPath),
+    ],
   };
 }
 
@@ -115,4 +184,8 @@ export function resolveConfigLayers(skillDir, overrideDir = null, workspaceRoot 
     workspaceConfig: sources.workspaceConfigExists ? readConfigFile(sources.workspaceConfigPath) : {},
     cwdConfig: sources.overrideConfigExists ? readConfigFile(sources.overrideConfigPath) : {},
   };
+}
+
+export function validateConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
+  return loadConfigLayers(skillDir, overrideDir, workspaceRoot).diagnostics;
 }

@@ -4121,6 +4121,34 @@ function initSession(sessionDir, threadId) {
   fs7.writeFileSync(eventsPath, "", { flag: "a" });
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
+function writeSessionAliases(session, jobId) {
+  if (!session?.sessionDir || !session?.threadId || !jobId) return null;
+  const aliasDir = path7.join(session.sessionDir, "by-task");
+  fs7.mkdirSync(aliasDir, { recursive: true });
+  const payload = {
+    schema_version: "1.0",
+    jobId,
+    threadId: session.threadId,
+    eventsPath: session.eventsPath,
+    ndjsonPath: session.ndjsonPath,
+    diffPath: path7.join(session.sessionDir, `${session.threadId}.diff`)
+  };
+  const aliasPath = path7.join(aliasDir, `${jobId}.json`);
+  fs7.writeFileSync(aliasPath, JSON.stringify(payload, null, 2) + "\n");
+  for (const [suffix, target] of Object.entries({
+    events: session.eventsPath,
+    ndjson: session.ndjsonPath,
+    diff: payload.diffPath
+  })) {
+    const linkPath = path7.join(aliasDir, `${jobId}.${suffix}`);
+    try {
+      fs7.rmSync(linkPath, { force: true });
+      fs7.symlinkSync(target, linkPath);
+    } catch {
+    }
+  }
+  return { ...payload, aliasPath };
+}
 function findSession(sessionDir, threadId) {
   const ndjsonPath = path7.join(sessionDir, `${threadId}.ndjson`);
   const eventsPath = path7.join(sessionDir, `${threadId}.events`);
@@ -4138,15 +4166,19 @@ function logNdjson(session, tag, method, data) {
     data: data ?? {}
   };
   try {
-    fs7.appendFileSync(session.ndjsonPath, JSON.stringify(entry) + "\n");
+    fs7.appendFileSync(session.ndjsonPath, redactText(JSON.stringify(entry), session) + "\n");
   } catch {
   }
 }
 function logEvent(session, formattedBlock) {
   try {
-    fs7.appendFileSync(session.eventsPath, formattedBlock + "\n");
+    fs7.appendFileSync(session.eventsPath, redactText(formattedBlock, session) + "\n");
   } catch {
   }
+}
+function redactText(text, session) {
+  if (!session?.redactSecrets) return text;
+  return String(text).replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED_OPENAI_KEY]").replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]").replace(/\bxox[baprs]-[A-Za-z0-9-]{20,}\b/g, "[REDACTED_SLACK_TOKEN]").replace(/((?:api[_-]?key|token|secret|password)\s*[:=]\s*)["']?[^"',\s}\\]+/gi, "$1[REDACTED]");
 }
 function writeDiff(session, diffContent) {
   const diffPath = path7.join(session.sessionDir, `${session.threadId}.diff`);
@@ -4645,12 +4677,15 @@ function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPa
 function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }
-function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null, cwd = null }) {
+function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAgeMs, pid, jobId = null, budgetRemainingMs = null, scriptPath = null, cwd = null, assistantPreview = null }) {
   const lines = [
     `[HEARTBEAT] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | pid=${pid ?? "?"}`
   ];
   const itemLine = lastItem ? `  lastItem: ${lastItem}${Number.isFinite(lastItemAgeMs) ? ` (age ${fmtSeconds(lastItemAgeMs)})` : ""}` : "  lastItem: (none yet)";
   lines.push(itemLine);
+  if (assistantPreview) {
+    lines.push(`  assistant: ${compactPreview(assistantPreview, 220)}`);
+  }
   if (Number.isFinite(budgetRemainingMs) && budgetRemainingMs > 0) {
     lines.push(`  budget: ${fmtSeconds(budgetRemainingMs)} remaining`);
   }
@@ -4658,6 +4693,10 @@ function formatHeartbeatEvent(session, { elapsedMs, phase, lastItem, lastItemAge
     lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
   }
   return lines.join("\n");
+}
+function compactPreview(value, maxLength) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 function fmtSeconds(ms) {
   const s = Math.max(0, Math.round(ms / 1e3));
@@ -7970,6 +8009,9 @@ var DEFAULT_CONFIG = {
   // decisions; make it configurable so a slow loop can widen the window
   // without silently coercing the turn into a no-op answer.
   question_answer_ms: 3e5,
+  artifact_retention_jobs: 50,
+  artifact_retention_days: 30,
+  redact_secrets: false,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function resolveEffort(config, options = {}) {
@@ -8037,6 +8079,60 @@ function readConfigFile(filePath) {
     return {};
   }
 }
+var CONFIG_SCHEMA = {
+  mode: { type: "enum", values: ["plan", "default"] },
+  model: { type: "string" },
+  effort: { type: "enum", values: ["none", "minimal", "low", "medium", "high", "xhigh"] },
+  auto_review: { type: "boolean" },
+  post_task_prompt: { type: "string" },
+  allow_questions: { type: "boolean" },
+  session_dir: { type: "string" },
+  sandbox_policy: { type: "enum", values: ["danger-full-access", "workspace-write", "read-only"] },
+  skip_meta_skills: { type: "boolean" },
+  command_failure_circuit_breaker: { type: "boolean" },
+  idle_timeout_ms: { type: "positive-number" },
+  turn_plan_ms: { type: "positive-number" },
+  turn_default_ms: { type: "positive-number" },
+  pipeline_stage_ms: { type: "positive-number" },
+  pipeline_total_ms: { type: "positive-number" },
+  question_answer_ms: { type: "positive-number" },
+  artifact_retention_jobs: { type: "positive-number" },
+  artifact_retention_days: { type: "positive-number" },
+  redact_secrets: { type: "boolean" },
+  prompt_footer: { type: "string" },
+  default_backend: { type: "string" },
+  adapter_routing: { type: "object" }
+};
+function validateConfigLayer(layer, source, pathValue) {
+  const diagnostics = [];
+  if (!layer || typeof layer !== "object") return diagnostics;
+  for (const [key, value] of Object.entries(layer)) {
+    const schema2 = CONFIG_SCHEMA[key];
+    if (!schema2) {
+      diagnostics.push({
+        severity: "warning",
+        code: "CONFIG_UNKNOWN_KEY",
+        source,
+        path: pathValue,
+        key,
+        message: `Unknown config key '${key}' will be ignored by current runtime paths.`
+      });
+      continue;
+    }
+    const typeOk = schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
+    if (!typeOk) {
+      diagnostics.push({
+        severity: "error",
+        code: "CONFIG_INVALID_VALUE",
+        source,
+        path: pathValue,
+        key,
+        message: schema2.type === "enum" ? `Invalid value for '${key}'; expected one of: ${schema2.values.join(", ")}.` : `Invalid value for '${key}'; expected ${schema2.type}.`
+      });
+    }
+  }
+  return diagnostics;
+}
 function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
   const skillConfigPath = skillDir ? path8.join(skillDir, "config.yaml") : path8.join(os4.homedir(), ".codex-bridge", "config.yaml");
   const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path8.join(workspaceRoot, "config.yaml") : null;
@@ -8067,7 +8163,12 @@ function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
       workspaceConfigExists: workspaceConfigPath ? fs10.existsSync(workspaceConfigPath) : false,
       overrideConfigPath,
       overrideConfigExists: overrideConfigPath ? fs10.existsSync(overrideConfigPath) : false
-    }
+    },
+    diagnostics: [
+      ...validateConfigLayer(skillLayer, "skill-dir", skillConfigPath),
+      ...validateConfigLayer(workspaceLayer, "workspace-root", workspaceConfigPath),
+      ...validateConfigLayer(overrideLayer, "cwd", overrideConfigPath)
+    ]
   };
 }
 function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
@@ -8075,6 +8176,9 @@ function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
 }
 function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
+}
+function validateConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
+  return loadConfigLayers(skillDir, overrideDir, workspaceRoot).diagnostics;
 }
 
 // src/adapters/codex/index.mjs
@@ -10927,6 +11031,12 @@ function appendRenderedBriefToPrompt(prompt, brief) {
     "[/CODEX-BRIDGE STRUCTURED BRIEF]"
   ].filter((part) => String(part).trim()).join("\n\n");
 }
+function prepareRuntimeSession(session, config, jobId) {
+  if (!session) return session;
+  session.redactSecrets = Boolean(config?.redact_secrets);
+  writeSessionAliases(session, jobId);
+  return session;
+}
 var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
 var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
 var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -11194,7 +11304,7 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
     summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
@@ -11210,10 +11320,11 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge result task-abc --json"]
   },
   wait: {
-    synopsis: "wait <job-id-or-thread-id> [--timeout-ms <ms>] [--json]",
-    summary: "Block until the target job's events file emits [DONE], [ERROR], or [INCOMPLETE].",
+    synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
+    summary: "Block until target job events emit [DONE], [ERROR], or [INCOMPLETE]. With --any, return the first terminal job from N targets.",
     examples: [
       "codex-bridge wait task-abc --timeout-ms 600000 --json",
+      "codex-bridge wait --any task-a task-b task-c --json",
       "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
     ]
   },
@@ -11687,6 +11798,7 @@ async function handleConfigShow(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
   const effective = getBridgeConfig(cwd, workspaceRoot);
+  const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
   const overrides = {};
   for (const [k, v] of Object.entries(effective)) {
     if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
@@ -11705,6 +11817,9 @@ async function handleConfigShow(argv) {
     },
     effective_config: effective,
     overrides_vs_defaults: overrides,
+    diagnostics,
+    warnings: diagnostics.filter((d) => d.severity === "warning"),
+    errors: diagnostics.filter((d) => d.severity === "error"),
     precedence_order_low_to_high: [
       "DEFAULT_CONFIG",
       "skill-dir config.yaml",
@@ -11730,6 +11845,12 @@ async function handleConfigShow(argv) {
   if (Object.keys(overrides).length > 0) {
     lines.push("", "* = differs from DEFAULT_CONFIG");
   }
+  if (diagnostics.length > 0) {
+    lines.push("", "Diagnostics:");
+    for (const diagnostic of diagnostics) {
+      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key} \u2014 ${diagnostic.message}`);
+    }
+  }
   const rendered = `${lines.join("\n")}
 `;
   emitSuccess("config", payload, rendered, { json: options.json, startedAt });
@@ -11752,6 +11873,21 @@ async function handleUpdate(argv) {
       current_version: BRIDGE_VERSION,
       latest_version: update.latestVersion ?? null,
       has_update: true,
+      update_check: {
+        cached: Boolean(update.cached),
+        skipped: Boolean(update.skipped),
+        reason: update.reason ?? null,
+        fetch_reason: update.fetchReason ?? null,
+        fetch_status: update.fetchStatus ?? null,
+        cache_age_ms: update.cacheAgeMs ?? null
+      },
+      apply: {
+        requested: true,
+        command: applyResult.command,
+        ok: applyResult.ok,
+        exit_code: applyResult.exitCode,
+        error: applyResult.error
+      },
       applied: applyResult.ok,
       apply_exit_code: applyResult.exitCode,
       apply_error: applyResult.error,
@@ -11777,6 +11913,19 @@ async function handleUpdate(argv) {
     current_version: BRIDGE_VERSION,
     latest_version: update.latestVersion ?? null,
     has_update: Boolean(update.hasUpdate),
+    update_check: {
+      cached: Boolean(update.cached),
+      skipped: Boolean(update.skipped),
+      reason: update.reason ?? null,
+      fetch_reason: update.fetchReason ?? null,
+      fetch_status: update.fetchStatus ?? null,
+      cache_age_ms: update.cacheAgeMs ?? null
+    },
+    apply: {
+      requested: wantApply,
+      skipped: wantApply ? update.hasUpdate ? null : "no-update" : "not-requested",
+      command: installCommand
+    },
     check_skipped: Boolean(update.skipped),
     check_skip_reason: update.reason ?? null,
     fetch_reason: update.fetchReason ?? null,
@@ -11802,6 +11951,7 @@ Or rerun with --apply to install automatically.
   emitSuccess("update", payload, rendered, { json: options.json, startedAt });
 }
 function runSkillsAddForApply(jsonMode) {
+  const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
   try {
     const result = spawnSync4(
       "npx",
@@ -11815,16 +11965,17 @@ function runSkillsAddForApply(jsonMode) {
       return {
         ok: false,
         exitCode: null,
-        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.message
+        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.message,
+        command
       };
     }
     if (result.status !== 0) {
       const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
-      return { ok: false, exitCode: result.status, error: stderrTail || null };
+      return { ok: false, exitCode: result.status, error: stderrTail || null, command };
     }
-    return { ok: true, exitCode: 0, error: null };
+    return { ok: true, exitCode: 0, error: null, command };
   } catch (err) {
-    return { ok: false, exitCode: null, error: err?.message ?? String(err) };
+    return { ok: false, exitCode: null, error: err?.message ?? String(err), command };
   }
 }
 function renderUpdateFailureHint(update, currentVersion) {
@@ -12923,7 +13074,11 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     // `item.completed` notifications; see config.mjs DEFAULT_CONFIG comment.
     idleTimeoutMs: Number(request.idleTimeoutMs) > 0 ? Number(request.idleTimeoutMs) : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : 3e5,
     onTurnStart: (info) => {
-      heartbeatState.session = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
+      heartbeatState.session = prepareRuntimeSession(
+        findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId),
+        config,
+        request.jobId ?? null
+      );
       heartbeatState.phase = isPlanMode ? "plan" : "execute";
       heartbeatState.turnTimeoutMs = info.turnParams?.turnTimeoutMs ?? heartbeatState.turnTimeoutMs;
       startHeartbeat();
@@ -12961,7 +13116,11 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     onItemCompleted: (item, { threadId }) => {
       const effectiveThreadId = threadId ?? null;
       if (!effectiveThreadId) return;
-      const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
+      const s = prepareRuntimeSession(
+        findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId),
+        config,
+        request.jobId ?? null
+      );
       logNdjson(s, "ITEM_COMPLETED", "item/completed", {
         itemId: item?.id ?? null,
         itemType: item?.type ?? null,
@@ -13134,7 +13293,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
-            cwd: stateCwd
+            cwd: stateCwd,
+            assistantPreview: checkpointState.lastAssistantMessage
           })
         );
       } catch {
@@ -13272,7 +13432,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const backoffMs = policy.backoffMs[attempt - 1] ?? 2e3;
       const errorCode = result.error?.codexErrorInfo ?? result.error?.code ?? classifyError(result.error).code;
       if (result.threadId) {
-        const retrySession = initSession(sessionDir, result.threadId);
+        const retrySession = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
         logEvent(retrySession, formatRetryingEvent(retrySession, {
           attempt,
           maxAttempts: policy.maxAttempts,
@@ -13304,7 +13464,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       retryHistory[retryHistory.length - 1].outcome = "failed";
       result = retryResult;
     }
-    session = initSession(sessionDir, result.threadId);
+    session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
     const computedEventsPath = result.threadId ? path14.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
@@ -13884,8 +14044,8 @@ async function handleTaskWorker(argv) {
 async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms"],
-    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch"]
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
   });
   const cwd = resolveCommandCwd(options);
   if (options.watch) {
@@ -13907,8 +14067,12 @@ async function handleStatus(argv) {
     return;
   }
   if (options["prune-orphans"] || options.cleanup) {
-    const pruneReport = pruneOrphanedJobs(cwd);
-    emitSuccess("status", pruneReport, renderPruneOrphansReport(pruneReport), {
+    const report2 = options.cleanup ? cleanupTerminalJobs(cwd, {
+      dryRun: Boolean(options["dry-run"]),
+      retentionDays: Number(options["retention-days"]) > 0 ? Number(options["retention-days"]) : null,
+      retentionJobs: Number(options["retention-jobs"]) > 0 ? Number(options["retention-jobs"]) : null
+    }) : pruneOrphanedJobs(cwd);
+    emitSuccess("status", report2, options.cleanup ? renderCleanupReport(report2) : renderPruneOrphansReport(report2), {
       json: options.json,
       startedAt
     });
@@ -14219,6 +14383,64 @@ function renderPruneOrphansReport(report) {
   return `${lines.join("\n")}
 `;
 }
+function cleanupTerminalJobs(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const retentionDays = options.retentionDays ?? (Number(config.artifact_retention_days) || 30);
+  const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
+  const dryRun = Boolean(options.dryRun);
+  const jobs = listJobs(workspaceRoot, { raw: true });
+  const terminal = sortJobsNewestFirst2(jobs.filter((job) => !isActiveStatus(job.status)));
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1e3;
+  const removable = terminal.filter((job, index) => {
+    const ts = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
+    return index >= retentionJobs || Number.isFinite(ts) && ts < cutoffMs;
+  });
+  const removed = [];
+  if (!dryRun && removable.length > 0) {
+    const removeIds = new Set(removable.map((job) => job.id));
+    updateState(workspaceRoot, (state) => {
+      state.jobs = (state.jobs ?? []).filter((job) => !removeIds.has(job.id));
+    });
+    for (const job of removable) {
+      for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
+        if (!filePath) continue;
+        try {
+          fs16.rmSync(filePath, { force: true });
+        } catch {
+        }
+      }
+      removed.push({ id: job.id, status: job.status, completedAt: job.completedAt ?? null });
+    }
+  }
+  return {
+    workspaceRoot,
+    dryRun,
+    retentionDays,
+    retentionJobs,
+    candidates: removable.map((job) => ({ id: job.id, status: job.status, completedAt: job.completedAt ?? null })),
+    removed,
+    removedCount: removed.length,
+    candidateCount: removable.length
+  };
+}
+function isActiveStatus(status) {
+  return status === "queued" || status === "running";
+}
+function renderCleanupReport(report) {
+  if (report.candidateCount === 0) {
+    return `No terminal jobs exceed retention (${report.retentionJobs} jobs / ${report.retentionDays} days).
+`;
+  }
+  const verb = report.dryRun ? "Would remove" : "Removed";
+  const lines = [`${verb} ${report.dryRun ? report.candidateCount : report.removedCount} terminal job(s):`];
+  const entries = report.dryRun ? report.candidates : report.removed;
+  for (const entry of entries) {
+    lines.push(`  - ${entry.id} (${entry.status}, completed=${entry.completedAt ?? "unknown"})`);
+  }
+  return `${lines.join("\n")}
+`;
+}
 async function handleResult(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -14322,9 +14544,13 @@ async function handleWait(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "any"]
   });
   const cwd = resolveCommandCwd(options);
+  if (options.any) {
+    await handleWaitAny(cwd, positionals, options, startedAt);
+    return;
+  }
   const reference = positionals[0] ?? "";
   if (!reference) {
     throw usageError("wait requires <job-id-or-thread-id>");
@@ -14377,6 +14603,95 @@ async function handleWait(argv) {
 `,
     { json: options.json, startedAt }
   );
+}
+async function handleWaitAny(cwd, references, options, startedAt) {
+  const refs = references.filter(Boolean);
+  if (refs.length < 2) {
+    throw usageError("wait --any requires at least two job ids or thread ids.");
+  }
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+  const targets = refs.map((reference) => {
+    let job;
+    try {
+      job = resolveResultJob(cwd, reference).job;
+    } catch (err) {
+      if (err?.code === "JOB_NOT_FINISHED") {
+        job = buildSingleJobSnapshot(cwd, reference).job;
+      } else {
+        throw err;
+      }
+    }
+    if (!job?.threadId) {
+      throw notFoundError(`Job ${job?.id ?? reference} has no thread id yet.`, "JOB_HAS_NO_THREAD");
+    }
+    return {
+      reference,
+      job,
+      eventsPath: path14.join(sessionDir, `${job.threadId}.events`)
+    };
+  });
+  const deadline = Date.now() + timeoutMs;
+  let winner = null;
+  while (!winner && Date.now() < deadline) {
+    for (const target of targets) {
+      const result = scanTerminalEvent(target.eventsPath, TERMINAL);
+      if (result) {
+        winner = { target, result };
+        break;
+      }
+    }
+    if (!winner) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  if (!winner) {
+    throw new CliError(`No terminal event for any target within ${Math.round(timeoutMs / 1e3)}s.`, {
+      class: "timeout",
+      code: "WAIT_TIMEOUT",
+      retryable: true,
+      suggestion: "Run `status --watch --all` to inspect live multi-job state."
+    });
+  }
+  const elapsedMs = Date.now() - startedAt;
+  emitSuccess(
+    "wait",
+    {
+      mode: "any",
+      winner: {
+        reference: winner.target.reference,
+        jobId: winner.target.job.id,
+        threadId: winner.target.job.threadId,
+        terminalTag: winner.result.tag,
+        lastEventLine: winner.result.line,
+        eventsPath: winner.target.eventsPath
+      },
+      targets: targets.map((target) => ({
+        reference: target.reference,
+        jobId: target.job.id,
+        threadId: target.job.threadId,
+        eventsPath: target.eventsPath
+      })),
+      elapsedMs
+    },
+    `${winner.result.tag} ${winner.target.job.id} after ${Math.round(elapsedMs / 1e3)}s
+`,
+    { json: options.json, startedAt }
+  );
+}
+function scanTerminalEvent(eventsPath, pattern) {
+  try {
+    const data = fs16.readFileSync(eventsPath, "utf8");
+    for (const line of data.split("\n")) {
+      const m = pattern.exec(line);
+      if (m) return { timedOut: false, tag: m[1], line };
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return null;
 }
 async function handleEvents(argv) {
   const startedAt = Date.now();

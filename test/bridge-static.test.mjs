@@ -39,6 +39,8 @@ test("broker direct invocation detection uses platform-safe file URLs", () => {
 
 test("wait terminal matching is anchored to event headers", () => {
   assert.match(bridge, /const TERMINAL = \/\^\\\[\(DONE\|ERROR\|INCOMPLETE\)\\\]\//);
+  assert.match(bridge, /async function handleWaitAny/);
+  assert.match(bridge, /mode: "any"/);
   assert.match(bridge, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*/);
   assert.doesNotMatch(bridge, /\*"\[DONE\]"\*\|\*"\[ERROR\]"\*\|\*"\[INCOMPLETE\]"\*/);
 });
@@ -97,6 +99,17 @@ test("session directories resolve relative to canonical workspace roots", () => 
   assert.match(bridge, /resolveSessionDir\(config\.session_dir, workspaceRoot\)/);
   assert.match(bridge, /resolveSessionDir\(reviewConfig\.session_dir, resolveWorkspaceRoot\(request\.cwd\)\)/);
   assert.match(bridge, /resolveSessionDir\(getBridgeConfig\(cwd \?\? null, job\.workspaceRoot\)\.session_dir, job\.workspaceRoot\)/);
+});
+
+test("v2.2 ergonomics hooks are wired into runtime surfaces", () => {
+  assert.match(bridge, /validateConfigLayers\(ROOT_DIR, cwd, workspaceRoot\)/);
+  assert.match(bridge, /function cleanupTerminalJobs/);
+  assert.match(bridge, /retention-days/);
+  assert.match(bridge, /prepareRuntimeSession/);
+  assert.match(bridge, /writeSessionAliases\(session, jobId\)/);
+  assert.match(bridge, /assistantPreview: checkpointState\.lastAssistantMessage/);
+  assert.match(bridge, /update_check:/);
+  assert.match(bridge, /apply:/);
 });
 
 test("recovery-sensitive commands emit structured recovery payloads", () => {

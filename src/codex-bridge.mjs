@@ -73,7 +73,9 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  resolveJobFile,
   setConfig,
+  updateState,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
@@ -113,12 +115,14 @@ import {
   COMPLETION_CHECK_SCHEMA,
   DEFAULT_CONFIG,
   resolveConfigLayers,
-  resolveConfigSources
+  resolveConfigSources,
+  validateConfigLayers
 } from "./lib/config.mjs";
 import {
   resolveSessionDir,
   initSession,
   findSession,
+  writeSessionAliases,
   logNdjson,
   logEvent,
   captureGitDiff,
@@ -319,6 +323,13 @@ function appendRenderedBriefToPrompt(prompt, brief) {
     rendered,
     "[/CODEX-BRIDGE STRUCTURED BRIEF]",
   ].filter((part) => String(part).trim()).join("\n\n");
+}
+
+function prepareRuntimeSession(session, config, jobId) {
+  if (!session) return session;
+  session.redactSecrets = Boolean(config?.redact_secrets);
+  writeSessionAliases(session, jobId);
+  return session;
 }
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
@@ -659,7 +670,7 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
     summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
@@ -675,10 +686,11 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge result task-abc --json"]
   },
   wait: {
-    synopsis: "wait <job-id-or-thread-id> [--timeout-ms <ms>] [--json]",
-    summary: "Block until the target job's events file emits [DONE], [ERROR], or [INCOMPLETE].",
+    synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
+    summary: "Block until target job events emit [DONE], [ERROR], or [INCOMPLETE]. With --any, return the first terminal job from N targets.",
     examples: [
       "codex-bridge wait task-abc --timeout-ms 600000 --json",
+      "codex-bridge wait --any task-a task-b task-c --json",
       "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
     ]
   },
@@ -1242,6 +1254,7 @@ async function handleConfigShow(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
   const effective = getBridgeConfig(cwd, workspaceRoot);
+  const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
 
   // Diff against defaults so the caller can see which keys were overridden
   // (useful for a human-eyeballing the output).
@@ -1264,6 +1277,9 @@ async function handleConfigShow(argv) {
     },
     effective_config: effective,
     overrides_vs_defaults: overrides,
+    diagnostics,
+    warnings: diagnostics.filter((d) => d.severity === "warning"),
+    errors: diagnostics.filter((d) => d.severity === "error"),
     precedence_order_low_to_high: [
       "DEFAULT_CONFIG",
       "skill-dir config.yaml",
@@ -1290,6 +1306,12 @@ async function handleConfigShow(argv) {
   }
   if (Object.keys(overrides).length > 0) {
     lines.push("", "* = differs from DEFAULT_CONFIG");
+  }
+  if (diagnostics.length > 0) {
+    lines.push("", "Diagnostics:");
+    for (const diagnostic of diagnostics) {
+      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key} — ${diagnostic.message}`);
+    }
   }
   const rendered = `${lines.join("\n")}\n`;
 
@@ -1327,6 +1349,21 @@ async function handleUpdate(argv) {
       current_version: BRIDGE_VERSION,
       latest_version: update.latestVersion ?? null,
       has_update: true,
+      update_check: {
+        cached: Boolean(update.cached),
+        skipped: Boolean(update.skipped),
+        reason: update.reason ?? null,
+        fetch_reason: update.fetchReason ?? null,
+        fetch_status: update.fetchStatus ?? null,
+        cache_age_ms: update.cacheAgeMs ?? null,
+      },
+      apply: {
+        requested: true,
+        command: applyResult.command,
+        ok: applyResult.ok,
+        exit_code: applyResult.exitCode,
+        error: applyResult.error,
+      },
       applied: applyResult.ok,
       apply_exit_code: applyResult.exitCode,
       apply_error: applyResult.error,
@@ -1355,6 +1392,19 @@ async function handleUpdate(argv) {
     current_version: BRIDGE_VERSION,
     latest_version: update.latestVersion ?? null,
     has_update: Boolean(update.hasUpdate),
+    update_check: {
+      cached: Boolean(update.cached),
+      skipped: Boolean(update.skipped),
+      reason: update.reason ?? null,
+      fetch_reason: update.fetchReason ?? null,
+      fetch_status: update.fetchStatus ?? null,
+      cache_age_ms: update.cacheAgeMs ?? null,
+    },
+    apply: {
+      requested: wantApply,
+      skipped: wantApply ? (update.hasUpdate ? null : "no-update") : "not-requested",
+      command: installCommand,
+    },
     check_skipped: Boolean(update.skipped),
     check_skip_reason: update.reason ?? null,
     fetch_reason: update.fetchReason ?? null,
@@ -1387,6 +1437,7 @@ async function handleUpdate(argv) {
 // corrupt the JSON envelope). Returns the exit-code shape the caller
 // branches on.
 function runSkillsAddForApply(jsonMode) {
+  const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
   try {
     const result = spawnSync(
       "npx",
@@ -1403,15 +1454,16 @@ function runSkillsAddForApply(jsonMode) {
         error: result.error.code === "ENOENT"
           ? "npx not found on PATH; install Node.js to get npx"
           : result.error.message,
+        command,
       };
     }
     if (result.status !== 0) {
       const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
-      return { ok: false, exitCode: result.status, error: stderrTail || null };
+      return { ok: false, exitCode: result.status, error: stderrTail || null, command };
     }
-    return { ok: true, exitCode: 0, error: null };
+    return { ok: true, exitCode: 0, error: null, command };
   } catch (err) {
-    return { ok: false, exitCode: null, error: err?.message ?? String(err) };
+    return { ok: false, exitCode: null, error: err?.message ?? String(err), command };
   }
 }
 
@@ -2792,7 +2844,11 @@ async function runBridgeTask(request) {
       // [ERROR] tag on exit (the top-level try/finally below is the
       // ultimate backstop). Interval is 60s by default, overridable via
       // CODEX_BRIDGE_HEARTBEAT_MS (milliseconds, positive integer).
-      heartbeatState.session = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
+      heartbeatState.session = prepareRuntimeSession(
+        findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId),
+        config,
+        request.jobId ?? null,
+      );
       heartbeatState.phase = isPlanMode ? "plan" : "execute";
       heartbeatState.turnTimeoutMs = info.turnParams?.turnTimeoutMs ?? heartbeatState.turnTimeoutMs;
       startHeartbeat();
@@ -2845,7 +2901,11 @@ async function runBridgeTask(request) {
       // `references/ndjson-guide.md`.
       const effectiveThreadId = threadId ?? null;
       if (!effectiveThreadId) return;
-      const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
+      const s = prepareRuntimeSession(
+        findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId),
+        config,
+        request.jobId ?? null,
+      );
       logNdjson(s, "ITEM_COMPLETED", "item/completed", {
         itemId: item?.id ?? null,
         itemType: item?.type ?? null,
@@ -3103,6 +3163,7 @@ async function runBridgeTask(request) {
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
             cwd: stateCwd,
+            assistantPreview: checkpointState.lastAssistantMessage,
           })
         );
       } catch {
@@ -3316,7 +3377,7 @@ async function runBridgeTask(request) {
       // [RETRYING] must surface on the events file for the thread that failed.
       // If we have a threadId, initialize or find its session and log there.
       if (result.threadId) {
-        const retrySession = initSession(sessionDir, result.threadId);
+        const retrySession = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
         logEvent(retrySession, formatRetryingEvent(retrySession, {
           attempt,
           maxAttempts: policy.maxAttempts,
@@ -3353,7 +3414,7 @@ async function runBridgeTask(request) {
     }
 
     // Create session for post-processing
-    session = initSession(sessionDir, result.threadId);
+    session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
 
   // Ready-to-paste Monitor hint — computed once, attached to every setPhase
   // branch below so synchronous callers never have to assemble one.
@@ -4111,8 +4172,8 @@ async function handleTaskWorker(argv) {
 async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms"],
-    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch"]
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
   });
 
   const cwd = resolveCommandCwd(options);
@@ -4151,8 +4212,14 @@ async function handleStatus(argv) {
   // does but we can't signal. Either outcome means "pid exists (or did)";
   // only ESRCH is a clear reap signal.
   if (options["prune-orphans"] || options.cleanup) {
-    const pruneReport = pruneOrphanedJobs(cwd);
-    emitSuccess("status", pruneReport, renderPruneOrphansReport(pruneReport), {
+    const report = options.cleanup
+      ? cleanupTerminalJobs(cwd, {
+          dryRun: Boolean(options["dry-run"]),
+          retentionDays: Number(options["retention-days"]) > 0 ? Number(options["retention-days"]) : null,
+          retentionJobs: Number(options["retention-jobs"]) > 0 ? Number(options["retention-jobs"]) : null,
+        })
+      : pruneOrphanedJobs(cwd);
+    emitSuccess("status", report, options.cleanup ? renderCleanupReport(report) : renderPruneOrphansReport(report), {
       json: options.json,
       startedAt
     });
@@ -4514,6 +4581,62 @@ function renderPruneOrphansReport(report) {
   return `${lines.join("\n")}\n`;
 }
 
+function cleanupTerminalJobs(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const retentionDays = options.retentionDays ?? (Number(config.artifact_retention_days) || 30);
+  const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
+  const dryRun = Boolean(options.dryRun);
+  const jobs = listJobs(workspaceRoot, { raw: true });
+  const terminal = sortJobsNewestFirst(jobs.filter((job) => !isActiveStatus(job.status)));
+  const cutoffMs = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
+  const removable = terminal.filter((job, index) => {
+    const ts = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
+    return index >= retentionJobs || (Number.isFinite(ts) && ts < cutoffMs);
+  });
+  const removed = [];
+  if (!dryRun && removable.length > 0) {
+    const removeIds = new Set(removable.map((job) => job.id));
+    updateState(workspaceRoot, (state) => {
+      state.jobs = (state.jobs ?? []).filter((job) => !removeIds.has(job.id));
+    });
+    for (const job of removable) {
+      for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
+        if (!filePath) continue;
+        try { fs.rmSync(filePath, { force: true }); } catch { /* best effort */ }
+      }
+      removed.push({ id: job.id, status: job.status, completedAt: job.completedAt ?? null });
+    }
+  }
+  return {
+    workspaceRoot,
+    dryRun,
+    retentionDays,
+    retentionJobs,
+    candidates: removable.map((job) => ({ id: job.id, status: job.status, completedAt: job.completedAt ?? null })),
+    removed,
+    removedCount: removed.length,
+    candidateCount: removable.length,
+  };
+}
+
+function isActiveStatus(status) {
+  return status === "queued" || status === "running";
+}
+
+function renderCleanupReport(report) {
+  if (report.candidateCount === 0) {
+    return `No terminal jobs exceed retention (${report.retentionJobs} jobs / ${report.retentionDays} days).\n`;
+  }
+  const verb = report.dryRun ? "Would remove" : "Removed";
+  const lines = [`${verb} ${report.dryRun ? report.candidateCount : report.removedCount} terminal job(s):`];
+  const entries = report.dryRun ? report.candidates : report.removed;
+  for (const entry of entries) {
+    lines.push(`  - ${entry.id} (${entry.status}, completed=${entry.completedAt ?? "unknown"})`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 async function handleResult(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -4624,10 +4747,14 @@ async function handleWait(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "any"]
   });
 
   const cwd = resolveCommandCwd(options);
+  if (options.any) {
+    await handleWaitAny(cwd, positionals, options, startedAt);
+    return;
+  }
   const reference = positionals[0] ?? "";
   if (!reference) {
     throw usageError("wait requires <job-id-or-thread-id>");
@@ -4683,6 +4810,99 @@ async function handleWait(argv) {
     `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1000)}s\n`,
     { json: options.json, startedAt }
   );
+}
+
+async function handleWaitAny(cwd, references, options, startedAt) {
+  const refs = references.filter(Boolean);
+  if (refs.length < 2) {
+    throw usageError("wait --any requires at least two job ids or thread ids.");
+  }
+  const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+
+  const targets = refs.map((reference) => {
+    let job;
+    try {
+      job = resolveResultJob(cwd, reference).job;
+    } catch (err) {
+      if (err?.code === "JOB_NOT_FINISHED") {
+        job = buildSingleJobSnapshot(cwd, reference).job;
+      } else {
+        throw err;
+      }
+    }
+    if (!job?.threadId) {
+      throw notFoundError(`Job ${job?.id ?? reference} has no thread id yet.`, "JOB_HAS_NO_THREAD");
+    }
+    return {
+      reference,
+      job,
+      eventsPath: path.join(sessionDir, `${job.threadId}.events`),
+    };
+  });
+
+  const deadline = Date.now() + timeoutMs;
+  let winner = null;
+  while (!winner && Date.now() < deadline) {
+    for (const target of targets) {
+      const result = scanTerminalEvent(target.eventsPath, TERMINAL);
+      if (result) {
+        winner = { target, result };
+        break;
+      }
+    }
+    if (!winner) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  if (!winner) {
+    throw new CliError(`No terminal event for any target within ${Math.round(timeoutMs / 1000)}s.`, {
+      class: "timeout",
+      code: "WAIT_TIMEOUT",
+      retryable: true,
+      suggestion: "Run `status --watch --all` to inspect live multi-job state.",
+    });
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  emitSuccess(
+    "wait",
+    {
+      mode: "any",
+      winner: {
+        reference: winner.target.reference,
+        jobId: winner.target.job.id,
+        threadId: winner.target.job.threadId,
+        terminalTag: winner.result.tag,
+        lastEventLine: winner.result.line,
+        eventsPath: winner.target.eventsPath,
+      },
+      targets: targets.map((target) => ({
+        reference: target.reference,
+        jobId: target.job.id,
+        threadId: target.job.threadId,
+        eventsPath: target.eventsPath,
+      })),
+      elapsedMs,
+    },
+    `${winner.result.tag} ${winner.target.job.id} after ${Math.round(elapsedMs / 1000)}s\n`,
+    { json: options.json, startedAt }
+  );
+}
+
+function scanTerminalEvent(eventsPath, pattern) {
+  try {
+    const data = fs.readFileSync(eventsPath, "utf8");
+    for (const line of data.split("\n")) {
+      const m = pattern.exec(line);
+      if (m) return { timedOut: false, tag: m[1], line };
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return null;
 }
 
 async function handleEvents(argv) {

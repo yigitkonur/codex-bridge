@@ -1,6 +1,6 @@
 ---
 description: Show active and recent Codex Bridge jobs for this repository
-argument-hint: "[job-id] [--wait] [--watch [--interval 10s]] [--timeout-ms <ms>] [--all] [--json]"
+argument-hint: "[job-id] [--wait] [--watch [--interval 10s]] [--cleanup [--dry-run]] [--timeout-ms <ms>] [--all] [--json]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---

@@ -9,21 +9,21 @@ Research summary: `.planning/research/SUMMARY.md`
 Codebase maps: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/CONCERNS.md`, `.planning/codebase/CONVENTIONS.md`, `.planning/codebase/INTEGRATIONS.md`, `.planning/codebase/STACK.md`, `.planning/codebase/STRUCTURE.md`, `.planning/codebase/TESTING.md`
 
 **Core value:** Claude Code can hand work to Codex and regain reliable, inspectable control through stable commands, events, artifacts, reviews, and merge gates.
-**Current focus:** v2.1.0 field-report remediation is complete; no active phase remains.
+**Current focus:** v2.2.0 ergonomics and safety hardening is complete; no active phase remains.
 
 ## Current Position
 
 Phase: None
 Plan: None
-Status: v2.1.0 Claude Plugin Field Report Remediation complete
-Last activity: 2026-05-03 - Completed Phase 7 field-report remediation: brief delivery, resume/worktree safety, pipeline diff/check events, skill/docs alignment, generated outputs, and static verification.
+Status: v2.2.0 Ergonomics And Safety Hardening complete
+Last activity: 2026-05-03 - Completed Phases 8-12: task artifact aliases, wait-any fan-in, config diagnostics, structured update metadata, cleanup retention, opt-in redaction, docs, generated outputs, and static verification.
 
 Progress: [##########] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 22
+- Total plans completed: 27
 - Average duration: n/a
 - Total execution time: 0.0 hours
 
@@ -38,9 +38,10 @@ Progress: [##########] 100%
 | 5. State Artifact And Recovery Resilience | 3/3 | 0.0h | n/a |
 | 6. Release Readiness And Runtime Smoke | 3/3 | 0.0h | n/a |
 | 7. Claude Plugin Field Report Remediation | 3/3 | 0.0h | n/a |
+| 8-12. Ergonomics And Safety Hardening | 5/5 | 0.0h | n/a |
 
 **Recent Trend:**
-- Last 5 plans: 06-02, 06-03, 07-01, 07-02, 07-03
+- Last 5 plans: 08, 09, 10, 11, 12
 - Trend: milestone complete
 
 *Updated after each plan completion.*
@@ -66,11 +67,12 @@ Recent decisions affecting current work:
 - Milestone completion on 2026-05-03 archived v2.0.0 roadmap, requirements, and audit under `.planning/milestones/`; added `.planning/MILESTONES.md` and `.planning/RETROSPECTIVE.md`.
 - Closeout cleanup on 2026-05-03 removed the redundant root-level milestone audit duplicate after confirming it matched `.planning/milestones/v2.0.0-MILESTONE-AUDIT.md`.
 - Phase 7 execution on 2026-05-03 completed the Claude plugin field-report remediation. `npm run verify:static` passed with 359 tests / 358 passed / 1 skipped plus baseline contracts OK; `git diff --check` passed.
+- v2.2 execution on 2026-05-03 completed monitor/artifact ergonomics, config diagnostics, update safety metadata, retention/redaction cleanup controls, and backend-readiness closeout. `npm run verify:static` passed with 365 tests / 364 passed / 1 skipped plus baseline contracts OK; `npm run smoke:runtime -- --require-codex --json` passed against `codex-cli 0.128.0`; `git diff --check` passed.
 
 ### Pending Todos
 
 - Start a fresh next milestone with `$gsd-new-milestone` before adding new implementation phases.
-- Consider next milestone around richer monitor telemetry, task-id session aliases, cancel/resume naming polish, job-group/wait-any primitives, config validation, auto-update safety hardening, retention/redaction controls, and future backend readiness.
+- Consider next milestone around PR creation, multi-job monitor auto-arm, deeper live Claude plugin smoke automation, and future backend implementations.
 - Packaged plugin marketplace promotion is no longer pending: the marketplace entry and packaged plugin manifest now use the canonical `codex-bridge` install name.
 
 ### Blockers/Concerns
@@ -87,11 +89,10 @@ Recent decisions affecting current work:
 | Future Backends | Add non-Codex backend implementations after adapter contract completion | v2 | Initialization |
 | Distribution | Retire legacy skill layout only after plugin distribution and update guidance no longer depend on it | v2 | Initialization |
 | Runtime UX | PR creation and multi-job monitor auto-arm | v2 | Initialization |
-| Runtime UX | Richer monitor heartbeat previews, task-id session aliases, cancel/resume title cleanup, and job-group/wait-any primitives | v2 | Phase 7 |
 
 ## Session Continuity
 
 Last session: 2026-05-03
-Stopped at: v2.1.0 field-report remediation complete, generated outputs rebuilt, static verification passed, and no active phase remaining.
+Stopped at: v2.2.0 ergonomics and safety hardening complete, generated outputs rebuilt, static verification passed, and no active phase remaining.
 Resume file: None
 Next recommended command: `$gsd-new-milestone`
