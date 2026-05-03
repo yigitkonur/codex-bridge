@@ -9370,6 +9370,15 @@ var ADVERSARIAL_VERDICTS = /* @__PURE__ */ new Set(["approve", "approved", "need
 var FINDING_SEVERITIES = /* @__PURE__ */ new Set(["critical", "high", "medium", "low", "P0", "P1", "P2", "P3", "P4"]);
 function parseNativeReviewText(text) {
   const reviewText = typeof text === "string" ? text : String(text ?? "");
+  if (!reviewText.trim()) {
+    return {
+      verdict: "needs-attention",
+      summary: "Native review returned no review output.",
+      findings: [],
+      next_steps: ["Rerun review; blank native review output cannot approve the target."],
+      raw_output: reviewText
+    };
+  }
   const findings = parseNativeReviewFindings(reviewText).map(
     (finding, index) => validateReviewFinding2(finding, index)
   );
@@ -9730,13 +9739,11 @@ async function runAutoPipeline(options) {
         }
         completedStages.push("review");
         checkPipelineTimeout();
-        if (reviewResult.reviewText) {
-          const parsed = parseNativeReviewText(reviewResult.reviewText);
-          reviewVerdict = parsed.verdict;
-          reviewFindings = parsed.findings;
-          reviewFindingCount = reviewFindings.length;
-          unstructuredReviewAttention = reviewVerdict !== "approved" && reviewFindingCount === 0;
-        }
+        const parsed = parseNativeReviewText(reviewResult.reviewText);
+        reviewVerdict = parsed.verdict;
+        reviewFindings = parsed.findings;
+        reviewFindingCount = reviewFindings.length;
+        unstructuredReviewAttention = reviewVerdict !== "approved" && reviewFindingCount === 0;
         logEvent(session, formatPipelineEvent(session, {
           stage: "review",
           suffix: "done",

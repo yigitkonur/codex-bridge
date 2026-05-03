@@ -56,6 +56,21 @@ test("parseNativeReviewText treats qualified no-issue phrases as approved", () =
   }
 });
 
+test("parseNativeReviewText treats blank native review output as needs-attention", () => {
+  for (const reviewText of ["", " \n\t "]) {
+    const parsed = parseNativeReviewText(reviewText);
+    assert.equal(parsed.verdict, "needs-attention");
+    assert.equal(parsed.summary, "Native review returned no review output.");
+    assert.deepEqual(parsed.findings, []);
+    assert.equal(parsed.raw_output, reviewText);
+  }
+
+  const normalized = normalizeNativeReviewResult({ reviewText: "" });
+  assert.equal(normalized.verdict, "needs-attention");
+  assert.equal(normalized.summary, "Native review returned no review output.");
+  assert.deepEqual(normalized.next_steps, ["Rerun review; blank native review output cannot approve the target."]);
+});
+
 test("parseNativeReviewText preserves actionable native findings for pipeline fixes", () => {
   const parsed = parseNativeReviewText([
     "Review findings:",

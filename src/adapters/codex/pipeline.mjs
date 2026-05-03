@@ -171,13 +171,11 @@ export async function runAutoPipeline(options) {
 
         // Parse review findings from the shared native review parser so the
         // task review and auto-pipeline paths use the same extraction rules.
-        if (reviewResult.reviewText) {
-          const parsed = parseNativeReviewText(reviewResult.reviewText);
-          reviewVerdict = parsed.verdict;
-          reviewFindings = parsed.findings;
-          reviewFindingCount = reviewFindings.length;
-          unstructuredReviewAttention = reviewVerdict !== "approved" && reviewFindingCount === 0;
-        }
+        const parsed = parseNativeReviewText(reviewResult.reviewText);
+        reviewVerdict = parsed.verdict;
+        reviewFindings = parsed.findings;
+        reviewFindingCount = reviewFindings.length;
+        unstructuredReviewAttention = reviewVerdict !== "approved" && reviewFindingCount === 0;
         logEvent(session, formatPipelineEvent(session, {
           stage: "review",
           suffix: "done",

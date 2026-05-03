@@ -7,6 +7,15 @@ const FINDING_SEVERITIES = new Set(["critical", "high", "medium", "low", "P0", "
 
 export function parseNativeReviewText(text) {
   const reviewText = typeof text === "string" ? text : String(text ?? "");
+  if (!reviewText.trim()) {
+    return {
+      verdict: "needs-attention",
+      summary: "Native review returned no review output.",
+      findings: [],
+      next_steps: ["Rerun review; blank native review output cannot approve the target."],
+      raw_output: reviewText,
+    };
+  }
   const findings = parseNativeReviewFindings(reviewText).map((finding, index) =>
     validateReviewFinding(finding, index)
   );

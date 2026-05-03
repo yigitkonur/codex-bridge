@@ -179,6 +179,52 @@ test("auto-pipeline treats qualified clean review wording as approved", async ()
   }
 });
 
+test("auto-pipeline marks blank successful review output incomplete instead of done", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const reviewCalls = [];
+    const turnCalls = [];
+
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-watchdog",
+      cwd: root,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub(turnCalls),
+      runAppServerReview: makeReviewStub(reviewCalls, " \n\t "),
+      jobId: "job-watchdog",
+      stageTimeoutMs: 10_000,
+      totalTimeoutMs: 20_000,
+    });
+
+    assert.equal(reviewCalls.length, 1);
+    assert.equal(turnCalls.length, 0, "blank review output must not run a blind fix turn");
+    assert.equal(result.complete, false);
+    assert.equal(result.partial, true);
+    assert.equal(result.failing_stage, "review");
+    assert.equal(result.reviewVerdict, "needs-attention");
+    assert.equal(result.reviewFindingCount, 0);
+    assert.deepEqual(result.completedStages, ["diff", "review"]);
+    assert.deepEqual(result.missingItems, [
+      "Native review reported needs-attention but did not include parseable file/line findings, so auto-fix could not run.",
+    ]);
+
+    const events = fs.readFileSync(session.eventsPath, "utf8");
+    assert.match(events, /\[PIPELINE:review:done\].*verdict=needs-attention findings=0/);
+    assert.match(events, /\[INCOMPLETE\]/);
+    assert.doesNotMatch(events, /\[DONE\]/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("auto-pipeline caps review, fix, and check deadlines by remaining total budget", async () => {
   const { root, session } = makeTempSession();
   const originalDateNow = Date.now;
