@@ -4,7 +4,7 @@
 
 `codex-bridge` is a Node 22+ ESM package that exposes a Claude Code plugin/skill surface for delegating implementation, review, monitoring, and closed-loop follow-up work to OpenAI Codex. The current implementation centers on `src/codex-bridge.mjs`, a Codex app-server client/broker runtime under `src/adapters/codex/`, shared state/config/review helpers under `src/lib/`, optional Claude hooks under `hooks/`, and generated installable bundles under `skill/` and `plugin/`.
 
-This GSD initialization is for a brownfield project. Current project truth comes from source files, tests, package metadata, manifests, hooks, and CI workflows; repository Markdown is not trusted unless a future phase verifies it against implementation.
+The v2.0.0 GSD milestone completed on 2026-05-03. Current project truth comes from source files, tests, package metadata, manifests, hooks, workflows, generated bundles, and the archived GSD evidence under `.planning/milestones/`.
 
 ## Core Value
 
@@ -33,13 +33,18 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 - ✓ Phase 2 validates foreground task, send/resume, background task, wait, result, events, and unsupported-backend behavior with static tests plus authenticated smoke probes — validated in Phase 2.
 - ✓ Phase 3 normalizes native/adversarial review output, persists task-bound `review.json`, records branch-bound verdicts, filters pending verdicts, enforces approved-head merge safety, and implements the closed-loop `iterate` workflow — validated in Phase 3.
 - ✓ Phase 3 hardens auto-pipeline review/fix/check proof with explicit stage, budget, partial, missing-item, and fail-closed blank/invalid review or completion handling — validated in Phase 3.
+- ✓ Phase 4 keeps the packaged plugin surface internally consistent while explicitly preserving its noncanonical alpha metadata relationship — validated in Phase 4.
+- ✓ Phase 4 hardens hook and monitor automation with registered lifecycle hooks, safe Monitor parsing, Stop gate timeout/lock behavior, and spoof-resistance tests — validated in Phase 4.
+- ✓ Phase 5 hardens canonical workspace state, append-only replayable session logs, stable per-task artifacts, and structured recovery outcomes — validated in Phase 5.
+- ✓ Phase 6 adds source-built release packaging, checksums, CI static gates, update diagnostics, and authenticated runtime smoke covering setup, task, result, events, and adversarial review — validated in Phase 6.
 
 ### Active
 
-- [ ] Promote the packaged plugin surface from alpha/scaffold status to a canonical, internally consistent v2 install surface, or explicitly keep it noncanonical with tests and metadata aligned.
-- [ ] Harden hook and monitor automation around real Claude plugin boundaries, including spoof-resistant monitor arming, Stop hook timeouts, and session/subagent wake-up paths.
-- [ ] Expand authenticated runtime smoke coverage to review and release-readiness flows that Phase 2 did not own.
-- [ ] Continue using `npm run verify:static` as the entry and exit check for runtime, plugin, state, and release changes.
+- [ ] Define fresh v2.x requirements with `$gsd-new-milestone` before planning new implementation phases.
+- [ ] Decide whether to promote the packaged plugin from noncanonical alpha to canonical marketplace surface.
+- [ ] Harden auto-update safety and installer integrity beyond the current diagnostic/rate-limit guarantees.
+- [ ] Add retention/redaction controls for large or sensitive session and registry artifacts.
+- [ ] Prepare future non-Codex backend support only after fresh requirements define the compatibility contract.
 
 ### Out of Scope
 
@@ -50,15 +55,15 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 
 ## Context
 
-The package is ESM-only and declares Node `>=22.0.0` in `package.json`. It uses `esbuild` to bundle `src/codex-bridge.mjs` and `src/adapters/codex/broker.mjs` into both `skill/` and `plugin/`, and uses `js-yaml` for config loading. The CI workflow runs `npm ci`, `npm run build`, `npm test`, generated drift checks, output-existence checks, and bundled CLI sanity probes.
+The package is ESM-only and declares Node `>=22.0.0` in `package.json`. It uses `esbuild` to bundle `src/codex-bridge.mjs` and `src/adapters/codex/broker.mjs` into both `skill/` and `plugin/`, and uses `js-yaml` for config loading. The CI workflow runs `npm run verify:static`, generated drift checks, output-existence checks, bundled CLI sanity probes, and the static runtime smoke harness.
 
 The command surface is broad. `help --json` reports commands for task dispatch, send/steer/respond, native and adversarial review, staged iteration, status/result/wait/events/cancel, setup/version/update/config/auth, artifact waiting, verdicts, and merge. `version --json` reports schema version `1.0`, package version `2.0.0`, active backend `codex`, and adapter capabilities such as plan mode, background jobs, auto-pipeline, adversarial review, worktree support, and artifact registry.
 
 State is intentionally split. Project/workspace job state lives under a plugin-data-derived root keyed by canonical workspace root. Session logs live under the configured `session_dir`, defaulting to `~/.codex-bridge/sessions`, with append-only `.events` and `.ndjson` files. Per-task registry artifacts live under `~/.codex-bridge/jobs` unless overridden for tests.
 
-The risk profile is mostly contract drift. Source changes can require generated bundle updates, command/help/schema changes can break plugin surfaces, hook changes can stall Claude shutdown, and app-server protocol changes can invalidate tests that only simulate local behavior. Future work should preserve small, source-first changes followed by `npm run build` and `npm test`.
+The risk profile is mostly contract drift. Source changes can require generated bundle updates, command/help/schema changes can break plugin surfaces, hook changes can stall Claude shutdown, and app-server protocol changes can invalidate tests that only simulate local behavior. Future work should preserve small, source-first changes followed by `npm run verify:static`; release work should also run `npm run smoke:runtime -- --require-codex --json`.
 
-The current codebase map in `.planning/codebase/` was refreshed on 2026-05-02 at source commit `6b3a78a98eb5396798d0ed2ee3d8f7451f204652`. Planning for Phase 3 should use the refreshed `CONCERNS.md`, `ARCHITECTURE.md`, `STRUCTURE.md`, and `TESTING.md` maps rather than the older 2026-04-30 snapshot.
+The v2.0.0 milestone archive is in `.planning/milestones/`. The audit passed with 28/28 requirements satisfied, 6/6 phases verified, and 8/8 cross-phase flows complete. The current codebase map in `.planning/codebase/` was refreshed on 2026-05-02; future planning should refresh maps again before major v2.x work.
 
 ## Constraints
 
@@ -81,6 +86,9 @@ The current codebase map in `.planning/codebase/` was refreshed on 2026-05-02 at
 | Route supported runtime controls through the adapter | The backend abstraction must be real before adding review-loop or plugin hardening on top of it. | Completed in Phase 2 |
 | Bind review verdicts to task artifacts and branch heads | Review, verdict, merge, and iterate must share the same reviewed tree to avoid approving unreviewed work. | Completed in Phase 3 |
 | Keep auto-pipeline incomplete rather than optimistic on ambiguous review/check output | Blank native reviews and malformed completion checks should preserve artifacts and request attention instead of reporting success. | Completed in Phase 3 |
+| Keep packaged plugin alpha status explicit until promotion is deliberate | The root package is canonical while `plugin/` stays a noncanonical alpha surface with tested metadata. | Completed in Phase 4 |
+| Anchor state and sessions to canonical workspace roots | Multi-process and worktree flows need stable state/session lookup regardless of launcher cwd. | Completed in Phase 5 |
+| Require live runtime smoke before release completion | Static tests cannot prove app-server setup/task/review/events behavior. | Completed in Phase 6 |
 
 ## Evolution
 
@@ -100,4 +108,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state.
 
 ---
-*Last updated: 2026-05-02 after Phase 3 completion*
+*Last updated: 2026-05-03 after v2.0.0 milestone completion*

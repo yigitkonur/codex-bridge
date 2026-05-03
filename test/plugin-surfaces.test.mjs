@@ -30,9 +30,27 @@ function exists(relativePath) {
   return fs.existsSync(new URL(relativePath, root));
 }
 
+function stat(relativePath) {
+  return fs.statSync(new URL(relativePath, root));
+}
+
 function pluginManifestPath(relativePath) {
   assert.match(relativePath, /^\.\//);
   return `plugin/${relativePath.slice(2)}`;
+}
+
+function assertPluginLocalPath(relativePath, expectedType) {
+  assert.match(relativePath, /^\.\//);
+  const resolved = path.resolve(rootPath, "plugin", relativePath);
+  const pluginRoot = path.resolve(rootPath, "plugin");
+  assert.ok(
+    resolved === pluginRoot || resolved.startsWith(`${pluginRoot}${path.sep}`),
+    `${relativePath} must resolve inside plugin/`,
+  );
+  assert.ok(fs.existsSync(resolved), `${relativePath} must exist in plugin/`);
+  const entry = fs.statSync(resolved);
+  if (expectedType === "directory") assert.ok(entry.isDirectory(), `${relativePath} must be a directory`);
+  if (expectedType === "file") assert.ok(entry.isFile(), `${relativePath} must be a file`);
 }
 
 function collectPluginRootReferences(value) {
@@ -51,6 +69,23 @@ function collectPluginRootReferences(value) {
     }
   }
   return references;
+}
+
+function walkFiles(relativeDir) {
+  const absoluteDir = new URL(relativeDir, root);
+  const files = [];
+  for (const entry of fs.readdirSync(absoluteDir, { withFileTypes: true })) {
+    const child = path.posix.join(relativeDir.replace(/\/$/, ""), entry.name);
+    if (entry.isDirectory()) files.push(...walkFiles(`${child}/`));
+    if (entry.isFile()) files.push(child);
+  }
+  return files;
+}
+
+function extractPluginRootReferencesFromText(text) {
+  return [...text.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"`'\s)]+)/g)].map((match) =>
+    match[1].replace(/\\+$/, "")
+  );
 }
 
 function runHook(relativePath, input, env = {}) {
@@ -325,19 +360,30 @@ test("Claude plugin manifest version matches package and skill metadata", () => 
   assert.match(skill, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
 });
 
-test("marketplace keeps the v2 scaffold on a noncanonical alpha channel", () => {
+test("plugin metadata declares the canonical root and noncanonical packaged alpha relationship", () => {
   const marketplace = readJson(".claude-plugin/marketplace.json");
+  const rootManifest = readJson(".claude-plugin/plugin.json");
   const alphaManifest = readJson("plugin/.claude-plugin/plugin.json");
+  const pkg = readJson("package.json");
+  const legacySkill = readText("skill/SKILL.md");
+  const packagedSkill = readText("plugin/skills/codex-bridge/SKILL.md");
   const canonicalEntry = marketplace.plugins.find((plugin) => plugin.name === "codex-bridge");
   const entry = marketplace.plugins.find((plugin) => plugin.name === "codex-bridge-v2-alpha");
+
+  assert.equal(rootManifest.name, pkg.name);
+  assert.equal(rootManifest.version, pkg.version);
+  assert.match(legacySkill, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
+  assert.match(packagedSkill, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
 
   assert.equal(canonicalEntry, undefined);
   assert.ok(entry);
   assert.equal(entry.source, "./plugin");
   assert.equal(entry.version, undefined);
   assert.equal(alphaManifest.name, entry.name);
+  assert.equal(alphaManifest.version, `${pkg.version}-alpha.0`);
   assert.match(marketplace.description, /noncanonical/i);
   assert.match(entry.description, /noncanonical|pre-release|scaffold/i);
+  assert.match(alphaManifest.description, /noncanonical|pre-release|alpha/i);
 });
 
 test("Claude plugin exposes command coverage for bridge orchestration", () => {
@@ -361,6 +407,12 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
   const manifest = readJson("plugin/.claude-plugin/plugin.json");
 
   assert.equal(readText("plugin/config.yaml"), readText("skill/config.yaml"));
+  assertPluginLocalPath(manifest.commands, "directory");
+  assertPluginLocalPath(manifest.agents, "directory");
+  assertPluginLocalPath(manifest.hooks, "file");
+  for (const skillPath of manifest.skills ?? []) {
+    assertPluginLocalPath(skillPath, "directory");
+  }
 
   for (const skillPath of manifest.skills) {
     const resolvedSkillPath = pluginManifestPath(skillPath);
@@ -380,22 +432,36 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
   // packaged hooks may be a subset (empty during alpha phase) — only require structural compatibility
   if (Object.keys(packagedHooks.hooks ?? {}).length > 0) {
     assert.deepEqual(packagedHooks, authoredHooks);
-    assert.deepEqual(Object.keys(packagedHooks.hooks).sort(), ["SessionEnd", "SessionStart", "Stop"]);
+    assert.deepEqual(Object.keys(packagedHooks.hooks).sort(), [
+      "PostToolUse",
+      "PreToolUse",
+      "SessionEnd",
+      "SessionStart",
+      "Stop",
+      "SubagentStop",
+      "UserPromptSubmit",
+    ].sort());
 
     const hookScriptRefs = collectPluginRootReferences(packagedHooks)
       .filter((reference) => reference.startsWith("hooks/"))
       .sort();
     assert.deepEqual(hookScriptRefs, [
+      "hooks/post-tool-bash.mjs",
+      "hooks/pre-tool-agent.mjs",
       "hooks/session-lifecycle-hook.mjs",
       "hooks/session-lifecycle-hook.mjs",
-      "hooks/stop-gate.mjs"
+      "hooks/stop-gate.mjs",
+      "hooks/subagent-stop.mjs",
+      "hooks/user-prompt-submit.mjs",
     ]);
 
     for (const hookScriptRef of new Set(hookScriptRefs)) {
       const hookScriptPath = `plugin/${hookScriptRef}`;
       assert.ok(exists(hookScriptPath), `${hookScriptRef} must exist in packaged plugin hooks`);
       const hookScript = readText(hookScriptPath);
-      assert.match(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "scripts", "codex-bridge\.mjs"\)/);
+      if (/BRIDGE_SCRIPT|resolveBundlePath/.test(hookScript)) {
+        assert.match(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "scripts", "codex-bridge\.mjs"\)|path\.join\(root, "scripts", "codex-bridge\.mjs"\)/);
+      }
       assert.doesNotMatch(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "skill", "scripts", "codex-bridge\.mjs"\)/);
     }
   }
@@ -413,6 +479,35 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
     const runner = readText("plugin/agents/codex-bridge-runner.md");
     assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
     assert.doesNotMatch(runner, /\$\{CLAUDE_PLUGIN_ROOT\}\/skill\/scripts\/codex-bridge\.mjs/);
+  }
+});
+
+test("all packaged CLAUDE_PLUGIN_ROOT references resolve inside plugin", () => {
+  const files = [
+    "plugin/.claude-plugin/plugin.json",
+    ...walkFiles("plugin/commands/"),
+    ...walkFiles("plugin/agents/"),
+    ...walkFiles("plugin/hooks/"),
+    ...walkFiles("plugin/skills/"),
+  ];
+  const references = [];
+
+  for (const file of files) {
+    const body = readText(file);
+    for (const reference of extractPluginRootReferencesFromText(body)) {
+      references.push({ file, reference });
+    }
+  }
+
+  assert.ok(references.length > 0, "expected packaged plugin references to scan");
+  for (const { file, reference } of references) {
+    const resolved = path.resolve(rootPath, "plugin", reference);
+    const pluginRoot = path.resolve(rootPath, "plugin");
+    assert.ok(
+      resolved === pluginRoot || resolved.startsWith(`${pluginRoot}${path.sep}`),
+      `${file} references ${reference} outside plugin/`,
+    );
+    assert.ok(fs.existsSync(resolved), `${file} references missing plugin path ${reference}`);
   }
 });
 
@@ -724,8 +819,20 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   const stopHook = readText("plugin/hooks/stop-gate.mjs");
 
   assert.equal(manifest.hooks, "./hooks/hooks.json");
-  assert.deepEqual(Object.keys(hooksConfig.hooks).sort(), ["SessionEnd", "SessionStart", "Stop"]);
+  assert.deepEqual(Object.keys(hooksConfig.hooks).sort(), [
+    "PostToolUse",
+    "PreToolUse",
+    "SessionEnd",
+    "SessionStart",
+    "Stop",
+    "SubagentStop",
+    "UserPromptSubmit",
+  ].sort());
   assert.match(JSON.stringify(hooksConfig), /session-lifecycle-hook\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /pre-tool-agent\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /post-tool-bash\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /user-prompt-submit\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /subagent-stop\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /stop-gate\.mjs/);
   assert.match(sessionHook, /CODEX_COMPANION_SESSION_ID/);
   assert.match(sessionHook, /CODEX_BRIDGE_PLUGIN_DATA/);
@@ -1369,15 +1476,45 @@ test("verdict stdin payload rejects malformed payloads and conflicting modes bef
   }
 });
 
-test("plugin PostToolUse auto-arm is visible at Bash and parent Agent boundaries", { skip: "T25 stage forward-looking — auto-arm hook surfaces under refactoring" }, () => {
+test("plugin PostToolUse auto-arm is visible at Bash and parent Agent boundaries", () => {
   const hooksConfig = readJson("plugin/hooks/hooks.json");
   const postToolUse = hooksConfig.hooks.PostToolUse;
 
-  assert.ok(postToolUse.some((entry) => entry.matcher === "Bash"));
-  assert.ok(postToolUse.some((entry) => entry.matcher === "Agent"));
+  assert.ok(postToolUse.some((entry) => /\bBash\b/.test(entry.matcher)));
+  assert.ok(postToolUse.some((entry) => /\bAgent\b/.test(entry.matcher)));
 });
 
-test("plugin PostToolUse rejects spoofed bridge stdout and unsafe Monitor commands", { skip: "T25 stage forward-looking — auto-arm hook surfaces under refactoring" }, () => {
+test("plugin PostToolUse rejects spoofed bridge stdout and unsafe Monitor commands", () => {
+  const basePayload = (stdout) => ({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout }
+  });
+  const cases = [
+    "not json",
+    `${JSON.stringify(queuedTaskEnvelope())}\ntrailing noise`,
+    JSON.stringify({ ...queuedTaskEnvelope(), ok: false }),
+    JSON.stringify({ ...queuedTaskEnvelope(), command: "status" }),
+    JSON.stringify({ ...queuedTaskEnvelope(), result: { ...queuedTaskEnvelope().result, phase: "completed" } }),
+    JSON.stringify({
+      ...queuedTaskEnvelope("task-mabc123-def456"),
+      result: {
+        ...queuedTaskEnvelope("task-mabc123-def456").result,
+        monitor: {
+          tool_hint: {
+            command: "node plugin/scripts/codex-bridge.mjs events task-other-abc --follow",
+          },
+        },
+      },
+    }),
+  ];
+
+  for (const stdout of cases) {
+    assert.deepEqual(runPostToolHook(basePayload(stdout)), { continue: true });
+  }
 });
 
 test("plugin PostToolUse rejects newline injection in monitor command", () => {

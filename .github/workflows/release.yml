@@ -24,64 +24,15 @@ jobs:
       - name: install
         run: npm ci
 
-      - name: build
-        run: npm run build
+      - name: static verification
+        run: npm run verify:static
 
-      - name: stage skill payload under codex-bridge/
-        run: |
-          # Per agentskills.io, the installed directory name must match the
-          # `name` in SKILL.md front-matter. We ship a pre-named tarball so
-          # installers can extract it directly into their skills scope.
-          mkdir -p dist
-          cp -R skill/ dist/codex-bridge/
-          # Drop the maintainer docs from the shipped bundle — users only need
-          # the runtime + user-facing references.
-          rm -f dist/codex-bridge/AGENTS.md dist/codex-bridge/CLAUDE.md
+      - name: package release payload
+        run: npm run release:package -- --tag "$GITHUB_REF_NAME" --skip-build
 
-      - name: create tarball + zip
-        run: |
-          cd dist
-          tar -czf "codex-bridge-${GITHUB_REF_NAME}.tar.gz" codex-bridge
-          zip -qr "codex-bridge-${GITHUB_REF_NAME}.zip"     codex-bridge
-          shasum -a 256 codex-bridge-${GITHUB_REF_NAME}.tar.gz codex-bridge-${GITHUB_REF_NAME}.zip > SHA256SUMS
-
-      - name: build release notes from CHANGELOG + install snippet
+      - name: expose release notes path
         id: notes
-        run: |
-          # Extract the section for the current tag from CHANGELOG.md.
-          # Matches the line `## [X.Y.Z]`, then prints everything until the
-          # next `## ` heading (exclusive). Falls through to a placeholder
-          # if the section is missing — the generate_release_notes flag on
-          # the upload step still appends a commit-based auto-summary.
-          VERSION="${GITHUB_REF_NAME#v}"
-          SECTION=$(
-            awk -v header="## [$VERSION]" '
-              $0 ~ "^## \\[" && found { exit }
-              index($0, header) == 1 { found=1 }
-              found { print }
-            ' CHANGELOG.md
-          )
-          {
-            echo "## Install"
-            echo
-            echo '```sh'
-            echo "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y"
-            echo '```'
-            echo
-            echo "Verify with \`node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs setup --json\`."
-            echo "Check for later updates with \`bridge update\` or \`bridge version --check-update\`."
-            echo
-            if [ -n "$SECTION" ]; then
-              echo "---"
-              echo
-              echo "$SECTION"
-            else
-              echo "---"
-              echo
-              echo "_No CHANGELOG section found for \`$VERSION\` — see auto-generated commit summary below._"
-            fi
-          } > dist/RELEASE_NOTES.md
-          echo "notes_path=dist/RELEASE_NOTES.md" >> "$GITHUB_OUTPUT"
+        run: echo "notes_path=dist/RELEASE_NOTES.md" >> "$GITHUB_OUTPUT"
 
       - name: upload artifacts to release
         uses: softprops/action-gh-release@v2

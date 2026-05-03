@@ -19,6 +19,9 @@ import {
   writeReview,
   writeVerdict,
   appendEvent,
+  readRegistryEvents,
+  writeBriefArtifacts,
+  writeDiffArtifact,
 } from "../src/lib/registry.mjs";
 
 function withTempRegistry(fn) {
@@ -244,6 +247,33 @@ test("writeReview + readReview round-trip with registry-controlled fields", () =
   });
 });
 
+test("writeBriefArtifacts stores structured and rendered brief artifacts", () => {
+  withTempRegistry(() => {
+    const paths = writeBriefArtifacts("task-brief", {
+      brief: { objective: "ship", constraints: ["no questions"] },
+      rendered: "# Brief\n\nShip it.\n",
+      hash: "sha256:abc",
+      source: "brief.json",
+    });
+
+    const briefJson = JSON.parse(fs.readFileSync(paths.briefJsonPath, "utf8"));
+    assert.equal(briefJson.task_id, "task-brief");
+    assert.equal(briefJson.schema_version, REGISTRY_SCHEMA_VERSION);
+    assert.equal(briefJson.brief_hash, "sha256:abc");
+    assert.equal(briefJson.brief_source, "brief.json");
+    assert.deepEqual(briefJson.brief, { objective: "ship", constraints: ["no questions"] });
+    assert.equal(fs.readFileSync(paths.briefMdPath, "utf8"), "# Brief\n\nShip it.\n");
+  });
+});
+
+test("writeDiffArtifact writes stable diff.patch for task replay", () => {
+  withTempRegistry(() => {
+    const target = writeDiffArtifact("task-diff", "diff --git a/a b/a\n");
+    assert.equal(path.basename(target), "diff.patch");
+    assert.equal(fs.readFileSync(target, "utf8"), "diff --git a/a b/a\n");
+  });
+});
+
 test("appendEvent line-buffers to events.jsonl with timestamp", () => {
   withTempRegistry(() => {
     appendEvent("task-e", { tag: "DONE", message: "first" });
@@ -263,6 +293,22 @@ test("appendEvent line-buffers to events.jsonl with timestamp", () => {
     assert.equal(third.tag, "SPOOF");
     assert.notEqual(third.ts, spoof);
     assert.match(third.ts, /^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+test("readRegistryEvents replays jsonl and preserves corrupt lines", () => {
+  withTempRegistry(() => {
+    appendEvent("task-e", { tag: "DONE", message: "first" });
+    fs.appendFileSync(path.join(jobDir("task-e"), "events.jsonl"), "{ nope\n", "utf8");
+    appendEvent("task-e", { tag: "ERROR", message: "second" });
+
+    const events = readRegistryEvents("task-e");
+    assert.equal(events.length, 3);
+    assert.equal(events[0].tag, "DONE");
+    assert.equal(events[1].tag, "CORRUPT_REGISTRY_EVENT");
+    assert.match(events[1].raw, /nope/);
+    assert.equal(events[2].tag, "ERROR");
+    assert.deepEqual(readRegistryEvents("task-e", { maxEntries: 1 }).map((entry) => entry.tag), ["ERROR"]);
   });
 });
 

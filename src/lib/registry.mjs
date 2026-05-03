@@ -112,6 +112,58 @@ export function writeMeta(taskId, meta) {
   return target;
 }
 
+function writeRegistryTextFile(taskId, fileName, content) {
+  const dir = ensureJobDir(taskId);
+  const target = path.join(dir, fileName);
+  const tmp = `${target}.tmp.${tmpSuffix()}`;
+  fs.writeFileSync(tmp, content, "utf8");
+  fs.renameSync(tmp, target);
+  return target;
+}
+
+export function writeBriefArtifacts(taskId, { brief, rendered, hash, source } = {}) {
+  if (!brief || typeof brief !== "object" || Array.isArray(brief)) {
+    throw new TypeError("writeBriefArtifacts(taskId, artifacts): artifacts.brief must be an object");
+  }
+  const briefJsonPath = writeRegistryTextFile(taskId, "brief.json", `${JSON.stringify({
+    schema_version: REGISTRY_SCHEMA_VERSION,
+    task_id: taskId,
+    brief_hash: hash ?? null,
+    brief_source: source ?? null,
+    written_at: new Date().toISOString(),
+    brief,
+  }, null, 2)}\n`);
+  const briefMdPath = rendered
+    ? writeRegistryTextFile(taskId, "brief.md", String(rendered).endsWith("\n") ? String(rendered) : `${rendered}\n`)
+    : null;
+  return { briefJsonPath, briefMdPath };
+}
+
+export function writeDiffArtifact(taskId, diffContent) {
+  return writeRegistryTextFile(taskId, "diff.patch", String(diffContent ?? ""));
+}
+
+export function readRegistryEvents(taskId, { maxEntries = null } = {}) {
+  const target = path.join(jobDir(taskId), "events.jsonl");
+  if (!fs.existsSync(target)) return [];
+  const lines = fs.readFileSync(target, "utf8").split(/\r?\n/).filter(Boolean);
+  const selected = Number.isInteger(maxEntries) && maxEntries > 0 ? lines.slice(-maxEntries) : lines;
+  return selected.map((line, index) => {
+    try {
+      return JSON.parse(line);
+    } catch (error) {
+      return {
+        ts: null,
+        tag: "CORRUPT_REGISTRY_EVENT",
+        message: "Registry event line is not valid JSON.",
+        line: index,
+        raw: line,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
 export function readMeta(taskId) {
   const target = path.join(jobDir(taskId), "meta.json");
   return readRegistryJson(target);

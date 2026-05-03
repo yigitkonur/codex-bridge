@@ -42,6 +42,12 @@ const GENERATED_SURFACES = Object.freeze([
     reason: "Review schema asset listed in staticAssets"
   },
   {
+    source: "plugin/schemas/brief.schema.json",
+    outputs: ["plugin/schemas/brief.schema.json"],
+    kind: "packaged-static",
+    reason: "Brief schema is a packaged plugin-only contract referenced by plugin skill guidance"
+  },
+  {
     source: "src/templates/execute-instructions.md",
     outputs: ["skill/templates/execute-instructions.md", "plugin/templates/execute-instructions.md"],
     kind: "static-copy",
@@ -64,6 +70,30 @@ const GENERATED_SURFACES = Object.freeze([
     outputs: ["plugin/hooks"],
     kind: "directory-copy-with-plugin-path-transform",
     reason: "Root hook scripts/config are copied into the packaged plugin layout"
+  },
+  {
+    source: "plugin/.claude-plugin/plugin.json",
+    outputs: ["plugin/.claude-plugin/plugin.json"],
+    kind: "packaged-static",
+    reason: "Packaged plugin metadata is part of the installable plugin surface"
+  },
+  {
+    source: "plugin/commands",
+    outputs: ["plugin/commands"],
+    kind: "packaged-directory",
+    reason: "Packaged slash commands are part of the installable plugin surface"
+  },
+  {
+    source: "plugin/agents",
+    outputs: ["plugin/agents"],
+    kind: "packaged-directory",
+    reason: "Packaged subagent definitions are part of the installable plugin surface"
+  },
+  {
+    source: "plugin/skills/codex-bridge/SKILL.md",
+    outputs: ["plugin/skills/codex-bridge/SKILL.md"],
+    kind: "packaged-static",
+    reason: "Packaged plugin skill metadata is part of the installable plugin surface"
   }
 ]);
 
@@ -303,6 +333,27 @@ function compareGeneratedSurface(rootDir, surface, expectedBundleRoot = null) {
     return failures;
   }
 
+  if (surface.kind === "packaged-static") {
+    for (const output of surface.outputs) {
+      if (!pathExists(rootDir, output)) failures.push(`missing packaged static surface: ${output}`);
+    }
+    return failures;
+  }
+
+  if (surface.kind === "packaged-directory") {
+    for (const output of surface.outputs) {
+      const absolute = path.join(rootDir, output);
+      if (!fs.existsSync(absolute)) {
+        failures.push(`missing packaged directory surface: ${output}`);
+      } else if (!fs.statSync(absolute).isDirectory()) {
+        failures.push(`packaged surface is not a directory: ${output}`);
+      } else if (fs.readdirSync(absolute).length === 0) {
+        failures.push(`packaged directory surface is empty: ${output}`);
+      }
+    }
+    return failures;
+  }
+
   for (const output of surface.outputs) {
     if (!pathExists(rootDir, output)) {
       failures.push(`missing generated output: ${output}`);
@@ -345,6 +396,48 @@ function compareGeneratedSurface(rootDir, surface, expectedBundleRoot = null) {
       if (source !== generated) failures.push(`stale generated hook copy: ${outputRelative}`);
     }
   }
+
+  return failures;
+}
+
+function frontmatterVersion(text) {
+  const match = text.match(/metadata:\s*[\s\S]*?\n\s+version:\s*"([^"]+)"/);
+  return match ? match[1] : null;
+}
+
+function verifyPluginMetadata(rootDir, pkg) {
+  const failures = [];
+  const requiredFiles = [
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "plugin/.claude-plugin/plugin.json",
+    "skill/SKILL.md",
+    "plugin/skills/codex-bridge/SKILL.md",
+  ];
+  for (const file of requiredFiles) {
+    if (!pathExists(rootDir, file)) failures.push(`missing plugin metadata contract file: ${file}`);
+  }
+  if (failures.length > 0) return failures;
+
+  const rootManifest = JSON.parse(readText(rootDir, ".claude-plugin/plugin.json"));
+  const marketplace = JSON.parse(readText(rootDir, ".claude-plugin/marketplace.json"));
+  const pluginManifest = JSON.parse(readText(rootDir, "plugin/.claude-plugin/plugin.json"));
+  const legacySkillVersion = frontmatterVersion(readText(rootDir, "skill/SKILL.md"));
+  const packagedSkillVersion = frontmatterVersion(readText(rootDir, "plugin/skills/codex-bridge/SKILL.md"));
+
+  if (rootManifest.name !== pkg.name) failures.push(".claude-plugin/plugin.json name must match package.json name");
+  if (rootManifest.version !== pkg.version) failures.push(".claude-plugin/plugin.json version must match package.json version");
+  if (legacySkillVersion !== pkg.version) failures.push("skill/SKILL.md metadata.version must match package.json version");
+  if (packagedSkillVersion !== pkg.version) failures.push("plugin skill metadata.version must match package.json version");
+  if (pluginManifest.name !== "codex-bridge-v2-alpha") failures.push("packaged plugin manifest must stay on codex-bridge-v2-alpha while marketplace is noncanonical");
+  if (pluginManifest.version !== `${pkg.version}-alpha.0`) failures.push("packaged plugin alpha version must derive from package.json version");
+
+  const canonicalEntry = marketplace.plugins?.find((entry) => entry.name === pkg.name);
+  const alphaEntry = marketplace.plugins?.find((entry) => entry.name === pluginManifest.name);
+  if (canonicalEntry) failures.push("marketplace must not publish canonical codex-bridge entry while packaged plugin is alpha");
+  if (!alphaEntry) failures.push("marketplace must include packaged alpha plugin entry");
+  if (alphaEntry && alphaEntry.source !== "./plugin") failures.push("marketplace alpha entry must point to ./plugin");
+  if (!/noncanonical/i.test(marketplace.description ?? "")) failures.push("marketplace description must state noncanonical packaged alpha stance");
 
   return failures;
 }
@@ -407,6 +500,8 @@ export function verifyBaselineContracts(rootDir = process.cwd(), report = buildB
     for (const surface of report.generated_surfaces) {
       failures.push(...compareGeneratedSurface(rootDir, surface, expectedBundleRoot));
     }
+
+    failures.push(...verifyPluginMetadata(rootDir, pkg));
 
     const coveredCommands = new Set([...report.read_only_commands, ...Object.keys(report.mutating_command_coverage)]);
     for (const command of report.dispatch_commands) {

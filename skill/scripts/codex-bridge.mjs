@@ -16,6 +16,8 @@ var package_default = {
     "baseline:contracts": "node scripts/baseline-contracts.mjs",
     build: "node esbuild.config.mjs",
     dev: "node src/codex-bridge.mjs",
+    "release:package": "node scripts/package-release.mjs",
+    "smoke:runtime": "node scripts/runtime-smoke.mjs",
     test: "node --test test/*.test.mjs",
     "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
   },
@@ -4095,8 +4097,10 @@ import path7 from "node:path";
 import os3 from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
-function resolveSessionDir(configDir) {
-  const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os3.homedir());
+function resolveSessionDir(configDir, baseDir = process.cwd()) {
+  const configured = configDir ?? "~/.codex-bridge/sessions";
+  const expanded = configured.replace(/^~/, os3.homedir());
+  const dir = path7.isAbsolute(expanded) ? expanded : path7.resolve(baseDir, expanded);
   fs7.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -8522,6 +8526,34 @@ function writeMeta(taskId, meta) {
   fs12.renameSync(tmp, target);
   return target;
 }
+function writeRegistryTextFile(taskId, fileName, content) {
+  const dir = ensureJobDir(taskId);
+  const target = path10.join(dir, fileName);
+  const tmp = `${target}.tmp.${tmpSuffix()}`;
+  fs12.writeFileSync(tmp, content, "utf8");
+  fs12.renameSync(tmp, target);
+  return target;
+}
+function writeBriefArtifacts(taskId, { brief, rendered, hash, source } = {}) {
+  if (!brief || typeof brief !== "object" || Array.isArray(brief)) {
+    throw new TypeError("writeBriefArtifacts(taskId, artifacts): artifacts.brief must be an object");
+  }
+  const briefJsonPath = writeRegistryTextFile(taskId, "brief.json", `${JSON.stringify({
+    schema_version: REGISTRY_SCHEMA_VERSION,
+    task_id: taskId,
+    brief_hash: hash ?? null,
+    brief_source: source ?? null,
+    written_at: (/* @__PURE__ */ new Date()).toISOString(),
+    brief
+  }, null, 2)}
+`);
+  const briefMdPath = rendered ? writeRegistryTextFile(taskId, "brief.md", String(rendered).endsWith("\n") ? String(rendered) : `${rendered}
+`) : null;
+  return { briefJsonPath, briefMdPath };
+}
+function writeDiffArtifact(taskId, diffContent) {
+  return writeRegistryTextFile(taskId, "diff.patch", String(diffContent ?? ""));
+}
 function readMeta(taskId) {
   const target = path10.join(jobDir(taskId), "meta.json");
   return readRegistryJson(target);
@@ -10769,6 +10801,25 @@ async function runIterateLoop(options = {}) {
 }
 
 // src/codex-bridge.mjs
+function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
+  return {
+    schema_version: "1.0",
+    reason,
+    retryable: Boolean(retryable),
+    next_actions: nextActions,
+    artifacts,
+    details
+  };
+}
+function mirrorDiffToRegistry(taskId, diffPath) {
+  if (!taskId || !diffPath) return null;
+  try {
+    if (!fs16.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs16.readFileSync(diffPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
 function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
     if (process10.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
@@ -11935,7 +11986,7 @@ async function executeReviewRun(request) {
   ensureGitRepository(request.cwd);
   const startedAt = Date.now();
   const reviewConfig = getBridgeConfig(request.cwd, resolveWorkspaceRoot(request.cwd));
-  const reviewSessionDir = resolveSessionDir(reviewConfig.session_dir);
+  const reviewSessionDir = resolveSessionDir(reviewConfig.session_dir, resolveWorkspaceRoot(request.cwd));
   const logReviewTerminalEvent = (session, result2, { reviewKind, targetLabel }) => {
     if (result2.status === 0) {
       logEvent(session, formatDoneEvent(session, {
@@ -12665,7 +12716,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       request: spawnedRecord.request
     });
   }
-  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir);
+  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir, job.workspaceRoot);
   return {
     payload: {
       jobId: job.id,
@@ -12771,7 +12822,7 @@ async function runBridgeTask(request) {
     subagentType: request.subagentType ?? null
   });
   ensureCodexRuntimeAdapter(adapter2);
-  const sessionDir = resolveSessionDir(config.session_dir);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
   const effectiveMode = request.mode ?? config.mode ?? "plan";
   const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
   const metaSkillsPreamble = "[ORCHESTRATOR DIRECTIVE] Do not invoke your own planning, brainstorming, ceremony, or meta-skill chains before execution. Do not create scaffold files (spec documents, plan documents, design memos) under paths like `docs/`, `plans/`, `specs/`, or similar before touching the deliverable \u2014 unless the task explicitly asks for such an artifact as its output.";
@@ -13361,6 +13412,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         let dirtyDiff;
         try {
           dirtyDiff = captureGitDiff(request.cwd, session);
+          mirrorDiffToRegistry(request.jobId ?? request.taskId ?? null, dirtyDiff.diffPath);
         } catch {
           dirtyDiff = { diffStat: `${touchedFiles.length} touched files`, diffPath: "" };
         }
@@ -13458,6 +13510,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       return { ...result, session, pipeline: pipelineResult };
     }
     const diff = captureGitDiff(request.cwd, session);
+    mirrorDiffToRegistry(request.jobId ?? request.taskId ?? null, diff.diffPath);
     logEvent(session, formatDoneEvent(session, {
       duration: 0,
       diffStat: diff.diffStat,
@@ -13555,6 +13608,7 @@ async function handleTask(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   let brief = null;
   let briefHash2 = null;
+  let briefSource = null;
   if (options.brief || options["intercepted-from"]) {
     if (!options["worktree-auto"]) {
       throw conflictError(
@@ -13573,6 +13627,7 @@ async function handleTask(argv) {
     }
     brief = result.brief;
     briefHash2 = result.briefHash;
+    briefSource = result.source ?? options.brief;
   }
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
@@ -13639,8 +13694,18 @@ async function handleTask(argv) {
           isolation_mode: worktreeInfo.isolation_mode,
           base_ref: worktreeInfo.base_ref,
           base_sha: worktreeInfo.base_sha,
-          phase: "queued"
+          phase: "queued",
+          brief_hash: briefHash2,
+          brief_source: briefSource
         });
+        if (brief) {
+          writeBriefArtifacts(job.id, {
+            brief,
+            rendered: renderBriefAsMarkdown(brief),
+            hash: briefHash2,
+            source: briefSource
+          });
+        }
       } catch {
       }
       cwd = worktreeInfo.path;
@@ -13932,7 +13997,12 @@ async function handleAwaitArtifact(argv) {
           size: statInfo.size,
           terminated: jobTerminal,
           jobStatus,
-          elapsedMs: Date.now() - startedAt
+          elapsedMs: Date.now() - startedAt,
+          recovery: buildRecovery({
+            reason: "artifact-ready",
+            retryable: false,
+            artifacts: { artifactPath: resolvedPath }
+          })
         };
         emitSuccess("await-artifact", payload, `artifact ready: ${resolvedPath} (${statInfo.size} bytes)
 `, {
@@ -13951,7 +14021,20 @@ async function handleAwaitArtifact(argv) {
         terminated: true,
         reason: `job-${jobStatus}`,
         jobStatus,
-        elapsedMs: Date.now() - startedAt
+        elapsedMs: Date.now() - startedAt,
+        recovery: buildRecovery({
+          reason: `job-${jobStatus}`,
+          retryable: true,
+          nextActions: [
+            `Run result ${jobSnapshot.job?.id ?? jobRef} to inspect the terminal job output.`,
+            "Verify the producer writes the expected artifact path, then rerun or resume the task."
+          ],
+          artifacts: {
+            expectedArtifactPath: resolvedPath,
+            logFile: jobSnapshot.job?.logFile ?? null
+          },
+          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
+        })
       };
       if (!statInfo) {
         process10.exitCode = 7;
@@ -13976,7 +14059,20 @@ async function handleAwaitArtifact(argv) {
         terminated: false,
         reason: "timeout",
         jobStatus,
-        elapsedMs: Date.now() - startedAt
+        elapsedMs: Date.now() - startedAt,
+        recovery: buildRecovery({
+          reason: "timeout",
+          retryable: true,
+          nextActions: [
+            `Run status ${jobSnapshot.job?.id ?? jobRef} to confirm whether the producer is still active.`,
+            "Retry await-artifact with a larger --timeout-ms or inspect events for stalled output."
+          ],
+          artifacts: {
+            expectedArtifactPath: resolvedPath,
+            logFile: jobSnapshot.job?.logFile ?? null
+          },
+          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
+        })
       };
       process10.exitCode = 7;
       emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
@@ -14018,7 +14114,23 @@ function pruneOrphanedJobs(cwd) {
       reaped.push(finalizeOrphan(workspaceRoot, job, ts, "dead-pid"));
     }
   }
-  return { workspaceRoot, reaped, skipped, reapedCount: reaped.length, skippedCount: skipped.length, ts };
+  return {
+    workspaceRoot,
+    reaped,
+    skipped,
+    reapedCount: reaped.length,
+    skippedCount: skipped.length,
+    ts,
+    recovery: buildRecovery({
+      reason: reaped.length > 0 ? "orphans-reaped" : "state-clean",
+      retryable: reaped.length > 0,
+      nextActions: reaped.length > 0 ? [
+        "Inspect result/events for reaped jobs before retrying any interrupted work.",
+        "Rerun the original task only after confirming no generated artifacts were left half-written."
+      ] : [],
+      details: { reapedCount: reaped.length, skippedCount: skipped.length }
+    })
+  };
 }
 function finalizeOrphan(workspaceRoot, job, ts, reason) {
   const record = {
@@ -14186,7 +14298,7 @@ async function handleWait(argv) {
     );
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir);
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
@@ -14251,7 +14363,7 @@ async function handleEvents(argv) {
     );
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir);
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
@@ -14501,7 +14613,25 @@ async function handleCancel(argv) {
     status: "cancelled",
     title: job.title,
     turnInterruptAttempted: interrupt.attempted,
-    turnInterrupted: interrupt.interrupted
+    turnInterrupted: interrupt.interrupted,
+    recovery: buildRecovery({
+      reason: "cancelled-by-user",
+      retryable: false,
+      nextActions: [
+        `Run result ${job.id} to inspect any partial output.`,
+        "Start a fresh task if the cancelled work is still required."
+      ],
+      artifacts: {
+        logFile: job.logFile ?? null,
+        threadId,
+        turnId
+      },
+      details: {
+        interruptAttempted: interrupt.attempted,
+        interrupted: interrupt.interrupted,
+        interruptReason: interrupt.reason ?? null
+      }
+    })
   };
   emitSuccess("cancel", payload, renderCancelReport(nextJob), {
     json: options.json,
@@ -14737,6 +14867,14 @@ async function runIterateTaskJob({
     brief_hash: brief?.briefHash ?? null,
     brief_source: brief?.source ?? null
   });
+  if (brief?.brief) {
+    writeBriefArtifacts(job.id, {
+      brief: brief.brief,
+      rendered: renderBriefAsMarkdown(brief.brief),
+      hash: brief.briefHash,
+      source: brief.source
+    });
+  }
   const taskCwd = worktreeInfo.path;
   const request = buildTaskRequest({
     cwd: taskCwd,
@@ -15325,7 +15463,7 @@ async function handleSend(argv) {
   ensureCodexRuntimeAdapter(adapter2);
   guardCapability(adapter2, "supports_resume");
   const modeOverride = options.mode;
-  const sessionDir = resolveSessionDir(config.session_dir);
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const sendIsPlanMode = modeOverride === "plan";
   const turnOptions = {
     resumeThreadId: threadId,
@@ -15507,7 +15645,7 @@ async function handleSteer(argv) {
   ensureCodexAvailable(cwd);
   await adapter2.steer(threadId, turnId, prompt, { cwd });
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir);
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const session = findSession(sessionDir, threadId);
   if (session) {
     logNdjson(session, "STEER", "turn/steer", { turnId, prompt: prompt.slice(0, 120) });
@@ -15530,7 +15668,7 @@ async function handleRespond(argv) {
   }
   const cwd = resolveCommandCwd(options);
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir);
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const adapter2 = await resolveCommandAdapter({
     cwd,
     workspaceRoot: resolveWorkspaceRoot(cwd),
@@ -15548,7 +15686,13 @@ async function handleRespond(argv) {
   }
   let payload;
   if (options["json-payload"]) {
-    payload = JSON.parse(options["json-payload"]);
+    try {
+      payload = JSON.parse(options["json-payload"]);
+    } catch (error) {
+      throw usageError(
+        `respond --json-payload must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   } else {
     const answer = options.answer;
     if (!answer) {
@@ -15586,7 +15730,7 @@ async function handleSummary(argv) {
   }
   const cwd = resolveCommandCwd(options);
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir);
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const session = findSession(sessionDir, threadId);
   if (!session) {
     throw notFoundError(

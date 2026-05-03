@@ -5,8 +5,10 @@ import { spawnSync } from "node:child_process";
 
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
 
-export function resolveSessionDir(configDir) {
-  const dir = (configDir ?? "~/.codex-bridge/sessions").replace(/^~/, os.homedir());
+export function resolveSessionDir(configDir, baseDir = process.cwd()) {
+  const configured = configDir ?? "~/.codex-bridge/sessions";
+  const expanded = configured.replace(/^~/, os.homedir());
+  const dir = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -27,6 +29,41 @@ export function findSession(sessionDir, threadId) {
     return null;
   }
   return { ndjsonPath, eventsPath, sessionDir, threadId };
+}
+
+export function readNdjson(sessionOrPath, { maxEntries = null } = {}) {
+  const ndjsonPath = typeof sessionOrPath === "string" ? sessionOrPath : sessionOrPath?.ndjsonPath;
+  if (!ndjsonPath || !fs.existsSync(ndjsonPath)) return [];
+  const lines = fs.readFileSync(ndjsonPath, "utf8").split(/\r?\n/).filter(Boolean);
+  const selected = Number.isInteger(maxEntries) && maxEntries > 0 ? lines.slice(-maxEntries) : lines;
+  return selected.map((line, index) => {
+    try {
+      return JSON.parse(line);
+    } catch (error) {
+      return {
+        ts: null,
+        tag: "CORRUPT_NDJSON_LINE",
+        method: null,
+        threadId: null,
+        data: {
+          line: index,
+          raw: line,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  });
+}
+
+export function readEvents(sessionOrPath, { maxBlocks = null } = {}) {
+  const eventsPath = typeof sessionOrPath === "string" ? sessionOrPath : sessionOrPath?.eventsPath;
+  if (!eventsPath || !fs.existsSync(eventsPath)) return [];
+  const raw = fs.readFileSync(eventsPath, "utf8");
+  const blocks = raw
+    .split(/\n(?=\[[A-Z_]+\])/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  return Number.isInteger(maxBlocks) && maxBlocks > 0 ? blocks.slice(-maxBlocks) : blocks;
 }
 
 export function logNdjson(session, tag, method, data) {

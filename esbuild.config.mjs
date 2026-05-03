@@ -5,9 +5,9 @@ import path from "node:path";
 // Dual-output build during the v2.0 plugin migration.
 //
 //   skill/   legacy install layout for ~/.claude/skills/codex-bridge.
-//            Maintained through the Phase 3 overlap; dropped in Phase 4.
-//   plugin/  canonical Claude Code plugin install layout (Phase 1+).
-//            Distributed via /plugin marketplace add github:yigitkonur/codex-bridge.
+//            Versioned with package.json while the root plugin remains canonical.
+//   plugin/  noncanonical Claude Code plugin alpha layout used to harden the
+//            v2 packaged surface before marketplace promotion.
 //
 // Within skill/, the broker bundles to skill/app-server-broker.mjs (one level
 // up from skill/scripts/codex-bridge.mjs). Within plugin/, the broker
@@ -20,13 +20,13 @@ import path from "node:path";
 
 const targets = [
   {
-    label: "skill (legacy, deprecated in Phase 4)",
+    label: "skill (legacy, package-versioned)",
     cliOut: "skill/scripts/codex-bridge.mjs",
     brokerOut: "skill/app-server-broker.mjs",
     assetsRoot: "skill",
   },
   {
-    label: "plugin (canonical from v2.0.0)",
+    label: "plugin (noncanonical alpha)",
     cliOut: "plugin/scripts/codex-bridge.mjs",
     brokerOut: "plugin/scripts/app-server-broker.mjs",
     assetsRoot: "plugin",

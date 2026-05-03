@@ -29,12 +29,9 @@ jobs:
       - name: install
         run: npm ci
 
-      - name: build skill and plugin bundles
-        run: npm run build
-
-      - name: test
-        run: npm test
-        timeout-minutes: 2
+      - name: static verification
+        run: npm run verify:static
+        timeout-minutes: 4
 
       - name: verify committed bundle matches fresh build
         run: |
@@ -150,3 +147,6 @@ jobs:
             node -e "const j = $OUT; if (j.error.code !== 'INVALID_THREAD_ID') { console.error(j); process.exit(1); }"
             echo "::endgroup::"
           done
+
+      - name: runtime smoke harness static mode
+        run: npm run smoke:runtime -- --static-only --json

@@ -68,6 +68,31 @@ test("respond and summary resolve cwd before loading config", () => {
   assert.match(summary, /const cwd = resolveCommandCwd\(options\);/);
 });
 
+test("session directories resolve relative to canonical workspace roots", () => {
+  const callSites = [...bridge.matchAll(/resolveSessionDir\(config\.session_dir, resolveWorkspaceRoot\(cwd\)\)/g)];
+  assert.ok(callSites.length >= 6, "interactive commands should pass workspace root as session_dir base");
+  assert.match(bridge, /resolveSessionDir\(config\.session_dir, workspaceRoot\)/);
+  assert.match(bridge, /resolveSessionDir\(reviewConfig\.session_dir, resolveWorkspaceRoot\(request\.cwd\)\)/);
+  assert.match(bridge, /resolveSessionDir\(getBridgeConfig\(cwd \?\? null, job\.workspaceRoot\)\.session_dir, job\.workspaceRoot\)/);
+});
+
+test("recovery-sensitive commands emit structured recovery payloads", () => {
+  const awaitArtifact = bridge.match(/async function handleAwaitArtifact[\s\S]*?function pruneOrphanedJobs/)?.[0] ?? "";
+  const prune = bridge.match(/function pruneOrphanedJobs[\s\S]*?function finalizeOrphan/)?.[0] ?? "";
+  const cancel = bridge.match(/async function handleCancel[\s\S]*?function resolvePromptInput/)?.[0] ?? "";
+  const respond = bridge.match(/async function handleRespond[\s\S]*?async function handleSummary/)?.[0] ?? "";
+
+  assert.match(awaitArtifact, /recovery: buildRecovery\(/);
+  assert.match(awaitArtifact, /reason: "timeout"/);
+  assert.match(awaitArtifact, /expectedArtifactPath: resolvedPath/);
+  assert.match(prune, /recovery: buildRecovery\(/);
+  assert.match(prune, /reason: reaped\.length > 0 \? "orphans-reaped" : "state-clean"/);
+  assert.match(cancel, /recovery: buildRecovery\(/);
+  assert.match(cancel, /reason: "cancelled-by-user"/);
+  assert.match(respond, /respond --json-payload must be valid JSON/);
+  assert.match(respond, /catch \(error\)/);
+});
+
 test("send emits plan event instead of terminal done for plan results", () => {
   const send = bridge.match(/async function handleSend[\s\S]*?async function handleSteer/)?.[0] ?? "";
   assert.match(send, /if \(result\.planDetected && result\.planText\)/);

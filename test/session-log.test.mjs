@@ -10,7 +10,13 @@ import {
   formatDoneEvent,
   formatPlanEvent,
   formatQuestionEvent,
-  formatTailCommand
+  formatTailCommand,
+  initSession,
+  logEvent,
+  logNdjson,
+  readEvents,
+  readNdjson,
+  resolveSessionDir
 } from "../src/lib/session-log.mjs";
 
 const session = {
@@ -83,6 +89,52 @@ test("event action commands quote bridge script path", () => {
     }),
     "node '/bridge dir/codex-bridge.mjs' events job-1 --follow --exclude HEARTBEAT --timeout-ms 1800000"
   );
+});
+
+test("relative session_dir resolves against workspace root, not process cwd", (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-session-dir-"));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+
+  const workspace = path.join(tempRoot, "workspace");
+  const otherCwd = path.join(tempRoot, "other");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(otherCwd);
+
+  const previous = process.cwd();
+  process.chdir(otherCwd);
+  try {
+    const resolved = resolveSessionDir(".codex-bridge/sessions", workspace);
+    assert.equal(resolved, path.join(workspace, ".codex-bridge", "sessions"));
+    assert.ok(fs.existsSync(resolved));
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test("session replay helpers read append-only ndjson/events and preserve corrupt lines", (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-replay-"));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+
+  const sessionDir = path.join(tempRoot, "sessions");
+  const replaySession = initSession(sessionDir, "thread-replay");
+  logNdjson(replaySession, "TURN_PARAMS", "turn/start", { model: "gpt-test" });
+  fs.appendFileSync(replaySession.ndjsonPath, "{ not json\n", "utf8");
+  logNdjson(replaySession, "DONE", "turn/completed", { status: 0 });
+
+  logEvent(replaySession, "[PLAN] first\nbody");
+  logEvent(replaySession, "[DONE] second");
+
+  const ndjson = readNdjson(replaySession);
+  assert.equal(ndjson.length, 3);
+  assert.equal(ndjson[0].tag, "TURN_PARAMS");
+  assert.equal(ndjson[1].tag, "CORRUPT_NDJSON_LINE");
+  assert.match(ndjson[1].data.raw, /not json/);
+  assert.equal(ndjson[2].tag, "DONE");
+  assert.deepEqual(readNdjson(replaySession, { maxEntries: 1 }).map((entry) => entry.tag), ["DONE"]);
+
+  const events = readEvents(replaySession);
+  assert.deepEqual(events, ["[PLAN] first\nbody", "[DONE] second"]);
+  assert.deepEqual(readEvents(replaySession, { maxBlocks: 1 }), ["[DONE] second"]);
 });
 
 test("question response commands shell-quote option labels", () => {
