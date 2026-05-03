@@ -2,21 +2,21 @@
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-05-02)
+See: `.planning/PROJECT.md` (updated 2026-05-03)
 Requirements archive: `.planning/milestones/v2.0.0-REQUIREMENTS.md`
 Roadmap: `.planning/ROADMAP.md`
 Research summary: `.planning/research/SUMMARY.md`
 Codebase maps: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/CONCERNS.md`, `.planning/codebase/CONVENTIONS.md`, `.planning/codebase/INTEGRATIONS.md`, `.planning/codebase/STACK.md`, `.planning/codebase/STRUCTURE.md`, `.planning/codebase/TESTING.md`
 
 **Core value:** Claude Code can hand work to Codex and regain reliable, inspectable control through stable commands, events, artifacts, reviews, and merge gates.
-**Current focus:** v2.0.0 archived; ready for a fresh next milestone.
+**Current focus:** v2.0.0 archived and no active phase remains; ready for a fresh next milestone.
 
 ## Current Position
 
-Phase: 6 of 6 (Release Readiness And Runtime Smoke)
-Plan: 3 of 3 in current phase
-Status: Complete
-Last activity: 2026-05-03 - Archived v2.0.0 milestone. Roadmap and requirements were copied into `.planning/milestones/`, PROJECT/STATE were updated for the shipped state, and the living roadmap was collapsed to milestone summary plus next-milestone candidates.
+Phase: None active
+Plan: None active
+Status: v2.0.0 milestone complete and archived
+Last activity: 2026-05-03 - Re-checked closeout state after milestone archive, removed the redundant root milestone-audit duplicate, and updated living docs so the next step is clearly a fresh milestone rather than another v2.0.0 phase.
 
 Progress: [##########] 100%
 
@@ -61,8 +61,9 @@ Recent decisions affecting current work:
 - Phase 4 execution on 2026-05-03 completed packaged plugin and hook surface hardening. `npm run verify:static` passed with 341 tests / 340 passed / 1 skipped plus baseline contracts OK.
 - Phase 5 execution on 2026-05-03 completed state/artifact/recovery resilience. `npm run verify:static` passed with 348 tests / 347 passed / 1 skipped plus baseline contracts OK; `git diff --check` passed.
 - Phase 6 execution on 2026-05-03 completed release readiness and runtime smoke. `npm run verify:static` passed with 354 tests / 353 passed / 1 skipped plus baseline contracts OK; `npm run smoke:runtime -- --require-codex --json` passed against `codex-cli 0.125.0`; `git diff --check` passed.
-- Milestone audit on 2026-05-03 passed for v2.0.0: 28/28 requirements satisfied, 6/6 phases verified, 8/8 cross-phase flows complete. Report: `.planning/v2.0.0-MILESTONE-AUDIT.md`.
+- Milestone audit on 2026-05-03 passed for v2.0.0: 28/28 requirements satisfied, 6/6 phases verified, 8/8 cross-phase flows complete. Report: `.planning/milestones/v2.0.0-MILESTONE-AUDIT.md`.
 - Milestone completion on 2026-05-03 archived v2.0.0 roadmap, requirements, and audit under `.planning/milestones/`; added `.planning/MILESTONES.md` and `.planning/RETROSPECTIVE.md`.
+- Closeout cleanup on 2026-05-03 removed the redundant root-level milestone audit duplicate after confirming it matched `.planning/milestones/v2.0.0-MILESTONE-AUDIT.md`.
 
 ### Pending Todos
 
@@ -87,6 +88,6 @@ Recent decisions affecting current work:
 ## Session Continuity
 
 Last session: 2026-05-03
-Stopped at: v2.0.0 milestone archived; fresh next milestone can be initialized.
+Stopped at: v2.0.0 milestone archived, closeout docs cleaned, and no active phase remaining.
 Resume file: None
 Next recommended command: `$gsd-new-milestone`

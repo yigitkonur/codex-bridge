@@ -1,7 +1,7 @@
 # Research Summary: codex-bridge
 
 **Date:** 2026-04-30  
-**Synthesis scope:** `.planning/PROJECT.md`, `.planning/REQUIREMENTS.md`, and the generated stack, feature, architecture, and pitfall research under `.planning/research/`.  
+**Synthesis scope:** `.planning/PROJECT.md`, the requirements now archived at `.planning/milestones/v2.0.0-REQUIREMENTS.md`, and the generated stack, feature, architecture, and pitfall research under `.planning/research/`.
 **Evidence stance:** Repository Markdown outside `.planning/` remains untrusted for planning. The underlying research files used current source, tests, build config, package metadata, hooks, and workflows as evidence.
 
 ## Executive Summary
@@ -202,7 +202,7 @@ Static tests do not prove live app-server compatibility. Any phase that changes 
 ## Source Inputs
 
 - `.planning/PROJECT.md`
-- `.planning/REQUIREMENTS.md`
+- `.planning/milestones/v2.0.0-REQUIREMENTS.md`
 - `.planning/research/STACK.md`
 - `.planning/research/FEATURES.md`
 - `.planning/research/ARCHITECTURE.md`

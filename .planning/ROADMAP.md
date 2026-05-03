@@ -27,7 +27,7 @@ Completion evidence:
 
 ## Next Milestone
 
-No active next milestone is defined yet. Start one with `$gsd-new-milestone` so fresh requirements are created before new phase planning.
+No active next milestone is defined yet. The living roadmap is intentionally closed after v2.0.0; new implementation phases should not be appended here until `$gsd-new-milestone` creates fresh requirements and a new milestone scope.
 
 Candidate v2.x themes from deferred backlog:
 
@@ -43,3 +43,13 @@ Candidate v2.x themes from deferred backlog:
 | Milestone | Phases | Plans Complete | Status | Completed |
 |---|---:|---:|---|---|
 | v2.0.0 Bridge Completion | 6/6 | 19/19 | Complete | 2026-05-03 |
+
+## Completion Closeout
+
+| Item | Status | Evidence |
+|---|---|---|
+| v2.0.0 phases | Complete | 6/6 phases and 19/19 plans are archived under `.planning/phases/` and summarized in `.planning/milestones/v2.0.0-ROADMAP.md`. |
+| v2.0.0 requirements | Complete | `.planning/milestones/v2.0.0-MILESTONE-AUDIT.md` reports 28/28 requirements satisfied. |
+| Static validation | Complete | Latest verified gate: `npm run verify:static` passed with 354 tests / 353 passed / 1 skipped and baseline contracts OK. |
+| Runtime validation | Complete | Latest live smoke: `npm run smoke:runtime -- --require-codex --json` passed against `codex-cli 0.125.0`. |
+| Living plan state | Complete | No active phase remains; next work starts by creating a fresh milestone. |

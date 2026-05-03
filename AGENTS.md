@@ -193,15 +193,18 @@ Key artifacts:
 
 - `.planning/PROJECT.md` — project context, core value, active scope, and
   constraints
-- `.planning/REQUIREMENTS.md` — v1 requirement IDs and phase traceability
-- `.planning/ROADMAP.md` — six-phase roadmap and success criteria
+- `.planning/milestones/v2.0.0-REQUIREMENTS.md` — archived v2.0.0
+  requirement IDs and phase traceability
+- `.planning/ROADMAP.md` — shipped milestone summary and next-milestone
+  candidate themes
 - `.planning/STATE.md` — current GSD state and next phase pointer
 - `.planning/codebase/` — source-grounded codebase maps
 - `.planning/research/` — stack, feature, architecture, pitfalls, and summary
   research
 
-For planned work, start with `$gsd-discuss-phase 1` or `$gsd-plan-phase 1`
-unless the user asks for a different phase or explicitly bypasses GSD.
+The v2.0.0 milestone is complete and archived. For new planned work, start with
+`$gsd-new-milestone` before discussing, planning, or executing new phases unless
+the user explicitly asks for a smaller one-off task.
 
 ## Local Instruction Files
 

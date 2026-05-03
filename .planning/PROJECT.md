@@ -4,7 +4,7 @@
 
 `codex-bridge` is a Node 22+ ESM package that exposes a Claude Code plugin/skill surface for delegating implementation, review, monitoring, and closed-loop follow-up work to OpenAI Codex. The current implementation centers on `src/codex-bridge.mjs`, a Codex app-server client/broker runtime under `src/adapters/codex/`, shared state/config/review helpers under `src/lib/`, optional Claude hooks under `hooks/`, and generated installable bundles under `skill/` and `plugin/`.
 
-The v2.0.0 GSD milestone completed on 2026-05-03. Current project truth comes from source files, tests, package metadata, manifests, hooks, workflows, generated bundles, and the archived GSD evidence under `.planning/milestones/`.
+The v2.0.0 GSD milestone completed on 2026-05-03 and is archived. There is no active implementation milestone at the moment. Current project truth comes from source files, tests, package metadata, manifests, hooks, workflows, generated bundles, and the archived GSD evidence under `.planning/milestones/`.
 
 ## Core Value
 
@@ -40,7 +40,7 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 
 ### Active
 
-- [ ] Define fresh v2.x requirements with `$gsd-new-milestone` before planning new implementation phases.
+- [ ] Define fresh v2.x requirements with `$gsd-new-milestone` before planning or executing new implementation phases.
 - [ ] Decide whether to promote the packaged plugin from noncanonical alpha to canonical marketplace surface.
 - [ ] Harden auto-update safety and installer integrity beyond the current diagnostic/rate-limit guarantees.
 - [ ] Add retention/redaction controls for large or sensitive session and registry artifacts.
@@ -63,7 +63,7 @@ State is intentionally split. Project/workspace job state lives under a plugin-d
 
 The risk profile is mostly contract drift. Source changes can require generated bundle updates, command/help/schema changes can break plugin surfaces, hook changes can stall Claude shutdown, and app-server protocol changes can invalidate tests that only simulate local behavior. Future work should preserve small, source-first changes followed by `npm run verify:static`; release work should also run `npm run smoke:runtime -- --require-codex --json`.
 
-The v2.0.0 milestone archive is in `.planning/milestones/`. The audit passed with 28/28 requirements satisfied, 6/6 phases verified, and 8/8 cross-phase flows complete. The current codebase map in `.planning/codebase/` was refreshed on 2026-05-02; future planning should refresh maps again before major v2.x work.
+The v2.0.0 milestone archive is in `.planning/milestones/`. The audit passed with 28/28 requirements satisfied, 6/6 phases verified, and 8/8 cross-phase flows complete. The root-level duplicate audit was removed after confirming it was identical to the archived copy. The current codebase map in `.planning/codebase/` was refreshed on 2026-05-02; future planning should refresh maps again before major v2.x work.
 
 ## Constraints
 

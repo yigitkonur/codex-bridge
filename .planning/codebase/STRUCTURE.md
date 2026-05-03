@@ -61,9 +61,9 @@ codex-bridge/
 - Key files: `.github/workflows/build.yml`, `.github/workflows/release.yml`.
 
 **`.planning/`:**
-- Purpose: GSD project state, requirements, roadmap, plans, research, and generated codebase maps.
-- Contains: Planning state plus `.planning/codebase/ARCHITECTURE.md` and `.planning/codebase/STRUCTURE.md`.
-- Key files: `.planning/STATE.md`, `.planning/PROJECT.md`, `.planning/REQUIREMENTS.md`, `.planning/ROADMAP.md`, `.planning/codebase/`.
+- Purpose: GSD project state, archived milestone requirements/roadmap evidence, research, and generated codebase maps.
+- Contains: Living planning state plus archived v2.0.0 milestone artifacts under `.planning/milestones/`.
+- Key files: `.planning/STATE.md`, `.planning/PROJECT.md`, `.planning/ROADMAP.md`, `.planning/MILESTONES.md`, `.planning/milestones/v2.0.0-REQUIREMENTS.md`, `.planning/codebase/`.
 
 **`docs/`:**
 - Purpose: Supporting project documentation outside the executable runtime.

@@ -7,6 +7,7 @@
 **Plans:** 19/19 complete  
 **Requirements:** 28/28 satisfied  
 **Audit:** `.planning/milestones/v2.0.0-MILESTONE-AUDIT.md`
+**Tag:** `v2.0.0` (local annotated tag)
 
 ### Key Accomplishments
 
@@ -31,3 +32,9 @@
 - PR creation and multi-job monitor auto-arm.
 - Config validation, auto-update integrity hardening, and artifact retention/redaction controls.
 
+### Closeout State
+
+- Required local implementation work: complete.
+- Required local planning work: complete.
+- Redundant live audit copy: removed; archived audit remains authoritative.
+- External publication work: not part of local milestone completion; push `main` and tag `v2.0.0` when ready.

@@ -32,6 +32,7 @@
 
 - Treat source, tests, package metadata, hook/plugin manifests, generated bundles, and CI as authority.
 - Archive before deleting living planning files.
+- Keep only one authoritative copy of milestone evidence after archive; remove duplicate live copies once byte-equivalence is verified.
 - Keep runtime behavior machine-readable through JSON envelopes and stable artifact formats.
 - Use fail-closed statuses for ambiguous automation output.
 
@@ -50,4 +51,3 @@
 | Runtime proof | Authenticated Codex smoke is required for release confidence. |
 | Distribution | Legacy skill and packaged plugin dual-output remains useful but expensive. |
 | Future work | Next milestone should define fresh requirements before implementation. |
-
