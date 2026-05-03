@@ -22,7 +22,7 @@ Repository Markdown outside `.planning/` is not used as roadmap evidence.
 
 - [x] **Phase 1: Baseline Contracts And Generated Surface** - Maintainers can trust the static gate, generated-output map, JSON envelopes, and baseline coverage contracts. Completed 2026-04-30.
 - [x] **Phase 2: Adapter And Delegation Runtime** - Users can delegate Codex work through backend-aware runtime paths and observe/control foreground and background sessions. Completed 2026-05-01.
-- [ ] **Phase 3: Review Verdict And Iterate Loop** - Users can run reviews, track verdicts, enforce approved-head merge safety, and execute the closed-loop iterate workflow.
+- [x] **Phase 3: Review Verdict And Iterate Loop** - Users can run reviews, track verdicts, enforce approved-head merge safety, and execute the closed-loop iterate workflow. Completed 2026-05-02.
 - [ ] **Phase 4: Plugin And Hook Surface Hardening** - Maintainers can ship a consistent plugin layout with safe, bounded hook behavior.
 - [ ] **Phase 5: State Artifact And Recovery Resilience** - Users can trust workspace state, session logs, task artifacts, and recovery outcomes under failure.
 - [ ] **Phase 6: Release Readiness And Runtime Smoke** - Maintainers can release from source with CI, packaging, authenticated smoke checks, and update diagnostics aligned.
@@ -86,14 +86,16 @@ Completion evidence:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01: Native/adversarial review schema and context proof (wave 1; creates shared review-result and registry review artifact contracts)
-- [ ] 03-02: Auto-pipeline partial-completion and check-stage proof (wave 2; depends on 03-01 shared parser/contracts)
-- [ ] 03-03: Verdict, approved-head merge, and iterate orchestration (wave 3; depends on 03-01 and 03-02)
+- [x] 03-01: Native/adversarial review schema and context proof (wave 1; creates shared review-result and registry review artifact contracts)
+- [x] 03-02: Auto-pipeline partial-completion and check-stage proof (wave 2; depends on 03-01 shared parser/contracts)
+- [x] 03-03: Verdict, approved-head merge, and iterate orchestration (wave 3; depends on 03-01 and 03-02)
 
-Planning evidence:
+Completion evidence:
+- Implementation commits: `c3700ab` through `a44ddd7`, plus review-loop fixes `372093f`, `b0710fe`, `7605e0b`, and `aa15c26`
 - Phase artifacts: `.planning/phases/03-review-verdict-and-iterate-loop/`
-- Plan check: `.planning/phases/03-review-verdict-and-iterate-loop/03-PLAN-CHECK.md`
-- Execution readiness: ready for `$gsd-execute-phase 3`
+- Code review: `.planning/phases/03-review-verdict-and-iterate-loop/03-REVIEW.md` clean
+- Static gate: `npm run verify:static` passed with 340 tests / 337 passed / 3 skipped and baseline contracts OK
+- Verification: `.planning/phases/03-review-verdict-and-iterate-loop/03-VERIFICATION.md`
 
 ### Phase 4: Plugin And Hook Surface Hardening
 **Goal**: Maintainers can ship a consistent packaged plugin surface with safe hook activation, bounded decisions, and tested metadata relationships.
@@ -152,7 +154,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 |-------|----------------|--------|-----------|
 | 1. Baseline Contracts And Generated Surface | 3/3 | Complete | 2026-04-30 |
 | 2. Adapter And Delegation Runtime | 4/4 | Complete | 2026-05-01 |
-| 3. Review Verdict And Iterate Loop | 0/3 | Not started | - |
-| 4. Plugin And Hook Surface Hardening | 0/3 | Not started | - |
+| 3. Review Verdict And Iterate Loop | 3/3 | Complete | 2026-05-02 |
+| 4. Plugin And Hook Surface Hardening | 0/3 | Ready | - |
 | 5. State Artifact And Recovery Resilience | 0/3 | Not started | - |
 | 6. Release Readiness And Runtime Smoke | 0/3 | Not started | - |

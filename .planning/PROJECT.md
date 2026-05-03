@@ -31,10 +31,11 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 - ✓ Phase 2 routes supported Codex task dispatch, resume, respond, steer, cancel, result, and event operations through the backend adapter lifecycle — validated in Phase 2.
 - ✓ Phase 2 exposes setup backend/capability state and keeps backend precedence covered across explicit backend, environment, task metadata, routing, config layers, and defaults — validated in Phase 2.
 - ✓ Phase 2 validates foreground task, send/resume, background task, wait, result, events, and unsupported-backend behavior with static tests plus authenticated smoke probes — validated in Phase 2.
+- ✓ Phase 3 normalizes native/adversarial review output, persists task-bound `review.json`, records branch-bound verdicts, filters pending verdicts, enforces approved-head merge safety, and implements the closed-loop `iterate` workflow — validated in Phase 3.
+- ✓ Phase 3 hardens auto-pipeline review/fix/check proof with explicit stage, budget, partial, missing-item, and fail-closed blank/invalid review or completion handling — validated in Phase 3.
 
 ### Active
 
-- [ ] Finish the closed-loop iterate/reviewer/verdict workflow so task -> review -> verdict -> fix/merge can run end to end instead of returning staged manual instructions.
 - [ ] Promote the packaged plugin surface from alpha/scaffold status to a canonical, internally consistent v2 install surface, or explicitly keep it noncanonical with tests and metadata aligned.
 - [ ] Harden hook and monitor automation around real Claude plugin boundaries, including spoof-resistant monitor arming, Stop hook timeouts, and session/subagent wake-up paths.
 - [ ] Expand authenticated runtime smoke coverage to review and release-readiness flows that Phase 2 did not own.
@@ -78,6 +79,8 @@ The current codebase map in `.planning/codebase/` was refreshed on 2026-05-02 at
 | Commit planning docs by default | GSD docs should travel with the project unless the user later opts out. | Ongoing |
 | Make baseline contracts executable | Later phases need a gate that fails on contract drift instead of a stale checklist. | Completed in Phase 1 |
 | Route supported runtime controls through the adapter | The backend abstraction must be real before adding review-loop or plugin hardening on top of it. | Completed in Phase 2 |
+| Bind review verdicts to task artifacts and branch heads | Review, verdict, merge, and iterate must share the same reviewed tree to avoid approving unreviewed work. | Completed in Phase 3 |
+| Keep auto-pipeline incomplete rather than optimistic on ambiguous review/check output | Blank native reviews and malformed completion checks should preserve artifacts and request attention instead of reporting success. | Completed in Phase 3 |
 
 ## Evolution
 
@@ -97,4 +100,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state.
 
 ---
-*Last updated: 2026-05-02 after codebase map refresh*
+*Last updated: 2026-05-02 after Phase 3 completion*

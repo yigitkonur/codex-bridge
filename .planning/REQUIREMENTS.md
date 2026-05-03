@@ -30,10 +30,10 @@ These requirements define the next GSD milestone for an established codebase: ma
 
 ### Review And Iteration
 
-- [ ] **REVW-01**: User can run native review and adversarial review over working-tree or branch context with structured output and actionable findings.
-- [ ] **REVW-02**: Auto-pipeline can run review, conditional fix, and check stages with stage and total budgets that surface partial completion explicitly.
-- [ ] **REVW-03**: User can record verdicts, inspect pending verdicts, and merge only an approved worktree branch whose reviewed head still matches.
-- [ ] **REVW-04**: `iterate` can orchestrate task -> review -> verdict -> follow-up without requiring the user to manually assemble the loop.
+- [x] **REVW-01**: User can run native review and adversarial review over working-tree or branch context with structured output and actionable findings. Validated in Phase 3 by shared review-result normalization, task-bound `review.json` artifacts, branch-head binding, plugin/reviewer surface tests, and clean code review.
+- [x] **REVW-02**: Auto-pipeline can run review, conditional fix, and check stages with stage and total budgets that surface partial completion explicitly. Validated in Phase 3 by shared native review parsing, invalid/blank review fail-closed handling, explicit `completedStages`, `failing_stage`, budget, partial, completion, and missing-item fields, and auto-pipeline tests.
+- [x] **REVW-03**: User can record verdicts, inspect pending verdicts, and merge only an approved worktree branch whose reviewed head still matches. Validated in Phase 3 by verdict stdin payload preservation, pending verdict readiness/blocker output, Stop-hook pending verdict checks, superseded/merged filtering, approved-head merge enforcement, and regression tests.
+- [x] **REVW-04**: `iterate` can orchestrate task -> review -> verdict -> follow-up without requiring the user to manually assemble the loop. Validated in Phase 3 by the injectable iterate loop helper, production `iterate` wiring, follow-up superseding, explicit incomplete statuses, plugin docs, and deterministic loop tests.
 
 ### Plugin And Hook Surface
 
@@ -101,10 +101,10 @@ Deferred until the v1 contracts above are complete.
 | DLGT-02 | Phase 2 | Complete |
 | DLGT-03 | Phase 2 | Complete |
 | DLGT-04 | Phase 2 | Complete |
-| REVW-01 | Phase 3 | Pending |
-| REVW-02 | Phase 3 | Pending |
-| REVW-03 | Phase 3 | Pending |
-| REVW-04 | Phase 3 | Pending |
+| REVW-01 | Phase 3 | Complete |
+| REVW-02 | Phase 3 | Complete |
+| REVW-03 | Phase 3 | Complete |
+| REVW-04 | Phase 3 | Complete |
 | PLUG-01 | Phase 4 | Pending |
 | PLUG-02 | Phase 4 | Pending |
 | PLUG-03 | Phase 4 | Pending |
@@ -125,4 +125,4 @@ Deferred until the v1 contracts above are complete.
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-05-01 after Phase 2 completion*
+*Last updated: 2026-05-02 after Phase 3 completion*
