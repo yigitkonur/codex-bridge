@@ -42,7 +42,8 @@ codex login
 install the plugin in claude code:
 
 ```text
-/plugin install codex-bridge@yigitkonur
+/plugin marketplace add yigitkonur/codex-bridge
+/plugin install codex-bridge@codex-bridge
 /reload-plugins
 ```
 
@@ -53,6 +54,24 @@ then run:
 ```
 
 `setup` checks node, npm, codex, auth, backend capability support, and the optional stop review gate. if it says ready, you are good.
+
+why two commands? claude code installs plugins from marketplaces. `yigitkonur/codex-bridge` is the github repo that provides the marketplace, and `codex-bridge@codex-bridge` means "install the `codex-bridge` plugin from the `codex-bridge` marketplace." `@...` is the marketplace name, not the github owner.
+
+if you see this:
+
+```text
+marketplace "yigitkonur" not found
+```
+
+you ran the old bad command, `/plugin install codex-bridge@yigitkonur`. add the marketplace first, then install from it with `@codex-bridge`.
+
+for a local checkout while developing:
+
+```text
+/plugin marketplace add /absolute/path/to/codex-bridge
+/plugin install codex-bridge@codex-bridge
+/reload-plugins
+```
 
 if you are migrating from the old standalone skill under `~/.agents/skills/codex-bridge/`, read [migration.md](migration.md).
 

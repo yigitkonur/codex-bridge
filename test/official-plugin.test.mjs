@@ -29,7 +29,7 @@ test("official plugin detection ignores disabled official plugin and codex-bridg
       installPath: "/Users/me/.claude/plugins/cache/openai-codex/codex/1.0.4"
     },
     {
-      id: "codex-bridge@yigitkonur",
+      id: "codex-bridge@codex-bridge",
       enabled: true,
       installPath: "/Users/me/dev/codex-bridge"
     }

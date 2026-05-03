@@ -4,12 +4,12 @@
     "name": "Yigit Konur",
     "email": "noreply@yigitkonur.com"
   },
-  "description": "Noncanonical alpha-preview marketplace for codex-bridge v2 plugin scaffolding. Current release users should use the root v1.5 plugin/skill until the v2 surfaces are functional.",
+  "description": "Claude Code marketplace for codex-bridge, a Codex delegation plugin with worktree isolation, Monitor-ready events, review artifacts, verdicts, and gated merge.",
   "plugins": [
     {
-      "name": "codex-bridge-v2-alpha",
+      "name": "codex-bridge",
       "source": "./plugin",
-      "description": "Noncanonical pre-release scaffold for validating the in-progress v2 plugin subtree"
+      "description": "Delegate implementation, review, iteration, and long-running jobs from Claude Code to OpenAI Codex."
     }
   ]
 }

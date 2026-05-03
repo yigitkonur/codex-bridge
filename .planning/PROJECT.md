@@ -33,7 +33,7 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 - ✓ Phase 2 validates foreground task, send/resume, background task, wait, result, events, and unsupported-backend behavior with static tests plus authenticated smoke probes — validated in Phase 2.
 - ✓ Phase 3 normalizes native/adversarial review output, persists task-bound `review.json`, records branch-bound verdicts, filters pending verdicts, enforces approved-head merge safety, and implements the closed-loop `iterate` workflow — validated in Phase 3.
 - ✓ Phase 3 hardens auto-pipeline review/fix/check proof with explicit stage, budget, partial, missing-item, and fail-closed blank/invalid review or completion handling — validated in Phase 3.
-- ✓ Phase 4 keeps the packaged plugin surface internally consistent while explicitly preserving its noncanonical alpha metadata relationship — validated in Phase 4.
+- ✓ Phase 4 kept the packaged plugin surface internally consistent, and post-closeout install hardening promoted the packaged marketplace entry to the canonical `codex-bridge` plugin name — validated by plugin manifest validation and updated metadata tests.
 - ✓ Phase 4 hardens hook and monitor automation with registered lifecycle hooks, safe Monitor parsing, Stop gate timeout/lock behavior, and spoof-resistance tests — validated in Phase 4.
 - ✓ Phase 5 hardens canonical workspace state, append-only replayable session logs, stable per-task artifacts, and structured recovery outcomes — validated in Phase 5.
 - ✓ Phase 6 adds source-built release packaging, checksums, CI static gates, update diagnostics, and authenticated runtime smoke covering setup, task, result, events, and adversarial review — validated in Phase 6.
@@ -41,7 +41,6 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 ### Active
 
 - [ ] Define fresh v2.x requirements with `$gsd-new-milestone` before planning or executing new implementation phases.
-- [ ] Decide whether to promote the packaged plugin from noncanonical alpha to canonical marketplace surface.
 - [ ] Harden auto-update safety and installer integrity beyond the current diagnostic/rate-limit guarantees.
 - [ ] Add retention/redaction controls for large or sensitive session and registry artifacts.
 - [ ] Prepare future non-Codex backend support only after fresh requirements define the compatibility contract.
@@ -86,7 +85,7 @@ The v2.0.0 milestone archive is in `.planning/milestones/`. The audit passed wit
 | Route supported runtime controls through the adapter | The backend abstraction must be real before adding review-loop or plugin hardening on top of it. | Completed in Phase 2 |
 | Bind review verdicts to task artifacts and branch heads | Review, verdict, merge, and iterate must share the same reviewed tree to avoid approving unreviewed work. | Completed in Phase 3 |
 | Keep auto-pipeline incomplete rather than optimistic on ambiguous review/check output | Blank native reviews and malformed completion checks should preserve artifacts and request attention instead of reporting success. | Completed in Phase 3 |
-| Keep packaged plugin alpha status explicit until promotion is deliberate | The root package is canonical while `plugin/` stays a noncanonical alpha surface with tested metadata. | Completed in Phase 4 |
+| Promote packaged plugin marketplace install path | Claude Code installs plugins from configured marketplaces, and the documented end-user install path requires the marketplace entry and packaged plugin manifest to use the canonical `codex-bridge` name. | Completed after v2.0.0 closeout |
 | Anchor state and sessions to canonical workspace roots | Multi-process and worktree flows need stable state/session lookup regardless of launcher cwd. | Completed in Phase 5 |
 | Require live runtime smoke before release completion | Static tests cannot prove app-server setup/task/review/events behavior. | Completed in Phase 6 |
 

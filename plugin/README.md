@@ -20,9 +20,12 @@ npm test
 
 ## install check
 
-from claude code, install the root plugin package and run:
+from claude code, add this repo as a marketplace, install the packaged plugin, and run setup:
 
 ```text
+/plugin marketplace add yigitkonur/codex-bridge
+/plugin install codex-bridge@codex-bridge
+/reload-plugins
 /codex-bridge:setup
 ```
 

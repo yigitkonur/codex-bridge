@@ -69,11 +69,12 @@ Recent decisions affecting current work:
 
 - Start a fresh next milestone with `$gsd-new-milestone` before adding new implementation phases.
 - Consider next milestone around config validation, auto-update safety hardening, retention/redaction controls, and future backend readiness.
+- Packaged plugin marketplace promotion is no longer pending: the marketplace entry and packaged plugin manifest now use the canonical `codex-bridge` install name.
 
 ### Blockers/Concerns
 
 - Release readiness now includes a tested source packaging path and a live runtime smoke harness; run `npm run smoke:runtime -- --require-codex --json` before any actual release tag.
-- Live Claude Code hook invocation remains environment-dependent; deterministic hook subprocess tests cover the packaged hook behavior, but a manual Claude Code plugin-session check is still useful before marketplace promotion.
+- Live Claude Code hook invocation remains environment-dependent; deterministic hook subprocess tests cover the packaged hook behavior, but a manual Claude Code plugin-session check is still useful after marketplace install.
 - Generated `skill/` and `plugin/` outputs are product surface and must remain synchronized after source or surface changes.
 - Future phases should keep changes source-first and test-backed across CLI, adapter, broker, registry, hook, generated-layout, and CI contracts.
 

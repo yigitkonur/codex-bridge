@@ -5,9 +5,7 @@ import path from "node:path";
 // Dual-output build during the v2.0 plugin migration.
 //
 //   skill/   legacy install layout for ~/.claude/skills/codex-bridge.
-//            Versioned with package.json while the root plugin remains canonical.
-//   plugin/  noncanonical Claude Code plugin alpha layout used to harden the
-//            v2 packaged surface before marketplace promotion.
+//   plugin/  canonical Claude Code plugin layout used by the marketplace entry.
 //
 // Within skill/, the broker bundles to skill/app-server-broker.mjs (one level
 // up from skill/scripts/codex-bridge.mjs). Within plugin/, the broker
@@ -26,7 +24,7 @@ const targets = [
     assetsRoot: "skill",
   },
   {
-    label: "plugin (noncanonical alpha)",
+    label: "plugin",
     cliOut: "plugin/scripts/codex-bridge.mjs",
     brokerOut: "plugin/scripts/app-server-broker.mjs",
     assetsRoot: "plugin",

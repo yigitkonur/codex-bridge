@@ -122,6 +122,10 @@ registry + brief schema + staged iterate helper. Migration notes in
   script paths, and the runner subagent's thin-forwarder contract.
 
 ### Fixed
+- Claude Code marketplace installation docs now use the real two-step flow:
+  add the `yigitkonur/codex-bridge` marketplace first, then install
+  `codex-bridge@codex-bridge`. The packaged plugin manifest now uses the
+  canonical `codex-bridge` name and a Claude-validated `agents` file list.
 - *(preview — `feat/plugin-surfaces`)* `.claude-plugin/plugin.json` matches the
   package / skill metadata version instead of advertising stale `1.2.3`
   metadata to Claude Code plugin discovery.

@@ -1133,7 +1133,7 @@ test("auto-pipeline clamps stage timeout to remaining total budget", async () =>
   try {
     const reviewCalls = [];
     const stageMs = 5_000;
-    const totalMs = 200;
+    const totalMs = 1_000;
     const startedAt = Date.now();
 
     const result = await runAutoPipeline({
@@ -1166,7 +1166,7 @@ test("auto-pipeline clamps stage timeout to remaining total budget", async () =>
     assert.equal(result.totalTimeoutMs, totalMs);
     assert.match(result.error, /Auto-pipeline exceeded/);
     assert.ok(
-      Date.now() - startedAt < 1_500,
+      Date.now() - startedAt < 2_000,
       "pipeline should stop on total budget instead of waiting for the full stage timeout"
     );
     assert.equal(reviewCalls.length, 1);

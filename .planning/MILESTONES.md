@@ -26,9 +26,9 @@
 
 ### Known Deferred Items
 
-- Live Claude Code plugin-session hook invocation before marketplace promotion.
+- Live Claude Code plugin-session hook invocation after marketplace install.
 - Future backend implementations beyond Codex.
-- Canonical packaged-plugin marketplace promotion and legacy skill retirement.
+- Legacy skill retirement after plugin marketplace install confidence is proven across real user machines.
 - PR creation and multi-job monitor auto-arm.
 - Config validation, auto-update integrity hardening, and artifact retention/redaction controls.
 

@@ -35,7 +35,7 @@ Candidate v2.x themes from deferred backlog:
 - Auto-update safety hardening and installer integrity.
 - Session/artifact retention and redaction controls.
 - Future backend readiness beyond the Codex adapter.
-- Canonical packaged-plugin marketplace promotion and legacy skill retirement.
+- Legacy skill retirement after plugin marketplace install confidence is proven across real user machines.
 - PR creation and multi-job monitor auto-arm.
 
 ## Progress

@@ -193,7 +193,7 @@ Static tests do not prove live app-server compatibility. Any phase that changes 
 - Live Codex app-server round-trip coverage is missing from the generated research; release planning must define how setup, task, review, and event streaming are smoke-tested.
 - Windows broker support remains an implementation possibility, not a v1 support claim.
 - Non-Codex backend support needs phase-specific research before any capability flags or user-facing claims expand.
-- The packaged v2 plugin surface has alpha/canonicality tension that must be resolved through tests and metadata before distribution language changes.
+- The packaged plugin marketplace path has been promoted to canonical metadata; future distribution work should focus on real install/session proof and legacy skill retirement.
 - Several hook scripts exist as latent generated assets but are not active behavior until registered and tested.
 - `iterate` currently needs orchestration work before it can satisfy the review/verdict/follow-up loop requirement.
 - `merge --pr` and remote delivery should stay out of v1 unless release scope explicitly adds host integration, push behavior, and failure recovery.

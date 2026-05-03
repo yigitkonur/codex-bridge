@@ -53,6 +53,16 @@ function assertPluginLocalPath(relativePath, expectedType) {
   if (expectedType === "file") assert.ok(entry.isFile(), `${relativePath} must be a file`);
 }
 
+function assertPluginLocalPaths(relativePaths, expectedType) {
+  for (const relativePath of Array.isArray(relativePaths) ? relativePaths : [relativePaths]) {
+    assertPluginLocalPath(relativePath, expectedType);
+  }
+}
+
+function pluginManifestPaths(relativePaths) {
+  return (Array.isArray(relativePaths) ? relativePaths : [relativePaths]).map(pluginManifestPath);
+}
+
 function collectPluginRootReferences(value) {
   const references = [];
   if (typeof value === "string") {
@@ -360,30 +370,28 @@ test("Claude plugin manifest version matches package and skill metadata", () => 
   assert.match(skill, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
 });
 
-test("plugin metadata declares the canonical root and noncanonical packaged alpha relationship", () => {
+test("plugin metadata declares the canonical packaged marketplace relationship", () => {
   const marketplace = readJson(".claude-plugin/marketplace.json");
   const rootManifest = readJson(".claude-plugin/plugin.json");
-  const alphaManifest = readJson("plugin/.claude-plugin/plugin.json");
+  const pluginManifest = readJson("plugin/.claude-plugin/plugin.json");
   const pkg = readJson("package.json");
   const legacySkill = readText("skill/SKILL.md");
   const packagedSkill = readText("plugin/skills/codex-bridge/SKILL.md");
   const canonicalEntry = marketplace.plugins.find((plugin) => plugin.name === "codex-bridge");
-  const entry = marketplace.plugins.find((plugin) => plugin.name === "codex-bridge-v2-alpha");
 
   assert.equal(rootManifest.name, pkg.name);
   assert.equal(rootManifest.version, pkg.version);
   assert.match(legacySkill, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
   assert.match(packagedSkill, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
 
-  assert.equal(canonicalEntry, undefined);
-  assert.ok(entry);
-  assert.equal(entry.source, "./plugin");
-  assert.equal(entry.version, undefined);
-  assert.equal(alphaManifest.name, entry.name);
-  assert.equal(alphaManifest.version, `${pkg.version}-alpha.0`);
-  assert.match(marketplace.description, /noncanonical/i);
-  assert.match(entry.description, /noncanonical|pre-release|scaffold/i);
-  assert.match(alphaManifest.description, /noncanonical|pre-release|alpha/i);
+  assert.ok(canonicalEntry);
+  assert.equal(canonicalEntry.source, "./plugin");
+  assert.equal(canonicalEntry.version, undefined);
+  assert.equal(pluginManifest.name, canonicalEntry.name);
+  assert.equal(pluginManifest.version, pkg.version);
+  assert.doesNotMatch(marketplace.description, /noncanonical|alpha|pre-release|scaffold/i);
+  assert.doesNotMatch(canonicalEntry.description, /noncanonical|alpha|pre-release|scaffold/i);
+  assert.doesNotMatch(pluginManifest.description, /noncanonical|alpha|pre-release|scaffold/i);
 });
 
 test("Claude plugin exposes command coverage for bridge orchestration", () => {
@@ -408,8 +416,9 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
 
   assert.equal(readText("plugin/config.yaml"), readText("skill/config.yaml"));
   assertPluginLocalPath(manifest.commands, "directory");
-  assertPluginLocalPath(manifest.agents, "directory");
-  assertPluginLocalPath(manifest.hooks, "file");
+  assertPluginLocalPaths(manifest.agents, "file");
+  assert.equal(manifest.hooks, undefined);
+  assert.ok(exists("plugin/hooks/hooks.json"), "standard plugin hooks file must exist for auto-discovery");
   for (const skillPath of manifest.skills ?? []) {
     assertPluginLocalPath(skillPath, "directory");
   }
@@ -423,13 +432,16 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
     assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.commands)), expectedCommands);
   }
   if (manifest.agents) {
-    assert.deepEqual(listMarkdownFiles(pluginManifestPath(manifest.agents)).sort(), ["codex-bridge-reviewer.md", "codex-bridge-runner.md"].sort());
+    assert.deepEqual(
+      pluginManifestPaths(manifest.agents).map((agentPath) => path.basename(agentPath)).sort(),
+      ["codex-bridge-reviewer.md", "codex-bridge-runner.md"].sort(),
+    );
   }
-  assert.ok(exists(pluginManifestPath(manifest.hooks)), `${manifest.hooks} must exist`);
+  assert.ok(exists("plugin/hooks/hooks.json"), "standard plugin hooks file must exist");
 
   const authoredHooks = readJson("hooks/hooks.json");
-  const packagedHooks = readJson(pluginManifestPath(manifest.hooks));
-  // packaged hooks may be a subset (empty during alpha phase) — only require structural compatibility
+  const packagedHooks = readJson("plugin/hooks/hooks.json");
+  // packaged hooks may be a subset of authored hooks — only require structural compatibility.
   if (Object.keys(packagedHooks.hooks ?? {}).length > 0) {
     assert.deepEqual(packagedHooks, authoredHooks);
     assert.deepEqual(Object.keys(packagedHooks.hooks).sort(), [
@@ -818,7 +830,7 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   const sessionHook = readText("plugin/hooks/session-lifecycle-hook.mjs");
   const stopHook = readText("plugin/hooks/stop-gate.mjs");
 
-  assert.equal(manifest.hooks, "./hooks/hooks.json");
+  assert.equal(manifest.hooks, undefined);
   assert.deepEqual(Object.keys(hooksConfig.hooks).sort(), [
     "PostToolUse",
     "PreToolUse",
@@ -1316,7 +1328,7 @@ test("runner subagent remains a thin forwarding wrapper", () => {
   const manifest = readJson("plugin/.claude-plugin/plugin.json");
   const runner = readText("plugin/agents/codex-bridge-runner.md");
 
-  assert.equal(manifest.agents, "./agents");
+  assert.ok(manifest.agents.includes("./agents/codex-bridge-runner.md"));
   assert.match(runner, /name: codex-bridge-runner/);
   assert.match(runner, /Use exactly one `Bash` call/);
   assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
@@ -1335,8 +1347,10 @@ test("canonical plugin manifest paths resolve inside the plugin package", () => 
     );
   }
   assert.equal(exists(path.join("plugin", manifest.commands)), true);
-  assert.equal(exists(path.join("plugin", manifest.agents)), true);
-  assert.equal(exists(path.join("plugin", manifest.hooks)), true);
+  for (const agentPath of manifest.agents ?? []) {
+    assert.equal(exists(path.join("plugin", agentPath)), true);
+  }
+  assert.equal(exists("plugin/hooks/hooks.json"), true);
   assert.equal(exists("plugin/config.yaml"), true);
 
   const result = spawnSync(

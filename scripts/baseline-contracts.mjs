@@ -429,15 +429,22 @@ function verifyPluginMetadata(rootDir, pkg) {
   if (rootManifest.version !== pkg.version) failures.push(".claude-plugin/plugin.json version must match package.json version");
   if (legacySkillVersion !== pkg.version) failures.push("skill/SKILL.md metadata.version must match package.json version");
   if (packagedSkillVersion !== pkg.version) failures.push("plugin skill metadata.version must match package.json version");
-  if (pluginManifest.name !== "codex-bridge-v2-alpha") failures.push("packaged plugin manifest must stay on codex-bridge-v2-alpha while marketplace is noncanonical");
-  if (pluginManifest.version !== `${pkg.version}-alpha.0`) failures.push("packaged plugin alpha version must derive from package.json version");
+  if (marketplace.name !== pkg.name) failures.push(".claude-plugin/marketplace.json name must match package.json name");
+  if (pluginManifest.name !== pkg.name) failures.push("packaged plugin manifest name must match package.json name");
+  if (pluginManifest.version !== pkg.version) failures.push("packaged plugin manifest version must match package.json version");
 
   const canonicalEntry = marketplace.plugins?.find((entry) => entry.name === pkg.name);
-  const alphaEntry = marketplace.plugins?.find((entry) => entry.name === pluginManifest.name);
-  if (canonicalEntry) failures.push("marketplace must not publish canonical codex-bridge entry while packaged plugin is alpha");
-  if (!alphaEntry) failures.push("marketplace must include packaged alpha plugin entry");
-  if (alphaEntry && alphaEntry.source !== "./plugin") failures.push("marketplace alpha entry must point to ./plugin");
-  if (!/noncanonical/i.test(marketplace.description ?? "")) failures.push("marketplace description must state noncanonical packaged alpha stance");
+  if (!canonicalEntry) failures.push("marketplace must publish canonical codex-bridge entry");
+  if (canonicalEntry && canonicalEntry.source !== "./plugin") failures.push("marketplace canonical entry must point to ./plugin");
+  if (/noncanonical|alpha|pre-release|scaffold/i.test(marketplace.description ?? "")) {
+    failures.push("marketplace description must not describe the packaged plugin as alpha or noncanonical");
+  }
+  if (/noncanonical|alpha|pre-release|scaffold/i.test(canonicalEntry?.description ?? "")) {
+    failures.push("marketplace canonical entry must not describe the packaged plugin as alpha or noncanonical");
+  }
+  if (/noncanonical|alpha|pre-release|scaffold/i.test(pluginManifest.description ?? "")) {
+    failures.push("packaged plugin manifest must not describe itself as alpha or noncanonical");
+  }
 
   return failures;
 }

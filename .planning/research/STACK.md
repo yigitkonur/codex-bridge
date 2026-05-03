@@ -16,7 +16,7 @@ Use the existing stack as-is: Node built-ins for process, fs, net, crypto, fetch
 | Area | Recommendation | Confidence | Evidence |
 |---|---|---:|---|
 | Runtime | Keep Node.js `>=22.0.0` and ESM-only modules. | HIGH | `package.json:5`, `package.json:13-15` |
-| Package version | Keep package and plugin metadata aligned unless intentionally shipping an alpha plugin subtree. | HIGH | `package.json:2-4`, `.claude-plugin/plugin.json:3-7`, `src/codex-bridge.mjs:15`, `src/codex-bridge.mjs:1102-1116` |
+| Package version | Keep package, root plugin metadata, packaged plugin metadata, and skill metadata aligned unless intentionally version-stamping a migration. | HIGH | `package.json:2-4`, `.claude-plugin/plugin.json:3-7`, `plugin/.claude-plugin/plugin.json:3-7`, `src/codex-bridge.mjs:15`, `src/codex-bridge.mjs:1102-1116` |
 | Build | Keep `npm run build` as the only bundle generator. | HIGH | `package.json:6-9`, `esbuild.config.mjs:77-125` |
 | Tests | Keep `npm test` on Node's built-in runner; add focused `.test.mjs` files for observable contracts. | HIGH | `package.json:6-10`, `.github/workflows/build.yml:35-37`, `test/bridge-static.test.mjs:14-23` |
 | Bundler | Keep `esbuild`; lockfile currently resolves it to `0.24.2`. | HIGH | `package.json:16-18`, `package-lock.json:451-452` |
