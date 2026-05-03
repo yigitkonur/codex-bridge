@@ -12,11 +12,10 @@
 //    its next reasoning step.
 //
 // 2. Resume-intent detection: match the user prompt against patterns
-//    like /^(continue|keep going|resume|that codex one)/i. If matched
-//    AND a recent codex-bridge thread exists for this workspace, emit
-//    additionalContext suggesting `/codex-bridge:task --resume-last
-//    <prompt>`. Helps the orchestrator route follow-ups without the
-//    user having to type the slash command.
+//    like /^(continue|keep going|resume|that codex one)/i. If matched,
+//    emit additionalContext suggesting `iterate <task_id>` for task
+//    worktree follow-up, or `task --resume-last` only for thread-only
+//    conversational continuation.
 //
 // Both responsibilities are no-ops in v2.0.0 until T15 lands the
 // artifact registry (jobs/) and T22 wires the rewake-signal write path.
@@ -161,7 +160,7 @@ function main() {
       blocks.push(
         [
           "## Codex-Bridge: resume-intent detected",
-          'If a recent codex-bridge thread exists for this workspace, consider routing this as `/codex-bridge:task --resume-last "<prompt>"` rather than starting a fresh dispatch.',
+          'If a recent codex-bridge task exists for this workspace, use `/codex-bridge:iterate <task_id>` for follow-up fixes that must preserve worktree state. Use `/codex-bridge:task --resume-last "<prompt>"` only for thread-only continuation with no new auto-worktree.',
         ].join("\n"),
       );
     }

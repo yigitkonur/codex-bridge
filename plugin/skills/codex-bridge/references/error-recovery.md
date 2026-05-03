@@ -17,7 +17,7 @@ error.code
 │
 ├─ BRIEF_FILE_NOT_FOUND           → check the @path you passed
 ├─ BRIEF_INVALID_JSON             → JSON parse failed; check brief.json
-├─ BRIEF_SCHEMA_VIOLATION         → error.details has the AJV array
+├─ BRIEF_SCHEMA_VIOLATION         → error.details lists schema errors; fix unknown/missing fields
 ├─ BRIEF_PARENT_NOT_FOUND         → parent_task_id refers to a missing job
 ├─ BRIEF_BACKEND_UNAVAILABLE      → backend_hint not registered on this install
 │
@@ -25,7 +25,7 @@ error.code
 ├─ TASK_DIR_LOCKED                → another worker holds <task_id>/lock
 ├─ VERDICT_NOT_APPROVED           → run review; resolve verdict before merge
 │
-├─ WORKTREE_CREATE_FAILED         → check disk space, base ref, branch name
+├─ WORKTREE_CREATE_FAILED         → check cwd is a git repo with at least one commit, disk space, base ref, branch name
 ├─ WORKTREE_READ_ONLY_CONFLICT    → --worktree-auto + --read-only is incoherent
 ├─ WRITE_READ_ONLY_CONFLICT       → choose --write or --read-only
 └─ REVIEW_*                       → see "Review path" below

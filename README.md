@@ -91,6 +91,18 @@ hand off an implementation task:
 /codex-bridge:task fix the failing auth tests with the smallest safe patch
 ```
 
+for file-changing work you want isolated from your main checkout:
+
+```text
+/codex-bridge:task --write --worktree-auto --background fix the failing auth tests with the smallest safe patch
+```
+
+for non-trivial work, pair a brief with a real prompt:
+
+```text
+/codex-bridge:task --write --worktree-auto --background --brief @brief.json implement the task described in the structured brief
+```
+
 run a stricter review:
 
 ```text
@@ -116,8 +128,12 @@ useful patterns:
 ```text
 /codex-bridge:task --background investigate why ci is failing
 /codex-bridge:task --write --worktree-auto add pagination to the export endpoint
-/codex-bridge:task --resume finish the previous codex task
+/codex-bridge:task --resume continue the previous thread without creating a new worktree
 ```
+
+`--resume` and `--resume-last` are thread-only. they are rejected with
+`--worktree-auto`; use `/codex-bridge:iterate task-abc123` when follow-up work
+must continue from an existing task worktree.
 
 ### `/codex-bridge:review`
 
@@ -153,6 +169,7 @@ runs a task, reviews the result, writes a verdict, and starts follow-up work unt
 ```
 
 the output includes the next action. approved work still does not auto-merge.
+use this instead of `task --resume-last --worktree-auto` for follow-up fixes.
 
 ### `/codex-bridge:status`, `/events`, `/wait`, `/result`, `/cancel`
 

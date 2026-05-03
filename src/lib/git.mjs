@@ -537,6 +537,15 @@ export function createSubagentWorktree({
 
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
+  const headCheck = git(repoRoot, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  if (headCheck.status !== 0) {
+    throw new CliError("Git repository has no commits; worktree isolation needs a base commit.", {
+      class: "validation",
+      code: "GIT_REPO_HAS_NO_COMMITS",
+      retryable: false,
+      suggestion: "Create an initial commit first, for example: `git add -A && git commit -m \"initial commit\"` or `git commit --allow-empty -m \"initial commit\"`."
+    });
+  }
   const currentBranch = getCurrentBranch(cwd);
   // getCurrentBranch returns "HEAD" when detached (never empty), so the
   // ?? chain previously skipped detectDefaultBranch entirely. Treat

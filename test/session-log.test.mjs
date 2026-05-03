@@ -192,3 +192,41 @@ test("captureGitDiff includes unstaged untracked files", (t) => {
   assert.match(diffContent, /diff --git a\/new-file\.txt b\/new-file\.txt/);
   assert.match(diffContent, /<untracked file: new-file\.txt, 8 bytes; content omitted from session diff>/);
 });
+
+test("captureGitDiff can summarize committed work since an explicit base ref", (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-session-log-base-"));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+
+  const repo = path.join(tempRoot, "repo");
+  const sessionDir = path.join(tempRoot, "sessions");
+  fs.mkdirSync(repo);
+  fs.mkdirSync(sessionDir);
+
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "codex-bridge@example.test"]);
+  runGit(repo, ["config", "user.name", "Codex Bridge Test"]);
+  fs.writeFileSync(path.join(repo, "tracked.txt"), "base\n");
+  runGit(repo, ["add", "tracked.txt"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  const base = runGit(repo, ["rev-parse", "HEAD"]).stdout.trim();
+
+  fs.writeFileSync(path.join(repo, "tracked.txt"), "base\nnext\n");
+  fs.writeFileSync(path.join(repo, "committed.txt"), "one\n");
+  runGit(repo, ["add", "tracked.txt", "committed.txt"]);
+  runGit(repo, ["commit", "-m", "worker commit"]);
+
+  const captured = captureGitDiff(repo, {
+    threadId: "thread-base",
+    sessionDir,
+  }, { baseRef: base });
+
+  assert.equal(captured.diffStat, "2 files | +2 -0");
+  assert.deepEqual(captured.files.sort(), [
+    "M committed.txt (+1 -0)",
+    "M tracked.txt (+1 -0)",
+  ]);
+
+  const diffContent = fs.readFileSync(captured.diffPath, "utf8");
+  assert.match(diffContent, /diff --git a\/committed\.txt b\/committed\.txt/);
+  assert.match(diffContent, /diff --git a\/tracked\.txt b\/tracked\.txt/);
+});

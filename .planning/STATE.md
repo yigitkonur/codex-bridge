@@ -9,21 +9,21 @@ Research summary: `.planning/research/SUMMARY.md`
 Codebase maps: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/CONCERNS.md`, `.planning/codebase/CONVENTIONS.md`, `.planning/codebase/INTEGRATIONS.md`, `.planning/codebase/STACK.md`, `.planning/codebase/STRUCTURE.md`, `.planning/codebase/TESTING.md`
 
 **Core value:** Claude Code can hand work to Codex and regain reliable, inspectable control through stable commands, events, artifacts, reviews, and merge gates.
-**Current focus:** v2.0.0 archived and no active phase remains; ready for a fresh next milestone.
+**Current focus:** v2.1.0 field-report remediation is complete; no active phase remains.
 
 ## Current Position
 
-Phase: None active
-Plan: None active
-Status: v2.0.0 milestone complete and archived
-Last activity: 2026-05-03 - Re-checked closeout state after milestone archive, removed the redundant root milestone-audit duplicate, and updated living docs so the next step is clearly a fresh milestone rather than another v2.0.0 phase.
+Phase: None
+Plan: None
+Status: v2.1.0 Claude Plugin Field Report Remediation complete
+Last activity: 2026-05-03 - Completed Phase 7 field-report remediation: brief delivery, resume/worktree safety, pipeline diff/check events, skill/docs alignment, generated outputs, and static verification.
 
 Progress: [##########] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 19
+- Total plans completed: 22
 - Average duration: n/a
 - Total execution time: 0.0 hours
 
@@ -37,9 +37,10 @@ Progress: [##########] 100%
 | 4. Plugin And Hook Surface Hardening | 3/3 | 0.0h | n/a |
 | 5. State Artifact And Recovery Resilience | 3/3 | 0.0h | n/a |
 | 6. Release Readiness And Runtime Smoke | 3/3 | 0.0h | n/a |
+| 7. Claude Plugin Field Report Remediation | 3/3 | 0.0h | n/a |
 
 **Recent Trend:**
-- Last 5 plans: 05-02, 05-03, 06-01, 06-02, 06-03
+- Last 5 plans: 06-02, 06-03, 07-01, 07-02, 07-03
 - Trend: milestone complete
 
 *Updated after each plan completion.*
@@ -64,18 +65,18 @@ Recent decisions affecting current work:
 - Milestone audit on 2026-05-03 passed for v2.0.0: 28/28 requirements satisfied, 6/6 phases verified, 8/8 cross-phase flows complete. Report: `.planning/milestones/v2.0.0-MILESTONE-AUDIT.md`.
 - Milestone completion on 2026-05-03 archived v2.0.0 roadmap, requirements, and audit under `.planning/milestones/`; added `.planning/MILESTONES.md` and `.planning/RETROSPECTIVE.md`.
 - Closeout cleanup on 2026-05-03 removed the redundant root-level milestone audit duplicate after confirming it matched `.planning/milestones/v2.0.0-MILESTONE-AUDIT.md`.
+- Phase 7 execution on 2026-05-03 completed the Claude plugin field-report remediation. `npm run verify:static` passed with 359 tests / 358 passed / 1 skipped plus baseline contracts OK; `git diff --check` passed.
 
 ### Pending Todos
 
-- Remediate the Claude plugin field-report issues captured in `.planning/field-reports/2026-05-03-codex-bridge-claude-plugin-issues.md`, starting with P0 brief delivery and resume/worktree continuity.
 - Start a fresh next milestone with `$gsd-new-milestone` before adding new implementation phases.
-- Consider next milestone around config validation, auto-update safety hardening, retention/redaction controls, and future backend readiness.
+- Consider next milestone around richer monitor telemetry, task-id session aliases, cancel/resume naming polish, job-group/wait-any primitives, config validation, auto-update safety hardening, retention/redaction controls, and future backend readiness.
 - Packaged plugin marketplace promotion is no longer pending: the marketplace entry and packaged plugin manifest now use the canonical `codex-bridge` install name.
 
 ### Blockers/Concerns
 
 - Release readiness now includes a tested source packaging path and a live runtime smoke harness; run `npm run smoke:runtime -- --require-codex --json` before any actual release tag.
-- Live Claude Code hook invocation remains environment-dependent; deterministic hook subprocess tests cover the packaged hook behavior, but a manual Claude Code plugin-session check is still useful after marketplace install.
+- Live Claude Code hook invocation remains environment-dependent; deterministic hook subprocess tests cover the packaged hook behavior, but a manual Claude Code plugin-session check is still useful after marketplace install and after the Phase 7 brief/resume fixes.
 - Generated `skill/` and `plugin/` outputs are product surface and must remain synchronized after source or surface changes.
 - Future phases should keep changes source-first and test-backed across CLI, adapter, broker, registry, hook, generated-layout, and CI contracts.
 
@@ -86,10 +87,11 @@ Recent decisions affecting current work:
 | Future Backends | Add non-Codex backend implementations after adapter contract completion | v2 | Initialization |
 | Distribution | Retire legacy skill layout only after plugin distribution and update guidance no longer depend on it | v2 | Initialization |
 | Runtime UX | PR creation and multi-job monitor auto-arm | v2 | Initialization |
+| Runtime UX | Richer monitor heartbeat previews, task-id session aliases, cancel/resume title cleanup, and job-group/wait-any primitives | v2 | Phase 7 |
 
 ## Session Continuity
 
 Last session: 2026-05-03
-Stopped at: v2.0.0 milestone archived, closeout docs cleaned, and no active phase remaining.
+Stopped at: v2.1.0 field-report remediation complete, generated outputs rebuilt, static verification passed, and no active phase remaining.
 Resume file: None
 Next recommended command: `$gsd-new-milestone`

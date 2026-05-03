@@ -184,12 +184,15 @@ export function diffGitSnapshot(cwd, snapshot) {
   };
 }
 
-export function captureGitDiff(cwd, session) {
-  const numstatResult = spawnSync("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 10000 });
-  const fullResult = spawnSync("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 10000 });
+export function captureGitDiff(cwd, session, options = {}) {
+  const baseRef = typeof options.baseRef === "string" && options.baseRef.trim()
+    ? options.baseRef.trim()
+    : "HEAD";
+  const numstatResult = spawnSync("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 10000 });
+  const fullResult = spawnSync("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 10000 });
   const untrackedFiles = getUntrackedFileStats(cwd);
 
-  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles);
+  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles, baseRef);
   const diffPath = writeDiff(session, diffContent);
 
   const numstatOutput = numstatResult.stdout || "";
@@ -276,19 +279,19 @@ function displayGitPath(fileName) {
   return fileName.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
 }
 
-function appendUntrackedDiffMarkers(diffContent, untrackedFiles) {
+function appendUntrackedDiffMarkers(diffContent, untrackedFiles, baseRef = "HEAD") {
   if (untrackedFiles.length === 0) {
     return diffContent;
   }
-  const marker = formatUntrackedDiffMarkers(untrackedFiles);
+  const marker = formatUntrackedDiffMarkers(untrackedFiles, baseRef);
   if (!diffContent) {
     return marker;
   }
   return `${diffContent}${diffContent.endsWith("\n") ? "" : "\n"}${marker}`;
 }
 
-function formatUntrackedDiffMarkers(untrackedFiles) {
-  const lines = ["# Untracked files omitted from git diff HEAD:"];
+function formatUntrackedDiffMarkers(untrackedFiles, baseRef = "HEAD") {
+  const lines = [`# Untracked files omitted from git diff ${baseRef}:`];
   for (const file of untrackedFiles) {
     const size = Number.isFinite(file.sizeBytes) ? `, ${file.sizeBytes} bytes` : "";
     lines.push(`diff --git a/${file.fileName} b/${file.fileName}`);

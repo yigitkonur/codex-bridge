@@ -15,6 +15,7 @@ import {
 import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "../../lib/config.mjs";
 import { extractUpstreamRequestId } from "../../lib/cli-errors.mjs";
 import { parseNativeReviewText } from "../../lib/review-result.mjs";
+import { readMeta } from "../../lib/registry.mjs";
 
 // Default budgets. Runtime callers may override via `stageTimeoutMs` /
 // `totalTimeoutMs` on runAutoPipeline options, which in turn resolve from
@@ -58,6 +59,15 @@ export async function runAutoPipeline(options) {
   const completedStages = [];
   const startTime = Date.now();
   const executeInstructions = loadExecuteInstructions(rootDir);
+  const taskMeta = jobId ? readMeta(jobId) : null;
+  const taskDiffBaseRef =
+    typeof taskMeta?.base_sha === "string" && taskMeta.base_sha
+      ? taskMeta.base_sha
+      : (typeof taskMeta?.base_ref === "string" && taskMeta.base_ref ? taskMeta.base_ref : null);
+  const captureTaskDiff = () =>
+    taskDiffBaseRef
+      ? captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef })
+      : captureGitDiff(cwd, session);
 
   const remainingPipelineMs = () => totalMs - (Date.now() - startTime);
 
@@ -358,14 +368,13 @@ export async function runAutoPipeline(options) {
             summary: "completion-check inconclusive",
           };
         }
+        const missingDetail = Array.isArray(completionResult.missing_items) && completionResult.missing_items.length
+          ? ` missing=${completionResult.missing_items.length} missing_items=${JSON.stringify(completionResult.missing_items)}`
+          : "";
         logEvent(session, formatPipelineEvent(session, {
           stage: "check",
           suffix: "done",
-          detail: `complete=${Boolean(completionResult.complete)}${
-            Array.isArray(completionResult.missing_items) && completionResult.missing_items.length
-              ? ` missing=${completionResult.missing_items.length}`
-              : ""
-          }`
+          detail: `complete=${Boolean(completionResult.complete)}${missingDetail}`
         }));
       } catch (error) {
         if (error instanceof TimeoutError) {
@@ -410,7 +419,7 @@ export async function runAutoPipeline(options) {
     }
 
     // Stage 4: Final git diff and notification
-    const finalDiff = captureGitDiff(cwd, session);
+    const finalDiff = captureTaskDiff();
     const duration = Math.round((Date.now() - startTime) / 1000);
     const missingItems = Array.isArray(completionResult.missing_items)
       ? completionResult.missing_items
@@ -519,7 +528,7 @@ export async function runAutoPipeline(options) {
     // Capture whatever diff exists
     let finalDiff;
     try {
-      finalDiff = captureGitDiff(cwd, session);
+      finalDiff = captureTaskDiff();
     } catch {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }

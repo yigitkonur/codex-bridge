@@ -21,6 +21,10 @@ metadata:
 
 Codex is the executor; you are the orchestrator. Most of the wiring is in the runtime — your job is the **judgment**: when to delegate, what to surface as `specific_concerns`, when to merge, when to iterate.
 
+Tasks are read-only unless the command explicitly opts into writes or config
+sets a wider sandbox. For file-changing work, use `--write`; for bridge-managed
+isolation, pair it with `--worktree-auto`.
+
 ## When to use codex-bridge
 
 **Trigger** when the work is one of:
@@ -52,7 +56,10 @@ When a hook misbehaves, set `CODEX_BRIDGE_HOOK_DISABLE=<name>` (or `=all`) and r
 
 ## Briefs (the orchestrator's privileged channel)
 
-For non-trivial work, prefer a **brief** over a free-text prompt. The brief is a small JSON object that travels with the task all the way through to the review prompt's `{{OPUS_CONCERNS}}` slot. See `references/brief-composition.md`.
+For non-trivial work, prefer a **brief plus a real prompt**. The brief is a
+small JSON object that is appended to the worker prompt and also travels with
+the task through review/check artifacts. It does not remove the need for a
+positional prompt or `--prompt-file`. See `references/brief-composition.md`.
 
 Minimum useful brief — `goal` and `worker_assignment` are the only required keys:
 
@@ -70,7 +77,7 @@ Minimum useful brief — `goal` and `worker_assignment` are the only required ke
 Pass it to either subcommand:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json --background --worktree-auto --brief @brief.json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json --write --background --worktree-auto --brief @brief.json "Implement the task described in the Codex Bridge structured brief."
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --brief @brief.json
 ```
 
@@ -102,8 +109,8 @@ Write-mode tasks land in `<repo>/../.codex-bridge-worktrees/<task_id>` on a `sub
 
 1. Read `<jobs>/<task_id>/meta.json`, then run `adversarial-review --cwd <worktree.path> --base <worktree.base_ref>` with the same brief.
 2. Inspect the verdict: `/codex-bridge:verdict <task_id>` or read `<jobs>/<task_id>/verdict.json`.
-3. If `verdict=approved`: `/codex-bridge:merge <task_id>` (gated; refuses if verdict isn't approved). `verdicts --pending` shows approved-but-unmerged work.
-4. If `verdict=needs-attention` or `must-fix`: re-brief and re-dispatch manually, use `/codex-bridge:iterate <task_id>` for the next-action stub, or `/codex-bridge:verdict <task_id> --discard` to abandon.
+3. If `verdict=approved`: `/codex-bridge:merge <task_id>` (gated; refuses if verdict isn't approved). `verdicts --pending` shows approved-but-unmerged work. Do not manually `git merge subagent/codex/*` except as recovery from a bridge failure.
+4. If `verdict=needs-attention` or `must-fix`: use `/codex-bridge:iterate <task_id>` or start a fresh worktree task with a corrected prompt; `/codex-bridge:verdict <task_id> --discard` abandons unwanted work.
 
 ## Pointers
 

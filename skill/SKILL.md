@@ -28,6 +28,10 @@ Delegate coding tasks to Codex and manage the workflow via Monitor notifications
 
 **Claude Code plugin install:** when installed as a Claude Code plugin instead of a standalone skill, prefer the native slash commands: `/codex-bridge:task`, `/codex-bridge:review`, `/codex-bridge:adversarial-review`, `/codex-bridge:status`, `/codex-bridge:result`, `/codex-bridge:events`, `/codex-bridge:wait`, `/codex-bridge:send`, `/codex-bridge:respond`, and `/codex-bridge:cancel`. The command files invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs"` and use the `codex-bridge:codex-bridge-runner` subagent for substantial task delegation, so Claude Code gets a fresh worker context while the bridge remains the source of truth for job IDs and Monitor hints. Plugin hooks export the Claude session id for job scoping. If the official OpenAI Codex plugin/skill is enabled, prefer it for standard `/codex:*` review-gate behavior; use `codex-bridge` when the official plugin is unavailable or when the user explicitly wants `codex-bridge` orchestration, Monitor-ready event files, or `/codex-bridge:*` commands. The `codex-bridge` stop-time review gate is project-specific and opt-in only: `/codex-bridge:setup --enable-review-gate` creates `.codex-bridge-stop-review-gate.lock` in the git root, but that mode is suppressed while the official OpenAI Codex plugin is enabled; without the lock file, the Stop hook exits without running Codex.
 
+**Write-mode default:** tasks are read-only unless the command explicitly opts
+into writes or the project config sets a wider sandbox. For file-changing work,
+use `--write`; for bridge-managed isolation, pair it with `--worktree-auto`.
+
 ## Identifiers (the single biggest source of derailment — read this first)
 
 Two kinds of IDs flow through every task. Use the right one or commands fail:
@@ -158,6 +162,21 @@ TOOL_HINT=$(echo "$LAUNCH" | jq -c '.result.monitor.tool_hint')
 
 The positional form takes **text**, not a path; use `--prompt-file` to load from disk.
 
+For non-trivial work, prefer a structured brief plus a short positional prompt.
+The brief is appended to the worker prompt and also persisted under the task
+registry for review/check forensics:
+
+```bash
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --write --worktree-auto --background \
+  --brief @brief.json \
+  "Implement the task described in the Codex Bridge structured brief."
+```
+
+Do not run `task --brief @brief.json` with no prompt; the CLI rejects empty
+task requests. If a task returns `[INCOMPLETE]`, use `iterate <task_id>` or a
+fresh worktree task. Do not use `--resume-last --worktree-auto`; thread resume
+does not imply worktree continuity and the CLI rejects that combination.
+
 **`--write` interacts with two layers — `sandbox_policy` override wins over the mode-derived default.** Under the shipped `sandbox_policy: "danger-full-access"` default, every turn (plan *or* default) runs with full filesystem access regardless of `--write`; plan-mode is a *reasoning* constraint, not a sandbox one. The "first turn is readOnly" behavior only applies when you've tightened `sandbox_policy` to `"read-only"` (or cleared the override so the mode-derived default kicks in) — in that configuration, a plan-mode first turn runs `readOnly` and `--write` has no effect until a `send <thread-id> --mode default …` approves the plan. Pass `--mode default` on `task` to skip the plan turn in either configuration. `--mode` on `task --background` is also applied — the override flows through the job record into the detached worker.
 
 **Fallback when `jq` isn't available.** Rendered (non-JSON) output ends with a one-line footer printed verbatim after Codex's final message:
@@ -227,6 +246,10 @@ Each stage emits a start tag (`[PIPELINE:review]`) and a done tag (`[PIPELINE:re
 3. **Do not edit files Codex just wrote.** If you ask Codex to scaffold something and immediately modify one of its outputs, you'll fight Codex's internal repo model on the next `send`. Commit first, then edit in a separate conversation if needed.
 4. **Don't use a generator as verification of its own output.** If your new files depend on `xcodegen` / `prisma generate` / `protoc` / similar, don't re-run the generator and compare diffs — the second run's output is non-deterministic for anything order-dependent. Compile with `xcodebuild` / `cargo build` / `tsc` against the committed tree instead.
 5. **Verify on the committed tree, not the working copy.** Commit your intended changes, then rebuild from a clean tree. Working-copy builds can hide late pipeline writes.
+6. **Use bridge merge gates for worktree tasks.** For `subagent/codex/<task_id>`
+   branches, run `result`, review or `adversarial-review`, record/inspect the
+   `verdict`, then use `merge <task_id>`. Manual `git merge subagent/codex/*`
+   is a recovery path, not the normal happy path.
 
 Common follow-ups:
 - Standalone review: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs review`

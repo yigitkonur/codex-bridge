@@ -50,15 +50,38 @@ test("task retry binds same-thread retry to the failed thread id", () => {
 
 test("resume task chooses default continue prompt before prompt decorators", () => {
   const task = bridge.match(/async function runBridgeTask[\s\S]*?const activeMode = isPlanMode \? "plan" : "default";/)?.[0] ?? "";
-  const defaultPromptIndex = task.indexOf("const taskPrompt = request.resumeLast && !String(request.prompt ?? \"\").trim()");
+  const defaultPromptIndex = task.indexOf("const baseTaskPrompt = request.resumeLast && !String(request.prompt ?? \"\").trim()");
   const footerIndex = task.indexOf("const promptWithFooter = config.prompt_footer");
   assert.notEqual(defaultPromptIndex, -1);
   assert.notEqual(footerIndex, -1);
   assert.ok(defaultPromptIndex < footerIndex);
   assert.match(task, /\? DEFAULT_CONTINUE_PROMPT\s+: \(request\.prompt \?\? ""\);/);
+  assert.match(task, /const taskPrompt = appendRenderedBriefToPrompt\(baseTaskPrompt, request\.brief \?\? null\);/);
   assert.match(task, /\$\{metaSkillsPrefix\}\$\{taskPrompt\}\\n\\n\$\{config\.prompt_footer\}/);
   assert.match(task, /\$\{metaSkillsPrefix\}\$\{taskPrompt\}/);
   assert.doesNotMatch(task, /\$\{metaSkillsPrefix\}\$\{request\.prompt\}/);
+});
+
+test("task brief is delivered into effective worker prompt", () => {
+  assert.match(bridge, /function appendRenderedBriefToPrompt\(prompt, brief\)/);
+  assert.match(bridge, /CODEX-BRIDGE STRUCTURED BRIEF/);
+  assert.match(bridge, /renderBriefAsMarkdown\(brief\)/);
+  assert.match(bridge, /brief: brief \?\? null/);
+  assert.match(bridge, /brief,\n\s+write,/);
+});
+
+test("task rejects thread-only resume with automatic worktree creation", () => {
+  const handleTask = bridge.match(/async function handleTask\(argv\)[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  assert.match(handleTask, /resumeLast && options\["worktree-auto"\]/);
+  assert.match(handleTask, /RESUME_WORKTREE_CONFLICT/);
+  assert.match(handleTask, /codex-bridge iterate <task_id>/);
+});
+
+test("brief schema violations preserve details and a fix suggestion", () => {
+  const handleTask = bridge.match(/if \(options\.brief\) \{[\s\S]*?const model = normalizeRequestedModel/)?.[0] ?? "";
+  assert.match(handleTask, /details: result\.details/);
+  assert.match(handleTask, /BRIEF_SCHEMA_VIOLATION/);
+  assert.match(handleTask, /valid top-level keys/);
 });
 
 test("respond and summary resolve cwd before loading config", () => {
@@ -219,6 +242,14 @@ test("task pipeline envelope preserves partial-completion proof fields", () => {
   }
 });
 
+test("auto-pipeline final diff is task-base aware and check events include missing items", () => {
+  assert.match(autoPipeline, /import \{ readMeta \} from "\.\.\/\.\.\/lib\/registry\.mjs";/);
+  assert.match(autoPipeline, /const taskMeta = jobId \? readMeta\(jobId\) : null;/);
+  assert.match(autoPipeline, /const captureTaskDiff = \(\) =>/);
+  assert.match(autoPipeline, /const finalDiff = captureTaskDiff\(\);/);
+  assert.match(autoPipeline, /missing_items=\$\{JSON\.stringify\(completionResult\.missing_items\)\}/);
+});
+
 test("working-tree review empty check includes untracked files", () => {
   const review = bridge.match(/async function executeReviewRun[\s\S]*?async function executeTaskRun/)?.[0] ?? "";
   const workingTreeCheck = review.match(
@@ -294,7 +325,8 @@ test("background task writes job record before spawning worker", () => {
 
 test("resume-last task prompt avoids undefined template output", () => {
   const runBridgeTask = bridge.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
-  assert.match(runBridgeTask, /const taskPrompt = request\.resumeLast && !String\(request\.prompt \?\? ""\)\.trim\(\)/);
+  assert.match(runBridgeTask, /const baseTaskPrompt = request\.resumeLast && !String\(request\.prompt \?\? ""\)\.trim\(\)/);
+  assert.match(runBridgeTask, /const taskPrompt = appendRenderedBriefToPrompt\(baseTaskPrompt, request\.brief \?\? null\)/);
   assert.match(runBridgeTask, /DEFAULT_CONTINUE_PROMPT/);
   assert.doesNotMatch(runBridgeTask, /\$\{metaSkillsPrefix\}\$\{request\.prompt\}/);
 });

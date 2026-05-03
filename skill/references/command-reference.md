@@ -123,7 +123,7 @@ codex-bridge task [--backend <name>] [--write] [--effort <level>] [--mode <plan|
 | `--mode <plan\|default>` | Override `config.mode` for this single run. Honored on both foreground and background paths. Rejected with `USAGE_ERROR` (exit 2) for any other value. |
 | `-m, --model <name>` | Upstream model; `spark` resolves to `gpt-5.3-codex-spark` |
 | `--prompt-file <path>` | Read prompt from file instead of argv/stdin |
-| `--resume`, `--resume-last` | Continue the latest tracked thread for this session |
+| `--resume`, `--resume-last` | Continue the latest tracked thread for this session. Thread-only resume; rejected with `--worktree-auto`. Use `iterate <task_id>` for follow-up work that must preserve task worktree state. |
 | `--fresh` | Start a new thread even if a resumable one exists |
 | `--background` | Detached worker; returns immediately with a job id |
 | `--no-pipeline` | Skip the auto-review/fix/check pipeline for this single run (overrides `auto_review` / `post_task_prompt` from config). Ndjson carries a `PIPELINE_SKIPPED` entry. |

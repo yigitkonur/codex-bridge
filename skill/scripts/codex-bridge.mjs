@@ -1594,6 +1594,15 @@ function createSubagentWorktree({
   assertSafeTaskId(taskId, "createSubagentWorktree");
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
+  const headCheck = git(repoRoot, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  if (headCheck.status !== 0) {
+    throw new CliError("Git repository has no commits; worktree isolation needs a base commit.", {
+      class: "validation",
+      code: "GIT_REPO_HAS_NO_COMMITS",
+      retryable: false,
+      suggestion: 'Create an initial commit first, for example: `git add -A && git commit -m "initial commit"` or `git commit --allow-empty -m "initial commit"`.'
+    });
+  }
   const currentBranch = getCurrentBranch(cwd);
   const resolvedBaseRef = baseRef ?? (currentBranch !== "HEAD" ? currentBranch : null) ?? detectDefaultBranch(cwd) ?? "HEAD";
   const baseSha = runGit(repoRoot, [
@@ -4214,11 +4223,12 @@ function diffGitSnapshot(cwd, snapshot) {
     launchedAtIso: snapshot.isoTimestamp ?? null
   };
 }
-function captureGitDiff(cwd, session) {
-  const numstatResult = spawnSync3("git", ["diff", "--numstat", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
-  const fullResult = spawnSync3("git", ["diff", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+function captureGitDiff(cwd, session, options = {}) {
+  const baseRef = typeof options.baseRef === "string" && options.baseRef.trim() ? options.baseRef.trim() : "HEAD";
+  const numstatResult = spawnSync3("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
+  const fullResult = spawnSync3("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
   const untrackedFiles = getUntrackedFileStats(cwd);
-  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles);
+  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles, baseRef);
   const diffPath = writeDiff(session, diffContent);
   const numstatOutput = numstatResult.stdout || "";
   const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
@@ -4289,18 +4299,18 @@ function countTextLines(content) {
 function displayGitPath(fileName) {
   return fileName.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
 }
-function appendUntrackedDiffMarkers(diffContent, untrackedFiles) {
+function appendUntrackedDiffMarkers(diffContent, untrackedFiles, baseRef = "HEAD") {
   if (untrackedFiles.length === 0) {
     return diffContent;
   }
-  const marker = formatUntrackedDiffMarkers(untrackedFiles);
+  const marker = formatUntrackedDiffMarkers(untrackedFiles, baseRef);
   if (!diffContent) {
     return marker;
   }
   return `${diffContent}${diffContent.endsWith("\n") ? "" : "\n"}${marker}`;
 }
-function formatUntrackedDiffMarkers(untrackedFiles) {
-  const lines = ["# Untracked files omitted from git diff HEAD:"];
+function formatUntrackedDiffMarkers(untrackedFiles, baseRef = "HEAD") {
+  const lines = [`# Untracked files omitted from git diff ${baseRef}:`];
   for (const file of untrackedFiles) {
     const size = Number.isFinite(file.sizeBytes) ? `, ${file.sizeBytes} bytes` : "";
     lines.push(`diff --git a/${file.fileName} b/${file.fileName}`);
@@ -9702,6 +9712,9 @@ async function runAutoPipeline(options) {
   const completedStages = [];
   const startTime = Date.now();
   const executeInstructions = loadExecuteInstructions(rootDir);
+  const taskMeta = jobId ? readMeta(jobId) : null;
+  const taskDiffBaseRef = typeof taskMeta?.base_sha === "string" && taskMeta.base_sha ? taskMeta.base_sha : typeof taskMeta?.base_ref === "string" && taskMeta.base_ref ? taskMeta.base_ref : null;
+  const captureTaskDiff = () => taskDiffBaseRef ? captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef }) : captureGitDiff(cwd, session);
   const remainingPipelineMs = () => totalMs - (Date.now() - startTime);
   const checkPipelineTimeout = () => {
     if (remainingPipelineMs() <= 0) {
@@ -9924,10 +9937,11 @@ async function runAutoPipeline(options) {
             summary: "completion-check inconclusive"
           };
         }
+        const missingDetail = Array.isArray(completionResult.missing_items) && completionResult.missing_items.length ? ` missing=${completionResult.missing_items.length} missing_items=${JSON.stringify(completionResult.missing_items)}` : "";
         logEvent(session, formatPipelineEvent(session, {
           stage: "check",
           suffix: "done",
-          detail: `complete=${Boolean(completionResult.complete)}${Array.isArray(completionResult.missing_items) && completionResult.missing_items.length ? ` missing=${completionResult.missing_items.length}` : ""}`
+          detail: `complete=${Boolean(completionResult.complete)}${missingDetail}`
         }));
       } catch (error) {
         if (error instanceof TimeoutError) {
@@ -9962,7 +9976,7 @@ async function runAutoPipeline(options) {
         summary: completionResult.complete ? "native review needs attention" : typeof completionResult.summary === "string" ? completionResult.summary : "native review needs attention"
       };
     }
-    const finalDiff = captureGitDiff(cwd, session);
+    const finalDiff = captureTaskDiff();
     const duration = Math.round((Date.now() - startTime) / 1e3);
     const missingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
     const completionSummary = typeof completionResult.summary === "string" ? completionResult.summary : null;
@@ -10039,7 +10053,7 @@ async function runAutoPipeline(options) {
     const errorMessage = error instanceof PipelineTimeoutError ? `Auto-pipeline exceeded ${fmtSeconds(totalMs)}. Completed stages: ${completedStages.join(", ")}` : error.message;
     let finalDiff;
     try {
-      finalDiff = captureGitDiff(cwd, session);
+      finalDiff = captureTaskDiff();
     } catch {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
@@ -10902,6 +10916,17 @@ function loadDeveloperInstructions(mode) {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
 }
+function appendRenderedBriefToPrompt(prompt, brief) {
+  if (!brief) return prompt ?? "";
+  const rendered = renderBriefAsMarkdown(brief);
+  return [
+    prompt ?? "",
+    "[CODEX-BRIDGE STRUCTURED BRIEF]",
+    "The following brief is part of the worker instructions. Follow the worker_assignment and verify the acceptance_criteria before finishing.",
+    rendered,
+    "[/CODEX-BRIDGE STRUCTURED BRIEF]"
+  ].filter((part) => String(part).trim()).join("\n\n");
+}
 var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
 var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
 var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -11104,14 +11129,14 @@ function extractItemText(item) {
 var COMMANDS = Object.freeze({
   task: {
     synopsis: "task [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree (T17/T18). --brief @path.json projects a structured brief (T16) and persists it under the artifact registry.",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
       "codex-bridge task --prompt-file prompt.md --effort high --write",
-      "codex-bridge task --resume-last --write",
+      'codex-bridge task --resume-last "Continue the previous thread"',
       'codex-bridge task --background --write "Rewrite tests" --json',
-      "codex-bridge task --background --write --worktree-auto --brief @brief.json --json"
+      'codex-bridge task --background --write --worktree-auto --brief @brief.json --json "Implement the task described in the structured brief"'
     ]
   },
   send: {
@@ -12473,6 +12498,7 @@ function buildTaskRequest({
   model,
   effort,
   prompt,
+  brief,
   write,
   readOnly,
   resumeLast,
@@ -12494,6 +12520,7 @@ function buildTaskRequest({
     model,
     effort,
     prompt,
+    brief: brief ?? null,
     write,
     readOnly: Boolean(readOnly),
     resumeLast,
@@ -12764,7 +12791,9 @@ async function handleReviewCommand(argv, config) {
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
-        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+        details: result.details,
+        suggestion: result.code === "BRIEF_SCHEMA_VIOLATION" ? "Fix the brief JSON to match the schema. Common valid top-level keys are goal, worker_assignment, specific_concerns, acceptance_criteria, behavior_digest_seed, parent_task_id, backend_hint, iteration_max, and trust_budget_override." : void 0
       });
     }
     brief = result.brief;
@@ -12831,7 +12860,8 @@ async function runBridgeTask(request) {
 ` : `${metaSkillsPreamble} The calling orchestrator has already planned this task; your job is to execute it directly.
 
 ` : "";
-  const taskPrompt = request.resumeLast && !String(request.prompt ?? "").trim() ? DEFAULT_CONTINUE_PROMPT : request.prompt ?? "";
+  const baseTaskPrompt = request.resumeLast && !String(request.prompt ?? "").trim() ? DEFAULT_CONTINUE_PROMPT : request.prompt ?? "";
+  const taskPrompt = appendRenderedBriefToPrompt(baseTaskPrompt, request.brief ?? null);
   const promptWithFooter = config.prompt_footer ? `${metaSkillsPrefix}${taskPrompt}
 
 ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
@@ -13622,7 +13652,9 @@ async function handleTask(argv) {
     if (!result.ok) {
       throw new CliError(result.message, {
         code: result.code,
-        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation"
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+        details: result.details,
+        suggestion: result.code === "BRIEF_SCHEMA_VIOLATION" ? "Fix the brief JSON to match the schema. Common valid top-level keys are goal, worker_assignment, specific_concerns, acceptance_criteria, behavior_digest_seed, parent_task_id, backend_hint, iteration_max, and trust_budget_override." : void 0
       });
     }
     brief = result.brief;
@@ -13638,6 +13670,13 @@ async function handleTask(argv) {
     throw conflictError(
       "Choose either --resume/--resume-last or --fresh.",
       "RESUME_FRESH_CONFLICT"
+    );
+  }
+  if (resumeLast && options["worktree-auto"]) {
+    throw conflictError(
+      "--resume/--resume-last resumes a Codex thread only and cannot safely create a fresh worktree. Use `iterate <task_id>` to continue task worktree state, or start a fresh `task --write --worktree-auto` from the current branch.",
+      "RESUME_WORKTREE_CONFLICT",
+      "Use `codex-bridge iterate <task_id>` for follow-up fixes, or drop --resume-last and dispatch a fresh worktree task."
     );
   }
   requireTaskRequest(prompt, resumeLast);
@@ -13710,9 +13749,16 @@ async function handleTask(argv) {
       }
       cwd = worktreeInfo.path;
     } catch (err) {
+      if (err instanceof CliError) {
+        throw err;
+      }
       throw new CliError(
         `failed to create subagent worktree for ${job.id}: ${err.message ?? err}`,
-        { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" }
+        {
+          code: "WORKTREE_CREATE_FAILED",
+          class: "internal",
+          suggestion: "Check that cwd is a Git repository with at least one commit, the base ref exists, and the worktree branch/path are available."
+        }
       );
     }
   }
@@ -13724,6 +13770,7 @@ async function handleTask(argv) {
       model,
       effort,
       prompt,
+      brief,
       write,
       readOnly,
       resumeLast,
@@ -13753,6 +13800,7 @@ async function handleTask(argv) {
       model,
       effort,
       prompt,
+      brief,
       write,
       readOnly,
       resumeLast,
@@ -14882,6 +14930,7 @@ async function runIterateTaskJob({
     model,
     effort,
     prompt,
+    brief: brief?.brief ?? null,
     write: true,
     readOnly: false,
     resumeLast: false,

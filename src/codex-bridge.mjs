@@ -308,6 +308,18 @@ function loadDeveloperInstructions(mode) {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
 }
+
+function appendRenderedBriefToPrompt(prompt, brief) {
+  if (!brief) return prompt ?? "";
+  const rendered = renderBriefAsMarkdown(brief);
+  return [
+    prompt ?? "",
+    "[CODEX-BRIDGE STRUCTURED BRIEF]",
+    "The following brief is part of the worker instructions. Follow the worker_assignment and verify the acceptance_criteria before finishing.",
+    rendered,
+    "[/CODEX-BRIDGE STRUCTURED BRIEF]",
+  ].filter((part) => String(part).trim()).join("\n\n");
+}
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -582,14 +594,14 @@ function extractItemText(item) {
 const COMMANDS = Object.freeze({
   task: {
     synopsis: "task [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree (T17/T18). --brief @path.json projects a structured brief (T16) and persists it under the artifact registry.",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
       "codex-bridge task --prompt-file prompt.md --effort high --write",
-      "codex-bridge task --resume-last --write",
+      'codex-bridge task --resume-last "Continue the previous thread"',
       'codex-bridge task --background --write "Rewrite tests" --json',
-      "codex-bridge task --background --write --worktree-auto --brief @brief.json --json"
+      'codex-bridge task --background --write --worktree-auto --brief @brief.json --json "Implement the task described in the structured brief"'
     ]
   },
   send: {
@@ -2205,7 +2217,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
 }
 
 function buildTaskRequest({
-  cwd, stateCwd, model, effort, prompt, write, readOnly, resumeLast, jobId, mode,
+  cwd, stateCwd, model, effort, prompt, brief, write, readOnly, resumeLast, jobId, mode,
   idleTimeoutMs, noPipeline,
   turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs,
   backend = null,
@@ -2217,6 +2229,7 @@ function buildTaskRequest({
     model,
     effort,
     prompt,
+    brief: brief ?? null,
     write,
     readOnly: Boolean(readOnly),
     resumeLast,
@@ -2551,6 +2564,10 @@ async function handleReviewCommand(argv, config) {
       throw new CliError(result.message, {
         code: result.code,
         class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+        details: result.details,
+        suggestion: result.code === "BRIEF_SCHEMA_VIOLATION"
+          ? "Fix the brief JSON to match the schema. Common valid top-level keys are goal, worker_assignment, specific_concerns, acceptance_criteria, behavior_digest_seed, parent_task_id, backend_hint, iteration_max, and trust_budget_override."
+          : undefined,
       });
     }
     brief = result.brief;
@@ -2650,9 +2667,10 @@ async function runBridgeTask(request) {
         ? `${metaSkillsPreamble} The calling orchestrator is already driving the plan/execute loop; produce a concise inline [PLAN] and stop — the orchestrator approves before execution.\n\n`
         : `${metaSkillsPreamble} The calling orchestrator has already planned this task; your job is to execute it directly.\n\n`)
     : "";
-  const taskPrompt = request.resumeLast && !String(request.prompt ?? "").trim()
+  const baseTaskPrompt = request.resumeLast && !String(request.prompt ?? "").trim()
     ? DEFAULT_CONTINUE_PROMPT
     : (request.prompt ?? "");
+  const taskPrompt = appendRenderedBriefToPrompt(baseTaskPrompt, request.brief ?? null);
 
   // Append prompt footer from config (instructs Codex to use requestUserInput tool)
   const promptWithFooter = config.prompt_footer
@@ -3812,10 +3830,9 @@ async function handleTask(argv) {
   // Both --brief and --intercepted-from currently require --worktree-auto
   // because the registry directory is only created when a worktree is
   // dispatched (T15 wiring). Passing them without --worktree-auto would
-  // silently discard the value, so we fail loudly instead. (Folding the
-  // brief into the prompt itself is a follow-up; for now codex sees the
-  // raw positional prompt and the brief is recovered from disk by the
-  // reviewer.)
+  // silently discard the value, so we fail loudly instead. The validated
+  // brief is also appended to the worker prompt before dispatch, so Codex
+  // sees the structured assignment instead of only an on-disk artifact.
   let brief = null;
   let briefHash = null;
   let briefSource = null;
@@ -3833,6 +3850,10 @@ async function handleTask(argv) {
       throw new CliError(result.message, {
         code: result.code,
         class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+        details: result.details,
+        suggestion: result.code === "BRIEF_SCHEMA_VIOLATION"
+          ? "Fix the brief JSON to match the schema. Common valid top-level keys are goal, worker_assignment, specific_concerns, acceptance_criteria, behavior_digest_seed, parent_task_id, backend_hint, iteration_max, and trust_budget_override."
+          : undefined,
       });
     }
     brief = result.brief;
@@ -3850,6 +3871,13 @@ async function handleTask(argv) {
     throw conflictError(
       "Choose either --resume/--resume-last or --fresh.",
       "RESUME_FRESH_CONFLICT"
+    );
+  }
+  if (resumeLast && options["worktree-auto"]) {
+    throw conflictError(
+      "--resume/--resume-last resumes a Codex thread only and cannot safely create a fresh worktree. Use `iterate <task_id>` to continue task worktree state, or start a fresh `task --write --worktree-auto` from the current branch.",
+      "RESUME_WORKTREE_CONFLICT",
+      "Use `codex-bridge iterate <task_id>` for follow-up fixes, or drop --resume-last and dispatch a fresh worktree task."
     );
   }
   // Fail fast before `runBridgeTask` can append `prompt_footer` to an empty prompt
@@ -3937,9 +3965,16 @@ async function handleTask(argv) {
       }
       cwd = worktreeInfo.path;
     } catch (err) {
+      if (err instanceof CliError) {
+        throw err;
+      }
       throw new CliError(
         `failed to create subagent worktree for ${job.id}: ${err.message ?? err}`,
-        { code: "WORKTREE_CREATE_FAILED", exitClass: "internal" },
+        {
+          code: "WORKTREE_CREATE_FAILED",
+          class: "internal",
+          suggestion: "Check that cwd is a Git repository with at least one commit, the base ref exists, and the worktree branch/path are available."
+        },
       );
     }
   }
@@ -3953,6 +3988,7 @@ async function handleTask(argv) {
       model,
       effort,
       prompt,
+      brief,
       write,
       readOnly,
       resumeLast,
@@ -3984,6 +4020,7 @@ async function handleTask(argv) {
         model,
         effort,
         prompt,
+        brief,
         write,
         readOnly,
         resumeLast,
@@ -5297,6 +5334,7 @@ async function runIterateTaskJob({
     model,
     effort,
     prompt,
+    brief: brief?.brief ?? null,
     write: true,
     readOnly: false,
     resumeLast: false,
