@@ -14,7 +14,7 @@ Brief ──▶ task --background --worktree-auto --brief ──▶ Monitor (aut
                                                        [DONE] / [INCOMPLETE]
                                                           │
                                                           ▼
-                         adversarial-review --cwd <worktree.path> --base <base_ref>
+                              adversarial-review --task <task_id>
                                                           │
                                                           ▼
                                                   verdict.json written
@@ -70,11 +70,10 @@ Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`. While it streams:
 
 ## Review
 
-When Monitor terminates, read `<jobs>/<task_id>/meta.json` and run an adversarial review from the recorded worktree path against its recorded base ref. Use the same brief — its `specific_concerns` flow into the reviewer's `{{OPUS_CONCERNS}}` slot:
+When Monitor terminates, run a task-bound adversarial review. The bridge reads the task registry metadata, reviews the task worktree against its recorded base ref, persists `review.json`, and records the reviewed branch head used later by merge:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review \
-  --cwd "<worktree.path>" --base "<worktree.base_ref>" --brief @brief.json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --task <task_id> --brief @brief.json --json
 ```
 
 Prefer `iterate` when you want the bridge to own the review/verdict loop:

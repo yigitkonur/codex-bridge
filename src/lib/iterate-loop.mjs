@@ -302,6 +302,29 @@ export async function runIterateLoop(options = {}) {
       });
     }
     entry.next_task_id = nextTaskId;
+    if (typeof deps.markSuperseded === "function") {
+      const superseded = await callStep(
+        {
+          status: "verdict-failed",
+          step: "mark-superseded",
+          max,
+          iterations,
+          taskId,
+          iteration,
+          artifacts: artifactsFrom(entry, followup.value),
+        },
+        deps.markSuperseded,
+        {
+          taskId,
+          nextTaskId,
+          iteration,
+          verdict: verdictValue,
+          reviewResult,
+        },
+      );
+      if (!superseded.ok) return superseded.value;
+      entry.artifacts = artifactsFrom(entry, superseded.value);
+    }
     taskId = nextTaskId;
     taskState = followup.value;
   }

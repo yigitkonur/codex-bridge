@@ -10719,6 +10719,29 @@ async function runIterateLoop(options = {}) {
       });
     }
     entry.next_task_id = nextTaskId;
+    if (typeof deps.markSuperseded === "function") {
+      const superseded = await callStep(
+        {
+          status: "verdict-failed",
+          step: "mark-superseded",
+          max,
+          iterations,
+          taskId,
+          iteration,
+          artifacts: artifactsFrom(entry, followup.value)
+        },
+        deps.markSuperseded,
+        {
+          taskId,
+          nextTaskId,
+          iteration,
+          verdict: verdictValue,
+          reviewResult
+        }
+      );
+      if (!superseded.ok) return superseded.value;
+      entry.artifacts = artifactsFrom(entry, superseded.value);
+    }
     taskId = nextTaskId;
     taskState = followup.value;
   }
@@ -14808,6 +14831,35 @@ function createIterateDependencies({ cwd, workspaceRoot, model, effort, adapter:
       brief
     });
   };
+  const markSuperseded = async ({ taskId, nextTaskId, iteration, verdict }) => {
+    const supersededAt = nowIso2();
+    const reason = "iterate-followup";
+    const existingVerdict = readVerdict(taskId);
+    if (existingVerdict) {
+      writeVerdict(taskId, {
+        ...existingVerdict,
+        superseded_by: nextTaskId,
+        superseded_at: supersededAt,
+        superseded_reason: reason,
+        superseded_iteration: iteration + 1
+      });
+    }
+    const meta = readMeta(taskId);
+    if (meta) {
+      writeMeta(taskId, {
+        ...meta,
+        phase: "superseded",
+        superseded_by: nextTaskId,
+        superseded_at: supersededAt,
+        superseded_reason: reason,
+        superseded_verdict: verdict
+      });
+    }
+    return {
+      superseded_by: nextTaskId,
+      artifacts: buildIterateArtifacts(taskId)
+    };
+  };
   return {
     startTask: ({ prompt, iteration }) => runIterateTaskJob({
       prompt,
@@ -14823,7 +14875,8 @@ function createIterateDependencies({ cwd, workspaceRoot, model, effort, adapter:
     readTaskCompletion,
     runReview,
     writeVerdict: writeIterateVerdict,
-    startFollowup
+    startFollowup,
+    markSuperseded
   };
 }
 async function handleIterate(argv) {
@@ -15037,6 +15090,9 @@ async function handleVerdictsPending(argv) {
     if (!verdict) continue;
     const meta = readMeta(taskId);
     if (verdict.merged_at || meta?.merged_at || meta?.phase === "merged") {
+      continue;
+    }
+    if (verdict.superseded_by || meta?.superseded_by || meta?.phase === "superseded") {
       continue;
     }
     if (pendingVerdicts.has(verdict.verdict)) {

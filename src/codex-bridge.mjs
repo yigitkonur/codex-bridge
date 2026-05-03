@@ -5291,6 +5291,36 @@ function createIterateDependencies({ cwd, workspaceRoot, model, effort, adapter,
     });
   };
 
+  const markSuperseded = async ({ taskId, nextTaskId, iteration, verdict }) => {
+    const supersededAt = nowIso();
+    const reason = "iterate-followup";
+    const existingVerdict = readVerdict(taskId);
+    if (existingVerdict) {
+      writeVerdict(taskId, {
+        ...existingVerdict,
+        superseded_by: nextTaskId,
+        superseded_at: supersededAt,
+        superseded_reason: reason,
+        superseded_iteration: iteration + 1,
+      });
+    }
+    const meta = readMeta(taskId);
+    if (meta) {
+      writeMeta(taskId, {
+        ...meta,
+        phase: "superseded",
+        superseded_by: nextTaskId,
+        superseded_at: supersededAt,
+        superseded_reason: reason,
+        superseded_verdict: verdict,
+      });
+    }
+    return {
+      superseded_by: nextTaskId,
+      artifacts: buildIterateArtifacts(taskId),
+    };
+  };
+
   return {
     startTask: ({ prompt, iteration }) =>
       runIterateTaskJob({
@@ -5308,6 +5338,7 @@ function createIterateDependencies({ cwd, workspaceRoot, model, effort, adapter,
     runReview,
     writeVerdict: writeIterateVerdict,
     startFollowup,
+    markSuperseded,
   };
 }
 
@@ -5563,6 +5594,9 @@ async function handleVerdictsPending(argv) {
     if (!verdict) continue;
     const meta = readMeta(taskId);
     if (verdict.merged_at || meta?.merged_at || meta?.phase === "merged") {
+      continue;
+    }
+    if (verdict.superseded_by || meta?.superseded_by || meta?.phase === "superseded") {
       continue;
     }
     if (pendingVerdicts.has(verdict.verdict)) {

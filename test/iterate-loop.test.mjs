@@ -84,6 +84,14 @@ function makeDeps({ reviews, fail = {} } = {}) {
         artifacts: { meta_path: `${taskId}/meta.json` },
       };
     },
+    async markSuperseded(args) {
+      calls.push(["markSuperseded", args]);
+      if (fail.markSuperseded) throw new Error("supersede failed");
+      return {
+        superseded_by: args.nextTaskId,
+        artifacts: { verdict_path: `${args.taskId}/verdict.json` },
+      };
+    },
   };
   return deps;
 }
@@ -145,6 +153,15 @@ test("runIterateLoop starts a follow-up after needs-attention and then approves"
   assert.ok(followupCall);
   assert.match(followupCall[1].prompt, /Review verdict: needs-attention/);
   assert.match(followupCall[1].prompt, /Findings JSON/);
+  const supersededCall = deps.calls.find(([name]) => name === "markSuperseded");
+  assert.ok(supersededCall);
+  assert.deepEqual(supersededCall[1], {
+    taskId: "task-1",
+    nextTaskId: "task-2",
+    iteration: 1,
+    verdict: "needs-attention",
+    reviewResult: reviewResult("needs-attention", 1),
+  });
 });
 
 test("runIterateLoop enforces max iterations for repeated must-fix verdicts", async () => {
@@ -163,6 +180,7 @@ test("runIterateLoop enforces max iterations for repeated must-fix verdicts", as
   assert.equal(result.iterations[0].next_task_id, "task-2");
   assert.equal(result.iterations[1].next_task_id, undefined);
   assert.equal(deps.calls.filter(([name]) => name === "startFollowup").length, 1);
+  assert.equal(deps.calls.filter(([name]) => name === "markSuperseded").length, 1);
 });
 
 test("runIterateLoop returns task-failed with artifacts when task completion fails", async () => {
@@ -228,4 +246,21 @@ test("runIterateLoop returns follow-up-failed when redispatch fails", async () =
   assert.equal(result.failed_step, "start-follow-up");
   assert.equal(result.iterations.length, 1);
   assert.equal(result.artifacts.verdict_path, "task-1/verdict.json");
+});
+
+test("runIterateLoop returns verdict-failed when superseded marker persistence fails", async () => {
+  const deps = makeDeps({
+    reviews: [reviewResult("needs-attention", 1)],
+    fail: { markSuperseded: true },
+  });
+  const result = await runIterateLoop({
+    prompt: "implement this",
+    max: 2,
+    deps,
+  });
+
+  assert.equal(result.status, "verdict-failed");
+  assert.equal(result.failed_step, "mark-superseded");
+  assert.equal(result.iterations.length, 1);
+  assert.equal(result.iterations[0].next_task_id, "task-2");
 });

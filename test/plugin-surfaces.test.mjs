@@ -483,6 +483,7 @@ test("orchestration flow reference keeps manual approval branch-bound", () => {
   assert.match(flows, /result\.review_result/);
   assert.match(flows, /branch_head_sha/);
   assert.doesNotMatch(flows, /--set approved/);
+  assert.doesNotMatch(flows, /--cwd "<worktree\.path>" --base "<worktree\.base_ref>"/);
 });
 
 test("review command metadata advertises task-bound review mode", () => {
@@ -646,6 +647,14 @@ test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => 
 
   runBundledPluginCli(["verdict", "task-approved", "--set", "approved", "--json"], env);
   runBundledPluginCli(["verdict", "task-must", "--set", "must-fix", "--json"], env);
+  runBundledPluginCli(["verdict", "task-superseded", "--set", "must-fix", "--json"], env);
+  const supersededPath = path.join(registry, "task-superseded", "verdict.json");
+  const superseded = JSON.parse(fs.readFileSync(supersededPath, "utf8"));
+  fs.writeFileSync(
+    supersededPath,
+    `${JSON.stringify({ ...superseded, superseded_by: "task-follow-up" }, null, 2)}\n`,
+    "utf8"
+  );
 
   let pending = runBundledPluginCli(["verdicts", "--pending", "--json"], env).result.pending;
   assert.deepEqual(pending.map((entry) => entry.task_id), ["task-approved", "task-must"]);
