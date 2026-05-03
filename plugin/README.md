@@ -1,29 +1,35 @@
-# codex-bridge plugin scaffold
+# codex-bridge packaged plugin
 
-This directory is the pre-release v2.0.0 plugin scaffold for codex-bridge. It is
-not the canonical v1.5.0 runtime skill yet. The shipped runtime skill remains at
-`../skill/SKILL.md`, and the root `.claude-plugin/plugin.json` remains the
-v1.5.0 plugin metadata for the current release line.
+this directory is the packaged claude code plugin layout for codex-bridge.
 
-The plugin manifest in this directory intentionally uses the alpha-channel name
-`codex-bridge-v2-alpha` until the replacement plugin surface is functional. Do
-not load the root plugin surface and this pre-release scaffold together in one
-Claude Code install. The marketplace entry at
-`../.claude-plugin/marketplace.json` is explicitly noncanonical and points to
-this `./plugin` subtree only for local/alpha validation; the working v1.5.0
-runtime remains the release surface.
+it contains the plugin-local command files, agent definitions, hook registry, generated runtime bundles, generated prompts/schemas/templates, and the packaged skill entry. source lives outside this directory; generated files are refreshed by `npm run build`.
 
-The `2.0.0-alpha.0` version marks the scaffold as pre-release work for the v2
-plugin redesign. It intentionally differs from the root v1.5.0 metadata until
-the v2 plugin surface becomes the release surface.
+## edit rules
 
-Current tracked surfaces are intentionally minimal:
+- edit runtime source under `src/`.
+- edit root hook source under `hooks/`.
+- edit packaged command and agent surfaces under `plugin/commands/` and `plugin/agents/`.
+- do not hand-edit generated runtime files under `plugin/scripts/`, `plugin/prompts/`, `plugin/schemas/`, `plugin/templates/`, or `plugin/config.yaml`.
 
-- `plugin/.claude-plugin/plugin.json` declares only the placeholder skill and
-  hooks config that exist in this directory.
-- `plugin/skills/codex-bridge/SKILL.md` is a placeholder so the skill path
-  resolves during install validation.
-- `plugin/hooks/hooks.json` is an empty hooks registry for later phases.
+after any source or surface change, run:
 
-Commands and agents are omitted from the manifest until their tracked files land
-in later v2 phases.
+```bash
+npm run build
+npm test
+```
+
+## install check
+
+from claude code, install the root plugin package and run:
+
+```text
+/codex-bridge:setup
+```
+
+from a shell inside an installed plugin, the equivalent check is:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" setup --json
+```
+
+see the root [readme](../README.md) for user-facing setup and command docs.
