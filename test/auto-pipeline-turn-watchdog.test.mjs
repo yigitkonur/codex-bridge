@@ -143,6 +143,42 @@ test("auto-pipeline caps review withTimeout by remaining total budget", async ()
   }
 });
 
+test("auto-pipeline treats qualified clean review wording as approved", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const reviewCalls = [];
+    const turnCalls = [];
+
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-watchdog",
+      cwd: root,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub(turnCalls),
+      runAppServerReview: makeReviewStub(reviewCalls, "No major issues found.\nNo material findings."),
+      jobId: "job-watchdog",
+      stageTimeoutMs: 10_000,
+      totalTimeoutMs: 20_000,
+    });
+
+    assert.equal(result.complete, true);
+    assert.equal(result.reviewVerdict, "approved");
+    assert.equal(result.reviewFindingCount, 0);
+    assert.equal(result.partial, false);
+    assert.deepEqual(result.completedStages, ["diff", "review"]);
+    assert.equal(turnCalls.length, 0, "clean review wording must not trigger a fix or check turn");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("auto-pipeline caps review, fix, and check deadlines by remaining total budget", async () => {
   const { root, session } = makeTempSession();
   const originalDateNow = Date.now;

@@ -42,6 +42,20 @@ test("normalizeNativeReviewResult maps clean native output to normalized review 
   assert.equal(result.raw_output, "No issues found. Looks good overall.");
 });
 
+test("parseNativeReviewText treats qualified no-issue phrases as approved", () => {
+  for (const reviewText of [
+    "No major issues found.",
+    "No material findings.",
+    "No significant concerns.",
+    "No actionable regressions detected.",
+    "No blocking problems remain.",
+  ]) {
+    const parsed = parseNativeReviewText(reviewText);
+    assert.equal(parsed.verdict, "approved", reviewText);
+    assert.deepEqual(parsed.findings, []);
+  }
+});
+
 test("parseNativeReviewText preserves actionable native findings for pipeline fixes", () => {
   const parsed = parseNativeReviewText([
     "Review findings:",

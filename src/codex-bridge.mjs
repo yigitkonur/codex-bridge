@@ -49,7 +49,7 @@ import {
     runAppServerTurn
   } from "./adapters/codex/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, createSubagentWorktree, ensureGitRepository, getWorkingTreeState, mergeSubagentBranch, resolveReviewTarget } from "./lib/git.mjs";
 import {
   existsTask,
   jobDir,
@@ -2007,6 +2007,16 @@ function samePath(left, right) {
   return safeRealPath(left) === safeRealPath(right);
 }
 
+function summarizeWorkingTreeState(state) {
+  const files = [
+    ...state.staged.map((file) => `staged:${file}`),
+    ...state.unstaged.map((file) => `unstaged:${file}`),
+    ...state.untracked.map((file) => `untracked:${file}`),
+  ];
+  const shown = files.slice(0, 20).join(", ");
+  return files.length > 20 ? `${shown}, ... and ${files.length - 20} more` : shown;
+}
+
 function requireTaskReviewContext(taskId, options = {}) {
   const meta = readMeta(taskId);
   if (!meta) {
@@ -2049,6 +2059,14 @@ function requireTaskReviewContext(taskId, options = {}) {
     throw validationError(
       `could not resolve reviewed branch HEAD for ${taskId} in ${reviewCwd}: ${detail}`,
       "TASK_REVIEW_HEAD_UNRESOLVED",
+    );
+  }
+  const state = getWorkingTreeState(reviewCwd);
+  if (state.isDirty) {
+    throw validationError(
+      `task worktree for ${taskId} is dirty; commit, discard, or rerun the task before task-bound review. Status: ${summarizeWorkingTreeState(state)}`,
+      "TASK_WORKTREE_DIRTY",
+      "Task-bound review binds verdicts to the reviewed branch HEAD, so staged, unstaged, or untracked worktree changes must not be left outside that commit.",
     );
   }
 

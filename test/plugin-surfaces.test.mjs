@@ -587,6 +587,43 @@ test("review --task rejects an explicit --cwd outside the task worktree", () => 
   assert.match(error.message, /--cwd points/);
 });
 
+test("review --task rejects dirty task worktrees before binding approval to a branch head", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-review-dirty-"));
+  const registry = path.join(tempRoot, "registry");
+  const repo = path.join(tempRoot, "repo");
+  fs.mkdirSync(repo, { recursive: true });
+
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "bridge@example.test"]);
+  runGit(repo, ["config", "user.name", "Codex Bridge Test"]);
+  fs.writeFileSync(path.join(repo, "README.md"), "base\n", "utf8");
+  runGit(repo, ["add", "README.md"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  runGit(repo, ["branch", "-M", "main"]);
+  runGit(repo, ["checkout", "-b", "subagent/codex/task-dirty"]);
+  fs.writeFileSync(path.join(repo, "uncommitted.txt"), "dirty\n", "utf8");
+
+  writeRegistryMeta(registry, "task-dirty", {
+    schema_version: "1.0",
+    task_id: "task-dirty",
+    worktree: {
+      path: repo,
+      branch: "subagent/codex/task-dirty",
+      base_ref: "main",
+    },
+  });
+
+  const result = runBridge(
+    "src/codex-bridge.mjs",
+    ["adversarial-review", "--task", "task-dirty", "--json"],
+    { env: { CODEX_BRIDGE_REGISTRY: registry } },
+  );
+  const error = parseBridgeError(result);
+  assert.equal(error.code, "TASK_WORKTREE_DIRTY");
+  assert.match(error.message, /untracked:uncommitted\.txt/);
+  assert.equal(fs.existsSync(path.join(registry, "task-dirty", "review.json")), false);
+});
+
 test("review --task writes normalized review.json for the reviewed branch head", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-review-run-"));
   const registry = path.join(tempRoot, "registry");
@@ -646,8 +683,17 @@ test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => 
   const env = { CODEX_BRIDGE_REGISTRY: registry };
 
   runBundledPluginCli(["verdict", "task-approved", "--set", "approved", "--json"], env);
+  runBundledPluginCli(["verdict", "task-merged", "--set", "approved", "--json"], env);
   runBundledPluginCli(["verdict", "task-must", "--set", "must-fix", "--json"], env);
+  runBundledPluginCli(["verdict", "task-needs", "--set", "needs-attention", "--json"], env);
   runBundledPluginCli(["verdict", "task-superseded", "--set", "must-fix", "--json"], env);
+  const mergedPath = path.join(registry, "task-merged", "verdict.json");
+  const merged = JSON.parse(fs.readFileSync(mergedPath, "utf8"));
+  fs.writeFileSync(
+    mergedPath,
+    `${JSON.stringify({ ...merged, merged_at: "2026-04-29T00:00:00.000Z" }, null, 2)}\n`,
+    "utf8"
+  );
   const supersededPath = path.join(registry, "task-superseded", "verdict.json");
   const superseded = JSON.parse(fs.readFileSync(supersededPath, "utf8"));
   fs.writeFileSync(
@@ -657,7 +703,7 @@ test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => 
   );
 
   let pending = runBundledPluginCli(["verdicts", "--pending", "--json"], env).result.pending;
-  assert.deepEqual(pending.map((entry) => entry.task_id), ["task-approved", "task-must"]);
+  assert.deepEqual(pending.map((entry) => entry.task_id), ["task-approved", "task-must", "task-needs"]);
 
   const approvedPath = path.join(registry, "task-approved", "verdict.json");
   const approved = JSON.parse(fs.readFileSync(approvedPath, "utf8"));
@@ -668,7 +714,7 @@ test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => 
   );
 
   pending = runBundledPluginCli(["verdicts", "--pending", "--json"], env).result.pending;
-  assert.deepEqual(pending.map((entry) => entry.task_id), ["task-must"]);
+  assert.deepEqual(pending.map((entry) => entry.task_id), ["task-must", "task-needs"]);
 });
 
 test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () => {
@@ -690,6 +736,7 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(stopHook, /reviewGateEnabled !== true/);
   assert.match(stopHook, /Run a stop-gate review of the previous Claude turn\./);
   assert.match(stopHook, /\.codex-bridge-stop-review-gate\.lock/);
+  assert.match(stopHook, /"verdicts", "--pending", "--json"/);
   assert.match(stopHook, /if \(!activation\.active\)/);
   assert.match(stopHook, /maybeMigrateLegacyGate/);
   assert.match(stopHook, /config\?\.stopReviewGate === true/);
@@ -919,6 +966,59 @@ if (command === "status") {
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.decision, "block");
     assert.match(payload.reason, /Codex is not ready/);
+  } finally {
+    fs.rmSync(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("plugin Stop hook blocks pending review verdicts before launching stop-time review", () => {
+  const harness = makeStopGateHarness(`
+import process from "node:process";
+
+const [command] = process.argv.slice(2);
+if (command === "status") {
+  process.stdout.write(JSON.stringify({ ok: true, result: { running: [] } }));
+} else if (command === "setup") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      reviewGateEnabled: true,
+      reviewGateLockExists: true,
+      ready: true
+    }
+  }));
+} else if (command === "verdicts") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      count: 3,
+      pending: [
+        { task_id: "task-approved", verdict: "approved", next_action: { argv: ["merge", "task-approved"] } },
+        { task_id: "task-needs", verdict: "needs-attention", next_action: { argv: ["iterate", "task-needs"] } },
+        { task_id: "task-must", verdict: "must-fix", next_action: { argv: ["iterate", "task-must"] } }
+      ]
+    }
+  }));
+} else if (command === "task") {
+  process.stderr.write("stop-time review should not run while verdicts are pending");
+  process.exit(99);
+} else {
+  process.exit(2);
+}
+`);
+
+  try {
+    const result = runStopGateHarness(harness);
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.stderr, /stop-time review should not run/);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.decision, "block");
+    assert.match(payload.reason, /pending review verdicts/);
+    assert.match(payload.reason, /task-approved/);
+    assert.match(payload.reason, /task-needs/);
+    assert.match(payload.reason, /task-must/);
+    assert.match(payload.reason, /codex-bridge merge task-approved/);
+    assert.match(payload.reason, /codex-bridge iterate task-needs/);
   } finally {
     fs.rmSync(harness.tempRoot, { recursive: true, force: true });
   }

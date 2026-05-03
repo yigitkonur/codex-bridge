@@ -9383,7 +9383,13 @@ function parseNativeReviewText(text) {
     };
   }
   const lower = reviewText.toLowerCase();
-  const reviewTextWithoutNoIssuePhrases = lower.replace(/\bno\s+(?:actionable\s+)?(?:issues?|findings?|problems?|concerns?)\b/g, "").replace(/\b(?:issues?|findings?|problems?|concerns?):\s*(?:none|n\/a)\b/g, "");
+  const reviewTextWithoutNoIssuePhrases = lower.replace(
+    /\bno\s+(?:(?:major|material|significant|substantive|critical|actionable|blocking|new|remaining)\s+)*(?:issues?|findings?|problems?|concerns?|regressions?)\s*(?:found|detected|identified|remain|remaining)?\b/g,
+    ""
+  ).replace(
+    /\bwithout\s+(?:(?:major|material|significant|substantive|critical|actionable|blocking|new|remaining)\s+)*(?:issues?|findings?|problems?|concerns?|regressions?)\b/g,
+    ""
+  ).replace(/\b(?:issues?|findings?|problems?|concerns?):\s*(?:none|n\/a)\b/g, "");
   const explicitAttention = lower.includes("needs-attention") || /\bneeds attention\b/.test(lower) || /\brequires attention\b/.test(lower);
   const hasIssues = explicitAttention || /\b(?:findings?|issues?|problems?|concerns?|regressions?)\b/.test(reviewTextWithoutNoIssuePhrases);
   return {
@@ -12253,6 +12259,15 @@ function safeRealPath(filePath) {
 function samePath(left, right) {
   return safeRealPath(left) === safeRealPath(right);
 }
+function summarizeWorkingTreeState(state) {
+  const files = [
+    ...state.staged.map((file) => `staged:${file}`),
+    ...state.unstaged.map((file) => `unstaged:${file}`),
+    ...state.untracked.map((file) => `untracked:${file}`)
+  ];
+  const shown = files.slice(0, 20).join(", ");
+  return files.length > 20 ? `${shown}, ... and ${files.length - 20} more` : shown;
+}
 function requireTaskReviewContext(taskId, options = {}) {
   const meta = readMeta(taskId);
   if (!meta) {
@@ -12290,6 +12305,14 @@ function requireTaskReviewContext(taskId, options = {}) {
     throw validationError(
       `could not resolve reviewed branch HEAD for ${taskId} in ${reviewCwd}: ${detail}`,
       "TASK_REVIEW_HEAD_UNRESOLVED"
+    );
+  }
+  const state = getWorkingTreeState(reviewCwd);
+  if (state.isDirty) {
+    throw validationError(
+      `task worktree for ${taskId} is dirty; commit, discard, or rerun the task before task-bound review. Status: ${summarizeWorkingTreeState(state)}`,
+      "TASK_WORKTREE_DIRTY",
+      "Task-bound review binds verdicts to the reviewed branch HEAD, so staged, unstaged, or untracked worktree changes must not be left outside that commit."
     );
   }
   return {

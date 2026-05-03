@@ -133,6 +133,50 @@ function blockReason(reason, runningNote) {
   return runningNote ? `${runningNote} ${reason}` : reason;
 }
 
+function formatCommandArg(value) {
+  const text = String(value ?? "");
+  return text.replace(/[\r\n\t]+/g, " ").replace(/[^\w./:@=-]+/g, "_").slice(0, 120) || "_";
+}
+
+function formatPendingVerdict(entry) {
+  const taskId = typeof entry?.task_id === "string" && entry.task_id ? entry.task_id : "unknown-task";
+  const verdict = typeof entry?.verdict === "string" && entry.verdict ? entry.verdict : "unknown-verdict";
+  const action = Array.isArray(entry?.next_action?.argv) && entry.next_action.argv.length > 0
+    ? `next: codex-bridge ${entry.next_action.argv.map(formatCommandArg).join(" ")}`
+    : "next: inspect or discard the verdict";
+  return `${taskId} (${verdict}; ${action})`;
+}
+
+function buildPendingVerdictsBlockReason(pending, count) {
+  const total = Number.isInteger(count) && count >= 0 ? count : pending.length;
+  const shownRows = pending.slice(0, 10);
+  const shown = shownRows.map(formatPendingVerdict).join("; ") || "details unavailable";
+  const extraCount = Math.max(0, total - shownRows.length);
+  const suffix = extraCount > 0 ? `; and ${extraCount} more` : "";
+  return `Codex Bridge has ${total} pending review verdict${total === 1 ? "" : "s"} blocking session stop: ${shown}${suffix}. Resolve them with merge, iterate, or verdict --discard before ending the session.`;
+}
+
+function pendingVerdictsBlockReason(cwd, input) {
+  const result = runBridge(cwd, input, ["verdicts", "--pending", "--json"], { timeoutMs: 15000 });
+  if (result.error) {
+    return `Codex Bridge stop-time review gate could not check pending verdicts: ${result.error.message}. Run /codex-bridge:verdicts --pending manually or remove the gate lock to disable the gate.`;
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    return detail
+      ? `Codex Bridge stop-time review gate could not check pending verdicts: ${detail}`
+      : "Codex Bridge stop-time review gate could not check pending verdicts.";
+  }
+  const payload = parseJson(result.stdout);
+  if (!payload?.ok || !payload.result) {
+    return "Codex Bridge stop-time review gate could not parse pending verdict output. Run /codex-bridge:verdicts --pending manually or remove the gate lock to disable the gate.";
+  }
+  const pending = Array.isArray(payload.result.pending) ? payload.result.pending : [];
+  const count = Number.isInteger(payload.result.count) ? payload.result.count : pending.length;
+  if (count <= 0 && pending.length === 0) return null;
+  return buildPendingVerdictsBlockReason(pending, count);
+}
+
 function resolveProjectRoot(cwd) {
   const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
     cwd,
@@ -455,6 +499,12 @@ function main() {
         runningNote
       )
     );
+    return;
+  }
+
+  const pendingReason = pendingVerdictsBlockReason(cwd, input);
+  if (pendingReason) {
+    emitBlock(blockReason(pendingReason, runningNote));
     return;
   }
 

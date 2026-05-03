@@ -22,7 +22,14 @@ export function parseNativeReviewText(text) {
 
   const lower = reviewText.toLowerCase();
   const reviewTextWithoutNoIssuePhrases = lower
-    .replace(/\bno\s+(?:actionable\s+)?(?:issues?|findings?|problems?|concerns?)\b/g, "")
+    .replace(
+      /\bno\s+(?:(?:major|material|significant|substantive|critical|actionable|blocking|new|remaining)\s+)*(?:issues?|findings?|problems?|concerns?|regressions?)\s*(?:found|detected|identified|remain|remaining)?\b/g,
+      "",
+    )
+    .replace(
+      /\bwithout\s+(?:(?:major|material|significant|substantive|critical|actionable|blocking|new|remaining)\s+)*(?:issues?|findings?|problems?|concerns?|regressions?)\b/g,
+      "",
+    )
     .replace(/\b(?:issues?|findings?|problems?|concerns?):\s*(?:none|n\/a)\b/g, "");
   const explicitAttention =
     lower.includes("needs-attention") ||
