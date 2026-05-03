@@ -67,6 +67,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
+- Remediate the Claude plugin field-report issues captured in `.planning/field-reports/2026-05-03-codex-bridge-claude-plugin-issues.md`, starting with P0 brief delivery and resume/worktree continuity.
 - Start a fresh next milestone with `$gsd-new-milestone` before adding new implementation phases.
 - Consider next milestone around config validation, auto-update safety hardening, retention/redaction controls, and future backend readiness.
 - Packaged plugin marketplace promotion is no longer pending: the marketplace entry and packaged plugin manifest now use the canonical `codex-bridge` install name.
