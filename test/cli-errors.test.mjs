@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyError, normalizeCodexErrorInfo, ExitCode, detectHelpFlag, detectJsonFlag } from "../src/lib/cli-errors.mjs";
+import { buildErrorEnvelope, classifyError, CliError, normalizeCodexErrorInfo, ExitCode, detectHelpFlag, detectJsonFlag } from "../src/lib/cli-errors.mjs";
 
 test("normalizes camelCase codexErrorInfo strings", () => {
   assert.deepEqual(normalizeCodexErrorInfo("sandboxError"), {
@@ -120,6 +120,43 @@ test("classifies backend adapter failures as BACKEND_INCAPABLE validation errors
   assert.equal(classified.retryable, false);
   assert.equal(classified.exitCode, ExitCode.VALIDATION);
   assert.deepEqual(classified.details, { backend: "gemini" });
+});
+
+test("error envelopes carry origin and next action for direct orchestration", () => {
+  const classified = classifyError(new CliError("bad config", {
+    class: "validation",
+    code: "CONFIG_INVALID_VALUE",
+    retryable: false,
+    suggestion: "Run `config show --json`.",
+    origin: "config",
+    nextAction: {
+      kind: "inspect-config",
+      command: "config show --json",
+      description: "Inspect config diagnostics."
+    }
+  }));
+
+  const envelope = buildErrorEnvelope(classified, { command: "task" });
+  assert.equal(envelope.error.origin, "config");
+  assert.deepEqual(envelope.error.next_action, {
+    kind: "inspect-config",
+    command: "config show --json",
+    description: "Inspect config diagnostics."
+  });
+});
+
+test("error envelopes derive a next action from suggestions", () => {
+  const envelope = buildErrorEnvelope(classifyError(new CliError("missing job", {
+    class: "not_found",
+    code: "JOB_NOT_FOUND",
+    retryable: false,
+    suggestion: "Run `status` to list known jobs."
+  })));
+
+  assert.deepEqual(envelope.error.next_action, {
+    kind: "follow-suggestion",
+    description: "Run `status` to list known jobs."
+  });
 });
 
 test("ETIMEDOUT in message without err.code still hits UPSTREAM_STREAM_DISCONNECTED", () => {

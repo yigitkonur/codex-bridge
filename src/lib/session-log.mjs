@@ -90,7 +90,7 @@ export function readEvents(sessionOrPath, { maxBlocks = null } = {}) {
   if (!eventsPath || !fs.existsSync(eventsPath)) return [];
   const raw = fs.readFileSync(eventsPath, "utf8");
   const blocks = raw
-    .split(/\n(?=\[[A-Z_]+\])/)
+    .split(/\n(?=\[[^\]]+\])/)
     .map((block) => block.trim())
     .filter(Boolean);
   return Number.isInteger(maxBlocks) && maxBlocks > 0 ? blocks.slice(-maxBlocks) : blocks;
@@ -794,11 +794,11 @@ export function fmtSeconds(ms) {
   return rem === 0 ? `${m}m` : `${m}m${String(rem).padStart(2, "0")}s`;
 }
 
-// Canonical terminal-tag set — the three that self-terminate
+// Canonical terminal-tag set — tags that self-terminate
 // `events --follow`. Exported so the finally-backstop regex, Monitor's
 // `terminal_tags` array, and every future consumer agree by construction.
-export const TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE"]);
-export const TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE)\]/m;
+export const TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE", "PLAN"]);
+export const TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN)\]/m;
 
 // v1.4.0 — default Monitor/`events --follow` uses EXCLUSION instead of
 // inclusion so new tags introduced by future bridge versions pass through

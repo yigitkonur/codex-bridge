@@ -244,7 +244,7 @@ function removeFileIfExists(filePath) {
   }
 }
 
-function writeJsonFileAtomic(filePath, payload) {
+export function writeJsonFileAtomic(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = path.join(
     path.dirname(filePath),
@@ -286,16 +286,15 @@ function saveStateUnlocked(cwd, state) {
     jobs: nextJobs
   };
 
+  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
   const retainedIds = new Set(nextJobs.map((job) => job.id));
   for (const job of previousJobs) {
     if (retainedIds.has(job.id)) {
       continue;
     }
-    removeJobFile(resolveJobFile(cwd, job.id));
-    removeFileIfExists(job.logFile);
+    try { removeJobFile(resolveJobFile(cwd, job.id)); } catch { /* best-effort post-commit cleanup */ }
+    try { removeFileIfExists(job.logFile); } catch { /* best-effort post-commit cleanup */ }
   }
-
-  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
   return nextState;
 }
 
@@ -520,12 +519,35 @@ export function readStopReviewGateState(workspaceRoot, officialPlugin) {
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  writeJsonFileAtomic(jobFile, payload);
   return jobFile;
 }
 
 export function readJobFile(jobFile) {
-  return JSON.parse(fs.readFileSync(jobFile, "utf8"));
+  try {
+    return JSON.parse(fs.readFileSync(jobFile, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw error;
+    }
+    let corruptPath = null;
+    if (fs.existsSync(jobFile)) {
+      corruptPath = `${jobFile}.corrupt-${Date.now()}`;
+      try {
+        fs.renameSync(jobFile, corruptPath);
+      } catch {
+        corruptPath = null;
+      }
+    }
+    const wrapped = new Error(
+      `Job detail file at ${jobFile} was corrupt${corruptPath ? `; preserved at ${corruptPath}` : ""}.`
+    );
+    wrapped.code = "JOB_DETAIL_CORRUPT";
+    wrapped.jobFile = jobFile;
+    wrapped.corruptPath = corruptPath;
+    wrapped.cause = error;
+    throw wrapped;
+  }
 }
 
 function removeJobFile(jobFile) {

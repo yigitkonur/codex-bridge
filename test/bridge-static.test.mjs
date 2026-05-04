@@ -38,11 +38,12 @@ test("broker direct invocation detection uses platform-safe file URLs", () => {
 });
 
 test("wait terminal matching is anchored to event headers", () => {
-  assert.match(bridge, /const TERMINAL = \/\^\\\[\(DONE\|ERROR\|INCOMPLETE\)\\\]\//);
+  assert.match(bridge, /const TERMINAL = TERMINAL_TAG_REGEX/);
+  assert.match(bridge, /TERMINAL_TAG_REGEX/);
   assert.match(bridge, /async function handleWaitAny/);
   assert.match(bridge, /mode: "any"/);
-  assert.match(bridge, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*/);
-  assert.doesNotMatch(bridge, /\*"\[DONE\]"\*\|\*"\[ERROR\]"\*\|\*"\[INCOMPLETE\]"\*/);
+  assert.match(bridge, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*\|"\[PLAN\]"\*/);
+  assert.doesNotMatch(bridge, /\*"\[DONE\]"\*\|\*"\[ERROR\]"\*\|\*"\[INCOMPLETE\]"\*\|\*"\[PLAN\]"\*/);
 });
 
 test("task retry binds same-thread retry to the failed thread id", () => {
@@ -112,6 +113,20 @@ test("v2.2 ergonomics hooks are wired into runtime surfaces", () => {
   assert.match(bridge, /apply:/);
 });
 
+test("auto-apply stays inert for help and json discovery paths", () => {
+  const autoApply = bridge.match(/function maybeTriggerAutoApply[\s\S]*?function spawnDetachedAutoApply/)?.[0] ?? "";
+  assert.match(autoApply, /detectJsonFlag\(rawArgv\)/);
+  assert.match(autoApply, /detectHelpFlag\(rawArgv\)/);
+  assert.match(autoApply, /subcommand === "version" \|\| subcommand === "update"/);
+});
+
+test("explicit update apply has a bounded installer timeout", () => {
+  const apply = bridge.match(/function runSkillsAddForApply[\s\S]*?function renderUpdateFailureHint/)?.[0] ?? "";
+  assert.match(apply, /const timeoutMs = 600_000/);
+  assert.match(apply, /timeout: timeoutMs/);
+  assert.match(apply, /skills installer timed out/);
+});
+
 test("recovery-sensitive commands emit structured recovery payloads", () => {
   const awaitArtifact = bridge.match(/async function handleAwaitArtifact[\s\S]*?function pruneOrphanedJobs/)?.[0] ?? "";
   const prune = bridge.match(/function pruneOrphanedJobs[\s\S]*?function finalizeOrphan/)?.[0] ?? "";
@@ -176,7 +191,7 @@ test("sandbox workspace-dirty returns before terminal error emission", () => {
 });
 
 test("tracked failed task results persist handoff error envelope", () => {
-  assert.match(bridge, /buildErrorEnvelope\(classifyError\(errLike\), \{ command, partial, handoff \}\)/);
+  assert.match(bridge, /buildErrorEnvelope\(classifyError\(errLike\), \{ command, partial, handoff, origin, nextAction \}\)/);
   assert.match(bridge, /payload:\s*\{\s*\.\.\.payload,\s*error\s*\}/);
 
   const foreground = bridge.match(/async function runForegroundCommand[\s\S]*?function spawnDetachedTaskWorker/)?.[0] ?? "";
@@ -190,6 +205,14 @@ test("tracked failed task results persist handoff error envelope", () => {
     worker,
     /persistFailureErrorInPayload\(\s*await runBridgeTask\(\{[\s\S]*?onProgress: progress[\s\S]*?\}\),\s*"task"\s*\)/
   );
+});
+
+test("task failures attach cause-aware next action to the error object", () => {
+  const errorBranch = bridge.match(/if \(result\.exitStatus !== 0 && result\.error\) \{[\s\S]*?return \{ \.\.\.result, session \};/)?.[0] ?? "";
+  assert.match(bridge, /function buildTurnErrorNextAction/);
+  assert.match(errorBranch, /const nextAction = buildTurnErrorNextAction/);
+  assert.match(errorBranch, /result\.error\.origin = origin/);
+  assert.match(errorBranch, /result\.error\.nextAction = nextAction/);
 });
 
 test("background task enqueue persists queued record before spawning worker", () => {

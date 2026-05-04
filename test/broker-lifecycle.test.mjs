@@ -6,7 +6,7 @@ import process from "node:process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { __testHooks__, ensureBrokerSession, loadBrokerSession } from "../src/lib/broker-lifecycle.mjs";
+import { __testHooks__, ensureBrokerSession, loadBrokerSession, teardownBrokerSession } from "../src/lib/broker-lifecycle.mjs";
 
 const { resolveBrokerScriptPath } = __testHooks__;
 
@@ -17,6 +17,27 @@ function writeIdleBrokerScript(scriptPath) {
       'import fs from "node:fs";',
       'fs.writeFileSync(process.env.BROKER_TEST_CHILD_PID_FILE, `${process.pid}\\n`, "utf8");',
       "setInterval(() => {}, 1000);"
+    ].join("\n"),
+    "utf8"
+  );
+}
+
+function writeListeningBrokerScript(scriptPath) {
+  fs.writeFileSync(
+    scriptPath,
+    [
+      'import fs from "node:fs";',
+      'import net from "node:net";',
+      'const endpoint = process.argv[process.argv.indexOf("--endpoint") + 1];',
+      'const pidFile = process.argv[process.argv.indexOf("--pid-file") + 1];',
+      'const socketPath = endpoint.replace(/^unix:/, "");',
+      'try { fs.unlinkSync(socketPath); } catch {}',
+      'const server = net.createServer((socket) => socket.end());',
+      'server.listen(socketPath, () => {',
+      '  fs.appendFileSync(process.env.BROKER_TEST_COUNT_FILE, "spawned\\n", "utf8");',
+      '  fs.writeFileSync(pidFile, `${process.pid}\\n`, "utf8");',
+      '});',
+      'setInterval(() => {}, 1000);'
     ].join("\n"),
     "utf8"
   );
@@ -227,3 +248,45 @@ test("broker startup failure is surfaced instead of returning a null session", a
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+test(
+  "concurrent cold starts share one broker session",
+  { skip: process.platform === "win32" ? "test broker script listens on unix sockets" : false },
+  async () => {
+    const previousBridgePluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-broker-concurrent-"));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+    const scriptPath = path.join(root, "listening-broker.mjs");
+    const countFile = path.join(root, "spawn-count.txt");
+    writeListeningBrokerScript(scriptPath);
+    process.env.CODEX_BRIDGE_PLUGIN_DATA = root;
+
+    let session = null;
+    try {
+      const [left, right] = await Promise.all([
+        ensureBrokerSession(workspace, {
+          scriptPath,
+          timeoutMs: 1000,
+          env: { ...process.env, BROKER_TEST_COUNT_FILE: countFile }
+        }),
+        ensureBrokerSession(workspace, {
+          scriptPath,
+          timeoutMs: 1000,
+          env: { ...process.env, BROKER_TEST_COUNT_FILE: countFile }
+        })
+      ]);
+      session = left;
+      assert.equal(left.endpoint, right.endpoint);
+      assert.equal(fs.readFileSync(countFile, "utf8").trim().split(/\r?\n/).length, 1);
+    } finally {
+      if (session) {
+        teardownBrokerSession({ ...session, killProcess: (pid) => {
+          try { process.kill(pid, "SIGTERM"); } catch {}
+        } });
+      }
+      restoreEnv("CODEX_BRIDGE_PLUGIN_DATA", previousBridgePluginData);
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  }
+);

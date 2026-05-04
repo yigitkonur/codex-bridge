@@ -192,7 +192,30 @@ export function readStoredJob(workspaceRoot, jobId) {
   if (!fs.existsSync(jobFile)) {
     return null;
   }
-  return readJobFile(jobFile);
+  try {
+    return readJobFile(jobFile);
+  } catch (error) {
+    if (error?.code === "JOB_DETAIL_CORRUPT") {
+      throw new CliError(`Job detail for ${jobId} is corrupt.`, {
+        class: "conflict",
+        code: "JOB_DETAIL_CORRUPT",
+        retryable: false,
+        suggestion: "Run `status` to inspect the state index; relaunch the task if the detail artifact is required.",
+        details: {
+          jobId,
+          jobFile,
+          corruptPath: error.corruptPath ?? null,
+          cause: error.cause?.message ?? null,
+        },
+        nextAction: {
+          kind: "inspect-status",
+          command: `status ${jobId}`,
+          description: "Inspect the state-index record that survived the corrupt detail file.",
+        },
+      });
+    }
+    throw error;
+  }
 }
 
 function matchJobReference(jobs, reference, predicate = () => true) {

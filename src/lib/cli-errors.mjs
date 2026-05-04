@@ -168,6 +168,8 @@ export class CliError extends Error {
     if (meta.suggestion) this.suggestion = meta.suggestion;
     if (meta.details) this.details = meta.details;
     if (meta.retryAfter != null) this.retryAfter = meta.retryAfter;
+    if (meta.origin) this.origin = meta.origin;
+    if (meta.nextAction) this.nextAction = meta.nextAction;
   }
 }
 
@@ -218,6 +220,8 @@ export function classifyError(err) {
       suggestion: err.suggestion,
       details: err.details,
       retryAfter: err.retryAfter,
+      origin: err.origin,
+      nextAction: err.nextAction,
       exitCode: CLASS_TO_EXIT[err.class] ?? ExitCode.CRASH
     };
   }
@@ -288,6 +292,40 @@ export function classifyError(err) {
       retryable: true,
       suggestion: "Init/shutdown/socket-connect timed out. Verify Codex is responding and retry.",
       exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "BROKER_LOCK_TIMEOUT") {
+    return {
+      class: "timeout",
+      code: "BROKER_LOCK_TIMEOUT",
+      message,
+      retryable: true,
+      suggestion: "Another bridge process is starting the shared broker. Retry after a brief delay, or inspect active bridge jobs with `status --all`.",
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "BROKER_START_FAILED") {
+    return {
+      class: "dependency_failed",
+      code: "BROKER_START_FAILED",
+      message,
+      retryable: true,
+      suggestion: "Run `setup --json` to verify Codex app-server readiness, then retry.",
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "JOB_DETAIL_CORRUPT") {
+    return {
+      class: "conflict",
+      code: "JOB_DETAIL_CORRUPT",
+      message,
+      retryable: false,
+      suggestion: "Run `status --all` to inspect the surviving state index; relaunch if the detailed result is required.",
+      details: {
+        jobFile: err.jobFile ?? null,
+        corruptPath: err.corruptPath ?? null,
+      },
+      exitCode: ExitCode.CONFLICT
     };
   }
   // Match both the synthesized capitalized message from codex.mjs and the
@@ -372,7 +410,15 @@ export function extractUpstreamRequestId(message) {
 }
 
 // Match the success envelope schema contract (schema_version 1.0).
-export function buildErrorEnvelope(classified, { command, partial, handoff } = {}) {
+function defaultNextAction(classified) {
+  if (!classified?.suggestion) return null;
+  return {
+    kind: "follow-suggestion",
+    description: classified.suggestion
+  };
+}
+
+export function buildErrorEnvelope(classified, { command, partial, handoff, origin = null, nextAction = null } = {}) {
   const error = {
     class: classified.class,
     code: classified.code,
@@ -382,6 +428,10 @@ export function buildErrorEnvelope(classified, { command, partial, handoff } = {
   if (classified.suggestion) error.suggestion = classified.suggestion;
   if (classified.details) error.details = classified.details;
   if (classified.retryAfter != null) error.retry_after = classified.retryAfter;
+  const effectiveOrigin = origin ?? classified.origin ?? null;
+  if (effectiveOrigin) error.origin = effectiveOrigin;
+  const effectiveNextAction = nextAction ?? classified.nextAction ?? defaultNextAction(classified);
+  if (effectiveNextAction) error.next_action = effectiveNextAction;
 
   const upstreamRequestId = extractUpstreamRequestId(classified.message);
   if (upstreamRequestId) error.upstream_request_id = upstreamRequestId;
@@ -463,9 +513,11 @@ export function emitError(err, { json = false, command = null, stderr = process.
   // can consume the handoff without tailing `.events`.
   const partial = err?.partial ?? null;
   const handoff = err?.handoff ?? null;
+  const origin = err?.origin ?? classified.origin ?? null;
+  const nextAction = err?.nextAction ?? classified.nextAction ?? null;
 
   if (json) {
-    const envelope = buildErrorEnvelope(classified, { command, partial, handoff });
+    const envelope = buildErrorEnvelope(classified, { command, partial, handoff, origin, nextAction });
     stdout.write(`${JSON.stringify(envelope)}\n`);
   } else {
     stderr.write(`${classified.message}\n`);

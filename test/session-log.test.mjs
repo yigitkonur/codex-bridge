@@ -18,6 +18,8 @@ import {
   readEvents,
   readNdjson,
   resolveSessionDir,
+  TERMINAL_TAG_REGEX,
+  TERMINAL_TAGS,
   writeSessionAliases
 } from "../src/lib/session-log.mjs";
 
@@ -155,6 +157,7 @@ test("session replay helpers read append-only ndjson/events and preserve corrupt
   logNdjson(replaySession, "DONE", "turn/completed", { status: 0 });
 
   logEvent(replaySession, "[PLAN] first\nbody");
+  logEvent(replaySession, "[PIPELINE:review] start");
   logEvent(replaySession, "[DONE] second");
 
   const ndjson = readNdjson(replaySession);
@@ -166,8 +169,14 @@ test("session replay helpers read append-only ndjson/events and preserve corrupt
   assert.deepEqual(readNdjson(replaySession, { maxEntries: 1 }).map((entry) => entry.tag), ["DONE"]);
 
   const events = readEvents(replaySession);
-  assert.deepEqual(events, ["[PLAN] first\nbody", "[DONE] second"]);
+  assert.deepEqual(events, ["[PLAN] first\nbody", "[PIPELINE:review] start", "[DONE] second"]);
   assert.deepEqual(readEvents(replaySession, { maxBlocks: 1 }), ["[DONE] second"]);
+});
+
+test("PLAN is a terminal event tag for wait/follow consumers", () => {
+  assert.deepEqual(TERMINAL_TAGS, ["DONE", "ERROR", "INCOMPLETE", "PLAN"]);
+  const match = TERMINAL_TAG_REGEX.exec("[PLAN] thread turn");
+  assert.equal(match?.[1], "PLAN");
 });
 
 test("question response commands shell-quote option labels", () => {

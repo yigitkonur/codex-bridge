@@ -14,17 +14,6 @@ export {
   resolveModel,
 } from "./runtime-options.mjs";
 
-function readConfigFile(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const doc = yaml.load(raw) ?? {};
-    const bridge = doc.codex_bridge ?? doc;
-    return typeof bridge === "object" && bridge !== null ? bridge : {};
-  } catch {
-    return {};
-  }
-}
-
 const CONFIG_SCHEMA = {
   mode: { type: "enum", values: ["plan", "default"] },
   model: { type: "string" },
@@ -50,6 +39,49 @@ const CONFIG_SCHEMA = {
   adapter_routing: { type: "object" },
 };
 
+function isConfigValueValid(schema, value) {
+  return (
+    schema.type === "string" ? typeof value === "string" :
+    schema.type === "boolean" ? typeof value === "boolean" :
+    schema.type === "object" ? value && typeof value === "object" && !Array.isArray(value) :
+    schema.type === "positive-number" ? Number(value) > 0 :
+    schema.type === "enum" ? typeof value === "string" && schema.values.includes(value) :
+    true
+  );
+}
+
+function parseConfigFile(filePath, source) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    return { config: {}, diagnostics: [] };
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const doc = yaml.load(raw) ?? {};
+    const bridge = doc.codex_bridge ?? doc;
+    return {
+      config: typeof bridge === "object" && bridge !== null ? bridge : {},
+      diagnostics: []
+    };
+  } catch (error) {
+    return {
+      config: {},
+      diagnostics: [{
+        severity: "error",
+        code: "CONFIG_PARSE_ERROR",
+        source,
+        path: filePath,
+        key: null,
+        message: `Could not read or parse config.yaml; this layer was ignored (${error?.message ?? error}).`,
+      }]
+    };
+  }
+}
+
+function readConfigFile(filePath) {
+  return parseConfigFile(filePath, "config").config;
+}
+
 function validateConfigLayer(layer, source, pathValue) {
   const diagnostics = [];
   if (!layer || typeof layer !== "object") return diagnostics;
@@ -66,14 +98,7 @@ function validateConfigLayer(layer, source, pathValue) {
       });
       continue;
     }
-    const typeOk =
-      schema.type === "string" ? typeof value === "string" :
-      schema.type === "boolean" ? typeof value === "boolean" :
-      schema.type === "object" ? value && typeof value === "object" && !Array.isArray(value) :
-      schema.type === "positive-number" ? Number(value) > 0 :
-      schema.type === "enum" ? typeof value === "string" && schema.values.includes(value) :
-      true;
-    if (!typeOk) {
+    if (!isConfigValueValid(schema, value)) {
       diagnostics.push({
         severity: "error",
         code: "CONFIG_INVALID_VALUE",
@@ -87,6 +112,19 @@ function validateConfigLayer(layer, source, pathValue) {
     }
   }
   return diagnostics;
+}
+
+function sanitizeConfigLayer(layer) {
+  const sanitized = {};
+  if (!layer || typeof layer !== "object") return sanitized;
+  for (const [key, value] of Object.entries(layer)) {
+    const schema = CONFIG_SCHEMA[key];
+    if (!schema || !isConfigValueValid(schema, value)) {
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  return sanitized;
 }
 
 function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
@@ -120,33 +158,34 @@ function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
 export function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
   const { skillConfigPath, workspaceConfigPath, overrideConfigPath } =
     configPaths(skillDir, overrideDir, workspaceRoot);
-  const skillLayer = readConfigFile(skillConfigPath);
+  const skillParsed = parseConfigFile(skillConfigPath, "skill-dir");
+  const skillLayer = skillParsed.config;
 
   // Workspace-root layer — only read if distinct from overrideDir (avoid
   // reading the same file twice) and actually exists.
-  const workspaceLayer =
-    workspaceConfigPath && fs.existsSync(workspaceConfigPath)
-      ? readConfigFile(workspaceConfigPath)
-      : {};
+  const workspaceParsed = workspaceConfigPath
+    ? parseConfigFile(workspaceConfigPath, "workspace-root")
+    : { config: {}, diagnostics: [] };
+  const workspaceLayer = workspaceParsed.config;
 
   // Override (cwd) layer — most specific, wins last.
-  const overrideLayer =
-    overrideConfigPath && fs.existsSync(overrideConfigPath)
-      ? readConfigFile(overrideConfigPath)
-      : {};
+  const overrideParsed = overrideConfigPath
+    ? parseConfigFile(overrideConfigPath, "cwd")
+    : { config: {}, diagnostics: [] };
+  const overrideLayer = overrideParsed.config;
 
   const mergedConfig = {
     ...DEFAULT_CONFIG,
-    ...skillLayer,
-    ...workspaceLayer,
-    ...overrideLayer,
+    ...sanitizeConfigLayer(skillLayer),
+    ...sanitizeConfigLayer(workspaceLayer),
+    ...sanitizeConfigLayer(overrideLayer),
   };
 
   return {
     defaults: DEFAULT_CONFIG,
-    skillConfig: skillLayer,
-    workspaceConfig: workspaceLayer,
-    cwdConfig: overrideLayer,
+    skillConfig: sanitizeConfigLayer(skillLayer),
+    workspaceConfig: sanitizeConfigLayer(workspaceLayer),
+    cwdConfig: sanitizeConfigLayer(overrideLayer),
     mergedConfig,
     sources: {
       skillConfigPath,
@@ -159,8 +198,11 @@ export function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = n
         overrideConfigPath ? fs.existsSync(overrideConfigPath) : false,
     },
     diagnostics: [
+      ...skillParsed.diagnostics,
       ...validateConfigLayer(skillLayer, "skill-dir", skillConfigPath),
+      ...workspaceParsed.diagnostics,
       ...validateConfigLayer(workspaceLayer, "workspace-root", workspaceConfigPath),
+      ...overrideParsed.diagnostics,
       ...validateConfigLayer(overrideLayer, "cwd", overrideConfigPath),
     ],
   };

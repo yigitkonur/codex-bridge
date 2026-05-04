@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import process from "node:process";
 
-import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile } from "./state.mjs";
+import { listJobs, readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile } from "./state.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -106,7 +106,24 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
       return;
     }
 
-    const storedJob = readJobFile(jobFile);
+    let storedJob;
+    try {
+      storedJob = readJobFile(jobFile);
+    } catch (error) {
+      if (error?.code !== "JOB_DETAIL_CORRUPT") {
+        throw error;
+      }
+      storedJob = listJobs(workspaceRoot, { raw: true }).find((job) => job.id === jobId) ?? {
+        id: jobId,
+        status: "running",
+        phase: "running"
+      };
+      patch.detailRecovery = {
+        code: "JOB_DETAIL_CORRUPT",
+        jobFile,
+        corruptPath: error.corruptPath ?? null,
+      };
+    }
     writeJobFile(workspaceRoot, jobId, {
       ...storedJob,
       ...patch
@@ -138,7 +155,14 @@ function readStoredJobOrNull(workspaceRoot, jobId) {
   if (!fs.existsSync(jobFile)) {
     return null;
   }
-  return readJobFile(jobFile);
+  try {
+    return readJobFile(jobFile);
+  } catch (error) {
+    if (error?.code === "JOB_DETAIL_CORRUPT") {
+      return listJobs(workspaceRoot, { raw: true }).find((job) => job.id === jobId) ?? null;
+    }
+    throw error;
+  }
 }
 
 export async function runTrackedJob(job, runner, options = {}) {

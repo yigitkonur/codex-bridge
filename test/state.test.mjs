@@ -11,6 +11,7 @@ import {
   resolveJobLogFile,
   resolveStateFile,
   resolveStateDir,
+  readJobFile,
   saveState,
   upsertJob,
   writeJobFile
@@ -282,6 +283,38 @@ test("corrupt state file is quarantined and recovered to defaults", () => {
       fs.readFileSync(path.join(stateDir, corruptSibling), "utf8"),
       "{\n"
     );
+  } finally {
+    if (previousBridgePluginData == null) {
+      delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_BRIDGE_PLUGIN_DATA = previousBridgePluginData;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("corrupt job detail file is quarantined with a structured error", () => {
+  const previousBridgePluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-corrupt-job-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+  process.env.CODEX_BRIDGE_PLUGIN_DATA = root;
+  try {
+    const jobFile = resolveJobFile(workspace, "task-corrupt");
+    fs.mkdirSync(path.dirname(jobFile), { recursive: true });
+    fs.writeFileSync(jobFile, "{\n", "utf8");
+
+    assert.throws(
+      () => readJobFile(jobFile),
+      (error) => {
+        assert.equal(error.code, "JOB_DETAIL_CORRUPT");
+        assert.equal(error.jobFile, jobFile);
+        assert.ok(error.corruptPath?.startsWith(`${jobFile}.corrupt-`));
+        assert.equal(fs.readFileSync(error.corruptPath, "utf8"), "{\n");
+        return true;
+      }
+    );
+    assert.equal(fs.existsSync(jobFile), false);
   } finally {
     if (previousBridgePluginData == null) {
       delete process.env.CODEX_BRIDGE_PLUGIN_DATA;

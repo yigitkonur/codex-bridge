@@ -147,6 +147,7 @@ import {
   formatRetryingEvent,
   formatHandoffEvent,
   TERMINAL_TAGS,
+  TERMINAL_TAG_REGEX,
   DEFAULT_MONITOR_EXCLUDE,
   writeReview as writeSessionReview
 } from "./lib/session-log.mjs";
@@ -209,6 +210,7 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
     if (process.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
     if (detectJsonFlag(rawArgv)) return;
+    if (detectHelpFlag(rawArgv)) return;
     if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
     if (subcommand === "version" || subcommand === "update") return;
 
@@ -296,7 +298,65 @@ function shellQuote(value) {
 }
 
 function bridgeCommand(subcommand, cwd = null) {
-  return `node ${SCRIPT_PATH} ${subcommand}${cwd ? ` --cwd ${shellQuote(cwd)}` : ""}`;
+  return `node ${shellQuote(SCRIPT_PATH)} ${subcommand}${cwd ? ` --cwd ${shellQuote(cwd)}` : ""}`;
+}
+
+function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, cwd = null, stateCwd = null }) {
+  const target = jobId ?? threadId;
+  const jobCwd = stateCwd ?? cwd;
+  if (origin === "upstream:response-chain-lost") {
+    return {
+      kind: "new-task",
+      command: `${bridgeCommand("task", cwd)} --json --mode default "<prompt rebased on last good sha>"`,
+      description: "The upstream response chain is dead; start a fresh task from committed state instead of sending on the same thread."
+    };
+  }
+  if (origin === "upstream:auth" || errorCode === "Unauthorized") {
+    return {
+      kind: "reauth",
+      command: "codex login",
+      description: "Refresh Codex authentication, then relaunch the task; retrying the same thread will repeat the auth failure."
+    };
+  }
+  if (origin === "upstream:transport") {
+    return {
+      kind: "retry-same-thread",
+      command: threadId
+        ? `${bridgeCommand("send", cwd)} ${threadId} "<same prompt>"`
+        : `${bridgeCommand("task", cwd)} --json --mode default "<same prompt>"`,
+      description: "The upstream stream dropped before completion; workspace state is unchanged, so retry the same thread once."
+    };
+  }
+  if (origin === "idle" || errorCode === "ClientTimeout" || errorCode === "TurnTimeout") {
+    return {
+      kind: "relaunch-with-longer-timeouts",
+      command: `${bridgeCommand("task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
+      description: "A timeout budget expired; relaunch with a larger budget after confirming the original job is not still progressing."
+    };
+  }
+  if (origin === "upstream:invalid-request") {
+    return {
+      kind: "new-task",
+      command: `${bridgeCommand("task", cwd)} --json --mode default "<fixed prompt>"`,
+      description: "Inspect the upstream validation error, fix the prompt/input shape, and launch a fresh task."
+    };
+  }
+  if (target) {
+    return {
+      kind: "inspect-result",
+      command: `${bridgeCommand("result", jobCwd)} ${target}`,
+      description: "Inspect the persisted result and session log before deciding whether to retry or start fresh."
+    };
+  }
+  return {
+    kind: threadId ? "retry-with-revised-prompt" : "new-task",
+    command: threadId
+      ? `${bridgeCommand("send", cwd)} ${threadId} "<revised prompt>"`
+      : `${bridgeCommand("task", cwd)} --json --mode default "<revised prompt>"`,
+    description: threadId
+      ? "Retry with an adjusted prompt, or cancel and start fresh."
+      : "Start a fresh task with a revised prompt."
+  };
 }
 
 const DEVELOPER_INSTRUCTIONS_FALLBACK = {
@@ -519,7 +579,7 @@ function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
   });
   const shellFallback = eventsPath
     ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do ` +
-      `echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*) break ;; esac; done`
+      `echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*) break ;; esac; done`
     : null;
   return {
     command: cliCommand,
@@ -687,7 +747,7 @@ const COMMANDS = Object.freeze({
   },
   wait: {
     synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
-    summary: "Block until target job events emit [DONE], [ERROR], or [INCOMPLETE]. With --any, return the first terminal job from N targets.",
+    summary: "Block until target job events emit [DONE], [ERROR], [INCOMPLETE], or [PLAN]. With --any, return the first terminal job from N targets.",
     examples: [
       "codex-bridge wait task-abc --timeout-ms 600000 --json",
       "codex-bridge wait --any task-a task-b task-c --json",
@@ -699,7 +759,7 @@ const COMMANDS = Object.freeze({
     summary: "Stream the target's events file. `--filter` keeps only listed tags (inclusion); `--exclude` drops listed tags and shows everything else (exclusion — forward-compatible default for Monitor). Flags are mutually exclusive.",
     examples: [
       "codex-bridge events task-abc --follow --exclude HEARTBEAT  # default Monitor shape",
-      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE  # narrow inclusion view",
+      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN  # narrow inclusion view",
       "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 600000"
     ]
   },
@@ -1310,7 +1370,7 @@ async function handleConfigShow(argv) {
   if (diagnostics.length > 0) {
     lines.push("", "Diagnostics:");
     for (const diagnostic of diagnostics) {
-      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key} — ${diagnostic.message}`);
+      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} — ${diagnostic.message}`);
     }
   }
   const rendered = `${lines.join("\n")}\n`;
@@ -1363,6 +1423,7 @@ async function handleUpdate(argv) {
         ok: applyResult.ok,
         exit_code: applyResult.exitCode,
         error: applyResult.error,
+        timed_out: Boolean(applyResult.timedOut),
       },
       applied: applyResult.ok,
       apply_exit_code: applyResult.exitCode,
@@ -1380,8 +1441,24 @@ async function handleUpdate(argv) {
       // Non-zero install exit surfaces as a dependency_failed error so
       // callers can branch on $? without parsing stdout.
       const err = new CliError(
-        `skills installer exited ${applyResult.exitCode}`,
-        { class: "dependency_failed", code: "UPDATE_APPLY_FAILED", retryable: true, suggestion: `Re-run manually: ${installCommand}` }
+        applyResult.timedOut ? "skills installer timed out" : `skills installer exited ${applyResult.exitCode}`,
+        {
+          class: "dependency_failed",
+          code: "UPDATE_APPLY_FAILED",
+          retryable: true,
+          suggestion: `Re-run manually: ${installCommand}`,
+          details: {
+            command: applyResult.command,
+            exitCode: applyResult.exitCode,
+            error: applyResult.error,
+            timedOut: Boolean(applyResult.timedOut),
+          },
+          nextAction: {
+            kind: "manual-update",
+            command: installCommand,
+            description: "Run the installer manually after checking npm/network availability.",
+          },
+        }
       );
       emitError(err, { json: options.json, command: "update" });
     }
@@ -1438,6 +1515,7 @@ async function handleUpdate(argv) {
 // branches on.
 function runSkillsAddForApply(jsonMode) {
   const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const timeoutMs = 600_000;
   try {
     const result = spawnSync(
       "npx",
@@ -1445,6 +1523,7 @@ function runSkillsAddForApply(jsonMode) {
       {
         stdio: jsonMode ? ["ignore", "pipe", "pipe"] : "inherit",
         encoding: "utf8",
+        timeout: timeoutMs,
       }
     );
     if (result.error) {
@@ -1453,17 +1532,20 @@ function runSkillsAddForApply(jsonMode) {
         exitCode: null,
         error: result.error.code === "ENOENT"
           ? "npx not found on PATH; install Node.js to get npx"
-          : result.error.message,
+          : result.error.code === "ETIMEDOUT"
+            ? `skills installer timed out after ${Math.round(timeoutMs / 1000)}s`
+            : result.error.message,
         command,
+        timedOut: result.error.code === "ETIMEDOUT",
       };
     }
     if (result.status !== 0) {
       const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
-      return { ok: false, exitCode: result.status, error: stderrTail || null, command };
+      return { ok: false, exitCode: result.status, error: stderrTail || null, command, timedOut: false };
     }
-    return { ok: true, exitCode: 0, error: null, command };
+    return { ok: true, exitCode: 0, error: null, command, timedOut: false };
   } catch (err) {
-    return { ok: false, exitCode: null, error: err?.message ?? String(err), command };
+    return { ok: false, exitCode: null, error: err?.message ?? String(err), command, timedOut: false };
   }
 }
 
@@ -2394,7 +2476,9 @@ function persistFailureErrorInPayload(execution, command = null) {
   const errLike = execution.error ?? { message: `Codex turn failed (status ${execution.exitStatus}).` };
   const partial = errLike?.partial ?? null;
   const handoff = errLike?.handoff ?? null;
-  const { error } = buildErrorEnvelope(classifyError(errLike), { command, partial, handoff });
+  const origin = errLike?.origin ?? null;
+  const nextAction = errLike?.nextAction ?? null;
+  const { error } = buildErrorEnvelope(classifyError(errLike), { command, partial, handoff, origin, nextAction });
   const payload =
     execution.payload && typeof execution.payload === "object" && !Array.isArray(execution.payload)
       ? execution.payload
@@ -3646,10 +3730,19 @@ async function runBridgeTask(request) {
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
     markTerminalEmitted();
 
-    setPhase("error", {
-      command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "<revised prompt>"`,
-      description: "Retry with an adjusted prompt, or cancel and start fresh."
-    }, { errorCode, monitor });
+    const nextAction = buildTurnErrorNextAction({
+      origin,
+      errorCode,
+      threadId: result.threadId,
+      jobId: request.jobId ?? null,
+      cwd: request.cwd,
+      stateCwd,
+    });
+    if (result.error && typeof result.error === "object") {
+      result.error.origin = origin;
+      result.error.nextAction = nextAction;
+    }
+    setPhase("error", nextAction, { errorCode, monitor });
     return { ...result, session };
   }
 
@@ -4781,7 +4874,7 @@ async function handleWait(argv) {
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
-  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+  const TERMINAL = TERMINAL_TAG_REGEX;
 
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
   if (result.timedOut) {
@@ -4820,7 +4913,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
   const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+  const TERMINAL = TERMINAL_TAG_REGEX;
 
   const targets = refs.map((reference) => {
     let job;
@@ -5003,7 +5096,7 @@ async function handleEvents(argv) {
     return included;
   };
 
-  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+  const TERMINAL = TERMINAL_TAG_REGEX;
 
   // Dump existing content (filtered). Track whether a terminal tag is already
   // present so --follow can short-circuit on already-completed events files.
@@ -5040,7 +5133,7 @@ async function handleEvents(argv) {
   // Tail mode — follow appends until a terminal tag or the timeout.
   let timedOut = false;
   // Capture the terminal tag line so the end-of-stream envelope can report
-  // which event actually closed the stream (DONE / ERROR / INCOMPLETE).
+  // which event actually closed the stream (DONE / ERROR / INCOMPLETE / PLAN).
   // Pre-1.2.5 the envelope only said `timedOut: true/false`, which
   // under-determined Monitor's "stream ended" signal — callers couldn't
   // tell happy-path [DONE] from an error-closure without re-reading the
@@ -5152,7 +5245,7 @@ async function handleEvents(argv) {
       timedOut,
       // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
       // distinguish happy-path closure from timeout without re-reading the
-      // file. terminalTag is one of DONE / ERROR / INCOMPLETE on success,
+      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN on success,
       // or null when the stream ended via timeout. elapsedMs measures
       // follow duration only (not total job elapsed time).
       terminalTag,

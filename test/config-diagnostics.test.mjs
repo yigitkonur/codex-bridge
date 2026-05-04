@@ -22,6 +22,23 @@ test("config diagnostics report unknown keys and invalid values by layer", () =>
   assert.ok(diagnostics.some((d) => d.code === "CONFIG_INVALID_VALUE" && d.key === "sandbox_policy"));
   assert.ok(diagnostics.some((d) => d.code === "CONFIG_INVALID_VALUE" && d.key === "artifact_retention_jobs"));
   assert.ok(diagnostics.some((d) => d.source === "cwd" && d.key === "redact_secrets"));
+
+  const layers = loadConfigLayers(skill, cwd, workspace);
+  assert.equal(layers.mergedConfig.sandbox_policy, "danger-full-access");
+  assert.equal(layers.mergedConfig.artifact_retention_jobs, 50);
+  assert.equal(layers.mergedConfig.redact_secrets, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(layers.mergedConfig, "mystery_key"), false);
+});
+
+test("malformed config yaml is reported and ignored for runtime merge", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-config-parse-"));
+  const skill = path.join(root, "skill");
+  fs.mkdirSync(skill, { recursive: true });
+  fs.writeFileSync(path.join(skill, "config.yaml"), "codex_bridge:\n  mode: [\n", "utf8");
+
+  const layers = loadConfigLayers(skill, null, null);
+  assert.equal(layers.mergedConfig.mode, "plan");
+  assert.ok(layers.diagnostics.some((d) => d.code === "CONFIG_PARSE_ERROR" && d.source === "skill-dir"));
 });
 
 test("new cleanup and redaction defaults are present in merged config", () => {

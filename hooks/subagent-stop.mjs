@@ -6,7 +6,7 @@
 // from T10, the future reviewer from T21). If so, it surfaces the last
 // terminal event from the bridge's artifact registry into the parent
 // transcript as additionalContext, so the parent thread sees
-// [DONE: ...] / [ERROR: ...] / [INCOMPLETE: ...] without having to
+// [DONE: ...] / [ERROR: ...] / [INCOMPLETE: ...] / [PLAN: ...] without having to
 // run /codex-bridge:result.
 //
 // In v2.0.0 the artifact registry lands in T15. Until then, this hook
@@ -39,7 +39,7 @@ const BRIDGE_AGENT_TYPES = new Set([
   "codex-bridge:codex-bridge-runner",
   "codex-bridge:codex-bridge-reviewer",
 ]);
-const TERMINAL_TAG_PATTERN = /\[(?:DONE|ERROR|INCOMPLETE)[^\]]*\]/;
+const TERMINAL_TAG_PATTERN = /\[(?:DONE|ERROR|INCOMPLETE|PLAN)[^\]]*\]/;
 const JOB_ID_PATTERN = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/i;
 const JOB_ID_PATTERN_GLOBAL = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/gi;
 
