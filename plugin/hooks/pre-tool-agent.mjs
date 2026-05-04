@@ -326,7 +326,7 @@ function formatTrackerContext(envelope) {
   lines.push("");
   if (monitorHint) {
     lines.push(
-      "Next step (REQUIRED): immediately arm the Monitor tool with the EXACT payload below. The Monitor will surface progress (CHECKPOINT, PLAN, QUESTION) and self-terminate on [DONE]/[ERROR]/[INCOMPLETE]:",
+      "Next step (REQUIRED): immediately arm the Monitor tool with the EXACT payload below. The Monitor will surface progress (CHECKPOINT, PLAN, QUESTION) and self-terminate on [DONE]/[ERROR]/[INCOMPLETE]/[PLAN]:",
     );
     lines.push("");
     lines.push("Monitor input:");

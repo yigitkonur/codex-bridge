@@ -190,6 +190,8 @@ var CliError = class extends Error {
     if (meta.suggestion) this.suggestion = meta.suggestion;
     if (meta.details) this.details = meta.details;
     if (meta.retryAfter != null) this.retryAfter = meta.retryAfter;
+    if (meta.origin) this.origin = meta.origin;
+    if (meta.nextAction) this.nextAction = meta.nextAction;
   }
 };
 function usageError(message, suggestion) {
@@ -226,6 +228,8 @@ function classifyError(err) {
       suggestion: err.suggestion,
       details: err.details,
       retryAfter: err.retryAfter,
+      origin: err.origin,
+      nextAction: err.nextAction,
       exitCode: CLASS_TO_EXIT[err.class] ?? ExitCode.CRASH
     };
   }
@@ -293,6 +297,40 @@ function classifyError(err) {
       exitCode: ExitCode.TRANSIENT
     };
   }
+  if (err?.code === "BROKER_LOCK_TIMEOUT") {
+    return {
+      class: "timeout",
+      code: "BROKER_LOCK_TIMEOUT",
+      message,
+      retryable: true,
+      suggestion: "Another bridge process is starting the shared broker. Retry after a brief delay, or inspect active bridge jobs with `status --all`.",
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "BROKER_START_FAILED") {
+    return {
+      class: "dependency_failed",
+      code: "BROKER_START_FAILED",
+      message,
+      retryable: true,
+      suggestion: "Run `setup --json` to verify Codex app-server readiness, then retry.",
+      exitCode: ExitCode.TRANSIENT
+    };
+  }
+  if (err?.code === "JOB_DETAIL_CORRUPT") {
+    return {
+      class: "conflict",
+      code: "JOB_DETAIL_CORRUPT",
+      message,
+      retryable: false,
+      suggestion: "Run `status --all` to inspect the surviving state index; relaunch if the detailed result is required.",
+      details: {
+        jobFile: err.jobFile ?? null,
+        corruptPath: err.corruptPath ?? null
+      },
+      exitCode: ExitCode.CONFLICT
+    };
+  }
   if (/codex app-server exited unexpectedly/i.test(message)) {
     return {
       class: "dependency_failed",
@@ -357,7 +395,14 @@ function extractUpstreamRequestId(message) {
   const match = /request id:\s*([0-9a-f-]{8,})/i.exec(String(message));
   return match ? match[1] : null;
 }
-function buildErrorEnvelope(classified, { command, partial, handoff } = {}) {
+function defaultNextAction(classified) {
+  if (!classified?.suggestion) return null;
+  return {
+    kind: "follow-suggestion",
+    description: classified.suggestion
+  };
+}
+function buildErrorEnvelope(classified, { command, partial, handoff, origin = null, nextAction = null } = {}) {
   const error = {
     class: classified.class,
     code: classified.code,
@@ -367,6 +412,10 @@ function buildErrorEnvelope(classified, { command, partial, handoff } = {}) {
   if (classified.suggestion) error.suggestion = classified.suggestion;
   if (classified.details) error.details = classified.details;
   if (classified.retryAfter != null) error.retry_after = classified.retryAfter;
+  const effectiveOrigin = origin ?? classified.origin ?? null;
+  if (effectiveOrigin) error.origin = effectiveOrigin;
+  const effectiveNextAction = nextAction ?? classified.nextAction ?? defaultNextAction(classified);
+  if (effectiveNextAction) error.next_action = effectiveNextAction;
   const upstreamRequestId = extractUpstreamRequestId(classified.message);
   if (upstreamRequestId) error.upstream_request_id = upstreamRequestId;
   if (partial) error.partial = partial;
@@ -421,8 +470,10 @@ function emitError(err, { json: json2 = false, command = null, stderr = process2
   const classified = classifyError(err);
   const partial = err?.partial ?? null;
   const handoff = err?.handoff ?? null;
+  const origin = err?.origin ?? classified.origin ?? null;
+  const nextAction = err?.nextAction ?? classified.nextAction ?? null;
   if (json2) {
-    const envelope = buildErrorEnvelope(classified, { command, partial, handoff });
+    const envelope = buildErrorEnvelope(classified, { command, partial, handoff, origin, nextAction });
     stdout.write(`${JSON.stringify(envelope)}
 `);
   } else {
@@ -2073,15 +2124,21 @@ function saveStateUnlocked(cwd, state) {
     },
     jobs: nextJobs
   };
+  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
   const retainedIds = new Set(nextJobs.map((job) => job.id));
   for (const job of previousJobs) {
     if (retainedIds.has(job.id)) {
       continue;
     }
-    removeJobFile(resolveJobFile(cwd, job.id));
-    removeFileIfExists(job.logFile);
+    try {
+      removeJobFile(resolveJobFile(cwd, job.id));
+    } catch {
+    }
+    try {
+      removeFileIfExists(job.logFile);
+    } catch {
+    }
   }
-  writeJsonFileAtomic(resolveStateFile(cwd), nextState);
   return nextState;
 }
 function updateState(cwd, mutate) {
@@ -2139,12 +2196,34 @@ function getConfig(cwd) {
 function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs4.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}
-`, "utf8");
+  writeJsonFileAtomic(jobFile, payload);
   return jobFile;
 }
 function readJobFile(jobFile) {
-  return JSON.parse(fs4.readFileSync(jobFile, "utf8"));
+  try {
+    return JSON.parse(fs4.readFileSync(jobFile, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw error;
+    }
+    let corruptPath = null;
+    if (fs4.existsSync(jobFile)) {
+      corruptPath = `${jobFile}.corrupt-${Date.now()}`;
+      try {
+        fs4.renameSync(jobFile, corruptPath);
+      } catch {
+        corruptPath = null;
+      }
+    }
+    const wrapped = new Error(
+      `Job detail file at ${jobFile} was corrupt${corruptPath ? `; preserved at ${corruptPath}` : ""}.`
+    );
+    wrapped.code = "JOB_DETAIL_CORRUPT";
+    wrapped.jobFile = jobFile;
+    wrapped.corruptPath = corruptPath;
+    wrapped.cause = error;
+    throw wrapped;
+  }
 }
 function removeJobFile(jobFile) {
   if (fs4.existsSync(jobFile)) {
@@ -2162,6 +2241,9 @@ function resolveJobFile(cwd, jobId) {
 
 // src/lib/broker-lifecycle.mjs
 var BROKER_STATE_FILE = "broker.json";
+var BROKER_LOCK_FILE = "broker.lock";
+var BROKER_LOCK_TIMEOUT_MS = 5e3;
+var BROKER_STALE_LOCK_MS = 3e4;
 function createBrokerSessionDir(prefix = "cxc-") {
   return fs5.mkdtempSync(path5.join(os2.tmpdir(), prefix));
 }
@@ -2202,6 +2284,85 @@ function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env =
 function resolveBrokerStateFile(cwd) {
   return path5.join(resolveStateDir(cwd), BROKER_STATE_FILE);
 }
+function resolveBrokerLockFile(cwd) {
+  return path5.join(resolveStateDir(cwd), BROKER_LOCK_FILE);
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function readBrokerLockPid(lockFile) {
+  try {
+    const [pidLine] = fs5.readFileSync(lockFile, "utf8").split(/\r?\n/, 1);
+    const pid = Number.parseInt(pidLine, 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+function isProcessAlive(pid) {
+  try {
+    process5.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+async function acquireBrokerLock(cwd, { timeoutMs = BROKER_LOCK_TIMEOUT_MS, staleMs = BROKER_STALE_LOCK_MS } = {}) {
+  const stateDir = resolveStateDir(cwd);
+  fs5.mkdirSync(stateDir, { recursive: true });
+  const lockFile = resolveBrokerLockFile(cwd);
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      const fd = fs5.openSync(lockFile, "wx");
+      fs5.writeFileSync(fd, `${process5.pid}
+${(/* @__PURE__ */ new Date()).toISOString()}
+`, "utf8");
+      let ownedIno = null;
+      try {
+        ownedIno = fs5.fstatSync(fd).ino;
+      } catch {
+      }
+      return () => {
+        try {
+          fs5.closeSync(fd);
+        } catch {
+        }
+        try {
+          if (ownedIno !== null) {
+            const stat = fs5.statSync(lockFile);
+            if (stat.ino !== ownedIno) return;
+          }
+          fs5.unlinkSync(lockFile);
+        } catch (releaseError) {
+          if (releaseError?.code !== "ENOENT") {
+          }
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const stat = fs5.statSync(lockFile);
+        const ownerPid = readBrokerLockPid(lockFile);
+        const ownerAlive = ownerPid ? isProcessAlive(ownerPid) : false;
+        if (ownerPid && !ownerAlive || !ownerPid && Date.now() - stat.mtimeMs > staleMs) {
+          fs5.unlinkSync(lockFile);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        const err = new Error(`Timed out waiting for broker session lock: ${lockFile}`);
+        err.code = "BROKER_LOCK_TIMEOUT";
+        throw err;
+      }
+      await sleep(50);
+    }
+  }
+}
 function loadBrokerSession(cwd) {
   const stateFile = resolveBrokerStateFile(cwd);
   if (!fs5.existsSync(stateFile)) {
@@ -2216,8 +2377,7 @@ function loadBrokerSession(cwd) {
 function saveBrokerSession(cwd, session) {
   const stateDir = resolveStateDir(cwd);
   fs5.mkdirSync(stateDir, { recursive: true });
-  fs5.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}
-`, "utf8");
+  writeJsonFileAtomic(resolveBrokerStateFile(cwd), session);
 }
 function clearBrokerSession(cwd) {
   const stateFile = resolveBrokerStateFile(cwd);
@@ -2279,58 +2439,66 @@ function resolveBrokerScriptPath({ moduleUrl = import.meta.url, existsSync = fs5
   );
 }
 async function ensureBrokerSession(cwd, options = {}) {
-  const existing = loadBrokerSession(cwd);
-  if (existing && await isBrokerEndpointReady(existing.endpoint)) {
-    return existing;
-  }
-  if (existing) {
-    teardownBrokerSession({
-      endpoint: existing.endpoint ?? null,
-      pidFile: existing.pidFile ?? null,
-      logFile: existing.logFile ?? null,
-      sessionDir: existing.sessionDir ?? null,
-      pid: existing.pid ?? null,
-      killProcess: options.killProcess ?? null
-    });
-    clearBrokerSession(cwd);
-  }
-  const sessionDir = createBrokerSessionDir();
-  const endpointFactory = options.createBrokerEndpoint ?? createBrokerEndpoint;
-  const endpoint = endpointFactory(sessionDir, options.platform);
-  const pidFile = path5.join(sessionDir, "broker.pid");
-  const logFile = path5.join(sessionDir, "broker.log");
-  const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
-  const timeoutMs = options.timeoutMs ?? 2e3;
-  const child = spawnBrokerProcess({
-    scriptPath,
-    cwd,
-    endpoint,
-    pidFile,
-    logFile,
-    env: options.env ?? process5.env
+  const release = await acquireBrokerLock(cwd, {
+    timeoutMs: options.lockTimeoutMs ?? BROKER_LOCK_TIMEOUT_MS,
+    staleMs: options.lockStaleMs ?? BROKER_STALE_LOCK_MS
   });
-  const ready = await waitForBrokerEndpoint(endpoint, timeoutMs);
-  if (!ready) {
-    const startFailure = createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs });
-    teardownBrokerSession({
+  try {
+    const existing = loadBrokerSession(cwd);
+    if (existing && await isBrokerEndpointReady(existing.endpoint)) {
+      return existing;
+    }
+    if (existing) {
+      teardownBrokerSession({
+        endpoint: existing.endpoint ?? null,
+        pidFile: existing.pidFile ?? null,
+        logFile: existing.logFile ?? null,
+        sessionDir: existing.sessionDir ?? null,
+        pid: existing.pid ?? null,
+        killProcess: options.killProcess ?? null
+      });
+      clearBrokerSession(cwd);
+    }
+    const sessionDir = createBrokerSessionDir();
+    const endpointFactory = options.createBrokerEndpoint ?? createBrokerEndpoint;
+    const endpoint = endpointFactory(sessionDir, options.platform);
+    const pidFile = path5.join(sessionDir, "broker.pid");
+    const logFile = path5.join(sessionDir, "broker.log");
+    const scriptPath = options.scriptPath ?? resolveBrokerScriptPath();
+    const timeoutMs = options.timeoutMs ?? 2e3;
+    const child = spawnBrokerProcess({
+      scriptPath,
+      cwd,
+      endpoint,
+      pidFile,
+      logFile,
+      env: options.env ?? process5.env
+    });
+    const ready = await waitForBrokerEndpoint(endpoint, timeoutMs);
+    if (!ready) {
+      const startFailure = createBrokerStartFailure({ endpoint, scriptPath, logFile, timeoutMs });
+      teardownBrokerSession({
+        endpoint,
+        pidFile,
+        logFile,
+        sessionDir,
+        pid: child.pid ?? null,
+        killProcess: options.killProcess ?? terminateProcessTree
+      });
+      throw startFailure;
+    }
+    const session = {
       endpoint,
       pidFile,
       logFile,
       sessionDir,
-      pid: child.pid ?? null,
-      killProcess: options.killProcess ?? terminateProcessTree
-    });
-    throw startFailure;
+      pid: child.pid ?? null
+    };
+    saveBrokerSession(cwd, session);
+    return session;
+  } finally {
+    release();
   }
-  const session = {
-    endpoint,
-    pidFile,
-    logFile,
-    sessionDir,
-    pid: child.pid ?? null
-  };
-  saveBrokerSession(cwd, session);
-  return session;
 }
 function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
   if (Number.isFinite(pid) && killProcess) {
@@ -4705,8 +4873,8 @@ function fmtSeconds(ms) {
   const rem = s % 60;
   return rem === 0 ? `${m}m` : `${m}m${String(rem).padStart(2, "0")}s`;
 }
-var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE"]);
-var TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE)\]/m;
+var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE", "PLAN"]);
+var TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN)\]/m;
 var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT"]);
 function formatTailCommand({ scriptPath, jobId, timeoutMs = 18e5, exclude = DEFAULT_MONITOR_EXCLUDE, cwd = null }) {
   const excludeClause = exclude && exclude.length > 0 ? ` --exclude ${Array.from(exclude).join(",")}` : "";
@@ -4903,7 +5071,24 @@ function createJobProgressUpdater(workspaceRoot, jobId) {
     if (!fs8.existsSync(jobFile)) {
       return;
     }
-    const storedJob = readJobFile(jobFile);
+    let storedJob;
+    try {
+      storedJob = readJobFile(jobFile);
+    } catch (error) {
+      if (error?.code !== "JOB_DETAIL_CORRUPT") {
+        throw error;
+      }
+      storedJob = listJobs(workspaceRoot, { raw: true }).find((job) => job.id === jobId) ?? {
+        id: jobId,
+        status: "running",
+        phase: "running"
+      };
+      patch.detailRecovery = {
+        code: "JOB_DETAIL_CORRUPT",
+        jobFile,
+        corruptPath: error.corruptPath ?? null
+      };
+    }
     writeJobFile(workspaceRoot, jobId, {
       ...storedJob,
       ...patch
@@ -4932,7 +5117,14 @@ function readStoredJobOrNull(workspaceRoot, jobId) {
   if (!fs8.existsSync(jobFile)) {
     return null;
   }
-  return readJobFile(jobFile);
+  try {
+    return readJobFile(jobFile);
+  } catch (error) {
+    if (error?.code === "JOB_DETAIL_CORRUPT") {
+      return listJobs(workspaceRoot, { raw: true }).find((job) => job.id === jobId) ?? null;
+    }
+    throw error;
+  }
 }
 async function runTrackedJob(job, runner, options = {}) {
   const runningRecord = {
@@ -5137,7 +5329,30 @@ function readStoredJob(workspaceRoot, jobId) {
   if (!fs9.existsSync(jobFile)) {
     return null;
   }
-  return readJobFile(jobFile);
+  try {
+    return readJobFile(jobFile);
+  } catch (error) {
+    if (error?.code === "JOB_DETAIL_CORRUPT") {
+      throw new CliError(`Job detail for ${jobId} is corrupt.`, {
+        class: "conflict",
+        code: "JOB_DETAIL_CORRUPT",
+        retryable: false,
+        suggestion: "Run `status` to inspect the state index; relaunch the task if the detail artifact is required.",
+        details: {
+          jobId,
+          jobFile,
+          corruptPath: error.corruptPath ?? null,
+          cause: error.cause?.message ?? null
+        },
+        nextAction: {
+          kind: "inspect-status",
+          command: `status ${jobId}`,
+          description: "Inspect the state-index record that survived the corrupt detail file."
+        }
+      });
+    }
+    throw error;
+  }
 }
 function matchJobReference(jobs, reference, predicate = () => true) {
   const filtered = jobs.filter(predicate);
@@ -8069,16 +8284,6 @@ var COMPLETION_CHECK_SCHEMA = {
 };
 
 // src/lib/config.mjs
-function readConfigFile(filePath) {
-  try {
-    const raw = fs10.readFileSync(filePath, "utf8");
-    const doc = jsYaml.load(raw) ?? {};
-    const bridge = doc.codex_bridge ?? doc;
-    return typeof bridge === "object" && bridge !== null ? bridge : {};
-  } catch {
-    return {};
-  }
-}
 var CONFIG_SCHEMA = {
   mode: { type: "enum", values: ["plan", "default"] },
   model: { type: "string" },
@@ -8103,6 +8308,35 @@ var CONFIG_SCHEMA = {
   default_backend: { type: "string" },
   adapter_routing: { type: "object" }
 };
+function isConfigValueValid(schema2, value) {
+  return schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
+}
+function parseConfigFile(filePath, source) {
+  if (!filePath || !fs10.existsSync(filePath)) {
+    return { config: {}, diagnostics: [] };
+  }
+  try {
+    const raw = fs10.readFileSync(filePath, "utf8");
+    const doc = jsYaml.load(raw) ?? {};
+    const bridge = doc.codex_bridge ?? doc;
+    return {
+      config: typeof bridge === "object" && bridge !== null ? bridge : {},
+      diagnostics: []
+    };
+  } catch (error) {
+    return {
+      config: {},
+      diagnostics: [{
+        severity: "error",
+        code: "CONFIG_PARSE_ERROR",
+        source,
+        path: filePath,
+        key: null,
+        message: `Could not read or parse config.yaml; this layer was ignored (${error?.message ?? error}).`
+      }]
+    };
+  }
+}
 function validateConfigLayer(layer, source, pathValue) {
   const diagnostics = [];
   if (!layer || typeof layer !== "object") return diagnostics;
@@ -8119,8 +8353,7 @@ function validateConfigLayer(layer, source, pathValue) {
       });
       continue;
     }
-    const typeOk = schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
-    if (!typeOk) {
+    if (!isConfigValueValid(schema2, value)) {
       diagnostics.push({
         severity: "error",
         code: "CONFIG_INVALID_VALUE",
@@ -8133,6 +8366,18 @@ function validateConfigLayer(layer, source, pathValue) {
   }
   return diagnostics;
 }
+function sanitizeConfigLayer(layer) {
+  const sanitized = {};
+  if (!layer || typeof layer !== "object") return sanitized;
+  for (const [key, value] of Object.entries(layer)) {
+    const schema2 = CONFIG_SCHEMA[key];
+    if (!schema2 || !isConfigValueValid(schema2, value)) {
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
 function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
   const skillConfigPath = skillDir ? path8.join(skillDir, "config.yaml") : path8.join(os4.homedir(), ".codex-bridge", "config.yaml");
   const workspaceConfigPath = workspaceRoot && workspaceRoot !== overrideDir ? path8.join(workspaceRoot, "config.yaml") : null;
@@ -8141,20 +8386,23 @@ function configPaths(skillDir, overrideDir = null, workspaceRoot = null) {
 }
 function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
   const { skillConfigPath, workspaceConfigPath, overrideConfigPath } = configPaths(skillDir, overrideDir, workspaceRoot);
-  const skillLayer = readConfigFile(skillConfigPath);
-  const workspaceLayer = workspaceConfigPath && fs10.existsSync(workspaceConfigPath) ? readConfigFile(workspaceConfigPath) : {};
-  const overrideLayer = overrideConfigPath && fs10.existsSync(overrideConfigPath) ? readConfigFile(overrideConfigPath) : {};
+  const skillParsed = parseConfigFile(skillConfigPath, "skill-dir");
+  const skillLayer = skillParsed.config;
+  const workspaceParsed = workspaceConfigPath ? parseConfigFile(workspaceConfigPath, "workspace-root") : { config: {}, diagnostics: [] };
+  const workspaceLayer = workspaceParsed.config;
+  const overrideParsed = overrideConfigPath ? parseConfigFile(overrideConfigPath, "cwd") : { config: {}, diagnostics: [] };
+  const overrideLayer = overrideParsed.config;
   const mergedConfig = {
     ...DEFAULT_CONFIG,
-    ...skillLayer,
-    ...workspaceLayer,
-    ...overrideLayer
+    ...sanitizeConfigLayer(skillLayer),
+    ...sanitizeConfigLayer(workspaceLayer),
+    ...sanitizeConfigLayer(overrideLayer)
   };
   return {
     defaults: DEFAULT_CONFIG,
-    skillConfig: skillLayer,
-    workspaceConfig: workspaceLayer,
-    cwdConfig: overrideLayer,
+    skillConfig: sanitizeConfigLayer(skillLayer),
+    workspaceConfig: sanitizeConfigLayer(workspaceLayer),
+    cwdConfig: sanitizeConfigLayer(overrideLayer),
     mergedConfig,
     sources: {
       skillConfigPath,
@@ -8165,8 +8413,11 @@ function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
       overrideConfigExists: overrideConfigPath ? fs10.existsSync(overrideConfigPath) : false
     },
     diagnostics: [
+      ...skillParsed.diagnostics,
       ...validateConfigLayer(skillLayer, "skill-dir", skillConfigPath),
+      ...workspaceParsed.diagnostics,
       ...validateConfigLayer(workspaceLayer, "workspace-root", workspaceConfigPath),
+      ...overrideParsed.diagnostics,
       ...validateConfigLayer(overrideLayer, "cwd", overrideConfigPath)
     ]
   };
@@ -10942,6 +11193,7 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
     if (process10.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
     if (detectJsonFlag(rawArgv)) return;
+    if (detectHelpFlag(rawArgv)) return;
     if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
     if (subcommand === "version" || subcommand === "update") return;
     void checkForUpdate({ currentVersion: BRIDGE_VERSION }).then((result) => {
@@ -11006,7 +11258,58 @@ function shellQuote2(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 function bridgeCommand(subcommand, cwd = null) {
-  return `node ${SCRIPT_PATH} ${subcommand}${cwd ? ` --cwd ${shellQuote2(cwd)}` : ""}`;
+  return `node ${shellQuote2(SCRIPT_PATH)} ${subcommand}${cwd ? ` --cwd ${shellQuote2(cwd)}` : ""}`;
+}
+function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, cwd = null, stateCwd = null }) {
+  const target = jobId ?? threadId;
+  const jobCwd = stateCwd ?? cwd;
+  if (origin === "upstream:response-chain-lost") {
+    return {
+      kind: "new-task",
+      command: `${bridgeCommand("task", cwd)} --json --mode default "<prompt rebased on last good sha>"`,
+      description: "The upstream response chain is dead; start a fresh task from committed state instead of sending on the same thread."
+    };
+  }
+  if (origin === "upstream:auth" || errorCode === "Unauthorized") {
+    return {
+      kind: "reauth",
+      command: "codex login",
+      description: "Refresh Codex authentication, then relaunch the task; retrying the same thread will repeat the auth failure."
+    };
+  }
+  if (origin === "upstream:transport") {
+    return {
+      kind: "retry-same-thread",
+      command: threadId ? `${bridgeCommand("send", cwd)} ${threadId} "<same prompt>"` : `${bridgeCommand("task", cwd)} --json --mode default "<same prompt>"`,
+      description: "The upstream stream dropped before completion; workspace state is unchanged, so retry the same thread once."
+    };
+  }
+  if (origin === "idle" || errorCode === "ClientTimeout" || errorCode === "TurnTimeout") {
+    return {
+      kind: "relaunch-with-longer-timeouts",
+      command: `${bridgeCommand("task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
+      description: "A timeout budget expired; relaunch with a larger budget after confirming the original job is not still progressing."
+    };
+  }
+  if (origin === "upstream:invalid-request") {
+    return {
+      kind: "new-task",
+      command: `${bridgeCommand("task", cwd)} --json --mode default "<fixed prompt>"`,
+      description: "Inspect the upstream validation error, fix the prompt/input shape, and launch a fresh task."
+    };
+  }
+  if (target) {
+    return {
+      kind: "inspect-result",
+      command: `${bridgeCommand("result", jobCwd)} ${target}`,
+      description: "Inspect the persisted result and session log before deciding whether to retry or start fresh."
+    };
+  }
+  return {
+    kind: threadId ? "retry-with-revised-prompt" : "new-task",
+    command: threadId ? `${bridgeCommand("send", cwd)} ${threadId} "<revised prompt>"` : `${bridgeCommand("task", cwd)} --json --mode default "<revised prompt>"`,
+    description: threadId ? "Retry with an adjusted prompt, or cancel and start fresh." : "Start a fresh task with a revised prompt."
+  };
 }
 var DEVELOPER_INSTRUCTIONS_FALLBACK = {
   plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
@@ -11164,7 +11467,7 @@ function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
     exclude: DEFAULT_MONITOR_EXCLUDE,
     cwd
   });
-  const shellFallback = eventsPath ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*) break ;; esac; done` : null;
+  const shellFallback = eventsPath ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*) break ;; esac; done` : null;
   return {
     command: cliCommand,
     shell_fallback: shellFallback,
@@ -11321,7 +11624,7 @@ var COMMANDS = Object.freeze({
   },
   wait: {
     synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
-    summary: "Block until target job events emit [DONE], [ERROR], or [INCOMPLETE]. With --any, return the first terminal job from N targets.",
+    summary: "Block until target job events emit [DONE], [ERROR], [INCOMPLETE], or [PLAN]. With --any, return the first terminal job from N targets.",
     examples: [
       "codex-bridge wait task-abc --timeout-ms 600000 --json",
       "codex-bridge wait --any task-a task-b task-c --json",
@@ -11333,7 +11636,7 @@ var COMMANDS = Object.freeze({
     summary: "Stream the target's events file. `--filter` keeps only listed tags (inclusion); `--exclude` drops listed tags and shows everything else (exclusion \u2014 forward-compatible default for Monitor). Flags are mutually exclusive.",
     examples: [
       "codex-bridge events task-abc --follow --exclude HEARTBEAT  # default Monitor shape",
-      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE  # narrow inclusion view",
+      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN  # narrow inclusion view",
       "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 600000"
     ]
   },
@@ -11611,7 +11914,7 @@ function applyStopReviewGateSnapshot(snapshot) {
     needsReview: gate.enabled
   };
 }
-function sleep(ms) {
+function sleep2(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function shorten2(text, limit = 96) {
@@ -11848,7 +12151,7 @@ async function handleConfigShow(argv) {
   if (diagnostics.length > 0) {
     lines.push("", "Diagnostics:");
     for (const diagnostic of diagnostics) {
-      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key} \u2014 ${diagnostic.message}`);
+      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
     }
   }
   const rendered = `${lines.join("\n")}
@@ -11886,7 +12189,8 @@ async function handleUpdate(argv) {
         command: applyResult.command,
         ok: applyResult.ok,
         exit_code: applyResult.exitCode,
-        error: applyResult.error
+        error: applyResult.error,
+        timed_out: Boolean(applyResult.timedOut)
       },
       applied: applyResult.ok,
       apply_exit_code: applyResult.exitCode,
@@ -11902,8 +12206,24 @@ async function handleUpdate(argv) {
       emitSuccess("update", payload2, rendered2, { json: options.json, startedAt });
     } else {
       const err = new CliError(
-        `skills installer exited ${applyResult.exitCode}`,
-        { class: "dependency_failed", code: "UPDATE_APPLY_FAILED", retryable: true, suggestion: `Re-run manually: ${installCommand}` }
+        applyResult.timedOut ? "skills installer timed out" : `skills installer exited ${applyResult.exitCode}`,
+        {
+          class: "dependency_failed",
+          code: "UPDATE_APPLY_FAILED",
+          retryable: true,
+          suggestion: `Re-run manually: ${installCommand}`,
+          details: {
+            command: applyResult.command,
+            exitCode: applyResult.exitCode,
+            error: applyResult.error,
+            timedOut: Boolean(applyResult.timedOut)
+          },
+          nextAction: {
+            kind: "manual-update",
+            command: installCommand,
+            description: "Run the installer manually after checking npm/network availability."
+          }
+        }
       );
       emitError(err, { json: options.json, command: "update" });
     }
@@ -11952,30 +12272,33 @@ Or rerun with --apply to install automatically.
 }
 function runSkillsAddForApply(jsonMode) {
   const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const timeoutMs = 6e5;
   try {
     const result = spawnSync4(
       "npx",
       ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
       {
         stdio: jsonMode ? ["ignore", "pipe", "pipe"] : "inherit",
-        encoding: "utf8"
+        encoding: "utf8",
+        timeout: timeoutMs
       }
     );
     if (result.error) {
       return {
         ok: false,
         exitCode: null,
-        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.message,
-        command
+        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.code === "ETIMEDOUT" ? `skills installer timed out after ${Math.round(timeoutMs / 1e3)}s` : result.error.message,
+        command,
+        timedOut: result.error.code === "ETIMEDOUT"
       };
     }
     if (result.status !== 0) {
       const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
-      return { ok: false, exitCode: result.status, error: stderrTail || null, command };
+      return { ok: false, exitCode: result.status, error: stderrTail || null, command, timedOut: false };
     }
-    return { ok: true, exitCode: 0, error: null, command };
+    return { ok: true, exitCode: 0, error: null, command, timedOut: false };
   } catch (err) {
-    return { ok: false, exitCode: null, error: err?.message ?? String(err), command };
+    return { ok: false, exitCode: null, error: err?.message ?? String(err), command, timedOut: false };
   }
 }
 function renderUpdateFailureHint(update, currentVersion) {
@@ -12120,7 +12443,7 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
   const deadline = Date.now() + timeoutMs;
   let snapshot = buildSingleJobSnapshot(cwd, reference);
   while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
-    await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+    await sleep2(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
     snapshot = buildSingleJobSnapshot(cwd, reference);
   }
   return {
@@ -12760,7 +13083,9 @@ function persistFailureErrorInPayload(execution, command = null) {
   const errLike = execution.error ?? { message: `Codex turn failed (status ${execution.exitStatus}).` };
   const partial = errLike?.partial ?? null;
   const handoff = errLike?.handoff ?? null;
-  const { error } = buildErrorEnvelope(classifyError(errLike), { command, partial, handoff });
+  const origin = errLike?.origin ?? null;
+  const nextAction = errLike?.nextAction ?? null;
+  const { error } = buildErrorEnvelope(classifyError(errLike), { command, partial, handoff, origin, nextAction });
   const payload = execution.payload && typeof execution.payload === "object" && !Array.isArray(execution.payload) ? execution.payload : {};
   return {
     ...execution,
@@ -13633,10 +13958,19 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       }));
       logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
       markTerminalEmitted();
-      setPhase("error", {
-        command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "<revised prompt>"`,
-        description: "Retry with an adjusted prompt, or cancel and start fresh."
-      }, { errorCode, monitor });
+      const nextAction = buildTurnErrorNextAction({
+        origin,
+        errorCode,
+        threadId: result.threadId,
+        jobId: request.jobId ?? null,
+        cwd: request.cwd,
+        stateCwd
+      });
+      if (result.error && typeof result.error === "object") {
+        result.error.origin = origin;
+        result.error.nextAction = nextAction;
+      }
+      setPhase("error", nextAction, { errorCode, monitor });
       return { ...result, session };
     }
     if (result.planDetected && result.planText) {
@@ -14575,7 +14909,7 @@ async function handleWait(argv) {
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+  const TERMINAL = TERMINAL_TAG_REGEX;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
   if (result.timedOut) {
     throw new CliError(
@@ -14612,7 +14946,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+  const TERMINAL = TERMINAL_TAG_REGEX;
   const targets = refs.map((reference) => {
     let job;
     try {
@@ -14755,7 +15089,7 @@ async function handleEvents(argv) {
     lastBlockIncluded = included;
     return included;
   };
-  const TERMINAL = /^\[(DONE|ERROR|INCOMPLETE)\]/;
+  const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
   if (fs16.existsSync(eventsPath)) {
@@ -14880,7 +15214,7 @@ async function handleEvents(argv) {
       timedOut,
       // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
       // distinguish happy-path closure from timeout without re-reading the
-      // file. terminalTag is one of DONE / ERROR / INCOMPLETE on success,
+      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN on success,
       // or null when the stream ended via timeout. elapsedMs measures
       // follow duration only (not total job elapsed time).
       terminalTag,
