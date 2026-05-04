@@ -9,7 +9,7 @@ Bridge config is layered. Each layer overrides the one above it (lowest → high
 3. **Workspace-root override** — `$(git rev-parse --show-toplevel)/config.yaml` (the project's repo root). Useful when one repo needs different settings than your global skill config and you want the setting to apply regardless of which subdirectory you run the command from.
 4. **cwd override** — `$(pwd)/config.yaml`, where `pwd` is the cwd passed to the command (via `-C` flag or the default process cwd). Wins last. Useful for running the same command against different configs by `cd`-ing into different dirs.
 
-If any file is missing or malformed, that layer is skipped silently — the next layer's values apply. The system never crashes on config errors.
+If a file is missing, that layer is skipped. If a file is malformed, the layer is ignored and `config show` reports `CONFIG_PARSE_ERROR` so agents can fix the exact file.
 
 All four layers are honored. Before 1.1.0, only the skill config layer was read — a `config.yaml` sitting next to your project was silently ignored. See `unexpected-bridge-observations/07-cwd-config-yaml-is-ignored.md` for the original derailment.
 
@@ -43,13 +43,12 @@ Resolution order for every timeout: CLI flag → `config.yaml` key → built-in 
 
 ## Validation and error handling
 
-`loadConfig` does not schema-validate YAML layers. Wrong types and typos survive the merge; behavior depends on where the value is read:
+`loadConfig` validates every YAML layer before merging. Unknown keys and invalid values are reported by `config show`; only schema-known, schema-valid keys enter the effective runtime config:
 
-1. **YAML parse failure** (file unreadable, malformed syntax) → the whole layer is dropped silently and the next layer takes over.
-2. **Malformed `*_ms` key in `config.yaml`** (e.g. `turn_plan_ms: "30m"`, `idle_timeout_ms: 0`, `pipeline_stage_ms: -1`) → each read site uses `Number(config.<key>) > 0 ? … : <default>` and silently reverts to the **built-in default** (not the layer below). This is deliberately different from the CLI-flag contract below — a typo in `config.yaml` will not raise an error.
-3. **Malformed CLI flag** (`--turn-plan-ms abc`, `--idle-timeout-ms 0`) → `parsePositiveMsOption` throws `USAGE_ERROR` (exit 2). Callers notice typos immediately.
-4. **Malformed `sandbox_policy`** → silently falls back to the mode-derived default (`plan → read-only`, `default → workspace-write`). Documented under `sandbox_policy` below.
-5. **Malformed `effort`, `mode`, or any other string/boolean key** → **no validation** in `loadConfig`. The raw value is forwarded to the downstream consumer. A bad `effort:` in config.yaml reaches Codex as the `reasoning_effort` payload; a bad `mode:` reaches `buildCollaborationMode` unchecked. Fix by running `config show` to see the effective merged values.
+1. **YAML parse failure** (file unreadable, malformed syntax) → the whole layer is dropped and `CONFIG_PARSE_ERROR` names the file.
+2. **Malformed config value** (wrong type, bad enum, non-positive timeout) → `CONFIG_INVALID_VALUE`; that key is ignored and the next lower valid layer/default applies.
+3. **Unknown config key** → `CONFIG_UNKNOWN_KEY`; ignored at runtime.
+4. **Malformed CLI flag** (`--turn-plan-ms abc`, `--idle-timeout-ms 0`) → `USAGE_ERROR` (exit 2). Callers notice typos immediately.
 
 Run `config show` whenever a knob seems to have no effect — the output enumerates every layer's path and highlights keys that differ from `DEFAULT_CONFIG`.
 
@@ -110,7 +109,7 @@ Opt into a stricter profile by editing `config.yaml`:
 
 The setting applies to `task` and `send` turns and to the auto-pipeline's **fix** stage. The **completion-check** stage stays `read-only` regardless, because the check must not mutate the workspace while evaluating it.
 
-Unknown values silently fall back to the mode-derived default (`plan → read-only`, `default → workspace-write`). A typo cannot widen permissions beyond the mode-derived floor.
+Unknown values are rejected by config diagnostics and ignored by the runtime merge. A typo cannot widen permissions beyond the next lower valid layer/default.
 
 **macOS caveat for `workspace-write`:** Apple seatbelt's enforcement of `workspace-write` depends on the Codex binary version and the OS rev — in some combinations `.git/` writes under the cwd succeed, in others they're denied. Do not rely on the sandbox to block `.git/` writes on macOS; if a task needs the **`workspace-dirty`** phase to be triggerable (e.g. for automated handback testing), verify with a scripted Codex run on your exact OS+Codex combo. The phase only fires when upstream Codex raises `SandboxError`; a permissive seatbelt lets the commit go through and the run finishes as `phase: "done"`. Linux sandboxes (bubblewrap/user-namespaces) are more consistently restrictive.
 

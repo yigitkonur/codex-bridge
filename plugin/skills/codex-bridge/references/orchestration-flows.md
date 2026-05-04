@@ -61,7 +61,7 @@ The PostToolUse(Bash) hook parses the envelope, captures `result.jobId`, and emi
 
 ## Monitor
 
-Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`. While it streams:
+Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`/`[PLAN]`. While it streams:
 
 - **`[PLAN]`** → read it; either `send <thread-id> --mode default "Implement the plan."` to approve, or `send <thread-id> "Revise: …"` to push back.
 - **`[QUESTION]`** → `respond <request-id> --question-id <qid> --answer "<label>"`.

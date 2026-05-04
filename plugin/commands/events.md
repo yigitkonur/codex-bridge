@@ -22,4 +22,4 @@ Otherwise run:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" events "$ARGUMENTS"
 ```
 
-Do not fabricate completion while the stream is running. Treat `[DONE]`, `[ERROR]`, and `[INCOMPLETE]` as terminal tags.
+Do not fabricate completion while the stream is running. Treat `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, and `[PLAN]` as terminal tags.

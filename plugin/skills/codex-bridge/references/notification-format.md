@@ -4,7 +4,7 @@ The event command contract lives at `events --help`; this file covers the *judgm
 
 ## Two semantic buckets
 
-- **Interrupts** — act now: `[QUESTION]`, `[PLAN]`, `[DONE]`, `[ERROR]`, `[INCOMPLETE]`. Monitor self-terminates on terminal interrupts ([DONE]/[ERROR]/[INCOMPLETE]).
+- **Interrupts** — act now: `[QUESTION]`, `[PLAN]`, `[DONE]`, `[ERROR]`, `[INCOMPLETE]`. Monitor self-terminates on terminal interrupts ([PLAN]/[DONE]/[ERROR]/[INCOMPLETE]).
 - **Progress** — periodic scan: `[CHECKPOINT]`, `[HEARTBEAT]`, `[PIPELINE:*]`, `[WARNING]`, `[CONFIRMED]`, `[RETRYING]`, `[HANDOFF]`, `[PARTIAL]`. Safe to batch-process; never terminal except `[PIPELINE:done]` which closes the pipeline only.
 
 ## Why `[ERROR]` is ambiguous

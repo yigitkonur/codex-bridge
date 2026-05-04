@@ -48,25 +48,16 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
   broker session.
 - If the broker is busy or unavailable in selected cases, `withAppServer` falls
   back to a direct client.
-- Server requests without a custom handler use built-in defaults in
-  `AppServerClientBase.handleServerRequest` (`src/adapters/codex/protocol.mjs:152-186`):
-  `item/tool/requestUserInput` auto-answers with `{ answers: {} }`,
-  `item/commandExecution/requestApproval` and
-  `item/fileChange/requestApproval` auto-accept (`{ decision: "accept" }`),
-  `item/permissions/requestApproval` auto-grants the requested permissions
-  for the session, and `mcpServer/elicitation/request` auto-accepts. Only
-  unknown methods are rejected with `-32601`. When wiring a custom handler
-  for a known method, take care that disabling the auto-answer is the
-  intended behavior change.
+- Server requests without a custom handler are rejected with JSON-RPC
+  `-32601`. Task paths intentionally install a handler for
+  `item/tool/requestUserInput` so questions flow through the disk-backed
+  `respond` IPC path; do not assume protocol defaults will auto-answer or
+  auto-approve requests.
 
 The `.d.ts` method map should include every app-server method live code sends:
 `initialize`, thread start/resume/name/list, `review/start`, turn
-start/steer/interrupt, `account/read`, and `config/read`. Current declarations
-may lag behind live code — as of this writing `turn/steer`, `account/read`, and
-`config/read` are sent on the wire but not yet declared in
-`src/adapters/codex/protocol.d.ts`. File `app-server generate-ts` regen issues against
-the upstream codex-rs spec when adding new methods; keep this map in sync
-before tightening type checking.
+start/steer/interrupt, `account/read`, and `config/read`. Keep declarations in
+sync when adding methods; do not invent aliases for JSON-RPC method names.
 
 ## Codex Runtime
 
@@ -129,10 +120,11 @@ plumbing from task paths; session logs and questions depend on them.
 - `post_task_prompt` and `prompt_footer`
 
 Config layers merge in this order: defaults, skill config, workspace-root
-config, cwd config. `buildCollaborationMode("plan", ...)` always sets
+config, cwd config. Malformed YAML and invalid values are reported through
+diagnostics; only schema-known, schema-valid keys enter the effective runtime
+config. `buildCollaborationMode("plan", ...)` always sets
 `reasoning_effort: "xhigh"`. `buildSandboxPolicy` accepts only
-`danger-full-access`, `workspace-write`, and `read-only`; invalid overrides fall
-back to mode-derived defaults without widening permissions.
+`danger-full-access`, `workspace-write`, and `read-only`.
 
 ## State And Jobs
 
@@ -140,19 +132,14 @@ back to mode-derived defaults without widening permissions.
 
 - The workspace root comes from `resolveWorkspaceRoot`.
 - The hash uses `fs.realpathSync.native` when available.
-- State root resolution reads `CLAUDE_PLUGIN_DATA` (the only env var
-  consulted, defined as `PLUGIN_DATA_ENV` at `src/lib/state.mjs:9`) and
-  falls back to `os.tmpdir()/codex-companion` when unset.
-- `state.json` and `jobs/*.json` live under that state dir. There is no
-  `state.lock` file in the current implementation — `src/lib/state.mjs` writes
-  `state.json` with a plain `fs.writeFileSync`, with no separate lock file
-  and no write-temp-then-rename. Callers running concurrently can race; the
-  upstream broker session and the per-launch `tracked-jobs.mjs` writes are the
-  only serialization in practice.
-- `loadState` is **not** strictly read-only: when it detects orphaned
-  `running`/`queued` jobs whose pid is no longer alive (`reapOrphans`), it
-  rewrites `state.json` in place via `fs.writeFileSync`. Writers should expect
-  that any `loadState` call may flush a reaper update.
+- State root resolution prefers `CODEX_BRIDGE_PLUGIN_DATA`, falls back to
+  `CLAUDE_PLUGIN_DATA`, then `os.tmpdir()/codex-companion`.
+- `state.json` and `jobs/*.json` live under that state dir. Mutating state
+  updates use `state.lock`; `state.json`, `jobs/*.json`, and `broker.json` use
+  temp-write + rename persistence. Corrupt `state.json` and job detail files
+  are preserved as `.corrupt-<ts>` siblings for diagnosis.
+- `loadState` is read-only. It quarantines corrupt state and returns defaults,
+  but stale running/queued job reaping is persisted only by writer paths.
 - Job lists are pruned to `MAX_JOBS = 50`.
 
 `tracked-jobs.mjs` writes job detail files and state-index entries. Preserve the
@@ -176,9 +163,10 @@ state.
 Only `logEvent` and `logNdjson` append to `.events` and `.ndjson`, and they use
 `fs.appendFileSync`. Keep event writes synchronous and append-only.
 
-Current terminal tags are `DONE`, `ERROR`, and `INCOMPLETE`. `events --follow`
-and `wait` rely on headers matching those tags. `DEFAULT_MONITOR_EXCLUDE` is
-`["HEARTBEAT"]`, so new tags should pass through unless explicitly excluded.
+Current terminal tags are `DONE`, `ERROR`, `INCOMPLETE`, and `PLAN`.
+`events --follow` and `wait` rely on `TERMINAL_TAG_REGEX`; `QUESTION` is
+interrupt-class but not terminal. `DEFAULT_MONITOR_EXCLUDE` is `["HEARTBEAT"]`,
+so new tags should pass through unless explicitly excluded.
 
 Current event-format helpers include:
 
@@ -242,19 +230,16 @@ read-only completion check read-only.
 
 - Exit codes: success `0`, crash `1`, usage `2`, not found `3`, auth `4`,
   conflict `5`, validation `6`, transient `7`, partial `8`.
-- `classifyError` does a direct lookup of `err.codexErrorInfo` /
-  `err.codex_error_info` against the frozen `CODEX_ERROR_INFO` table —
-  there is no `normalizeCodexErrorInfo` helper or string/snake-case
-  normalization layer. Variants the upstream sends camelCase are matched
-  as-is; unknown values fall through to the generic classifier.
+- `classifyError` normalizes `err.codexErrorInfo` / `err.codex_error_info`
+  across PascalCase, camelCase, snake_case, and object-shaped variants before
+  consulting `CODEX_ERROR_INFO`.
 - The per-turn-budget rejection synthesized in `runAppServerTurn`
-  (`Turn timed out after <ms>ms`, `src/adapters/codex/codex.mjs:712`) has no
-  dedicated retryable branch in `classifyError`; it falls through to the
-  generic catch-all and surfaces as `INTERNAL_ERROR` (exit 1). Only the
-  idle-watchdog message (`/No events received for \d+s/`) maps to the
-  retryable `ClientTimeout` (exit 7) branch — see
-  `src/lib/cli-errors.mjs:170-180`. Aligns with the round-4 fix in
-  `skill/references/error-recovery.md`.
+  (`Turn timed out after <ms>ms`) maps to retryable `TurnTimeout` (exit 7).
+  The idle-watchdog message (`/No events received for \d+s/`) maps to
+  retryable `ClientTimeout`.
+- JSON error envelopes include `error.next_action` when the runtime has an
+  explicit recovery move, or a follow-suggestion action when only a suggestion
+  is available. Turn failures also include `error.origin` when classified.
 - `classifyTurnErrorOrigin` distinguishes idle, upstream compact proxy,
   upstream transport, response-chain loss, upstream auth, upstream invalid
   request, and generic turn failures.

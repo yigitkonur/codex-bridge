@@ -131,8 +131,8 @@ Tags in the stream fall into two semantic buckets. Orchestrators should handle t
 **Interrupts — act now.** Appear immediately, demand a response:
 
 - `[QUESTION]` — Codex is blocked waiting for an answer; respond via `respond <request-id> --answer …`.
-- `[PLAN]` — plan-mode turn produced a plan; approve via `send <thread-id> --mode default "Implement the plan."` or revise.
-- `[DONE]` / `[ERROR]` / `[INCOMPLETE]` — terminal, Monitor self-closes. Branch on the origin line and `result.phase`.
+- `[PLAN]` — plan-mode turn produced a plan; terminal for wait/Monitor. Approve via `send <thread-id> --mode default "Implement the plan."` or revise.
+- `[DONE]` / `[ERROR]` / `[INCOMPLETE]` / `[PLAN]` — terminal, Monitor self-closes. Branch on the origin line and `result.phase`.
 
 **Progress — periodic scan.** Informational; safe to process in batches:
 

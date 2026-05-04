@@ -123,7 +123,7 @@ The `result.monitor.tool_hint` object in the launch payload has the exact shape 
 
 ### Handling unknown tags (forward-compat)
 
-The v1.4.0 default (`--exclude HEARTBEAT`) means any tag a future bridge version emits reaches the orchestrator verbatim — including tags your code doesn't know about. The canonical extractor for the head tag is the regex `/^\[([^\]]+)\]/` (match anything between leading brackets). Split on `:` for the subtype (`[PIPELINE:review]` → head `PIPELINE`, subtype `review`). Don't assume the tag vocabulary is closed; if you see a tag you don't recognize, surface the line verbatim to the user/log and keep watching — the bridge only self-terminates on `[DONE]`, `[ERROR]`, or `[INCOMPLETE]`.
+The v1.4.0 default (`--exclude HEARTBEAT`) means any tag a future bridge version emits reaches the orchestrator verbatim — including tags your code doesn't know about. The canonical extractor for the head tag is the regex `/^\[([^\]]+)\]/` (match anything between leading brackets). Split on `:` for the subtype (`[PIPELINE:review]` → head `PIPELINE`, subtype `review`). Don't assume the tag vocabulary is closed; if you see a tag you don't recognize, surface the line verbatim to the user/log and keep watching — the bridge only self-terminates on `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, or `[PLAN]`.
 
 ## Waiting without streaming
 

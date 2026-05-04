@@ -298,7 +298,7 @@ codex-bridge cancel [job-id-or-thread-id] [--json]
 
 ## wait
 
-Block until the target job's events file emits `[DONE]`, `[ERROR]`, or `[INCOMPLETE]`. Uses `fs.watch` plus a 500 ms poll fallback; cheaper and more reliable than `status --wait` when you only need the terminal signal.
+Block until the target job's events file emits `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, or `[PLAN]`. Uses `fs.watch` plus a 500 ms poll fallback; cheaper and more reliable than `status --wait` when you only need the terminal signal.
 
 ```
 codex-bridge wait <job-id-or-thread-id> [--timeout-ms <ms>] [--json]
@@ -314,7 +314,7 @@ Success payload shape:
 {
   "jobId": "task-...",
   "threadId": "019d...",
-  "terminalTag": "DONE" | "ERROR" | "INCOMPLETE",
+  "terminalTag": "DONE" | "ERROR" | "INCOMPLETE" | "PLAN",
   "lastEventLine": "[DONE] 019d... completed in 4s | 1 files | +2 -0",
   "eventsPath": "/abs/path/to/events",
   "elapsedMs": 3214
@@ -333,7 +333,7 @@ codex-bridge events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclud
 
 | Flag | Description |
 |------|-------------|
-| `--follow` | Keep watching for appended lines; self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`) — even if already present in the initial dump. |
+| `--follow` | Keep watching for appended lines; self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`) — even if already present in the initial dump. |
 | `--filter <tags>` | **Inclusion** list. Only lines whose head tag is in the comma-separated list pass. `PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix:done]`, etc. Case-insensitive. Narrow views only — **not forward-compatible** (any new tag a future bridge version emits is silently dropped). |
 | `--exclude <tags>` | **Exclusion** list (v1.4.0, default for Monitor). Every line passes *except* those whose head tag is in the list. Future tags pass through automatically — forward-compatible. Mutually exclusive with `--filter`. |
 | `--timeout-ms <ms>` | Deadline for `--follow`; default 600 000 (10 min). For long turns, pass a larger value explicitly — e.g. `--timeout-ms 1800000` to match the 30-min turn budget. The `result.monitor.command` emitted on `task --json` launches already carries the 30-min form. |
@@ -365,7 +365,7 @@ Without `--follow`, the command dumps existing lines (filtered/excluded) and exi
 }
 ```
 
-Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutual-exclusion CLI rule). `terminalTag` is one of `DONE` / `ERROR` / `INCOMPLETE` on happy-path close, or `null` when the stream closed via `--timeout-ms`. `elapsedMs` measures follow duration only (not total job elapsed time). This envelope matches `wait`'s return shape so Monitor / orchestrators can switch on the same fields.
+Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutual-exclusion CLI rule). `terminalTag` is one of `DONE` / `ERROR` / `INCOMPLETE` / `PLAN` on happy-path close, or `null` when the stream closed via `--timeout-ms`. `elapsedMs` measures follow duration only (not total job elapsed time). This envelope matches `wait`'s return shape so Monitor / orchestrators can switch on the same fields.
 
 **Early-exit envelope (terminal tag already present in the initial dump, or `--follow` omitted):**
 
@@ -385,7 +385,7 @@ Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutu
 
 `result.followed` is the boolean coercion of the `--follow` flag (`Boolean(options.follow)`) — `true` when `--follow` was passed and a terminal tag was already in the initial dump; `false` when `--follow` was omitted entirely. The early-exit branch **omits** `timedOut`, `terminalTag`, `terminalLine`, and `elapsedMs` — the watcher never ran, so there is no follow-duration or terminal-tag capture. Orchestrators that switch on `result.terminalTag` must treat it as absent/`undefined` in this case and re-read the events file (or pair with `summary`) to determine which terminal closed the run.
 
-**Recommended shape:** `--exclude HEARTBEAT`. Every tag the bridge emits passes except the 60-s liveness pulse that would flood an LLM orchestrator's context. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
+**Recommended shape:** `--exclude HEARTBEAT`. Every tag the bridge emits passes except the 60-s liveness pulse that would flood an LLM orchestrator's context. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE,PLAN` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
 
 ## setup
 

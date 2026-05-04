@@ -36,7 +36,7 @@ Monitor handling:
 - Background task output should include a JSON envelope with `result.jobId` and `result.monitor.tool_hint`.
 - When live progress is useful, pass `result.monitor.tool_hint` directly to the Monitor tool.
 - If Monitor is not available, the equivalent command is `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" events <job-id> --follow --exclude HEARTBEAT`.
-- Do not fabricate completion while Monitor is still running. Report status only, then wait for the terminal `[DONE]`, `[ERROR]`, or `[INCOMPLETE]` tag.
+- Do not fabricate completion while Monitor is still running. Report status only, then wait for the terminal `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, or `[PLAN]` tag.
 
 Operating rules:
 

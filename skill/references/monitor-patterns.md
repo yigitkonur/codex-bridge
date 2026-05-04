@@ -21,7 +21,7 @@ If not ready, wait 1-2 seconds and check again. The events file is created when 
 
 ## Preset A: `events --follow --exclude HEARTBEAT` (default, preferred)
 
-Use for every task. Self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`), even if the tag was already present in the initial dump. Handles file rotation; filter is prefix-aware on the head tag (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, `[PIPELINE:review:done]`, …). Continuation lines of multi-line blocks inherit the header's decision, so an included `[CHECKPOINT]` block ships whole.
+Use for every task. Self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`), even if the tag was already present in the initial dump. Handles file rotation; filter is prefix-aware on the head tag (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, `[PIPELINE:review:done]`, …). Continuation lines of multi-line blocks inherit the header's decision, so an included `[CHECKPOINT]` block ships whole.
 
 ```bash
 node "$SCRIPT_PATH" events "$JOB_ID" --follow \
@@ -30,7 +30,7 @@ node "$SCRIPT_PATH" events "$JOB_ID" --follow \
 
 **Why exclusion, not inclusion (v1.4.0).** Pre-1.4.0 the canonical shape was `--filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING` — an explicit inclusion list. Any tag the bridge emitted that *wasn't* on that list was silently dropped at the filter boundary, which meant adding a new tag in a future bridge version would make existing orchestrators deaf to it. The v1.4.0 default flips to `--exclude HEARTBEAT`: every tag passes through except the high-frequency liveness pulse that would flood LLM context. Future tags reach the orchestrator by default; noise stays out.
 
-**When to use `--filter` instead (rare).** You specifically want a narrow view — e.g. only terminal tags during a quick sanity check: `--filter DONE,ERROR,INCOMPLETE`. Passing both `--filter` and `--exclude` exits 2 with `USAGE_ERROR`.
+**When to use `--filter` instead (rare).** You specifically want a narrow view — e.g. only terminal tags during a quick sanity check: `--filter DONE,ERROR,INCOMPLETE,PLAN`. Passing both `--filter` and `--exclude` exits 2 with `USAGE_ERROR`.
 
 Monitor params: `persistent: false, timeout_ms: 1800000` (30 min — matches the raised turn-budget default). Match the `--timeout-ms` on the subcommand to the Monitor tool's outer deadline so they expire together.
 
@@ -58,9 +58,9 @@ When `--json --follow` closes the stream, `events` emits a terminal envelope so 
 }
 ```
 
-`terminalTag` is `"DONE"` / `"ERROR"` / `"INCOMPLETE"` on happy-path close, `null` on `--timeout-ms` expiry. Same field shape as `wait --json` (Preset D), so orchestrators can use identical branching logic for either. Exactly one of `filter` / `exclude` is non-null in the envelope — they're mutually exclusive by CLI contract.
+`terminalTag` is `"DONE"` / `"ERROR"` / `"INCOMPLETE"` / `"PLAN"` on happy-path close, `null` on `--timeout-ms` expiry. Same field shape as `wait --json` (Preset D), so orchestrators can use identical branching logic for either. Exactly one of `filter` / `exclude` is non-null in the envelope — they're mutually exclusive by CLI contract.
 
-Events received with the default exclude-HEARTBEAT shape: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[CHECKPOINT]`, `[PIPELINE:*]`, `[PIPELINE:*:done]`, `[PIPELINE:done]` / `[PIPELINE:failed]`, `[WARNING]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]`, and any future tag the bridge adds. Typical volume: 1 CHECKPOINT every 5 min + a handful of interrupt tags per task.
+Events received with the default exclude-HEARTBEAT shape: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[CHECKPOINT]`, `[PIPELINE:*]`, `[PIPELINE:*:done]`, `[PIPELINE:done]` / `[PIPELINE:failed]`, `[WARNING]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]`, and any future tag the bridge adds. `[PLAN]` is terminal for wait/follow; `[QUESTION]` is interrupt-class but not terminal. Typical volume: 1 CHECKPOINT every 5 min + a handful of interrupt tags per task.
 
 ## Preset A-raw: `tail -f` fallback
 
@@ -70,7 +70,7 @@ Use only when the bundled script isn't available (e.g. you're operating outside 
 tail -f "$EVENTS_FILE" | while IFS= read -r line; do
   echo "$line"
   case "$line" in
-    *"[DONE]"*|*"[ERROR]"*|*"[INCOMPLETE]"*) break ;;
+    *"[DONE]"*|*"[ERROR]"*|*"[INCOMPLETE]"*|*"[PLAN]"*) break ;;
   esac
 done
 ```
@@ -152,7 +152,7 @@ The rule: if the thing you're watching doesn't write to `~/.codex-bridge/session
 
 ## Stopping a Monitor
 
-- Terminal tag ([DONE]/[ERROR]/[INCOMPLETE]) → self-terminates via `break`
+- Terminal tag ([DONE]/[ERROR]/[INCOMPLETE]/[PLAN]) → self-terminates via `break`
 - TaskStop → kill by task ID
 - Session end → all monitors die
 - Auto-kill for volume → restart with tighter filter
