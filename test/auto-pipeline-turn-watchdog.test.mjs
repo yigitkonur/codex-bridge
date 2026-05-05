@@ -1130,6 +1130,7 @@ test("auto-pipeline source pins per-turn watchdog at the fix-stage call site", (
 
 test("auto-pipeline clamps stage timeout to remaining total budget", async () => {
   const { root, session } = makeTempSession();
+  let holdTimer = null;
   try {
     const reviewCalls = [];
     const stageMs = 5_000;
@@ -1151,7 +1152,23 @@ test("auto-pipeline clamps stage timeout to remaining total budget", async () =>
       runAppServerTurn: makeTurnStub([]),
       runAppServerReview: async (cwd, opts) => {
         reviewCalls.push({ cwd, opts: { ...opts } });
-        return new Promise(() => {});
+        return new Promise((resolve) => {
+          // Keep Node 22's test runner alive long enough for the unref'd
+          // pipeline-total timeout to fire, then clear this in finally.
+          holdTimer = setTimeout(() => {
+            resolve({
+              status: 0,
+              threadId: "review-thread",
+              sourceThreadId: "review-thread",
+              turnId: "review-turn",
+              reviewText: "review approved",
+              reasoningSummary: "",
+              turn: { id: "review-turn", status: "completed" },
+              error: null,
+              stderr: "",
+            });
+          }, stageMs);
+        });
       },
       jobId: "job-total-budget",
       stageTimeoutMs: stageMs,
@@ -1177,6 +1194,7 @@ test("auto-pipeline clamps stage timeout to remaining total budget", async () =>
     assert.match(events, /\[ERROR\].*ClientTimeout/s);
     assert.match(events, /failing_stage: pipeline-total/);
   } finally {
+    if (holdTimer) clearTimeout(holdTimer);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

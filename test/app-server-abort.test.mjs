@@ -108,16 +108,19 @@ test("captureTurn aborts startRequest pending entry when state.completion wins t
 
   // Kick off captureTurn against a thread.
   const capturePromise = captureTurn(client, "thread-leak", startRequest, {
-    idleTimeoutMs: 50,
+    idleTimeoutMs: 0,
     turnTimeoutMs: 0
   });
 
   // Wait one microtask so the Promise.race participants are wired up and the
   // pending map has the turn/start entry.
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(client.pending.size, 1, "turn/start should be pending before idle timeout fires");
+  assert.equal(client.pending.size, 1, "turn/start should be pending before forced completion");
 
-  // Let idleInterval fire and force completion.
+  // Force the state.completion side of the race through the same app-server
+  // exit path used when the Codex process dies. Relying on an unref'd idle
+  // timer makes Node 22's test runner cancel this pending test early.
+  client.emit("exit");
   await capturePromise;
 
   // After captureTurn returns, the abandoned turn/start pending entry must be

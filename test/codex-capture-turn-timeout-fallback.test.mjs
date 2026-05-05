@@ -107,7 +107,18 @@ test("turn timeout falls through to failed completion when no turn id is known",
     }
   );
 
-  const state = await captured;
+  let guardTimer = null;
+  const state = await Promise.race([
+    captured,
+    new Promise((_, reject) => {
+      guardTimer = setTimeout(
+        () => reject(new Error("captureTurn did not settle after turn timeout")),
+        500
+      );
+    })
+  ]).finally(() => {
+    if (guardTimer) clearTimeout(guardTimer);
+  });
 
   assert.equal(state.finalTurn?.status, "failed");
   assert.equal(state.error?.code, "TurnTimeout");
