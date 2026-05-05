@@ -1,13 +1,12 @@
 // Canonical type contract for codex-bridge backend adapters.
 //
-// v2.0 ships only the codex adapter; this contract is the seam for
+// v2.x currently ships only the codex adapter; this contract is the seam for
 // future adapters (gemini, aider, claude-cli, ollama, ...).
 //
 // See ./index.mjs for the registry implementation.
-// See ./_interface/INTERFACE.md for the prose contract.
-// See ./_interface/EVENT_VOCABULARY.md for canonical tag glossary.
-// See ./_interface/CAPABILITIES.md for capability flags + resolution order.
-// See ./_interface/BRIEF.md for the brief schema and rendering rules.
+// See .planning/codebase/ADAPTERS.md for prose contract notes, canonical event
+// vocabulary, capability flags, and resolution order.
+// See plugin/schemas/brief.schema.json and src/lib/brief.mjs for brief rules.
 
 export interface BackendAdapter {
   name: string;

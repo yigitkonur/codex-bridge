@@ -1,6 +1,5 @@
-// Backend adapter registry. See ./index.d.ts for the contract,
-// ./_interface/INTERFACE.md for the prose version, and
-// ./_interface/CAPABILITIES.md for the resolution order.
+// Backend adapter registry. See ./index.d.ts for the typed contract and
+// .planning/codebase/ADAPTERS.md for prose notes.
 
 import process from "node:process";
 import codexAdapter from "./codex/index.mjs";
@@ -105,7 +104,7 @@ export async function loadAdapter(name) {
   return adapter;
 }
 
-// Resolution order documented in ./_interface/CAPABILITIES.md.
+// Resolution order documented in .planning/codebase/ADAPTERS.md.
 // Highest precedence first; first non-empty string wins.
 export async function selectAdapter(options = {}) {
   // Validate config layer shape to prevent silent access errors

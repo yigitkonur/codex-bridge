@@ -136,7 +136,7 @@ test("envBackend wins over metaBackend (layer 2 beats layer 3)", async () => {
 
 test("metaBackend wins over adapter_routing and default_backend layers", async () => {
   _resetAdapterCache();
-  // metaBackend is layer 3 in CAPABILITIES.md; routing and default_backend
+  // metaBackend is layer 3 in .planning/codebase/ADAPTERS.md; routing and default_backend
   // layers (4–7) must not overrule it. Without this assertion a refactor
   // that demoted metaBackend below routing could pass the rest of the suite.
   await assert.rejects(
@@ -415,7 +415,7 @@ test("codex adapter declares the canonical capability shape", async () => {
   const adapter = await loadAdapter("codex");
   const caps = adapter.capabilities();
 
-  // Required canonical flags from src/adapters/_interface/CAPABILITIES.md.
+  // Required canonical flags from .planning/codebase/ADAPTERS.md.
   for (const flag of [
     "supports_plan_mode",
     "supports_questions",
