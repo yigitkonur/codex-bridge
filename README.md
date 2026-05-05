@@ -63,7 +63,7 @@ if you see this:
 marketplace "yigitkonur" not found
 ```
 
-you ran the old bad command, `/plugin install codex-bridge@yigitkonur`. add the marketplace first, then install from it with `@codex-bridge`.
+you used the old owner-as-marketplace install shape. add the marketplace first, then install from it with `@codex-bridge`.
 
 for a local checkout while developing:
 
@@ -73,7 +73,10 @@ for a local checkout while developing:
 /reload-plugins
 ```
 
-if you are migrating from the old standalone skill under `~/.agents/skills/codex-bridge/`, read [migration.md](migration.md).
+if you are migrating from the old standalone skill under `~/.agents/skills/codex-bridge/`, read [migration.md](MIGRATION.md).
+
+contributors and agents use GSD under `.planning/` as the only workflow
+authority; public docs here are for install and runtime usage.
 
 ## quick start
 
@@ -121,7 +124,7 @@ run the closed loop:
 
 starts a codex task. by default the bridge uses plan mode, the configured sandbox, and the auto review pipeline.
 
-use it for implementation, debugging, refactors, and bigger investigations. write-mode work should use worktree isolation; the plugin hooks enforce that for direct cli calls.
+use it for implementation, debugging, refactors, and bigger investigations. write-mode work should use worktree isolation; active plugin hooks surface Monitor/status context and may route Agent calls through the bridge, but the installed hook manifest does not currently register a Bash preflight gate.
 
 useful patterns:
 
@@ -223,7 +226,7 @@ for non-trivial work, use a brief. it gives codex a clean assignment and gives t
 use it like this:
 
 ```text
-/codex-bridge:task --brief @brief.json --background
+/codex-bridge:task --write --worktree-auto --brief @brief.json --background implement the task described in the structured brief
 /codex-bridge:adversarial-review --brief @brief.json --task task-abc123 --json
 ```
 
@@ -280,8 +283,7 @@ thread events, ndjson, and diff paths.
 codex-bridge ships claude code hooks for the stuff that should be enforced by runtime, not vibes:
 
 - pre-tool agent routing for supported delegation cases.
-- pre-tool bash checks for write-mode worktree isolation.
-- post-tool bash monitor hints for background jobs.
+- post-tool bash/agent monitor hints for background jobs.
 - session lifecycle cleanup and status context.
 - optional stop-time review gate.
 
@@ -358,7 +360,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" version --json
 - [brief schema](plugin/schemas/brief.schema.json)
 - [brief composition](plugin/skills/codex-bridge/references/brief-composition.md)
 - [error recovery](plugin/skills/codex-bridge/references/error-recovery.md)
-- [adapter contract](src/adapters/README.md)
+- [adapter notes](.planning/codebase/ADAPTERS.md)
 
 ## license
 

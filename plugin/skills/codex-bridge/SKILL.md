@@ -34,7 +34,7 @@ isolation, pair it with `--worktree-auto`.
 - Adversarial review where you want to weight findings against specific risks.
 - Background coding job you want to tail without burning Opus turns on the implementation.
 - A `[QUESTION]` or `[PLAN]` to respond to.
-- Manual task→review→verdict→merge loops; `/codex-bridge:iterate` currently returns the next manual action.
+- Task→review→verdict→follow-up loops with `/codex-bridge:iterate`.
 
 **Don't trigger** when:
 
@@ -47,8 +47,7 @@ isolation, pair it with `--worktree-auto`.
 You almost never have to remember the wiring — the hooks do it:
 
 - **PreToolUse(Agent)** intercepts Explore-class subagents and reroutes them through codex-bridge. Pass-through for Plan, general-purpose, and codex-bridge:* types.
-- **PreToolUse(Bash)** auto-rejects `task --write` invocations missing `--worktree-auto`. Worktree isolation is the canonical write-mode contract.
-- **PostToolUse(Bash)** parses the `--json` envelope and emits an `additionalContext` block with the literal Monitor invocation. You arm it on the next turn — no manual derivation.
+- **PostToolUse(Bash|Agent)** parses accepted bridge envelopes and emits an `additionalContext` block with the literal Monitor invocation. You arm it on the next turn — no manual derivation.
 - **SessionStart** injects running-job status into context, so you start every session oriented.
 - **Stop** can run the opt-in stop-time review gate. Pending verdicts are surfaced through `verdicts --pending`; check and resolve them before exiting.
 
@@ -92,7 +91,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" version --json | jq '.resu
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" status <task_id> --json | jq '.result.capabilities'
 ```
 
-The active backend's `capabilities` object names the booleans you should branch on (`supports_questions`, `supports_resume`, `supports_worktree`, `supports_artifact_registry`, …). v2.0 ships only the codex backend; future adapters declare their own. Don't hard-code "codex behavior" in slash commands — branch on the capability you actually need.
+The active backend's `capabilities` object names the booleans you should branch on (`supports_questions`, `supports_resume`, `supports_worktree`, `supports_artifact_registry`, …). v2.x currently ships only the codex backend; future adapters must declare their own. Don't hard-code "codex behavior" in slash commands — branch on the capability you actually need.
 
 ## Identifiers
 
@@ -118,12 +117,11 @@ Everything below is owned by another canonical surface. Read those when you need
 
 - **Per-subcommand reference** — `node …/codex-bridge.mjs <sub> --help`. The `--json` envelope's `error.code`, `error.suggestion`, and `result.next_action.command` are also self-documenting.
 - **Event stream** — `events --help` shows the supported filters. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary.
-- **Config keys** — `config show --json` prints the merged config. Edit `~/.codex-bridge/config.yaml` or `<workspace>/.codex-bridge.yaml`; the resolution order is documented there.
+- **Config keys** — `config show --json` prints the merged config. Edit `~/.codex-bridge/config.yaml`, `<workspace>/config.yaml`, or the cwd `config.yaml`; the resolution order is documented there.
 - **Error decision tree** — `references/error-recovery.md` (decision tree by `error.code` + `origin`).
 - **Brief composition** — `references/brief-composition.md` (full schema + when to use which field).
 - **One canonical orchestration flow** — `references/orchestration-flows.md`.
 - **Notification format** — `references/notification-format.md` (judgment-only; current CLI details are owned by `events --help`).
 - **Monitor patterns** — `references/monitor-patterns.md` (Preset A only; everything else has been removed).
-- **Re-bloat prevention** — `references/AGENTS.md` (read before adding a new reference file).
 
 When in doubt: ask the runtime first (`<subcommand> --help`, `config show --json`, `version --json`), then read prose. Prose ages; the runtime is canonical.

@@ -1,21 +1,23 @@
-# Migration: codex-bridge v1.x skill → v2.0 plugin
+# Migration: codex-bridge v1.x skill -> v2.x plugin
 
-v2.0 is a structural rewrite. The CLI surface stays compatible; the install path and teaching surface change.
+v2.x is a structural rewrite from the old standalone skill to the Claude Code
+plugin. The CLI surface stays compatible; the install path and teaching surface
+change.
 
 ## What changed
 
-| Surface | v1.x | v2.0 |
+| Surface | v1.x | v2.x |
 |---|---|---|
 | Install path | `~/.agents/skills/codex-bridge/` (user-level skill, symlinked into `~/.claude/skills/`) | `${CLAUDE_PLUGIN_ROOT}` (Claude Code plugin) |
-| Distribution | `npx skills add yigitkonur/codex-bridge` | `/plugin install codex-bridge@yigitkonur` |
-| Teaching surface | 22,061 words across 9 markdown files | 3,626 words across 7 files (-84%) |
-| Hooks | 3 (SessionStart, SessionEnd, Stop) | 7 (+PreToolUse Agent/Bash, PostToolUse Bash, UserPromptSubmit, SubagentStop) |
-| Worktree-per-dispatch | manual | auto-injected for write-mode by PreToolUse hook |
+| Distribution | `npx skills add yigitkonur/codex-bridge` | `/plugin marketplace add yigitkonur/codex-bridge`, then `/plugin install codex-bridge@codex-bridge` |
+| Teaching surface | large standalone skill reference set | slimmer plugin skill plus runtime help and GSD contributor docs |
+| Active hooks | 3 (SessionStart, SessionEnd, Stop) | SessionStart, SessionEnd, PreToolUse(Agent), PostToolUse(Bash\|Agent), UserPromptSubmit, SubagentStop, Stop |
+| Worktree-per-dispatch | manual | explicit `--write --worktree-auto` |
 | Monitor auto-arm | manual (rule taught in SKILL.md) | automatic via PostToolUse hook |
 | Brief schema | none | `plugin/schemas/brief.schema.json` |
-| Iterate workflow | none | staged `/codex-bridge:iterate` helper + reviewer subagent |
+| Iterate workflow | none | `/codex-bridge:iterate` task -> review -> verdict -> follow-up loop |
 | Verdict + merge gate | none | `/codex-bridge:verdict` + gated `/codex-bridge:merge` |
-| Adapter abstraction | none | `src/adapters/` (codex-only in v2.0; future backends are mechanical) |
+| Adapter abstraction | none | `src/adapters/` (Codex-only runtime today; future backends need fresh requirements and tests) |
 
 ## Compatibility
 
@@ -40,7 +42,9 @@ If you want to keep the v1.x skill running while you adopt the v2.0 plugin:
 
 1. **Install the plugin.**
    ```bash
-   /plugin install codex-bridge@yigitkonur
+   /plugin marketplace add yigitkonur/codex-bridge
+   /plugin install codex-bridge@codex-bridge
+   /reload-plugins
    ```
    The plugin script lives at `${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs`. The legacy skill at `~/.agents/skills/codex-bridge/scripts/codex-bridge.mjs` continues to work; both speak the same bridge protocol.
 
@@ -54,7 +58,7 @@ If you want to keep the v1.x skill running while you adopt the v2.0 plugin:
 ## What you have to relearn (very little)
 
 - **Don't manually pass the Monitor invocation.** The PostToolUse hook does it. If you see Monitor unarmed after a background dispatch, check `~/.codex-bridge/hook-errors/`.
-- **`task --write` requires `--worktree-auto`.** The PreToolUse hook will reject without it; the message includes the corrected command. To opt out, set `CODEX_BRIDGE_DISABLE_WORKTREE_AUTO=1`.
+- **`task --write` should use `--worktree-auto` for isolated work.** The active plugin manifest does not register a Bash preflight hook, so rely on the slash commands, runner agent, and explicit flags rather than a Bash hook rejection.
 - **Verdict before merge.** `/codex-bridge:merge` refuses to run while verdict ≠ approved. Use `/codex-bridge:verdict --discard` to abandon a task without merging.
 - **Briefs replace prompt-writing.md.** Use `--brief @path.json` for non-trivial work. The legacy `prompt-writing.md` was renamed to `brief-composition.md`.
 

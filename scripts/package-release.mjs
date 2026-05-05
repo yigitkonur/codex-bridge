@@ -124,7 +124,7 @@ function writeReleaseNotes({ tag, version, distDir }) {
     "```",
     "",
     "Verify with `node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs setup --json`.",
-    "Check for later updates with `bridge update` or `bridge version --check-update`.",
+    "Check for later updates with `node ~/.claude/skills/codex-bridge/scripts/codex-bridge.mjs update` or `/codex-bridge:update`.",
     "",
     "---",
     "",

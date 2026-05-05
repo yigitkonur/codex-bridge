@@ -64,7 +64,7 @@ Events received with the default exclude-HEARTBEAT shape: `[PLAN]`, `[QUESTION]`
 
 ### Tag reference
 
-Canonical source: `src/adapters/_interface/EVENT_VOCABULARY.md`. The table below is the practical view for Monitor consumers; new tags pass through the default `--exclude HEARTBEAT` filter.
+Canonical source: `.planning/codebase/ADAPTERS.md`. The table below is the practical view for Monitor consumers; new tags pass through the default `--exclude HEARTBEAT` filter.
 
 | Tag | Category | Cadence / trigger | Action |
 |---|---|---|---|

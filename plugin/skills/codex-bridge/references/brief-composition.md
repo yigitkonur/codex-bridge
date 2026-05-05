@@ -26,12 +26,12 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json --write --work
 ## Optional fields that matter
 
 - **`specific_concerns`** — array of up to 16 strings. **Each item flows into the review prompt.** This is your privileged channel: anything you've been watching from `[CHECKPOINT]` and `[PLAN]` events that warrants extra scrutiny. Phrase as risks ("Don't swallow non-retryable 4xx errors"), not as features ("Add retry").
-- **`acceptance_criteria`** — array of up to 16 strings. Codex sees these, and in v2.0.0 the orchestrator must verify them manually before declaring `verdict=approved`. Use for tests, diff size limits, "must not touch X."
+- **`acceptance_criteria`** — array of up to 16 strings. Codex sees these, and the orchestrator or iterate loop should verify them before declaring `verdict=approved`. Use for tests, diff size limits, "must not touch X."
 - **`behavior_digest_seed`** — up to 8000 chars of context the worker needs but can't be expected to derive (existing API contracts, file paths, recent design decisions). Don't dump the whole repo; dump the *relevant* slice.
-- **`parent_task_id`** — for future iterate-loop children. Set by orchestration when that loop lands; don't set by hand.
-- **`backend_hint`** — `"codex"` only in v2.0; expanded as adapters land.
-- **`iteration_max`** — records the intended cap for future iterate-loop automation. Manual v2.0 runs should still stop when the work is approved or abandoned.
-- **`trust_budget_override`** — future soft caps for automated merge decisions: `auto_merge_max_diff_lines`, `auto_merge_max_files`, `auto_merge_max_iterations`. In v2.0.0, treat them as intent metadata.
+- **`parent_task_id`** — for iterate-loop children. Let orchestration set it; don't set by hand unless you know the parent exists.
+- **`backend_hint`** — `"codex"` only in the current runtime; expanded only when adapters land.
+- **`iteration_max`** — records the intended cap for iterate-loop automation.
+- **`trust_budget_override`** — soft caps for automated merge decisions: `auto_merge_max_diff_lines`, `auto_merge_max_files`, `auto_merge_max_iterations`.
 
 ## Valid top-level keys
 
@@ -90,7 +90,7 @@ Skip the brief (free-text prompt is fine) when:
 - **Concerns as features.** "Use exponential backoff" belongs in `worker_assignment`. "Don't break the API" belongs in `specific_concerns`.
 - **Acceptance as wishlist.** If `npm test` doesn't actually exist, don't list it. The orchestrator should verify every listed criterion before approving.
 - **Whole-repo digest.** `behavior_digest_seed` is a slice, not a tarball. If it's > 4000 chars, you're probably dumping noise.
-- **Unbounded reruns.** Default `iteration_max=3` is usually right once automation lands. Don't bump to 10 unless the work is genuinely incremental.
+- **Unbounded reruns.** Default `iteration_max=3` is usually right. Don't bump to 10 unless the work is genuinely incremental.
 
 ## Versioning
 

@@ -2,7 +2,7 @@
 
 The hooks auto-arm Monitor on background dispatches; you almost never derive the invocation by hand. The runtime emits the canonical payload at `result.monitor.tool_hint` and the PostToolUse hook surfaces it as `additionalContext`.
 
-## Preset A — the only pattern that ships in v2.0
+## Preset A — the only pattern that ships in v2.x
 
 Use the literal `tool_hint` from the envelope. Default shape:
 
@@ -23,7 +23,7 @@ Why these defaults:
 
 ## Event tags you'll see
 
-The bridge emits a fixed vocabulary on the `.events` stream. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary. Canonical source: `src/adapters/_interface/EVENT_VOCABULARY.md`.
+The bridge emits a fixed vocabulary on the `.events` stream. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary. Canonical source: `.planning/codebase/ADAPTERS.md`.
 
 | Tag | Category | Cadence / trigger | What to do |
 |---|---|---|---|

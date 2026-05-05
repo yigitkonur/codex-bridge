@@ -1,6 +1,6 @@
 # Orchestration flow — one canonical loop
 
-The full plan→execute→review→merge loop, written for an Opus-driver. In v2.0.0, `iterate` can run the multi-round task → review → verdict → follow-up loop, while the lower-level task, review, verdict, and merge commands remain available for manual recovery.
+The full plan→execute→review→merge loop, written for an Opus-driver. `iterate` can run the multi-round task → review → verdict → follow-up loop, while the lower-level task, review, verdict, and merge commands remain available for manual recovery.
 
 ## The loop
 
@@ -44,20 +44,21 @@ Compose a brief — see `brief-composition.md`. Save to `brief.json` near your w
 
 ## Dispatch
 
-Either via slash command (preferred — hooks fire on the underlying Bash):
+Either via slash command (preferred):
 
 ```
-/codex-bridge:task --background --write --worktree-auto --brief @brief.json
+/codex-bridge:task --background --write --worktree-auto --brief @brief.json implement the task described in the structured brief
 ```
 
-Or directly (the PreToolUse(Bash) hook will reject without `--worktree-auto`):
+Or directly:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task \
-  --background --write --worktree-auto --json --brief @brief.json
+  --background --write --worktree-auto --json --brief @brief.json \
+  "Implement the task described in the structured brief."
 ```
 
-The PostToolUse(Bash) hook parses the envelope, captures `result.jobId`, and emits an `additionalContext` block with the literal Monitor invocation. **Arm the Monitor on your next turn with that exact payload — do not modify it.**
+The PostToolUse(Bash|Agent) hook parses accepted bridge envelopes, captures `result.jobId`, and emits an `additionalContext` block with the literal Monitor invocation. **Arm the Monitor on your next turn with that exact payload — do not modify it.**
 
 ## Monitor
 
