@@ -4,6 +4,11 @@ node_modules/
 .claude/
 dist/
 
+# GSD planning docs are source-controlled even when a user-level global ignore
+# excludes dot-directories.
+!.planning/
+!.planning/**
+
 # ━━ Added by run-repo-cleanup init-to-delete.py ━━
 # to-delete/ sweep folder — never tracked, used for quarantine before real deletion
 to-delete/
