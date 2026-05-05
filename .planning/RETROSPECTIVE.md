@@ -51,3 +51,16 @@
 | Runtime proof | Authenticated Codex smoke is required for release confidence. |
 | Distribution | Legacy skill and packaged plugin dual-output remains useful but expensive. |
 | Future work | Next milestone should define fresh requirements before implementation. |
+
+## Documentation Governance Addendum
+
+**Added:** 2026-05-05
+
+The GSD-only documentation migration confirmed that historical workflow prose
+can stay useful as evidence but should not remain active contributor authority
+once it drifts from source and tests. Retired Superpowers, root review rules,
+packaged reference governance, and source-adjacent adapter prose were converted
+into `.planning/codebase/DOCUMENTATION.md`,
+`.planning/codebase/ADAPTERS.md`, and a field report. Future public docs should
+stay limited to install, command usage, packaging, release history, and runtime
+asset guidance; contributor and agent workflow policy belongs in `.planning/`.

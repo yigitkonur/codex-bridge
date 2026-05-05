@@ -11,7 +11,7 @@ last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 **Runner:**
 - Node built-in test runner through `node --test test/*.test.mjs`.
 - Config: no separate test config file detected. The runner command lives in `package.json`.
-- Test files: 39 files under `test/` with 303 `test(...)` declarations.
+- Test files: 45 files under `test/` with 379 `test(...)` declarations as of 2026-05-05.
 
 **Assertion Library:**
 - `node:assert/strict` is used throughout the suite. Examples include `test/baseline-contracts.test.mjs`, `test/adapter-routing.test.mjs`, `test/plugin-surfaces.test.mjs`, and `test/cli-errors.test.mjs`.
@@ -91,6 +91,10 @@ class FakeTurnClient {
 ```
 
 `test/codex-capture.test.mjs`, `test/codex-capture-on-exit-flush.test.mjs`, `test/codex-capture-turn-timeout-fallback.test.mjs`, `test/app-server-client.test.mjs`, and `test/broker-stream-release-ordering.test.mjs` use fake client classes to exercise app-server lifecycle logic without a real Codex process.
+
+Note: `test/pre-tool-bash-hook.test.mjs` tests a packaged legacy Bash hook
+script directly. That script is not registered by the active `hooks/hooks.json`
+manifest unless future work wires it.
 
 ```javascript
 _setCodexAdapterRuntimeForTest({

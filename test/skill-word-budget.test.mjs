@@ -67,13 +67,18 @@ test("deleted reference files (command-reference, config-reference, ndjson-guide
   }
 });
 
-test("re-bloat prevention rules are present at references/AGENTS.md", () => {
-  const agentsPath = new URL("./AGENTS.md", REFS_DIR);
-  assert.ok(fs.existsSync(agentsPath), "references/AGENTS.md must exist");
-  const text = fs.readFileSync(agentsPath, "utf8");
-  assert.match(text, /CLI-derivability gate/);
-  assert.match(text, /Hook-enforceability gate/);
-  assert.match(text, /Context-injectability gate/);
+test("re-bloat prevention rules live in GSD documentation governance", () => {
+  const governancePath = new URL("../.planning/codebase/DOCUMENTATION.md", import.meta.url);
+  assert.ok(fs.existsSync(governancePath), ".planning/codebase/DOCUMENTATION.md must exist");
+  const text = fs.readFileSync(governancePath, "utf8");
+  assert.match(text, /Runtime derivability/);
+  assert.match(text, /Hook or test enforceability/);
+  assert.match(text, /GSD ownership/);
+  assert.equal(
+    fs.existsSync(new URL("./AGENTS.md", REFS_DIR)),
+    false,
+    "the packaged AGENTS reference was moved to GSD governance; don't reintroduce packaged workflow authority.",
+  );
 });
 
 test("brief-composition.md exists (renamed from prompt-writing.md)", () => {

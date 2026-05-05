@@ -5,6 +5,7 @@
 - ✅ **v2.0.0 Bridge Completion** — Phases 1-6, shipped 2026-05-03. Archive: `.planning/milestones/v2.0.0-ROADMAP.md`
 - ✅ **v2.1.0 Claude Plugin Field Report Remediation** — Phase 7, completed 2026-05-03.
 - ✅ **v2.2.0 Ergonomics And Safety Hardening** — Phases 8-12, completed 2026-05-03.
+- ✅ **GSD-Only Documentation Migration** — contributor workflow authority consolidated under `.planning/`, completed 2026-05-05.
 
 ## Phases
 
@@ -33,6 +34,10 @@ No active next milestone is defined yet. The living roadmap is closed after
 v2.2.0; new implementation phases should start from `$gsd-new-milestone` so the
 next scope gets fresh requirements instead of being appended casually.
 
+Contributor and agent workflow governance now lives only under `.planning/`.
+Public docs remain only for install, command usage, packaging, release history,
+and runtime prompt/schema/template assets.
+
 Candidate v2.x themes from deferred backlog:
 
 - Config validation and unknown-key diagnostics.
@@ -41,6 +46,18 @@ Candidate v2.x themes from deferred backlog:
 - Future backend readiness beyond the Codex adapter.
 - Legacy skill retirement after plugin marketplace install confidence is proven across real user machines.
 - PR creation and multi-job monitor auto-arm.
+
+## Completed Documentation Migration
+
+- [x] 2026-05-05: GSD-only documentation migration
+  - Scope: remove active Superpowers and other non-GSD workflow authority,
+    convert verified review/adapter/re-bloat signal into GSD docs, and keep
+    public/runtime docs only where package, plugin, skill, command, release, or
+    runtime assets require them.
+  - Evidence:
+    - `.planning/codebase/DOCUMENTATION.md`
+    - `.planning/codebase/ADAPTERS.md`
+    - `.planning/field-reports/2026-05-05-gsd-only-migration.md`
 
 ## Completed v2.2.0 Phases
 
@@ -71,6 +88,7 @@ Completion evidence:
 | v2.0.0 Bridge Completion | 6/6 | 19/19 | Complete | 2026-05-03 |
 | v2.1.0 Claude Plugin Field Report Remediation | 1/1 | 3/3 | Complete | 2026-05-03 |
 | v2.2.0 Ergonomics And Safety Hardening | 5/5 | 5/5 | Complete | 2026-05-03 |
+| GSD-Only Documentation Migration | n/a | n/a | Complete | 2026-05-05 |
 
 ## Completion Closeout
 
@@ -83,3 +101,4 @@ Completion evidence:
 | Field-report remediation | Complete | Phase 7 fixed the P0 defects, feasible P1 runtime/docs defects, and rebuilt generated plugin/skill surfaces. |
 | v2.2 ergonomics and safety | Complete | Phases 8-12 added task artifact aliases, wait-any, config diagnostics, update metadata, cleanup retention, and opt-in redaction. |
 | Living plan state | Complete | No active phase remains; next work starts by creating a fresh milestone. |
+| Workflow governance | Complete | `.planning/codebase/DOCUMENTATION.md` is the canonical contributor/agent workflow governance doc. |

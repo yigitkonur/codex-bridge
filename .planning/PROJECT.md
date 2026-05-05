@@ -4,7 +4,7 @@
 
 `codex-bridge` is a Node 22+ ESM package that exposes a Claude Code plugin/skill surface for delegating implementation, review, monitoring, and closed-loop follow-up work to OpenAI Codex. The current implementation centers on `src/codex-bridge.mjs`, a Codex app-server client/broker runtime under `src/adapters/codex/`, shared state/config/review helpers under `src/lib/`, optional Claude hooks under `hooks/`, and generated installable bundles under `skill/` and `plugin/`.
 
-The v2.0.0 GSD milestone completed on 2026-05-03 and is archived. There is no active implementation milestone at the moment. Current project truth comes from source files, tests, package metadata, manifests, hooks, workflows, generated bundles, and the archived GSD evidence under `.planning/milestones/`.
+The v2.0.0 GSD milestone completed on 2026-05-03 and is archived. The v2.1.0 field-report remediation and v2.2.0 ergonomics/safety hardening work also completed on 2026-05-03. There is no active implementation milestone at the moment. Current project truth comes from source files, tests, package metadata, manifests, hooks, workflows, generated bundles, and GSD evidence under `.planning/`.
 
 ## Core Value
 
@@ -41,9 +41,9 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 ### Active
 
 - [ ] Define fresh v2.x requirements with `$gsd-new-milestone` before planning or executing new implementation phases.
-- [ ] Harden auto-update safety and installer integrity beyond the current diagnostic/rate-limit guarantees.
-- [ ] Add retention/redaction controls for large or sensitive session and registry artifacts.
 - [ ] Prepare future non-Codex backend support only after fresh requirements define the compatibility contract.
+- [ ] Retire the legacy skill layout only after plugin marketplace install confidence is proven across real user machines.
+- [ ] Decide whether PR creation and multi-job Monitor auto-arm belong in the next milestone.
 
 ### Out of Scope
 
@@ -56,13 +56,13 @@ Claude Code can hand work to Codex and regain reliable, inspectable control thro
 
 The package is ESM-only and declares Node `>=22.0.0` in `package.json`. It uses `esbuild` to bundle `src/codex-bridge.mjs` and `src/adapters/codex/broker.mjs` into both `skill/` and `plugin/`, and uses `js-yaml` for config loading. The CI workflow runs `npm run verify:static`, generated drift checks, output-existence checks, bundled CLI sanity probes, and the static runtime smoke harness.
 
-The command surface is broad. `help --json` reports commands for task dispatch, send/steer/respond, native and adversarial review, staged iteration, status/result/wait/events/cancel, setup/version/update/config/auth, artifact waiting, verdicts, and merge. `version --json` reports schema version `1.0`, package version `2.0.0`, active backend `codex`, and adapter capabilities such as plan mode, background jobs, auto-pipeline, adversarial review, worktree support, and artifact registry.
+The command surface is broad. `help --json` reports commands for task dispatch, send/steer/respond, native and adversarial review, closed-loop iteration, status/result/wait/events/cancel, setup/version/update/config/auth, artifact waiting, verdicts, and merge. `version --json` reports schema version `1.0`, package version `2.2.0`, active backend `codex`, and adapter capabilities such as plan mode, background jobs, auto-pipeline, adversarial review, worktree support, and artifact registry.
 
 State is intentionally split. Project/workspace job state lives under a plugin-data-derived root keyed by canonical workspace root. Session logs live under the configured `session_dir`, defaulting to `~/.codex-bridge/sessions`, with append-only `.events` and `.ndjson` files. Per-task registry artifacts live under `~/.codex-bridge/jobs` unless overridden for tests.
 
 The risk profile is mostly contract drift. Source changes can require generated bundle updates, command/help/schema changes can break plugin surfaces, hook changes can stall Claude shutdown, and app-server protocol changes can invalidate tests that only simulate local behavior. Future work should preserve small, source-first changes followed by `npm run verify:static`; release work should also run `npm run smoke:runtime -- --require-codex --json`.
 
-The v2.0.0 milestone archive is in `.planning/milestones/`. The audit passed with 28/28 requirements satisfied, 6/6 phases verified, and 8/8 cross-phase flows complete. The root-level duplicate audit was removed after confirming it was identical to the archived copy. The current codebase map in `.planning/codebase/` was refreshed on 2026-05-02; future planning should refresh maps again before major v2.x work.
+The v2.0.0 milestone archive is in `.planning/milestones/`. The audit passed with 28/28 requirements satisfied, 6/6 phases verified, and 8/8 cross-phase flows complete. Phase 7 completed the Claude plugin field-report remediation, and Phases 8-12 completed v2.2.0 task aliases, wait-any fan-in, config diagnostics, update metadata, cleanup retention, opt-in redaction, and backend-readiness closeout. The root-level duplicate audit was removed after confirming it was identical to the archived copy. Current GSD-only documentation governance is captured in `.planning/codebase/DOCUMENTATION.md`.
 
 ## Constraints
 
@@ -88,6 +88,7 @@ The v2.0.0 milestone archive is in `.planning/milestones/`. The audit passed wit
 | Promote packaged plugin marketplace install path | Claude Code installs plugins from configured marketplaces, and the documented end-user install path requires the marketplace entry and packaged plugin manifest to use the canonical `codex-bridge` name. | Completed after v2.0.0 closeout |
 | Anchor state and sessions to canonical workspace roots | Multi-process and worktree flows need stable state/session lookup regardless of launcher cwd. | Completed in Phase 5 |
 | Require live runtime smoke before release completion | Static tests cannot prove app-server setup/task/review/events behavior. | Completed in Phase 6 |
+| Keep contributor workflow authority under GSD | Retired Superpowers and root review workflow prose drifted from source and package reality. Public docs remain only for install, command, packaging, release, and runtime asset needs. | Completed 2026-05-05 |
 
 ## Evolution
 
@@ -107,4 +108,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state.
 
 ---
-*Last updated: 2026-05-03 after v2.0.0 milestone completion*
+*Last updated: 2026-05-05 after GSD-only documentation migration*

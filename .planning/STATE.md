@@ -2,11 +2,11 @@
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-05-03)
+See: `.planning/PROJECT.md` (updated 2026-05-05)
 Requirements archive: `.planning/milestones/v2.0.0-REQUIREMENTS.md`
 Roadmap: `.planning/ROADMAP.md`
 Research summary: `.planning/research/SUMMARY.md`
-Codebase maps: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/CONCERNS.md`, `.planning/codebase/CONVENTIONS.md`, `.planning/codebase/INTEGRATIONS.md`, `.planning/codebase/STACK.md`, `.planning/codebase/STRUCTURE.md`, `.planning/codebase/TESTING.md`
+Codebase maps: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/ADAPTERS.md`, `.planning/codebase/CONCERNS.md`, `.planning/codebase/CONVENTIONS.md`, `.planning/codebase/DOCUMENTATION.md`, `.planning/codebase/INTEGRATIONS.md`, `.planning/codebase/STACK.md`, `.planning/codebase/STRUCTURE.md`, `.planning/codebase/TESTING.md`
 
 **Core value:** Claude Code can hand work to Codex and regain reliable, inspectable control through stable commands, events, artifacts, reviews, and merge gates.
 **Current focus:** v2.2.0 ergonomics and safety hardening is complete; no active phase remains.
@@ -16,7 +16,7 @@ Codebase maps: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/CONCERN
 Phase: None
 Plan: None
 Status: v2.2.0 Ergonomics And Safety Hardening complete
-Last activity: 2026-05-03 - Completed Phases 8-12: task artifact aliases, wait-any fan-in, config diagnostics, structured update metadata, cleanup retention, opt-in redaction, docs, generated outputs, and static verification.
+Last activity: 2026-05-05 - Migrated contributor and agent workflow authority to GSD-only documentation; retired Superpowers, root REVIEW.md, packaged reference AGENTS.md, and source-adjacent adapter prose after extracting verified signal.
 
 Progress: [##########] 100%
 
@@ -68,11 +68,12 @@ Recent decisions affecting current work:
 - Closeout cleanup on 2026-05-03 removed the redundant root-level milestone audit duplicate after confirming it matched `.planning/milestones/v2.0.0-MILESTONE-AUDIT.md`.
 - Phase 7 execution on 2026-05-03 completed the Claude plugin field-report remediation. `npm run verify:static` passed with 359 tests / 358 passed / 1 skipped plus baseline contracts OK; `git diff --check` passed.
 - v2.2 execution on 2026-05-03 completed monitor/artifact ergonomics, config diagnostics, update safety metadata, retention/redaction cleanup controls, and backend-readiness closeout. `npm run verify:static` passed with 365 tests / 364 passed / 1 skipped plus baseline contracts OK; `npm run smoke:runtime -- --require-codex --json` passed against `codex-cli 0.128.0`; `git diff --check` passed.
+- GSD-only documentation migration on 2026-05-05 made `.planning/` the contributor and agent workflow authority. It added `.planning/codebase/DOCUMENTATION.md`, `.planning/codebase/ADAPTERS.md`, and `.planning/field-reports/2026-05-05-gsd-only-migration.md`; removed active non-GSD workflow prose; and kept public/runtime docs only for install, packaging, command usage, release history, and runtime assets.
 
 ### Pending Todos
 
 - Start a fresh next milestone with `$gsd-new-milestone` before adding new implementation phases.
-- Consider next milestone around PR creation, multi-job monitor auto-arm, deeper live Claude plugin smoke automation, and future backend implementations.
+- Consider next milestone around PR creation, multi-job Monitor auto-arm, deeper live Claude plugin smoke automation, legacy skill retirement, and future backend implementations.
 - Packaged plugin marketplace promotion is no longer pending: the marketplace entry and packaged plugin manifest now use the canonical `codex-bridge` install name.
 
 ### Blockers/Concerns
@@ -80,7 +81,7 @@ Recent decisions affecting current work:
 - Release readiness now includes a tested source packaging path and a live runtime smoke harness; run `npm run smoke:runtime -- --require-codex --json` before any actual release tag.
 - Live Claude Code hook invocation remains environment-dependent; deterministic hook subprocess tests cover the packaged hook behavior, but a manual Claude Code plugin-session check is still useful after marketplace install and after the Phase 7 brief/resume fixes.
 - Generated `skill/` and `plugin/` outputs are product surface and must remain synchronized after source or surface changes.
-- Future phases should keep changes source-first and test-backed across CLI, adapter, broker, registry, hook, generated-layout, and CI contracts.
+- Future phases should keep changes source-first and test-backed across CLI, adapter, broker, registry, hook, generated-layout, public-doc, GSD-doc, and CI contracts.
 
 ## Deferred Items
 
@@ -92,7 +93,7 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-03
-Stopped at: v2.2.0 ergonomics and safety hardening complete, generated outputs rebuilt, static verification passed, and no active phase remaining.
+Last session: 2026-05-05
+Stopped at: v2.2.0 ergonomics and safety hardening complete, GSD-only documentation migration applied, and no active phase remaining.
 Resume file: None
 Next recommended command: `$gsd-new-milestone`

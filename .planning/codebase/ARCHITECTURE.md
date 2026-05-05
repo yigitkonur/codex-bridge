@@ -81,7 +81,7 @@ last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 
 **Key Characteristics:**
 - Use `src/codex-bridge.mjs` as the only authored public CLI orchestrator. Add command metadata to `COMMANDS`, add the handler, and wire `SUBCOMMAND_DISPATCH` together.
-- Keep runtime backend calls behind `src/adapters/index.mjs` and `src/adapters/codex/index.mjs`. The implemented backend is Codex; other adapter directories under `src/adapters/` contain interface notes and placeholders.
+- Keep runtime backend calls behind `src/adapters/index.mjs` and `src/adapters/codex/index.mjs`. The implemented backend is Codex; future-backend notes live in `.planning/codebase/ADAPTERS.md` until a concrete adapter is added.
 - Treat `src/` as source of truth and `skill/` plus `plugin/` runtime copies as build outputs where `esbuild.config.mjs` marks them generated.
 - Keep long-running work observable through synchronous `.events` and `.ndjson` session streams from `src/lib/session-log.mjs`.
 - Keep workspace-scoped coordination in `src/lib/state.mjs`; keep per-task artifact registry data in `src/lib/registry.mjs`.
@@ -305,7 +305,7 @@ last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 - **Threading:** Main CLI work is single-process/single-event-loop; background execution uses detached Node worker processes; app-server sharing uses a detached broker process (`src/codex-bridge.mjs`, `src/lib/tracked-jobs.mjs`, `src/adapters/codex/broker.mjs`).
 - **Transport:** Outbound app-server messages are newline-delimited JSON objects with `id`, `method`, and `params`; do not add a `jsonrpc` field (`src/adapters/codex/protocol.mjs`).
 - **Client identity:** Keep `DEFAULT_CLIENT_INFO.name` as `codex_bridge` unless the app-server contract and tests change together (`src/adapters/codex/protocol.mjs`).
-- **Backend support:** The active implementation is the Codex adapter; `aider`, `claude-cli`, `gemini`, and `ollama` directories under `src/adapters/` are documentation/stub surfaces.
+- **Backend support:** The active implementation is the Codex adapter. Do not claim support for `aider`, `claude-cli`, `gemini`, or `ollama` until `src/adapters/index.mjs`, tests, setup/auth behavior, command help, and public docs add a real backend together.
 - **Plan mode effort:** Plan mode always injects `reasoning.effort = "xhigh"` through `buildCollaborationMode` (`src/lib/runtime-options.mjs:101`).
 - **Config precedence:** Preserve the config layer order implemented by `loadConfigLayers` (`src/lib/config.mjs:56`).
 - **Global state:** Use workspace-scoped state helpers instead of module-level mutable job state; managed broker, job index, and gate settings live under the resolved state directory (`src/lib/state.mjs`).

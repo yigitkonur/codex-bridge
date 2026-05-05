@@ -134,6 +134,23 @@ last_mapped_commit: 6b3a78a98eb5396798d0ed2ee3d8f7451f204652
 
 **Plugin Surfaces:** Packaged command and agent markdown files are part of the tested product surface. `test/plugin-surfaces.test.mjs` pins 22 command files under `plugin/commands/` and 2 agent files under `plugin/agents/`. Command markdown uses YAML frontmatter with `description`, `argument-hint`, and `allowed-tools`; agent markdown uses frontmatter with `name`, `description`, `model`, `tools`, and `skills`.
 
+## Documentation Conventions
+
+**GSD authority:** Contributor and agent workflow policy belongs in
+`.planning/`. Use `.planning/codebase/DOCUMENTATION.md` for documentation
+governance and `.planning/codebase/ADAPTERS.md` for adapter contract notes.
+
+**Public-doc exceptions:** Keep public/runtime docs outside `.planning/` only
+when they are required for install, command usage, plugin/skill packaging,
+release history, or runtime prompt/schema/template assets. Examples:
+`README.md`, `MIGRATION.md`, `CHANGELOG.md`, `plugin/README.md`,
+`skill/SKILL.md`, `skill/references/**`, `plugin/commands/**`,
+`plugin/agents/**`, and `plugin/skills/codex-bridge/**`.
+
+**Source truth:** Before updating prose, re-check package scripts, source,
+tests, manifests, hooks, build scripts, and generated outputs. Do not preserve
+both a stale prose claim and the source-backed fact.
+
 ---
 
-*Convention analysis: 2026-05-02*
+*Convention analysis refreshed: 2026-05-05*
