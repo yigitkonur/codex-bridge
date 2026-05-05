@@ -15,6 +15,7 @@ import test from "node:test";
 const SKILL_DIR = new URL("../plugin/skills/codex-bridge/", import.meta.url);
 const SKILL_MD = new URL("./SKILL.md", SKILL_DIR);
 const REFS_DIR = new URL("./references/", SKILL_DIR);
+const PACKAGE_JSON = new URL("../package.json", import.meta.url);
 
 const SKILL_BUDGET = 1500;
 const REF_BUDGET = 800;
@@ -86,10 +87,11 @@ test("brief-composition.md exists (renamed from prompt-writing.md)", () => {
   );
 });
 
-test("SKILL.md frontmatter declares v2.0.0 metadata + Bash + Monitor allowed-tools", () => {
+test("SKILL.md frontmatter declares package version metadata + Bash + Monitor allowed-tools", () => {
   const text = fs.readFileSync(SKILL_MD, "utf8");
+  const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON, "utf8"));
   assert.match(text, /allowed-tools: Bash Monitor/);
-  assert.match(text, /version: "2\.0\.0"/);
+  assert.match(text, new RegExp(`version: "${pkg.version.replaceAll(".", "\\.")}"`));
 });
 
 test("SKILL.md does not duplicate runtime-owned content (envelope shape, exit codes, tag list, config table)", () => {

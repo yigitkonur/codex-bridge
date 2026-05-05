@@ -9,6 +9,51 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [2.2.0] — 2026-05-05
+
+This is the first GitHub Release after `v1.5.0`; it includes the `v2.0.0`
+plugin redesign that was tagged but not published as a GitHub Release, plus the
+post-`v2.0.0` field-report, recovery, and ergonomics hardening now present on
+the release branch.
+
+### Added — v2.2.0 ergonomics and safety hardening
+
+- Completed the v2.2 ergonomics and safety pass: richer bridge envelopes,
+  safer task lifecycle handling, improved monitor/status surfaces, and stronger
+  adapter capability reporting across `version`, `setup`, `task`, and result
+  flows.
+- Added runtime/static coverage for backend adapter dispatch, task retry,
+  resume/steer/cancel lifecycle calls, recovery-sensitive envelopes, event tag
+  vocabulary, and task pipeline partial-completion proof fields.
+- Added plugin hook coverage for PreToolUse/PostToolUse flows, Monitor
+  auto-arm behavior, stop-time review gate setup, verdict handling, and
+  worktree-isolation guardrails.
+
+### Fixed — v2.2.0 field-report and recovery hardening
+
+- Hardened bridge recovery paths around workspace-dirty failures, tracked task
+  failures, plan-pending terminal emission, retry handoff, and background worker
+  launch state.
+- Closed remaining field-report issues around cancel envelopes, heartbeat
+  filtering, event vocabulary stability, review/task artifacts, and stale or
+  malformed task metadata.
+- Refreshed generated plugin and skill bundles from the current runtime source
+  so packaged CLI, broker, prompts, schemas, templates, commands, agents, and
+  hooks stay aligned.
+- Reworked Claude plugin marketplace install docs and metadata so the packaged
+  plugin installs under the canonical `codex-bridge` identity.
+
+### Docs — v2.2.0
+
+- Rewrote the plugin README and aligned agent-facing recovery and Monitor
+  contracts with the current runtime behavior.
+- Captured the field-report remediation trail and review-feedback cleanup so
+  release notes describe the implemented branch, not stale planning intent.
+
+## [2.0.0] — 2026-05-02
+
 ### Added — v2.0.0 plugin redesign (Phases 0–4)
 
 Structural rewrite from user-level skill to hook-driven Claude Code plugin.
