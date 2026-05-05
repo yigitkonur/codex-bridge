@@ -1,7 +1,7 @@
 # src/templates/AGENTS.md
 
 This folder contains authored developer-instruction templates copied into
-`skill/templates/` by `npm run build`.
+`skill/templates/` and `plugin/templates/` by `npm run build`.
 
 ## Current Files
 
@@ -55,16 +55,16 @@ The execute template should not encourage plain-text questions that bypass
 
 ## Build And Verification
 
-After editing either template, run `npm run build`. Once the
-`feat/runtime-improvements` stack lands, also run `npm test`; on this branch
-alone `package.json` defines only `build` and `dev`.
+After editing either template, run the standard static checks:
 
 ```bash
 npm run build
-npm test   # post-feat/runtime-improvements
+npm test
 ```
 
 Check generated copies:
 
 - `skill/templates/plan-enforcement.md`
 - `skill/templates/execute-instructions.md`
+- `plugin/templates/plan-enforcement.md`
+- `plugin/templates/execute-instructions.md`

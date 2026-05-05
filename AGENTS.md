@@ -18,7 +18,8 @@ directories are not present.
 
 The package version is read from `package.json` by `src/codex-bridge.mjs`.
 Keep root `.claude-plugin/plugin.json`, `plugin/.claude-plugin/plugin.json`,
-`package.json`, and `skill/SKILL.md` aligned unless a migration deliberately
+`package.json`, `skill/SKILL.md`, and
+`plugin/skills/codex-bridge/SKILL.md` aligned unless a migration deliberately
 version-stamps one layout differently.
 
 Runtime source lives under `src/`. The build emits installable artifacts under
@@ -155,8 +156,8 @@ removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
 ## When Making Changes
 
 - New CLI subcommand: update `COMMANDS`, add a handler, wire
-  `SUBCOMMAND_DISPATCH`, extend plugin command coverage if user-facing, update
-  skill references, and add/adjust `test/*.test.mjs`.
+  `SUBCOMMAND_DISPATCH`, extend `plugin/commands/*.md` coverage if
+  user-facing, update skill references, and add/adjust `test/*.test.mjs`.
 - New config key: add `DEFAULT_CONFIG`, merge/render behavior,
   `skill/config.yaml` comments, generated `plugin/config.yaml`, user reference
   docs, and tests.
@@ -165,12 +166,15 @@ removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
   and test the observable contract.
 - New review-output field: update `src/schemas/review-output.schema.json`,
   `src/prompts/adversarial-review.md`, render code, and tests together.
-- Plugin surface change: edit `commands/`, `agents/`, `hooks/`, or
-  `.claude-plugin/plugin.json` directly, then run `npm run build` and
-  `npm test`.
+- Plugin surface change: edit `plugin/commands/`, `plugin/agents/`, root
+  `hooks/`, `.claude-plugin/plugin.json`, or
+  `plugin/.claude-plugin/plugin.json` directly, then run `npm run build` and
+  `npm test`. If root `commands/` or `agents/` directories are restored, edit
+  those restored sources instead of generated plugin copies.
 - Release change: keep `package.json`, `.claude-plugin/plugin.json`,
-  `plugin/.claude-plugin/plugin.json`, and `skill/SKILL.md` metadata aligned;
-  update `CHANGELOG.md`; run build and tests before tagging.
+  `plugin/.claude-plugin/plugin.json`, `skill/SKILL.md`, and
+  `plugin/skills/codex-bridge/SKILL.md` metadata aligned; update
+  `CHANGELOG.md`; run build and tests before tagging.
 
 ## Verification
 
@@ -187,10 +191,11 @@ authenticated Codex install. Static tests do not prove app-server round trips.
 ## GSD Planning
 
 This repository has been initialized with GSD planning artifacts under
-`.planning/`. Use them to understand current project intent, requirement
-coverage, roadmap order, and codebase research, but keep source, tests, package
-metadata, manifests, hooks, and CI workflows as the authority when facts
-conflict.
+`.planning/`. GSD is the only contributor and agent workflow authority for this
+repo. Use it to understand current project intent, requirement coverage,
+roadmap order, codebase research, documentation governance, and field reports,
+but keep source, tests, package metadata, manifests, hooks, build scripts, and
+CI workflows as the authority when facts conflict.
 
 Key artifacts:
 
@@ -202,12 +207,36 @@ Key artifacts:
   candidate themes
 - `.planning/STATE.md` — current GSD state and next phase pointer
 - `.planning/codebase/` — source-grounded codebase maps
+- `.planning/codebase/DOCUMENTATION.md` — GSD-only documentation governance and
+  public-doc exceptions
+- `.planning/codebase/ADAPTERS.md` — Codex-only adapter contract and future
+  backend notes
 - `.planning/research/` — stack, feature, architecture, pitfalls, and summary
   research
 
-The v2.0.0 milestone is complete and archived. For new planned work, start with
-`$gsd-new-milestone` before discussing, planning, or executing new phases unless
-the user explicitly asks for a smaller one-off task.
+The v2.0.0, v2.1.0, and v2.2.0 work is complete; no active implementation
+phase remains. For new planned work, start with `$gsd-new-milestone` before
+discussing, planning, or executing new phases unless the user explicitly asks
+for a smaller one-off task.
+
+Use GSD skills as the workflow entrypoints when the user's goal matches them:
+
+- Offer `$gsd-new-milestone` for fresh multi-phase product work.
+- Offer `$gsd-discuss-phase`, `$gsd-plan-phase`, `$gsd-execute-phase`, and
+  `$gsd-verify-work` for phase lifecycle work.
+- Offer `$gsd-quick` for a small tracked one-off; direct edits remain fine when
+  the user explicitly asks for a narrow task.
+- Offer `$gsd-map-codebase`, `$gsd-docs-update`, and `$gsd-health` for
+  codebase mapping, documentation refresh, and planning workspace repair.
+- Offer `$gsd-code-review` or `$gsd-audit-fix` for review/audit loops.
+- Offer `$gsd-progress` or `$gsd-resume-work` when the user asks what is next
+  or wants to continue prior GSD work.
+
+For docs/workflow changes, read `.planning/codebase/DOCUMENTATION.md` first.
+For adapter/backend changes or backend-support claims, read
+`.planning/codebase/ADAPTERS.md` first. For broad planned work, read
+`.planning/PROJECT.md`, `.planning/STATE.md`, and `.planning/ROADMAP.md`
+before choosing a phase or milestone path.
 
 ## Local Instruction Files
 

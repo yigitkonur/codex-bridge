@@ -1,14 +1,15 @@
 # src/prompts/AGENTS.md
 
-This folder contains authored prompt source copied into `skill/prompts/` by
-`npm run build`.
+This folder contains authored prompt source copied into `skill/prompts/` and
+`plugin/prompts/` by `npm run build`.
 
 ## Current File
 
 `adversarial-review.md` is the only prompt here. It is loaded by
-`buildAdversarialReviewPrompt` in `src/codex-bridge.mjs` through
-`loadPromptTemplate(ROOT_DIR, "adversarial-review")`, then interpolated with
-`src/lib/prompts.mjs`.
+`buildAdversarialReviewPrompt` in `src/lib/adversarial-review-prompt.mjs`
+through `loadPromptTemplate(ROOT_DIR, "adversarial-review")`, then
+interpolated with `src/lib/prompts.mjs`. `src/codex-bridge.mjs` calls that
+helper when running `adversarial-review`.
 
 ## Placeholder Contract
 
@@ -73,20 +74,18 @@ around user text that would let focus text override the review role.
 
 ## Build And Verification
 
-After editing this prompt, run `npm run build`. Once the
-`feat/runtime-improvements` stack lands, also run `npm test`; on this branch
-alone `package.json` declares only `build` and `dev`, so `npm test` exits with
-`Missing script: "test"`.
+After editing this prompt, run the standard static checks:
 
 ```bash
 npm run build
-npm test   # post-feat/runtime-improvements
+npm test
 ```
 
 Then inspect both source and generated copies if the diff is surprising:
 
 - `src/prompts/adversarial-review.md`
 - `skill/prompts/adversarial-review.md`
+- `plugin/prompts/adversarial-review.md`
 
 Runtime verification requires an authenticated Codex CLI and a real
 `adversarial-review` invocation.

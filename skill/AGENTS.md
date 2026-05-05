@@ -35,13 +35,15 @@ change without regenerated skill output ships stale code to users.
 
 ## SKILL.md
 
-`SKILL.md` is loaded by skill installers and by the Claude plugin manifest.
-Keep its frontmatter in sync with code and package metadata:
+`SKILL.md` is loaded by legacy skill installers and by the root plugin
+manifest's `./skill` entry. The packaged marketplace plugin has a separate
+`plugin/skills/codex-bridge/SKILL.md`; keep both skill frontmatters in sync
+with code and package metadata:
 
 - `name` must stay `codex-bridge`.
-- `metadata.version` must match `package.json`. On this branch alone
-  `.claude-plugin/plugin.json` still declares `1.2.3`; the version-sync fix
-  to `1.5.0` lands with the sibling `feat/plugin-surfaces` branch.
+- `metadata.version` must match `package.json`. Keep `package.json`, both
+  plugin manifests, `skill/SKILL.md`, and
+  `plugin/skills/codex-bridge/SKILL.md` version metadata aligned.
 - Runtime compatibility must match `package.json` engines and actual code.
 - Examples must invoke `node <skill path>/scripts/codex-bridge.mjs`; there is no
   package-level executable declared in `package.json`.
@@ -52,7 +54,9 @@ update `SKILL.md` and the relevant reference file in the same task.
 ## config.yaml
 
 `skill/config.yaml` is the shipped user-editable layer. The code source of
-truth is `DEFAULT_CONFIG` in `src/lib/config.mjs`.
+truth for default values is `DEFAULT_CONFIG` in
+`src/lib/runtime-options.mjs`; `src/lib/config.mjs` owns schema validation,
+diagnostics, and layer merging.
 
 Current default keys are:
 
@@ -72,18 +76,27 @@ Current default keys are:
 - `pipeline_stage_ms: 300000`
 - `pipeline_total_ms: 900000`
 - `question_answer_ms: 300000`
+- `artifact_retention_jobs: 50`
+- `artifact_retention_days: 30`
+- `redact_secrets: false`
 - `prompt_footer`
 
-When adding or changing a config key, update both `src/lib/config.mjs` and this
-file. Then update `references/config-reference.md` and tests that cover config
-surface behavior.
+When adding or changing a config key, update `src/lib/runtime-options.mjs`,
+`src/lib/config.mjs`, `skill/config.yaml`, generated `plugin/config.yaml`, and
+tests that cover config surface behavior.
 
 ## References
 
 Reference files are hand-authored. They are not copied by the build script.
 Keep them aligned with the CLI metadata in `src/codex-bridge.mjs`, event
 formatters in `src/lib/session-log.mjs`, error classification in
-`src/lib/cli-errors.mjs`, and config defaults in `src/lib/config.mjs`.
+`src/lib/cli-errors.mjs`, config defaults in `src/lib/runtime-options.mjs`, and
+config schema/layering in `src/lib/config.mjs`.
+
+Before adding a new user-facing reference file or workflow-like prose, read
+`.planning/codebase/DOCUMENTATION.md` and satisfy its public-documentation
+exception and re-bloat gates. Contributor or agent workflow policy belongs in
+GSD, not in the shipped skill references.
 
 Current reference files:
 
@@ -94,6 +107,7 @@ Current reference files:
 - `ndjson-guide.md`
 - `notification-format.md`
 - `orchestration-flows.md`
+- `brief-composition.md`
 - `prompt-writing.md`
 - `templates/coder-mission.md`
 - `templates/research-mission.md`

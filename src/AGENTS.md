@@ -15,6 +15,10 @@ This folder contains the authored runtime source. Build outputs live under
 | `schemas/` | Authored JSON schema source copied to bundled layouts |
 | `templates/` | Authored developer-instruction templates copied to bundled layouts |
 
+For adapter/backend facts, read `.planning/codebase/ADAPTERS.md` after checking
+the source. The active runtime is Codex-only unless `src/adapters/index.mjs`,
+tests, command help, setup/auth behavior, and public docs are updated together.
+
 ## `codex-bridge.mjs`
 
 The CLI uses a single file for command metadata, parsing, handlers, and task
@@ -57,9 +61,8 @@ When adding or changing a handler:
   `CliError` subclasses.
 - Use existing job helpers so `status`, `result`, `wait`, `events`, and
   `cancel` keep working.
-- For user-facing commands, update `COMMANDS`, `SUBCOMMAND_DISPATCH`, skill
-  references, and tests together. Once `feat/plugin-surfaces` lands, also
-  update `commands/*.md`.
+- For user-facing commands, update `COMMANDS`, `SUBCOMMAND_DISPATCH`,
+  `plugin/commands/*.md`, skill references, and tests together.
 
 ## Task Flow
 

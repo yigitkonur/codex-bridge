@@ -9,20 +9,26 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 |---|---|
 | `../adapters/codex/protocol.mjs` | JSONL app-server client, direct Codex spawn, broker transport, server requests |
 | `../adapters/codex/protocol.d.ts` | JSDoc TypeScript surface for app-server shapes |
+| `adversarial-review-prompt.mjs` | Prompt interpolation and orchestrator concern rendering for adversarial reviews |
 | `args.mjs` | Strict CLI argument parser and raw string tokenizer |
+| `brief.mjs` | Structured brief loading, validation, hashing, and Markdown rendering |
 | `broker-endpoint.mjs` | Unix socket / Windows pipe endpoint formatting and parsing |
 | `broker-lifecycle.mjs` | Shared broker session spawn, readiness, persistence, teardown |
 | `cli-errors.mjs` | Exit-code taxonomy, Codex error normalization, retry/handoff envelopes |
 | `../adapters/codex/codex.mjs` | Codex app-server turn/review/auth runtime wrapper and notification capture |
-| `config.mjs` | Default config, config layering, collaboration mode, sandbox policy |
+| `config.mjs` | Config schema validation, diagnostics, layering, collaboration mode, sandbox policy |
 | `fs.mjs` | Small filesystem helpers and stdin/text sniffing |
 | `git.mjs` | Review target resolution and review-context collection |
+| `iterate-loop.mjs` | Closed-loop task review / verdict / follow-up orchestration |
 | `job-control.mjs` | Job lookup/enrichment/status/result/cancel resolution |
 | `official-plugin.mjs` | Official OpenAI Codex Claude plugin detection |
 | `pending-requests.mjs` | Disk IPC for `requestUserInput` and `respond` |
 | `process.mjs` | Process execution, availability checks, process-tree termination |
 | `prompts.mjs` | Prompt template load/interpolation |
+| `registry.mjs` | Task artifact registry, metadata, brief, review, verdict, diff, and event files |
 | `render.mjs` | Human-readable CLI rendering |
+| `review-result.mjs` | Native/adversarial review result normalization and finding validation |
+| `runtime-options.mjs` | Hard-coded default config values, effort/model resolution, sandbox construction |
 | `session-log.mjs` | Session artifacts, event blocks, terminal tag constants |
 | `state.mjs` | Workspace-scoped persistent state and job files |
 | `thread-id.mjs` | UUID thread-id validation |
@@ -81,15 +87,13 @@ sync when adding methods; do not invent aliases for JSON-RPC method names.
   response resolves so buffered `turn/completed` can complete the capture.
 - The idle watchdog polls `lastNotificationAt` against `idle_timeout_ms` on a
   `Math.min(5000, idle_timeout_ms)` interval and fires when the gap exceeds
-  the budget. `requestUserInput` does not separately suppress the idle timer;
-  on long human/orchestrator delays, raise `--question-timeout-ms` and/or
-  `--idle-timeout-ms` together so the idle watchdog does not preempt the
-  pending question.
-- Turn timeout is enforced as `Promise.race([turnPromise, setTimeout(reject)])`
-  in `runAppServerTurn` — when the budget elapses, the race rejects and the
-  turn is failed without an explicit `turn/interrupt`. The standalone
-  `interruptTurn` helper exists for callers who need to interrupt by id, but
-  it is not the per-turn-budget path.
+  the budget. While `pendingServerRequests > 0`, `captureTurn` marks activity
+  and does not idle-timeout the turn; long human/orchestrator delays should
+  still raise `--question-timeout-ms` and `--idle-timeout-ms` together.
+- Turn timeout sends `turn/interrupt` when `state.turnId` or the thread's
+  tracked turn id is known, then waits for an interrupted `turn/completed`
+  until the interrupt grace timer fires. If no turn id is known, the timeout
+  completes the capture as failed and warns that the upstream turn may continue.
 - Auth status uses `account/read` plus `config/read`.
 - Availability checks require both `codex --version` and
   `codex app-server --help`.
@@ -100,12 +104,14 @@ plumbing from task paths; session logs and questions depend on them.
 
 ## Config
 
-`config.mjs` is the source of truth for bridge defaults:
+`runtime-options.mjs` is the source of truth for bridge defaults; `config.mjs`
+owns schema validation, diagnostics, and layer merging:
 
 - `mode: "plan"`
 - `model: "gpt-5.4"`
 - `effort: "xhigh"`
 - `auto_review: true`
+- `post_task_prompt`
 - `allow_questions: true`
 - `session_dir: "~/.codex-bridge/sessions"`
 - `sandbox_policy: "danger-full-access"`
@@ -117,13 +123,16 @@ plumbing from task paths; session logs and questions depend on them.
 - `pipeline_stage_ms: 300000`
 - `pipeline_total_ms: 900000`
 - `question_answer_ms: 300000`
-- `post_task_prompt` and `prompt_footer`
+- `artifact_retention_jobs: 50`
+- `artifact_retention_days: 30`
+- `redact_secrets: false`
+- `prompt_footer`
 
-Config layers merge in this order: defaults, skill config, workspace-root
-config, cwd config. Malformed YAML and invalid values are reported through
-diagnostics; only schema-known, schema-valid keys enter the effective runtime
-config. `buildCollaborationMode("plan", ...)` always sets
-`reasoning_effort: "xhigh"`. `buildSandboxPolicy` accepts only
+Config layers merge in this order: defaults, install-root config (`skill/` or
+`plugin/`), workspace-root config, then cwd config. Malformed YAML and invalid
+values are reported through diagnostics; only schema-known, schema-valid keys
+enter the effective runtime config. `buildCollaborationMode("plan", ...)`
+always sets `reasoning_effort: "xhigh"`. `buildSandboxPolicy` accepts only
 `danger-full-access`, `workspace-write`, and `read-only`.
 
 ## State And Jobs
@@ -140,7 +149,9 @@ config. `buildCollaborationMode("plan", ...)` always sets
   are preserved as `.corrupt-<ts>` siblings for diagnosis.
 - `loadState` is read-only. It quarantines corrupt state and returns defaults,
   but stale running/queued job reaping is persisted only by writer paths.
-- Job lists are pruned to `MAX_JOBS = 50`.
+- State index pruning keeps terminal jobs to `MAX_JOBS = 50`; the user-facing
+  `status --cleanup` command uses `artifact_retention_jobs` and
+  `artifact_retention_days` from config to remove terminal job artifacts.
 
 `tracked-jobs.mjs` writes job detail files and state-index entries. Preserve the
 two surfaces so `status`, `result`, `wait`, `events`, and `cancel` can resolve
@@ -161,7 +172,9 @@ state.
 - `<threadId>.review.json`
 
 Only `logEvent` and `logNdjson` append to `.events` and `.ndjson`, and they use
-`fs.appendFileSync`. Keep event writes synchronous and append-only.
+`fs.appendFileSync`. Keep event writes synchronous and append-only. When
+`redact_secrets` is true, persisted event and NDJSON text is redacted before
+write.
 
 Current terminal tags are `DONE`, `ERROR`, `INCOMPLETE`, and `PLAN`.
 `events --follow` and `wait` rely on `TERMINAL_TAG_REGEX`; `QUESTION` is
@@ -214,9 +227,9 @@ prompt and uses `turn/start` with the JSON schema from `src/schemas`.
 
 1. Capture initial git diff.
 2. Optionally run native review.
-3. Attempt a fix turn only when parsed findings exist. Current native review
-   parsing returns no structured findings, so the fix stage is effectively a
-   no-op for native review text.
+3. Parse native review text through `parseNativeReviewText`; actionable
+   markdown findings drive the fix stage. Unstructured attention without parsed
+   findings is reported incomplete without starting a fix turn.
 4. Optionally run the completion check with `COMPLETION_CHECK_SCHEMA`.
 5. Emit `[DONE]`, `[INCOMPLETE]`, or `[ERROR]`, plus `[PIPELINE:done]` or
    `[PIPELINE:failed]`.

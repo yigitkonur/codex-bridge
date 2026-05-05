@@ -1,7 +1,7 @@
 # src/schemas/AGENTS.md
 
 This folder contains authored JSON schema source copied into `skill/schemas/`
-by `npm run build`.
+and `plugin/schemas/` by `npm run build`.
 
 ## Current File
 
@@ -42,9 +42,8 @@ Change this schema only with the code and prompt paths that consume it:
 - `src/codex-bridge.mjs` persists parsed results with `writeReview` and puts the
   parsed object under the command payload.
 - `src/lib/render.mjs` renders adversarial review findings.
-- `test/plugin-surfaces.test.mjs` (added by `feat/runtime-improvements`) does
-  not validate schema contents, so add or adjust tests when changing behavior
-  once that suite lands.
+- `test/plugin-surfaces.test.mjs` validates packaged plugin surfaces; add or
+  adjust tests when changing schema behavior.
 
 ## Editing Rules
 
@@ -59,15 +58,14 @@ Change this schema only with the code and prompt paths that consume it:
 
 ## Build And Verification
 
-After editing the schema, run `npm run build`. Once the
-`feat/runtime-improvements` stack lands, also run `npm test`; on this branch
-alone `package.json` defines only `build` and `dev`.
+After editing the schema, run the standard static checks:
 
 ```bash
 npm run build
-npm test   # post-feat/runtime-improvements
+npm test
 ```
 
-Confirm the generated copy changed as expected:
+Confirm the generated copies changed as expected:
 
 - `skill/schemas/review-output.schema.json`
+- `plugin/schemas/review-output.schema.json`
