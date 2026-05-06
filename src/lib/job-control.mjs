@@ -272,6 +272,21 @@ function isResultTerminalJob(job) {
   );
 }
 
+function normalizeGroupFilter(value) {
+  if (value == null) {
+    return null;
+  }
+  const group = String(value).trim();
+  if (!group) {
+    throw new CliError("--group requires a non-empty group name.", {
+      class: "validation",
+      code: "GROUP_EMPTY",
+      retryable: false,
+    });
+  }
+  return group;
+}
+
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
@@ -284,6 +299,11 @@ export function buildStatusSnapshot(cwd, options = {}) {
   const jobs = sortJobsNewestFirst(visibleJobs);
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+
+  const group = normalizeGroupFilter(options.group);
+  if (group) {
+    jobs = jobs.filter((job) => job.group === group);
+  }
 
   const running = jobs
     .filter((job) => job.status === "queued" || job.status === "running")

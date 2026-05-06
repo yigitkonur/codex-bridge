@@ -2670,6 +2670,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
     kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
     write,
+    group: options.group ?? null,
     backend: options.backend ?? null,
     group: options.group ?? null,
     adapter_capabilities: options.adapterCapabilities ?? null,
@@ -2686,6 +2687,7 @@ function buildTaskRequest({
   idleTimeoutMs, noPipeline,
   turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs,
   backend = null,
+  group = null,
 }) {
   const opt = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null);
   return {
@@ -2700,6 +2702,7 @@ function buildTaskRequest({
     resumeLast,
     jobId,
     mode: mode ?? null,
+    group: group ?? null,
     idleTimeoutMs: opt(idleTimeoutMs),
     turnPlanMs: opt(turnPlanMs),
     turnDefaultMs: opt(turnDefaultMs),
@@ -2985,6 +2988,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       status: "queued",
       title: job.title,
       summary: job.summary,
+      group: job.group ?? null,
       registryTaskId: job.registryTaskId ?? null,
       worktree: job.worktree ?? null,
       logFile,
@@ -4439,7 +4443,7 @@ async function handleTask(argv) {
       "turn-plan-ms", "turn-default-ms",
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
       "question-timeout-ms",
-      "brief", "intercepted-from"
+      "brief", "intercepted-from", "group"
     ],
     booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
@@ -4660,7 +4664,8 @@ async function handleTask(argv) {
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
-      backend: adapter.name
+      backend: adapter.name,
+      group
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -4693,6 +4698,7 @@ async function handleTask(argv) {
         questionAnswerMs: questionTimeoutOverride,
         noPipeline,
         backend: adapter.name,
+        group,
         // `--quiet` suppresses the stderr `[codex] …` progress stream so
         // agents don't pattern-match a thread UUID out of it. Monitor /
         // `events --follow` remain the canonical in-run observation surface.
@@ -4885,6 +4891,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, j
           phase: j.phase ?? null,
           threadId: j.threadId ?? null,
           kind: j.kindLabel ?? j.kind ?? null,
+          group: j.group ?? null,
         })),
       };
       if (json) {
