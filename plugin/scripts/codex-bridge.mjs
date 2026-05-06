@@ -12461,7 +12461,7 @@ function createCompanionJob({
     ...extra
   });
 }
-function createTrackedProgress2(job, options = {}) {
+function createTrackedProgress(job, options = {}) {
   const logFile = options.logFile ?? createJobLogFile(job.workspaceRoot, job.id, job.title);
   const stderr = options.stderr === false ? false : true;
   return {
@@ -12623,7 +12623,7 @@ function persistFailureErrorInPayload(execution, command = null) {
   };
 }
 async function runForegroundCommand(job, runner, options = {}) {
-  const { logFile, progress } = createTrackedProgress2(job, {
+  const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile
   });
   const command = options.command ?? null;
@@ -12687,7 +12687,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   return child;
 }
 function enqueueBackgroundTask(cwd, job, request) {
-  const { logFile } = createTrackedProgress2(job);
+  const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
   const queuedRecord = {
     ...job,
