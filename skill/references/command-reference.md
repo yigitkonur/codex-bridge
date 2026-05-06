@@ -285,8 +285,14 @@ Use when `status` shows a pile of "running" jobs that aren't actually alive (e.g
 Get the full result of a completed job. Accepts either a job id or the thread UUID.
 
 ```
-codex-bridge result [job-id-or-thread-id] [--json]
+codex-bridge result [job-id-or-thread-id]
+                    [--transcript [--final-only] [--format markdown|text|json]]
+                    [--json]
 ```
+
+In JSON mode, `result.adapterResult.summary` and `result.adapterResult.finalMessage` contain the complete stored final assistant message when available.
+
+Use `--transcript --final-only --format text` to print only Codex's final assistant answer. Without `--final-only`, `--transcript` prints captured assistant messages from the NDJSON replay log, falling back to the stored final message when no replay log is present.
 
 ## cancel
 

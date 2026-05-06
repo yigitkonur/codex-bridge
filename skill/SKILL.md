@@ -255,6 +255,7 @@ Common follow-ups:
 - Standalone review: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs review`
 - Send a follow-up: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs send <thread-id> "also add tests"`
 - Read the full result: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs result <job-id>`
+- Read only the final assistant answer: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs result <job-id> --transcript --final-only --format text`
 
 ### [INCOMPLETE] — Completion check found gaps
 
@@ -355,6 +356,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs adversarial-review "focus on S
 Day-to-day work rarely needs these; the references have full details.
 
 - **Mid-turn steering:** `steer <thread-id> <turn-id> "…"` — see [references/command-reference.md](references/command-reference.md#steer). Find `<turn-id>` in the `[PLAN]` line or the `TURN_PARAMS` / `TURN_COMPLETED` NDJSON records.
+- **Final answer extraction:** `result <job-id> --transcript --final-only --format text` prints the stored final assistant message without requiring NDJSON queries.
 - **Block on terminal tags without streaming:** `wait <job-id> --timeout-ms 600000 --json` returns `{jobId, threadId, terminalTag, lastEventLine, elapsedMs, eventsPath}`. Exit 7 `WAIT_TIMEOUT` on deadline.
 - **Stream events with filters:** default shape is `events <job-id> --follow --exclude HEARTBEAT --timeout-ms 1800000`. Exclusion-based filter (v1.4.0) means any new tag future bridge versions emit passes through automatically — an inclusion-based `--filter X,Y,Z` silently drops unknown tags and is *not* forward-compatible. `--filter` and `--exclude` are mutually exclusive. Filter is prefix-aware on the head tag (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix:done]`, …). Continuation lines of multi-line blocks inherit the header's decision, so an included `[CHECKPOINT]` block ships whole (not just its header). With `--json`, the closing envelope carries `{terminalTag, terminalLine, elapsedMs, filter, exclude}` so Monitor can distinguish happy-path close from timeout.
 - **Retrospective analysis:** `summary <thread-id>` produces a markdown transcript from the NDJSON log.

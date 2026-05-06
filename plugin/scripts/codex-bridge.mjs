@@ -4297,6 +4297,29 @@ function findSession(sessionDir, threadId) {
   }
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
+function readNdjson(sessionOrPath, { maxEntries = null } = {}) {
+  const ndjsonPath = typeof sessionOrPath === "string" ? sessionOrPath : sessionOrPath?.ndjsonPath;
+  if (!ndjsonPath || !fs7.existsSync(ndjsonPath)) return [];
+  const lines = fs7.readFileSync(ndjsonPath, "utf8").split(/\r?\n/).filter(Boolean);
+  const selected = Number.isInteger(maxEntries) && maxEntries > 0 ? lines.slice(-maxEntries) : lines;
+  return selected.map((line, index) => {
+    try {
+      return JSON.parse(line);
+    } catch (error) {
+      return {
+        ts: null,
+        tag: "CORRUPT_NDJSON_LINE",
+        method: null,
+        threadId: null,
+        data: {
+          line: index,
+          raw: line,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      };
+    }
+  });
+}
 function logNdjson(session, tag, method, data) {
   const entry = {
     ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -8549,19 +8572,31 @@ async function cancel(_jobId, options = {}) {
     reason: result.detail ?? null
   };
 }
+function storedFinalMessage(storedJob) {
+  const candidates = [
+    storedJob?.result?.rawOutput,
+    storedJob?.result?.raw_output,
+    storedJob?.result?.finalMessage,
+    storedJob?.result?.codex?.stdout,
+    storedJob?.result?.reviewText
+  ];
+  return candidates.find((value) => typeof value === "string" && value.length > 0) ?? null;
+}
 async function getResult(jobId, options = {}) {
   const normalized = normalizeAdapterOptions(options);
   const cwd = normalized.cwd ?? process8.cwd();
   const { workspaceRoot, job } = resolveResultJob(cwd, jobId);
   const storedJob = readStoredJob(workspaceRoot, job.id);
   const exitCode = job.status === "completed" ? 0 : 1;
+  const finalMessage = storedFinalMessage(storedJob);
   return {
     jobId: job.id,
     threadId: job.threadId ?? storedJob?.threadId ?? null,
     phase: job.phase ?? storedJob?.phase ?? job.status ?? "error",
     exitCode,
     terminalTag: job.status === "completed" ? "DONE" : job.status === "cancelled" ? "ERROR" : null,
-    summary: job.summary ?? storedJob?.summary ?? null,
+    summary: finalMessage ?? job.summary ?? storedJob?.summary ?? null,
+    finalMessage,
     artifacts: storedJob?.result?.artifacts ?? {},
     raw: { job, storedJob }
   };
@@ -11381,7 +11416,7 @@ function extractItemText(item) {
   if (!item || typeof item !== "object") return null;
   switch (item.type) {
     case "agentMessage":
-      return typeof item.text === "string" ? item.text.slice(0, 500) : null;
+      return typeof item.text === "string" ? item.text : null;
     case "commandExecution":
       return typeof item.command === "string" ? item.command.slice(0, 200) : null;
     case "fileChange": {
@@ -11515,9 +11550,12 @@ var COMMANDS = Object.freeze({
     ]
   },
   result: {
-    synopsis: "result [job-id] [--json]",
+    synopsis: "result [job-id] [--transcript [--final-only] [--format markdown|text|json]] [--json]",
     summary: "Get the full result of a completed job. Omit job-id for the latest in this session.",
-    examples: ["codex-bridge result task-abc --json"]
+    examples: [
+      "codex-bridge result task-abc --json",
+      "codex-bridge result task-abc --transcript --final-only --format text"
+    ]
   },
   wait: {
     synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
@@ -15230,8 +15268,8 @@ function renderCleanupReport(report) {
 async function handleResult(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    valueOptions: ["cwd", "format"],
+    booleanOptions: ["json", "transcript", "final-only"]
   });
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
@@ -15249,10 +15287,124 @@ async function handleResult(argv) {
     storedJob,
     adapterResult
   };
+  if (options.transcript) {
+    const transcript = buildResultTranscript({
+      job,
+      storedJob,
+      adapterResult,
+      cwd,
+      workspaceRoot,
+      format: options.format,
+      finalOnly: Boolean(options["final-only"])
+    });
+    emitSuccess("result", { ...payload, transcript: transcript.payload }, transcript.rendered, {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
   emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
     json: options.json,
     startedAt
   });
+}
+function normalizeTranscriptFormat(format) {
+  const normalized = String(format ?? "markdown").trim().toLowerCase();
+  if (["markdown", "text", "json"].includes(normalized)) {
+    return normalized;
+  }
+  throw validationError(
+    `Unsupported transcript format "${format}". Use markdown, text, or json.`,
+    "INVALID_TRANSCRIPT_FORMAT"
+  );
+}
+function normalizeCompletedItem(entry) {
+  if (entry?.method !== "item/completed") return null;
+  const raw = entry.data?.item ?? entry.data ?? {};
+  const type2 = raw.type ?? raw.itemType ?? null;
+  if (!type2) return null;
+  return { ...raw, type: type2 };
+}
+function collectAgentTranscriptMessages(entries) {
+  const messages = [];
+  for (const entry of entries) {
+    const item = normalizeCompletedItem(entry);
+    if (item?.type !== "agentMessage" || typeof item.text !== "string" || !item.text) {
+      continue;
+    }
+    messages.push({
+      role: "assistant",
+      text: item.text,
+      timestamp: entry.ts ?? null,
+      itemId: item.itemId ?? item.id ?? null,
+      final: item.phase === "final_answer" ? true : null,
+      source: "ndjson"
+    });
+  }
+  return messages;
+}
+function readJobNdjsonEntries(cwd, workspaceRoot, threadId) {
+  if (!threadId) return [];
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+  const session = findSession(sessionDir, threadId);
+  return session ? readNdjson(session) : [];
+}
+function buildResultTranscript({ job, storedJob, adapterResult, cwd, workspaceRoot, format, finalOnly }) {
+  const normalizedFormat = normalizeTranscriptFormat(format);
+  const threadId = adapterResult.threadId ?? job.threadId ?? storedJob?.threadId ?? null;
+  const finalMessage = typeof adapterResult.finalMessage === "string" && adapterResult.finalMessage.length > 0 ? adapterResult.finalMessage : null;
+  const ndjsonMessages = collectAgentTranscriptMessages(readJobNdjsonEntries(cwd, workspaceRoot, threadId));
+  const fallbackFinalMessage = finalMessage ? [{
+    role: "assistant",
+    text: finalMessage,
+    timestamp: null,
+    itemId: null,
+    final: true,
+    source: "stored-result"
+  }] : [];
+  const messages = finalOnly ? fallbackFinalMessage.length > 0 ? fallbackFinalMessage : ndjsonMessages.slice(-1) : ndjsonMessages.length > 0 ? ndjsonMessages : fallbackFinalMessage;
+  const payload = {
+    jobId: job.id,
+    threadId,
+    finalOnly,
+    format: normalizedFormat,
+    messageCount: messages.length,
+    messages
+  };
+  return {
+    payload,
+    rendered: renderResultTranscript(payload)
+  };
+}
+function renderResultTranscript(payload) {
+  if (payload.format === "json") {
+    return `${JSON.stringify(payload.messages, null, 2)}
+`;
+  }
+  if (payload.format === "text") {
+    const text = payload.messages.map((message) => message.text).join("\n\n---\n\n");
+    return text && !text.endsWith("\n") ? `${text}
+` : text;
+  }
+  const lines = [
+    "# Codex Result Transcript",
+    "",
+    `Job: ${payload.jobId}`,
+    `Thread: ${payload.threadId ?? "unknown"}`
+  ];
+  if (payload.messages.length === 0) {
+    lines.push("", "No assistant messages captured.");
+    return `${lines.join("\n")}
+`;
+  }
+  payload.messages.forEach((message, index) => {
+    const suffix = message.final === true ? " (final)" : "";
+    const timestamp2 = message.timestamp ? ` - ${message.timestamp}` : "";
+    lines.push("", `## Assistant Message ${index + 1}${suffix}${timestamp2}`, "", message.text);
+  });
+  return `${lines.join("\n").trimEnd()}
+`;
 }
 function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
   return new Promise((resolve) => {
@@ -15767,7 +15919,7 @@ function buildTranscript(entries, threadId) {
       continue;
     }
     if (entry.method === "item/completed") {
-      const item = entry.data?.item ?? entry.data ?? {};
+      const item = normalizeCompletedItem(entry) ?? {};
       if (item.type === "userMessage") {
         const text = item.content?.map((c) => c.text).join(" ") ?? "";
         lines.push(`> ${text}`);

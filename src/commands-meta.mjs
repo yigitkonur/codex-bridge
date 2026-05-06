@@ -85,9 +85,12 @@ export const COMMANDS = Object.freeze({
     ]
   },
   result: {
-    synopsis: "result [job-id] [--json]",
+    synopsis: "result [job-id] [--transcript [--final-only] [--format markdown|text|json]] [--json]",
     summary: "Get the full result of a completed job. Omit job-id for the latest in this session.",
-    examples: ["codex-bridge result task-abc --json"]
+    examples: [
+      "codex-bridge result task-abc --json",
+      "codex-bridge result task-abc --transcript --final-only --format text"
+    ]
   },
   wait: {
     synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",

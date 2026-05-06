@@ -90,14 +90,14 @@ export function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
   };
 }
 
-// Extracts a small, retrospective-replay-friendly text preview from an
-// `item/completed` payload. Keep the slices tight — NDJSON is a transcript
-// replay store, not a verbatim mirror of the wire protocol.
+// Extracts retrospective-replay-friendly text from an `item/completed` payload.
+// Assistant messages are the deliverable, so preserve them verbatim; keep tool
+// previews tight so NDJSON remains readable.
 export function extractItemText(item) {
   if (!item || typeof item !== "object") return null;
   switch (item.type) {
     case "agentMessage":
-      return typeof item.text === "string" ? item.text.slice(0, 500) : null;
+      return typeof item.text === "string" ? item.text : null;
     case "commandExecution":
       return typeof item.command === "string" ? item.command.slice(0, 200) : null;
     case "fileChange": {

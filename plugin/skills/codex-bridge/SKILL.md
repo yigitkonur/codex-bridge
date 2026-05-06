@@ -116,6 +116,7 @@ Write-mode tasks land in `<repo>/../.codex-bridge-worktrees/<task_id>` on a `sub
 Everything below is owned by another canonical surface. Read those when you need the detail; don't expect SKILL.md to mirror them.
 
 - **Per-subcommand reference** — `node …/codex-bridge.mjs <sub> --help`. The `--json` envelope's `error.code`, `error.suggestion`, and `result.next_action.command` are also self-documenting.
+- **Final answer extraction** — `result <job-id> --transcript --final-only --format text` prints Codex's stored final assistant message without raw NDJSON queries.
 - **Event stream** — `events --help` shows the supported filters. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary.
 - **Config keys** — `config show --json` prints the merged config. Edit `~/.codex-bridge/config.yaml`, `<workspace>/config.yaml`, or the cwd `config.yaml`; the resolution order is documented there.
 - **Error decision tree** — `references/error-recovery.md` (decision tree by `error.code` + `origin`).

@@ -31,6 +31,7 @@ import {
   initSession,
   logEvent,
   logNdjson,
+  readNdjson,
   resolveSessionDir,
   TERMINAL_TAG_REGEX,
   writePlan,
@@ -561,8 +562,8 @@ function renderCleanupReport(report) {
 export async function handleResult(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    valueOptions: ["cwd", "format"],
+    booleanOptions: ["json", "transcript", "final-only"]
   });
 
   const cwd = resolveCommandCwd(options);
@@ -582,10 +583,135 @@ export async function handleResult(argv) {
     adapterResult
   };
 
+  if (options.transcript) {
+    const transcript = buildResultTranscript({
+      job,
+      storedJob,
+      adapterResult,
+      cwd,
+      workspaceRoot,
+      format: options.format,
+      finalOnly: Boolean(options["final-only"]),
+    });
+    emitSuccess("result", { ...payload, transcript: transcript.payload }, transcript.rendered, {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+
   emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
     json: options.json,
     startedAt
   });
+}
+
+function normalizeTranscriptFormat(format) {
+  const normalized = String(format ?? "markdown").trim().toLowerCase();
+  if (["markdown", "text", "json"].includes(normalized)) {
+    return normalized;
+  }
+  throw validationError(
+    `Unsupported transcript format "${format}". Use markdown, text, or json.`,
+    "INVALID_TRANSCRIPT_FORMAT"
+  );
+}
+
+function normalizeCompletedItem(entry) {
+  if (entry?.method !== "item/completed") return null;
+  const raw = entry.data?.item ?? entry.data ?? {};
+  const type = raw.type ?? raw.itemType ?? null;
+  if (!type) return null;
+  return { ...raw, type };
+}
+
+function collectAgentTranscriptMessages(entries) {
+  const messages = [];
+  for (const entry of entries) {
+    const item = normalizeCompletedItem(entry);
+    if (item?.type !== "agentMessage" || typeof item.text !== "string" || !item.text) {
+      continue;
+    }
+    messages.push({
+      role: "assistant",
+      text: item.text,
+      timestamp: entry.ts ?? null,
+      itemId: item.itemId ?? item.id ?? null,
+      final: item.phase === "final_answer" ? true : null,
+      source: "ndjson",
+    });
+  }
+  return messages;
+}
+
+function readJobNdjsonEntries(cwd, workspaceRoot, threadId) {
+  if (!threadId) return [];
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+  const session = findSession(sessionDir, threadId);
+  return session ? readNdjson(session) : [];
+}
+
+function buildResultTranscript({ job, storedJob, adapterResult, cwd, workspaceRoot, format, finalOnly }) {
+  const normalizedFormat = normalizeTranscriptFormat(format);
+  const threadId = adapterResult.threadId ?? job.threadId ?? storedJob?.threadId ?? null;
+  const finalMessage = typeof adapterResult.finalMessage === "string" && adapterResult.finalMessage.length > 0
+    ? adapterResult.finalMessage
+    : null;
+  const ndjsonMessages = collectAgentTranscriptMessages(readJobNdjsonEntries(cwd, workspaceRoot, threadId));
+  const fallbackFinalMessage = finalMessage
+    ? [{
+        role: "assistant",
+        text: finalMessage,
+        timestamp: null,
+        itemId: null,
+        final: true,
+        source: "stored-result",
+      }]
+    : [];
+  const messages = finalOnly
+    ? (fallbackFinalMessage.length > 0 ? fallbackFinalMessage : ndjsonMessages.slice(-1))
+    : (ndjsonMessages.length > 0 ? ndjsonMessages : fallbackFinalMessage);
+
+  const payload = {
+    jobId: job.id,
+    threadId,
+    finalOnly,
+    format: normalizedFormat,
+    messageCount: messages.length,
+    messages,
+  };
+  return {
+    payload,
+    rendered: renderResultTranscript(payload),
+  };
+}
+
+function renderResultTranscript(payload) {
+  if (payload.format === "json") {
+    return `${JSON.stringify(payload.messages, null, 2)}\n`;
+  }
+  if (payload.format === "text") {
+    const text = payload.messages.map((message) => message.text).join("\n\n---\n\n");
+    return text && !text.endsWith("\n") ? `${text}\n` : text;
+  }
+
+  const lines = [
+    "# Codex Result Transcript",
+    "",
+    `Job: ${payload.jobId}`,
+    `Thread: ${payload.threadId ?? "unknown"}`,
+  ];
+  if (payload.messages.length === 0) {
+    lines.push("", "No assistant messages captured.");
+    return `${lines.join("\n")}\n`;
+  }
+  payload.messages.forEach((message, index) => {
+    const suffix = message.final === true ? " (final)" : "";
+    const timestamp = message.timestamp ? ` - ${message.timestamp}` : "";
+    lines.push("", `## Assistant Message ${index + 1}${suffix}${timestamp}`, "", message.text);
+  });
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
@@ -1191,7 +1317,7 @@ function buildTranscript(entries, threadId) {
     }
 
     if (entry.method === "item/completed") {
-      const item = entry.data?.item ?? entry.data ?? {};
+      const item = normalizeCompletedItem(entry) ?? {};
       if (item.type === "userMessage") {
         const text = item.content?.map((c) => c.text).join(" ") ?? "";
         lines.push(`> ${text}`);

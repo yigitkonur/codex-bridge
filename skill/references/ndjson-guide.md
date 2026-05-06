@@ -4,7 +4,7 @@
 
 ## Scope
 
-NDJSON captures a curated slice of the run — **not every wire-level notification.** Per-item deltas (`item/agentMessage/delta`, `item/reasoning/*Delta`, etc.) and the bare `thread/started` / `turn/started` events are not persisted. Finalized `item/completed` events **are** persisted (as `ITEM_COMPLETED`), with a truncated `text` field sufficient for transcript replay. NDJSON is for retrospective queries on turn outcomes, per-item completions, questions, pipeline stages, steers, and errors.
+NDJSON captures a curated slice of the run — **not every wire-level notification.** Per-item deltas (`item/agentMessage/delta`, `item/reasoning/*Delta`, etc.) and the bare `thread/started` / `turn/started` events are not persisted. Finalized `item/completed` events **are** persisted (as `ITEM_COMPLETED`). Assistant-message text is preserved in full for transcript replay; tool and plan previews stay compact. NDJSON is for retrospective queries on turn outcomes, per-item completions, questions, pipeline stages, steers, and errors.
 
 ## Persisted tags
 
@@ -12,7 +12,7 @@ NDJSON captures a curated slice of the run — **not every wire-level notificati
 |-----|------|------------------------|--------|
 | `TURN_PARAMS` | Start of every Codex turn | `model`, `effort`, `collaborationMode`, `sandboxPolicy`, `hasOutputSchema`, `promptLength`, `promptPreview` | `src/codex-bridge.mjs::onTurnStart` |
 | `TURN_COMPLETED` | End of every Codex turn | `turnId`, `status` (0/non-zero), `planDetected`, `touchedFiles` | `src/codex-bridge.mjs` |
-| `ITEM_COMPLETED` | Every finalized item on the root thread | `itemId`, `itemType` (`agentMessage` \| `commandExecution` \| `fileChange` \| `plan` \| `reasoning` \| …), `text` (agentMessage ≤ 500 chars; commandExecution ≤ 200; fileChange = `"<op> <path>"`; plan = title / first line; otherwise `null`) | `runBridgeTask::onItemCompleted`, `handleSend::onItemCompleted` |
+| `ITEM_COMPLETED` | Every finalized item on the root thread | `itemId`, `itemType` (`agentMessage` \| `commandExecution` \| `fileChange` \| `plan` \| `reasoning` \| …), `text` (agentMessage full text; commandExecution ≤ 200 chars; fileChange = `"<op> <path>"`; plan = title / first line; otherwise `null`) | `runBridgeTask::onItemCompleted`, `handleSend::onItemCompleted` |
 | `QUESTION` | `item/tool/requestUserInput` arrived | `requestId`, `questions` | `runBridgeTask::onServerRequest` |
 | `CONFIRMED` | A pending question was answered via `respond` | `requestId` | `runBridgeTask::onServerRequest` |
 | `QUESTION_TIMEOUT` | Question timed out (default 5 min); bridge replied to the upstream server request with `result: { answers: {} }` (empty-answer success — `src/codex-bridge.mjs:2197`) | `requestId` | `runBridgeTask::onServerRequest` |
@@ -93,6 +93,11 @@ jq 'select(.tag == "ERROR" or .tag == "PIPELINE_ERROR") | {tag, origin: .data.or
 Use the `summary` command — it consolidates `.events`, `.ndjson`, and the diff file into a single markdown transcript:
 ```bash
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs summary <thread-id> --tail 400
+```
+
+For only the final assistant answer, prefer the result transcript shortcut:
+```bash
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs result <job-id> --transcript --final-only --format text
 ```
 
 Or read the `.events` file directly:

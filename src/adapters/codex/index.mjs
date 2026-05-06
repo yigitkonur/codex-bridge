@@ -171,19 +171,32 @@ async function cancel(_jobId, options = {}) {
   };
 }
 
+function storedFinalMessage(storedJob) {
+  const candidates = [
+    storedJob?.result?.rawOutput,
+    storedJob?.result?.raw_output,
+    storedJob?.result?.finalMessage,
+    storedJob?.result?.codex?.stdout,
+    storedJob?.result?.reviewText,
+  ];
+  return candidates.find((value) => typeof value === "string" && value.length > 0) ?? null;
+}
+
 async function getResult(jobId, options = {}) {
   const normalized = normalizeAdapterOptions(options);
   const cwd = normalized.cwd ?? process.cwd();
   const { workspaceRoot, job } = resolveResultJob(cwd, jobId);
   const storedJob = readStoredJob(workspaceRoot, job.id);
   const exitCode = job.status === "completed" ? 0 : 1;
+  const finalMessage = storedFinalMessage(storedJob);
   return {
     jobId: job.id,
     threadId: job.threadId ?? storedJob?.threadId ?? null,
     phase: job.phase ?? storedJob?.phase ?? job.status ?? "error",
     exitCode,
     terminalTag: job.status === "completed" ? "DONE" : job.status === "cancelled" ? "ERROR" : null,
-    summary: job.summary ?? storedJob?.summary ?? null,
+    summary: finalMessage ?? job.summary ?? storedJob?.summary ?? null,
+    finalMessage,
     artifacts: storedJob?.result?.artifacts ?? {},
     raw: { job, storedJob },
   };
