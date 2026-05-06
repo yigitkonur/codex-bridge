@@ -1,9 +1,9 @@
 // src/codex-bridge.mjs
-import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
-import fs18 from "node:fs";
+import { spawn as spawn5, spawnSync as spawnSync5 } from "node:child_process";
+import fs19 from "node:fs";
 import os7 from "node:os";
-import path15 from "node:path";
-import process11 from "node:process";
+import path16 from "node:path";
+import process12 from "node:process";
 
 // src/lib/cli-errors.mjs
 import process2 from "node:process";
@@ -852,7 +852,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // src/lib/process.mjs
-import { spawnSync } from "node:child_process";
+import { spawnSync as spawnSync2 } from "node:child_process";
 import process4 from "node:process";
 var DEFAULT_RUN_COMMAND_TIMEOUT_MS = 1e4;
 function resolveRunCommandTimeout(timeout) {
@@ -866,7 +866,7 @@ function resolveRunCommandTimeout(timeout) {
   return Math.max(1, Math.floor(parsed));
 }
 function runCommand(command, args = [], options = {}) {
-  const spawnSyncImpl = options.spawnSync ?? spawnSync;
+  const spawnSyncImpl = options.spawnSync ?? spawnSync2;
   const result = spawnSyncImpl(command, args, {
     cwd: options.cwd,
     env: options.env,
@@ -995,7 +995,7 @@ import os from "node:os";
 import path4 from "node:path";
 
 // src/lib/official-plugin.mjs
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync as spawnSync3 } from "node:child_process";
 var OFFICIAL_PLUGIN_STATUS = Object.freeze({
   ACTIVE: "active",
   ABSENT: "absent",
@@ -1071,8 +1071,8 @@ function extractPluginEntries(parsed) {
   return null;
 }
 function detectOfficialOpenAICodexPluginUncached(options = {}) {
-  const spawn4 = options.spawnSync ?? spawnSync2;
-  const result = spawn4("claude", ["plugin", "list", "--json"], {
+  const spawn6 = options.spawnSync ?? spawnSync3;
+  const result = spawn6("claude", ["plugin", "list", "--json"], {
     cwd: options.cwd ?? process.cwd(),
     env: options.env ?? process.env,
     encoding: "utf8",
@@ -4245,7 +4245,7 @@ function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIME
 import fs7 from "node:fs";
 import path7 from "node:path";
 import os3 from "node:os";
-import { spawnSync as spawnSync3 } from "node:child_process";
+import { spawnSync as spawnSync4 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
 function resolveSessionDir(configDir, baseDir = process.cwd()) {
   const configured = configDir ?? "~/.codex-bridge/sessions";
@@ -4348,11 +4348,11 @@ function writeReview(session, reviewData) {
 function captureGitSnapshot(cwd) {
   const isoTimestamp = (/* @__PURE__ */ new Date()).toISOString();
   try {
-    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync4("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (headResult.status !== 0 || !headResult.stdout) {
       return { headSha: null, porcelain: null, isoTimestamp };
     }
-    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync4("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
     return {
       headSha: headResult.stdout.trim(),
       porcelain: statusResult.status === 0 ? statusResult.stdout ?? "" : "",
@@ -4370,7 +4370,7 @@ function diffGitSnapshot(cwd, snapshot) {
   let currentHeadSha = null;
   let dirtyFiles = [];
   try {
-    const logResult = spawnSync3(
+    const logResult = spawnSync4(
       "git",
       ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
       { cwd, encoding: "utf8", timeout: 1e4 }
@@ -4378,11 +4378,11 @@ function diffGitSnapshot(cwd, snapshot) {
     if (logResult.status === 0 && logResult.stdout) {
       commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
-    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync4("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (headResult.status === 0 && headResult.stdout) {
       currentHeadSha = headResult.stdout.trim();
     }
-    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync4("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (statusResult.status === 0 && statusResult.stdout) {
       dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
@@ -4398,8 +4398,8 @@ function diffGitSnapshot(cwd, snapshot) {
 }
 function captureGitDiff(cwd, session, options = {}) {
   const baseRef = typeof options.baseRef === "string" && options.baseRef.trim() ? options.baseRef.trim() : "HEAD";
-  const numstatResult = spawnSync3("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
-  const fullResult = spawnSync3("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
+  const numstatResult = spawnSync4("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
+  const fullResult = spawnSync4("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
   const untrackedFiles = getUntrackedFileStats(cwd);
   const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles, baseRef);
   const diffPath = writeDiff(session, diffContent);
@@ -4410,7 +4410,7 @@ function captureGitDiff(cwd, session, options = {}) {
 }
 function getUntrackedFileStats(cwd) {
   try {
-    const result = spawnSync3(
+    const result = spawnSync4(
       "git",
       ["ls-files", "--others", "--exclude-standard", "-z"],
       { cwd, encoding: "utf8", timeout: 1e4 }
@@ -10604,9 +10604,138 @@ function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
 }
 
 // src/lib/update-check.mjs
+import { spawn as spawn3 } from "node:child_process";
+import fs16 from "node:fs";
+import path14 from "node:path";
+import os6 from "node:os";
+
+// src/lib/runtime-paths.mjs
 import fs15 from "node:fs";
 import path13 from "node:path";
-import os6 from "node:os";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// package.json
+var package_default = {
+  name: "codex-bridge",
+  version: "2.2.0",
+  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
+  type: "module",
+  scripts: {
+    "baseline:contracts": "node scripts/baseline-contracts.mjs",
+    build: "node esbuild.config.mjs",
+    dev: "node src/codex-bridge.mjs",
+    "release:package": "node scripts/package-release.mjs",
+    "smoke:runtime": "node scripts/runtime-smoke.mjs",
+    test: "node --test test/*.test.mjs",
+    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
+  },
+  author: "Yigit Konur",
+  license: "MIT",
+  engines: {
+    node: ">=22.0.0"
+  },
+  devDependencies: {
+    esbuild: "^0.24.0",
+    "js-yaml": "^4.1.0"
+  }
+};
+
+// src/lib/runtime-paths.mjs
+function resolveDispatcherDir() {
+  const here = path13.dirname(fileURLToPath2(import.meta.url));
+  if (fs15.existsSync(path13.join(here, "codex-bridge.mjs"))) return here;
+  const parent = path13.resolve(here, "..");
+  if (fs15.existsSync(path13.join(parent, "codex-bridge.mjs"))) return parent;
+  return here;
+}
+var SCRIPT_DIR = resolveDispatcherDir();
+var SCRIPT_PATH = path13.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs15.existsSync(path13.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path13.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path13.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path13.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path13.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var BRIDGE_VERSION = package_default.version;
+var BRIDGE_SCHEMA_VERSION = "1.0";
+var BRIDGE_CAPABILITIES = Object.freeze([
+  "plan-mode",
+  "background-jobs",
+  "auto-pipeline",
+  "adversarial-review",
+  "stop-gate-review",
+  "structured-errors",
+  "per-subcommand-help",
+  "machine-readable-help",
+  "workspace-config-override",
+  "update-check",
+  "backend-adapter"
+]);
+var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
+var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
+var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
+var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
+
+// src/lib/update-check.mjs
+function maybeTriggerAutoApply(rawArgv, subcommand) {
+  try {
+    if (process.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
+    if (detectJsonFlag(rawArgv)) return;
+    if (detectHelpFlag(rawArgv)) return;
+    if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
+    if (subcommand === "version" || subcommand === "update") return;
+    void checkForUpdate({ currentVersion: BRIDGE_VERSION }).then((result) => {
+      if (!result || !result.hasUpdate || !result.latestVersion) return;
+      if (!shouldAttemptApply()) return;
+      markApplyAttempted(result.latestVersion);
+      spawnDetachedAutoApply(result.latestVersion);
+    }).catch(() => {
+    });
+  } catch {
+  }
+}
+function spawnDetachedAutoApply(targetVersion) {
+  try {
+    const logDir = path14.join(os6.homedir(), ".codex-bridge");
+    fs16.mkdirSync(logDir, { recursive: true });
+    const logFile = path14.join(logDir, "auto-update.log");
+    try {
+      const stat = fs16.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs16.truncateSync(logFile, 0);
+    } catch {
+    }
+    const fd = fs16.openSync(logFile, "a");
+    try {
+      const banner = `
+[${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
+`;
+      fs16.writeSync(fd, banner);
+      const child = spawn3(
+        "npx",
+        ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+        {
+          detached: true,
+          stdio: ["ignore", fd, fd],
+          env: process.env
+        }
+      );
+      child.on("error", () => {
+        try {
+          fs16.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+`, "utf8");
+        } catch {
+        }
+      });
+      child.unref();
+    } finally {
+      try {
+        fs16.closeSync(fd);
+      } catch {
+      }
+    }
+  } catch {
+  }
+}
 var DEFAULT_CACHE_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_FETCH_TIMEOUT_MS = 2500;
 var APPLY_ATTEMPT_WINDOW_MS = 60 * 60 * 1e3;
@@ -10614,12 +10743,12 @@ var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/relea
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
-  const root = pluginDataDir ? path13.join(pluginDataDir, "codex-bridge-update.json") : path13.join(os6.homedir(), ".codex-bridge", "update-cache.json");
+  const root = pluginDataDir ? path14.join(pluginDataDir, "codex-bridge-update.json") : path14.join(os6.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
   try {
-    const raw = fs15.readFileSync(cachePath(), "utf8");
+    const raw = fs16.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
     return parsed;
@@ -10630,8 +10759,8 @@ function readCache() {
 function writeCache(entry) {
   try {
     const p = cachePath();
-    fs15.mkdirSync(path13.dirname(p), { recursive: true });
-    fs15.writeFileSync(p, JSON.stringify(entry, null, 2));
+    fs16.mkdirSync(path14.dirname(p), { recursive: true });
+    fs16.writeFileSync(p, JSON.stringify(entry, null, 2));
     return true;
   } catch {
     return false;
@@ -10645,9 +10774,9 @@ function cacheLockPath() {
 }
 function removeStaleLock(lockPath, staleMs) {
   try {
-    const stat = fs15.statSync(lockPath);
+    const stat = fs16.statSync(lockPath);
     if (Date.now() - stat.mtimeMs <= staleMs) return false;
-    fs15.unlinkSync(lockPath);
+    fs16.unlinkSync(lockPath);
     return true;
   } catch (err) {
     return err?.code === "ENOENT";
@@ -10656,15 +10785,15 @@ function removeStaleLock(lockPath, staleMs) {
 function acquireCacheLock(staleMs) {
   const lockPath = cacheLockPath();
   try {
-    fs15.mkdirSync(path13.dirname(lockPath), { recursive: true });
+    fs16.mkdirSync(path14.dirname(lockPath), { recursive: true });
   } catch {
     return null;
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = fs15.openSync(lockPath, "wx");
+      const fd = fs16.openSync(lockPath, "wx");
       try {
-        fs15.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+        fs16.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
       } catch {
       }
       return { fd, lockPath };
@@ -10677,11 +10806,11 @@ function acquireCacheLock(staleMs) {
 }
 function releaseCacheLock(lock) {
   try {
-    fs15.closeSync(lock.fd);
+    fs16.closeSync(lock.fd);
   } catch {
   }
   try {
-    fs15.unlinkSync(lock.lockPath);
+    fs16.unlinkSync(lock.lockPath);
   } catch {
   }
 }
@@ -11142,73 +11271,6 @@ async function runIterateLoop(options = {}) {
   };
 }
 
-// src/lib/runtime-paths.mjs
-import fs16 from "node:fs";
-import path14 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// package.json
-var package_default = {
-  name: "codex-bridge",
-  version: "2.2.0",
-  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
-  type: "module",
-  scripts: {
-    "baseline:contracts": "node scripts/baseline-contracts.mjs",
-    build: "node esbuild.config.mjs",
-    dev: "node src/codex-bridge.mjs",
-    "release:package": "node scripts/package-release.mjs",
-    "smoke:runtime": "node scripts/runtime-smoke.mjs",
-    test: "node --test test/*.test.mjs",
-    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
-  },
-  author: "Yigit Konur",
-  license: "MIT",
-  engines: {
-    node: ">=22.0.0"
-  },
-  devDependencies: {
-    esbuild: "^0.24.0",
-    "js-yaml": "^4.1.0"
-  }
-};
-
-// src/lib/runtime-paths.mjs
-function resolveDispatcherDir() {
-  const here = path14.dirname(fileURLToPath2(import.meta.url));
-  if (fs16.existsSync(path14.join(here, "codex-bridge.mjs"))) return here;
-  const parent = path14.resolve(here, "..");
-  if (fs16.existsSync(path14.join(parent, "codex-bridge.mjs"))) return parent;
-  return here;
-}
-var SCRIPT_DIR = resolveDispatcherDir();
-var SCRIPT_PATH = path14.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs16.existsSync(path14.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path14.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path14.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path14.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path14.join(ROOT_DIR, "templates", "plan-enforcement.md");
-var BRIDGE_VERSION = package_default.version;
-var BRIDGE_SCHEMA_VERSION = "1.0";
-var BRIDGE_CAPABILITIES = Object.freeze([
-  "plan-mode",
-  "background-jobs",
-  "auto-pipeline",
-  "adversarial-review",
-  "stop-gate-review",
-  "structured-errors",
-  "per-subcommand-help",
-  "machine-readable-help",
-  "workspace-config-override",
-  "update-check",
-  "backend-adapter"
-]);
-var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
-var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
-var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
-var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
-var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
-
 // src/lib/bridge-config.mjs
 import fs17 from "node:fs";
 import process10 from "node:process";
@@ -11330,8 +11392,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path16 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path16}`.trim();
+      const path17 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path17}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -11563,7 +11625,11 @@ var GLOBAL_FLAGS_DOC = [
   "  -h, --help        Show help for the subcommand and exit."
 ].join("\n");
 
-// src/codex-bridge.mjs
+// src/lib/task-runtime.mjs
+import { spawn as spawn4 } from "node:child_process";
+import fs18 from "node:fs";
+import path15 from "node:path";
+import process11 from "node:process";
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
   try {
@@ -11571,65 +11637,6 @@ function mirrorDiffToRegistry(taskId, diffPath) {
     return writeDiffArtifact(taskId, fs18.readFileSync(diffPath, "utf8"));
   } catch {
     return null;
-  }
-}
-function maybeTriggerAutoApply(rawArgv, subcommand) {
-  try {
-    if (process11.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
-    if (detectJsonFlag(rawArgv)) return;
-    if (detectHelpFlag(rawArgv)) return;
-    if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
-    if (subcommand === "version" || subcommand === "update") return;
-    void checkForUpdate({ currentVersion: BRIDGE_VERSION }).then((result) => {
-      if (!result || !result.hasUpdate || !result.latestVersion) return;
-      if (!shouldAttemptApply()) return;
-      markApplyAttempted(result.latestVersion);
-      spawnDetachedAutoApply(result.latestVersion);
-    }).catch(() => {
-    });
-  } catch {
-  }
-}
-function spawnDetachedAutoApply(targetVersion) {
-  try {
-    const logDir = path15.join(os7.homedir(), ".codex-bridge");
-    fs18.mkdirSync(logDir, { recursive: true });
-    const logFile = path15.join(logDir, "auto-update.log");
-    try {
-      const stat = fs18.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs18.truncateSync(logFile, 0);
-    } catch {
-    }
-    const fd = fs18.openSync(logFile, "a");
-    try {
-      const banner = `
-[${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
-`;
-      fs18.writeSync(fd, banner);
-      const child = spawn3(
-        "npx",
-        ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
-        {
-          detached: true,
-          stdio: ["ignore", fd, fd],
-          env: process11.env
-        }
-      );
-      child.on("error", () => {
-        try {
-          fs18.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
-`, "utf8");
-        } catch {
-        }
-      });
-      child.unref();
-    } finally {
-      try {
-        fs18.closeSync(fd);
-      } catch {
-      }
-    }
-  } catch {
   }
 }
 function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, cwd = null, stateCwd = null }) {
@@ -11762,194 +11769,6 @@ function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorComma
 ${parts.join(" \xB7 ")}
 `;
 }
-function printUsage() {
-  const lines = ["Usage:"];
-  for (const name of Object.keys(COMMANDS)) {
-    lines.push(`  codex-bridge ${COMMANDS[name].synopsis}`);
-  }
-  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC, "", "Run `codex-bridge <subcommand> --help` for per-command details.");
-  console.log(lines.join("\n"));
-}
-function printSubcommandUsage(name) {
-  const entry = COMMANDS[name];
-  if (!entry) {
-    printUsage();
-    return;
-  }
-  const lines = [
-    `codex-bridge ${entry.synopsis}`,
-    "",
-    entry.summary
-  ];
-  if (entry.examples?.length) {
-    lines.push("", "Examples:");
-    for (const example of entry.examples) {
-      lines.push(`  ${example}`);
-    }
-  }
-  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC);
-  console.log(lines.join("\n"));
-}
-function normalizeRequestedModel(model) {
-  if (model == null) {
-    return null;
-  }
-  const normalized = String(model).trim();
-  if (!normalized) {
-    return null;
-  }
-  return MODEL_ALIASES.get(normalized.toLowerCase()) ?? normalized;
-}
-function normalizeReasoningEffort(effort) {
-  if (effort == null) {
-    return null;
-  }
-  const normalized = String(effort).trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  if (!VALID_REASONING_EFFORTS.has(normalized)) {
-    throw validationError(
-      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh.`,
-      "INVALID_EFFORT"
-    );
-  }
-  return normalized;
-}
-function normalizeArgv(argv) {
-  if (argv.length === 1) {
-    const [raw] = argv;
-    if (!raw || !raw.trim()) {
-      return [];
-    }
-    return splitRawArgumentString(raw);
-  }
-  const out = [];
-  for (const element of argv) {
-    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
-      const tokens = splitRawArgumentString(element);
-      if (tokens.length > 1) {
-        out.push(...tokens);
-        continue;
-      }
-    }
-    out.push(element);
-  }
-  return out;
-}
-function parseCommandInput(argv, config = {}) {
-  return parseArgs(normalizeArgv(argv), {
-    ...config,
-    aliasMap: {
-      C: "cwd",
-      ...config.aliasMap ?? {}
-    }
-  });
-}
-function resolveCommandCwd(options = {}) {
-  return options.cwd ? path15.resolve(process11.cwd(), options.cwd) : process11.cwd();
-}
-function resolveCommandWorkspace(options = {}) {
-  return resolveWorkspaceRoot(resolveCommandCwd(options));
-}
-function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path15.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
-}
-function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
-  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs18.existsSync(lockPath);
-  let migratedFromLegacyConfig = false;
-  if (!lockExists) {
-    let legacyEnabled = false;
-    try {
-      legacyEnabled = getConfig(workspaceRoot)?.stopReviewGate === true;
-    } catch {
-      legacyEnabled = false;
-    }
-    if (legacyEnabled) {
-      try {
-        fs18.writeFileSync(
-          lockPath,
-          [
-            "# Codex Bridge stop-time review gate",
-            "# Presence of this file enables the Claude Code Stop hook for this project.",
-            "# Migrated from legacy state.json config.stopReviewGate=true.",
-            ""
-          ].join("\n"),
-          "utf8"
-        );
-        lockExists = true;
-        migratedFromLegacyConfig = true;
-      } catch {
-        lockExists = true;
-        migratedFromLegacyConfig = true;
-      }
-    }
-  }
-  const reviewGateSuppressionReason = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE ? "official-openai-codex-plugin-active" : officialPlugin.status === OFFICIAL_PLUGIN_STATUS.UNKNOWN ? "official-openai-codex-plugin-status-unknown" : null;
-  return {
-    enabled: lockExists && reviewGateSuppressionReason == null,
-    lockPath,
-    lockExists,
-    migratedFromLegacyConfig,
-    officialOpenAICodexPluginStatus: officialPlugin.status,
-    officialOpenAICodexPlugin: officialPlugin.plugin ?? null,
-    officialOpenAICodexPluginDetail: officialPlugin.detail ?? null,
-    reviewGateSuppressedByOfficialPlugin: officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE,
-    reviewGateLockIgnored: lockExists && reviewGateSuppressionReason != null,
-    reviewGateSuppressionReason
-  };
-}
-function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
-  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  if (enabled) {
-    try {
-      fs18.writeFileSync(
-        lockPath,
-        [
-          "# Codex Bridge stop-time review gate",
-          "# Presence of this file enables the Claude Code Stop hook for this project.",
-          ""
-        ].join("\n"),
-        "utf8"
-      );
-    } catch {
-    }
-  } else {
-    try {
-      fs18.rmSync(lockPath, { force: true });
-    } catch {
-    }
-    try {
-      setConfig(workspaceRoot, "stopReviewGate", false);
-    } catch {
-    }
-  }
-  return readStopReviewGate(workspaceRoot, officialPlugin);
-}
-function applyStopReviewGateSnapshot(snapshot) {
-  const gate = readStopReviewGate(snapshot.workspaceRoot);
-  return {
-    ...snapshot,
-    officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
-    officialOpenAICodexPlugin: gate.officialOpenAICodexPlugin,
-    officialOpenAICodexPluginDetail: gate.officialOpenAICodexPluginDetail,
-    reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
-    reviewGateLockIgnored: gate.reviewGateLockIgnored,
-    reviewGateSuppressionReason: gate.reviewGateSuppressionReason,
-    config: {
-      ...snapshot.config,
-      stopReviewGate: gate.enabled,
-      stopReviewGateLockPath: gate.lockPath,
-      stopReviewGateLockExists: gate.lockExists,
-      officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
-      reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
-      reviewGateLockIgnored: gate.reviewGateLockIgnored,
-      reviewGateSuppressionReason: gate.reviewGateSuppressionReason
-    },
-    needsReview: gate.enabled
-  };
-}
 function sleep2(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -11966,424 +11785,6 @@ function shorten2(text, limit = 96) {
 function firstMeaningfulLine2(text, fallback) {
   const line = String(text ?? "").split(/\r?\n/).map((value) => value.trim()).find(Boolean);
   return line ?? fallback;
-}
-async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
-  const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
-  const codexStatus = getCodexAvailability(cwd);
-  const authStatus = await getCodexAuthStatus(cwd);
-  const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
-  const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
-  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
-  const nextSteps = [];
-  if (!codexStatus.available) {
-    nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
-  }
-  if (codexStatus.available && !authStatus.loggedIn && authStatus.requiresOpenaiAuth) {
-    nextSteps.push("Run `!codex login`.");
-    nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
-  }
-  if (reviewGate.reviewGateSuppressedByOfficialPlugin) {
-    nextSteps.push("Use the official OpenAI Codex plugin for stop-time review; Codex Bridge review gate is disabled while it is enabled.");
-  } else if (reviewGate.reviewGateSuppressionReason === "official-openai-codex-plugin-status-unknown") {
-    nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
-  } else if (!reviewGate.enabled) {
-    nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
-  }
-  return {
-    ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
-    node: nodeStatus,
-    npm: npmStatus,
-    codex: codexStatus,
-    auth: authStatus,
-    active_backend: adapter2.name,
-    adapter_capabilities: adapter2.capabilities(),
-    sessionRuntime: getSessionRuntimeStatus(process11.env, workspaceRoot),
-    reviewGateEnabled: reviewGate.enabled,
-    reviewGateLockPath: reviewGate.lockPath,
-    reviewGateLockExists: reviewGate.lockExists,
-    officialOpenAICodexPluginStatus: reviewGate.officialOpenAICodexPluginStatus,
-    officialOpenAICodexPlugin: reviewGate.officialOpenAICodexPlugin,
-    officialOpenAICodexPluginDetail: reviewGate.officialOpenAICodexPluginDetail,
-    reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
-    reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
-    reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
-    actionsTaken,
-    nextSteps
-  };
-}
-async function handleSetup(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
-  });
-  if (options["enable-review-gate"] && options["disable-review-gate"]) {
-    throw conflictError(
-      "Choose either --enable-review-gate or --disable-review-gate.",
-      "REVIEW_GATE_CONFLICT"
-    );
-  }
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const actionsTaken = [];
-  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd, maxAgeMs: 0 });
-  if (options["enable-review-gate"]) {
-    if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {
-      const reviewGate = setStopReviewGate(workspaceRoot, true, officialPlugin);
-      if (reviewGate.enabled && reviewGate.lockExists) {
-        actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
-      } else {
-        actionsTaken.push(
-          `Failed to create the stop-time review gate lock at ${reviewGate.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
-        );
-      }
-    } else if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE) {
-      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin is enabled.");
-    } else {
-      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin status could not be verified.");
-    }
-  } else if (options["disable-review-gate"]) {
-    const reviewGate = setStopReviewGate(workspaceRoot, false, officialPlugin);
-    if (reviewGate.lockExists) {
-      actionsTaken.push(
-        `Failed to remove the stop-time review gate lock at ${reviewGate.lockPath}; the gate is still active. Please remove the lock file manually.`
-      );
-    } else {
-      actionsTaken.push(
-        `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
-      );
-    }
-  }
-  const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
-  emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
-    json: options.json,
-    startedAt
-  });
-}
-async function handleVersion(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "backend"],
-    booleanOptions: ["json", "check-update"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot, backend: options.backend });
-  const codex = getCodexAvailability(cwd);
-  const update = await checkForUpdate({
-    currentVersion: BRIDGE_VERSION,
-    force: Boolean(options["check-update"])
-  });
-  const payload = {
-    version: BRIDGE_VERSION,
-    schema_version: BRIDGE_SCHEMA_VERSION,
-    node_version: process11.version,
-    codex: {
-      available: codex.available,
-      detail: codex.detail ?? null
-    },
-    capabilities: [...BRIDGE_CAPABILITIES],
-    active_backend: adapter2.name,
-    adapter_capabilities: adapter2.capabilities(),
-    update: {
-      latest_version: update.latestVersion ?? null,
-      has_update: Boolean(update.hasUpdate),
-      checked_at_age_ms: update.cacheAgeMs ?? null,
-      check_skipped: Boolean(update.skipped),
-      check_skip_reason: update.reason ?? null
-    }
-  };
-  const updateLine = formatUpdateNotice(update);
-  const rendered = [
-    `codex-bridge ${payload.version} (schema ${payload.schema_version})`,
-    `  node:  ${payload.node_version}`,
-    `  codex: ${codex.available ? codex.detail ?? "available" : "not installed"}`,
-    `  backend: ${payload.active_backend}`,
-    `  caps:  ${payload.capabilities.join(", ")}`,
-    updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
-  ].join("\n") + "\n";
-  emitSuccess("version", payload, rendered, { json: options.json, startedAt });
-}
-async function handleConfigShow(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-  const action = positionals[0] ?? "show";
-  if (action !== "show") {
-    throw usageError(
-      `config: unknown action '${action}'. Supported: show.`
-    );
-  }
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
-  const effective = getBridgeConfig(cwd, workspaceRoot);
-  const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
-  const overrides = {};
-  for (const [k, v] of Object.entries(effective)) {
-    if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
-      overrides[k] = v;
-    }
-  }
-  const payload = {
-    sources: {
-      defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
-      skill_config_path: sources.skillConfigPath,
-      skill_config_exists: sources.skillConfigExists,
-      workspace_config_path: sources.workspaceConfigPath,
-      workspace_config_exists: sources.workspaceConfigExists,
-      override_config_path: sources.overrideConfigPath,
-      override_config_exists: sources.overrideConfigExists
-    },
-    effective_config: effective,
-    overrides_vs_defaults: overrides,
-    diagnostics,
-    warnings: diagnostics.filter((d) => d.severity === "warning"),
-    errors: diagnostics.filter((d) => d.severity === "error"),
-    precedence_order_low_to_high: [
-      "DEFAULT_CONFIG",
-      "skill-dir config.yaml",
-      "workspace-root config.yaml",
-      "cwd config.yaml"
-    ]
-  };
-  const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
-  const lines = [
-    "Config resolution (lowest \u2192 highest precedence):",
-    `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
-    `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
-    `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
-    `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
-    "",
-    "Effective config:"
-  ];
-  for (const [k, v] of Object.entries(effective)) {
-    const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
-    const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
-    lines.push(`  ${marker} ${k}: ${preview}`);
-  }
-  if (Object.keys(overrides).length > 0) {
-    lines.push("", "* = differs from DEFAULT_CONFIG");
-  }
-  if (diagnostics.length > 0) {
-    lines.push("", "Diagnostics:");
-    for (const diagnostic of diagnostics) {
-      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
-    }
-  }
-  const rendered = `${lines.join("\n")}
-`;
-  emitSuccess("config", payload, rendered, { json: options.json, startedAt });
-}
-async function handleUpdate(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "force", "apply", "yes"]
-  });
-  const update = await checkForUpdate({
-    currentVersion: BRIDGE_VERSION,
-    force: Boolean(options.force)
-  });
-  const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
-  const wantApply = Boolean(options.apply || options.yes);
-  if (wantApply && update.hasUpdate && update.latestVersion) {
-    const applyResult = runSkillsAddForApply(options.json);
-    const payload2 = {
-      current_version: BRIDGE_VERSION,
-      latest_version: update.latestVersion ?? null,
-      has_update: true,
-      update_check: {
-        cached: Boolean(update.cached),
-        skipped: Boolean(update.skipped),
-        reason: update.reason ?? null,
-        fetch_reason: update.fetchReason ?? null,
-        fetch_status: update.fetchStatus ?? null,
-        cache_age_ms: update.cacheAgeMs ?? null
-      },
-      apply: {
-        requested: true,
-        command: applyResult.command,
-        ok: applyResult.ok,
-        exit_code: applyResult.exitCode,
-        error: applyResult.error,
-        timed_out: Boolean(applyResult.timedOut)
-      },
-      applied: applyResult.ok,
-      apply_exit_code: applyResult.exitCode,
-      apply_error: applyResult.error,
-      install_command: installCommand
-    };
-    const rendered2 = applyResult.ok ? `Installed codex-bridge ${update.latestVersion} (was ${BRIDGE_VERSION}). Re-invoke the skill to pick up the new files.
-` : `Attempted to install ${update.latestVersion} (from ${BRIDGE_VERSION}) but the installer exited ${applyResult.exitCode}.
-` + (applyResult.error ? `  ${applyResult.error}
-` : "") + `Re-run manually: ${installCommand}
-`;
-    if (applyResult.ok) {
-      emitSuccess("update", payload2, rendered2, { json: options.json, startedAt });
-    } else {
-      const err = new CliError(
-        applyResult.timedOut ? "skills installer timed out" : `skills installer exited ${applyResult.exitCode}`,
-        {
-          class: "dependency_failed",
-          code: "UPDATE_APPLY_FAILED",
-          retryable: true,
-          suggestion: `Re-run manually: ${installCommand}`,
-          details: {
-            command: applyResult.command,
-            exitCode: applyResult.exitCode,
-            error: applyResult.error,
-            timedOut: Boolean(applyResult.timedOut)
-          },
-          nextAction: {
-            kind: "manual-update",
-            command: installCommand,
-            description: "Run the installer manually after checking npm/network availability."
-          }
-        }
-      );
-      emitError(err, { json: options.json, command: "update" });
-    }
-    return;
-  }
-  const payload = {
-    current_version: BRIDGE_VERSION,
-    latest_version: update.latestVersion ?? null,
-    has_update: Boolean(update.hasUpdate),
-    update_check: {
-      cached: Boolean(update.cached),
-      skipped: Boolean(update.skipped),
-      reason: update.reason ?? null,
-      fetch_reason: update.fetchReason ?? null,
-      fetch_status: update.fetchStatus ?? null,
-      cache_age_ms: update.cacheAgeMs ?? null
-    },
-    apply: {
-      requested: wantApply,
-      skipped: wantApply ? update.hasUpdate ? null : "no-update" : "not-requested",
-      command: installCommand
-    },
-    check_skipped: Boolean(update.skipped),
-    check_skip_reason: update.reason ?? null,
-    fetch_reason: update.fetchReason ?? null,
-    fetch_status: update.fetchStatus ?? null,
-    install_command: installCommand,
-    // --apply was requested but nothing to install: echo back the intent
-    // so scripted callers can tell "no action taken" from "skipped".
-    applied: wantApply && !update.hasUpdate ? false : null
-  };
-  let rendered;
-  if (update.skipped && !update.latestVersion) {
-    rendered = renderUpdateFailureHint(update, BRIDGE_VERSION);
-  } else if (update.hasUpdate) {
-    rendered = `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).
-To update, run:
-  ${installCommand}
-Or rerun with --apply to install automatically.
-`;
-  } else {
-    rendered = `codex-bridge is up to date (${BRIDGE_VERSION}${update.latestVersion ? `, latest ${update.latestVersion}` : ""}).
-`;
-  }
-  emitSuccess("update", payload, rendered, { json: options.json, startedAt });
-}
-function runSkillsAddForApply(jsonMode) {
-  const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
-  const timeoutMs = 6e5;
-  try {
-    const result = spawnSync4(
-      "npx",
-      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
-      {
-        stdio: jsonMode ? ["ignore", "pipe", "pipe"] : "inherit",
-        encoding: "utf8",
-        timeout: timeoutMs
-      }
-    );
-    if (result.error) {
-      return {
-        ok: false,
-        exitCode: null,
-        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.code === "ETIMEDOUT" ? `skills installer timed out after ${Math.round(timeoutMs / 1e3)}s` : result.error.message,
-        command,
-        timedOut: result.error.code === "ETIMEDOUT"
-      };
-    }
-    if (result.status !== 0) {
-      const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
-      return { ok: false, exitCode: result.status, error: stderrTail || null, command, timedOut: false };
-    }
-    return { ok: true, exitCode: 0, error: null, command, timedOut: false };
-  } catch (err) {
-    return { ok: false, exitCode: null, error: err?.message ?? String(err), command, timedOut: false };
-  }
-}
-function renderUpdateFailureHint(update, currentVersion) {
-  const reason = update.fetchReason ?? update.reason ?? "unknown";
-  const lines = [`Update check failed (current: ${currentVersion}, reason: ${reason}).`];
-  if (reason === "timeout" || reason === "network") {
-    lines.push("Network error reaching api.github.com. Retry in a moment.");
-  } else if (update.fetchStatus === 403) {
-    lines.push("GitHub returned 403 \u2014 likely the anonymous 60/hr rate limit. Wait an hour or re-run from a different IP.");
-  } else if (update.fetchStatus === 404) {
-    lines.push("GitHub returned 404. Re-run with --force; if it persists, the release endpoint may be temporarily unreachable.");
-  } else {
-    lines.push("Retry with --force; if it persists, check network connectivity to api.github.com.");
-  }
-  return lines.join("\n") + "\n";
-}
-async function handleAuthStatus(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const auth = await getCodexAuthStatus(cwd);
-  const status = auth.loggedIn ? "logged in" : "not logged in";
-  const provider = auth.provider ? ` via ${auth.provider}` : "";
-  const lines = [`Auth: ${status}${provider}.`];
-  if (auth.detail) lines.push(`  ${auth.detail}`);
-  if (!auth.loggedIn && auth.requiresOpenaiAuth) {
-    lines.push("  \u2192 Run `codex login` (or `codex login --device-auth`).");
-  }
-  emitSuccess("auth-status", auth, `${lines.join("\n")}
-`, {
-    json: options.json,
-    startedAt
-  });
-}
-function buildMachineReadableHelp() {
-  return {
-    version: BRIDGE_VERSION,
-    schema_version: BRIDGE_SCHEMA_VERSION,
-    commands: Object.entries(COMMANDS).map(([name, entry]) => ({
-      name,
-      synopsis: `codex-bridge ${entry.synopsis}`,
-      summary: entry.summary,
-      examples: entry.examples ?? []
-    })),
-    global_flags: [
-      { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
-      { flag: "--cwd <dir>", alias: "-C", description: "Override the working directory." },
-      { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
-    ],
-    exit_codes: {
-      0: "success",
-      1: "crash / unhandled internal error",
-      2: "usage (unknown subcommand, unknown flag, missing argument)",
-      3: "not_found (job, thread, resource)",
-      4: "auth (run `codex login`)",
-      5: "conflict (already running, state mismatch)",
-      6: "validation (bad input)",
-      7: "transient (timeout, network, rate-limit) \u2014 retry with backoff",
-      8: "partial_success (check result details)"
-    }
-  };
 }
 function ensureCodexAvailable(cwd) {
   const availability = getCodexAvailability(cwd);
@@ -12955,7 +12356,7 @@ function createCompanionJob({
     ...extra
   });
 }
-function createTrackedProgress(job, options = {}) {
+function createTrackedProgress2(job, options = {}) {
   const logFile = options.logFile ?? createJobLogFile(job.workspaceRoot, job.id, job.title);
   const stderr = options.stderr === false ? false : true;
   return {
@@ -13033,12 +12434,12 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow2(path15.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
-function readPromptFileOrThrow(absPath) {
+function readPromptFileOrThrow2(absPath) {
   try {
     return fs18.readFileSync(absPath, "utf8");
   } catch (err) {
@@ -13117,7 +12518,7 @@ function persistFailureErrorInPayload(execution, command = null) {
   };
 }
 async function runForegroundCommand(job, runner, options = {}) {
-  const { logFile, progress } = createTrackedProgress(job, {
+  const { logFile, progress } = createTrackedProgress2(job, {
     logFile: options.logFile
   });
   const command = options.command ?? null;
@@ -13155,7 +12556,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
     } catch {
     }
   }
-  const child = spawn3(process11.execPath, [
+  const child = spawn4(process11.execPath, [
     scriptPath,
     "task-worker",
     "--cwd",
@@ -13181,7 +12582,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   return child;
 }
 function enqueueBackgroundTask(cwd, job, request) {
-  const { logFile } = createTrackedProgress(job);
+  const { logFile } = createTrackedProgress2(job);
   appendLogLine(logFile, "Queued for background execution.");
   const queuedRecord = {
     ...job,
@@ -13257,83 +12658,6 @@ function enqueueBackgroundTask(cwd, job, request) {
     },
     logFile
   };
-}
-async function handleReviewCommand(argv, config) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "backend", "brief", "task"],
-    repeatableValueOptions: ["concern"],
-    booleanOptions: ["json", "background", "wait"],
-    aliasMap: {
-      m: "model"
-    }
-  });
-  const taskReview = options.task ? requireTaskReviewContext(options.task, options) : null;
-  const cwd = taskReview?.cwd ?? resolveCommandCwd(options);
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot,
-    backend: options.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  const focusText = positionals.join(" ").trim();
-  const target = resolveReviewTarget(cwd, {
-    base: taskReview?.base ?? options.base,
-    scope: taskReview?.scope ?? options.scope
-  });
-  let brief = null;
-  if (options.brief) {
-    const result = loadBrief(options.brief, { baseDir: cwd });
-    if (!result.ok) {
-      throw new CliError(result.message, {
-        code: result.code,
-        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
-        details: result.details,
-        suggestion: result.code === "BRIEF_SCHEMA_VIOLATION" ? "Fix the brief JSON to match the schema. Common valid top-level keys are goal, worker_assignment, specific_concerns, acceptance_criteria, behavior_digest_seed, parent_task_id, backend_hint, iteration_max, and trust_budget_override." : void 0
-      });
-    }
-    brief = result.brief;
-  }
-  const opusConcerns = Array.isArray(options.concern) ? options.concern : options.concern ? [options.concern] : [];
-  config.validateRequest?.(target, focusText, { brief, opusConcerns });
-  const metadata = buildReviewJobMetadata(config.reviewName, target);
-  const job = createCompanionJob({
-    prefix: "review",
-    kind: metadata.kind,
-    title: metadata.title,
-    workspaceRoot,
-    jobClass: "review",
-    summary: metadata.summary
-  });
-  await runForegroundCommand(
-    job,
-    (progress) => executeReviewRun({
-      cwd,
-      base: taskReview?.base ?? options.base,
-      scope: taskReview?.scope ?? options.scope,
-      model: options.model,
-      backend: options.backend ?? null,
-      focusText,
-      brief,
-      opusConcerns,
-      reviewName: config.reviewName,
-      taskId: taskReview?.taskId ?? null,
-      reviewedBranchHeadSha: taskReview?.reviewedBranchHeadSha ?? null,
-      onProgress: progress
-    }),
-    {
-      json: options.json,
-      startedAt,
-      command: config.reviewName === "Adversarial Review" ? "adversarial-review" : "review"
-    }
-  );
-}
-async function handleReview(argv) {
-  return handleReviewCommand(argv, {
-    reviewName: "Review",
-    validateRequest: validateNativeReviewRequest
-  });
 }
 async function runBridgeTask(request) {
   const stateCwd = request.stateCwd ?? request.cwd;
@@ -13581,7 +12905,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitHead = () => {
     if (!gitCwd) return null;
     try {
-      const r = spawnSync4("git", ["rev-parse", "HEAD"], {
+      const r = spawnSync("git", ["rev-parse", "HEAD"], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -13594,7 +12918,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitLogRange = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return [];
     try {
-      const r = spawnSync4(
+      const r = spawnSync(
         "git",
         ["log", "--no-color", "--no-decorate", "-n", "50", "--pretty=%h %s", `${from}..${to}`],
         { cwd: gitCwd, encoding: "utf8", timeout: 5e3 }
@@ -13611,7 +12935,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitDiffStat = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return null;
     try {
-      const r = spawnSync4("git", ["diff", "--shortstat", `${from}..${to}`], {
+      const r = spawnSync("git", ["diff", "--shortstat", `${from}..${to}`], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -14112,6 +13436,691 @@ function extractPlanSteps(planText) {
   }
   return steps.length > 0 ? steps : [{ number: 1, text: planText?.split("\n")[0] ?? "Plan", status: "pending" }];
 }
+
+// src/codex-bridge.mjs
+function printUsage() {
+  const lines = ["Usage:"];
+  for (const name of Object.keys(COMMANDS)) {
+    lines.push(`  codex-bridge ${COMMANDS[name].synopsis}`);
+  }
+  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC, "", "Run `codex-bridge <subcommand> --help` for per-command details.");
+  console.log(lines.join("\n"));
+}
+function printSubcommandUsage(name) {
+  const entry = COMMANDS[name];
+  if (!entry) {
+    printUsage();
+    return;
+  }
+  const lines = [
+    `codex-bridge ${entry.synopsis}`,
+    "",
+    entry.summary
+  ];
+  if (entry.examples?.length) {
+    lines.push("", "Examples:");
+    for (const example of entry.examples) {
+      lines.push(`  ${example}`);
+    }
+  }
+  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC);
+  console.log(lines.join("\n"));
+}
+function normalizeRequestedModel(model) {
+  if (model == null) {
+    return null;
+  }
+  const normalized = String(model).trim();
+  if (!normalized) {
+    return null;
+  }
+  return MODEL_ALIASES.get(normalized.toLowerCase()) ?? normalized;
+}
+function normalizeReasoningEffort(effort) {
+  if (effort == null) {
+    return null;
+  }
+  const normalized = String(effort).trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (!VALID_REASONING_EFFORTS.has(normalized)) {
+    throw validationError(
+      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh.`,
+      "INVALID_EFFORT"
+    );
+  }
+  return normalized;
+}
+function normalizeArgv(argv) {
+  if (argv.length === 1) {
+    const [raw] = argv;
+    if (!raw || !raw.trim()) {
+      return [];
+    }
+    return splitRawArgumentString(raw);
+  }
+  const out = [];
+  for (const element of argv) {
+    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
+      const tokens = splitRawArgumentString(element);
+      if (tokens.length > 1) {
+        out.push(...tokens);
+        continue;
+      }
+    }
+    out.push(element);
+  }
+  return out;
+}
+function parseCommandInput(argv, config = {}) {
+  return parseArgs(normalizeArgv(argv), {
+    ...config,
+    aliasMap: {
+      C: "cwd",
+      ...config.aliasMap ?? {}
+    }
+  });
+}
+function resolveCommandCwd(options = {}) {
+  return options.cwd ? path16.resolve(process12.cwd(), options.cwd) : process12.cwd();
+}
+function resolveCommandWorkspace(options = {}) {
+  return resolveWorkspaceRoot(resolveCommandCwd(options));
+}
+function resolveStopReviewGateLockPath(workspaceRoot) {
+  return path16.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+}
+function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
+  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
+  let lockExists = fs19.existsSync(lockPath);
+  let migratedFromLegacyConfig = false;
+  if (!lockExists) {
+    let legacyEnabled = false;
+    try {
+      legacyEnabled = getConfig(workspaceRoot)?.stopReviewGate === true;
+    } catch {
+      legacyEnabled = false;
+    }
+    if (legacyEnabled) {
+      try {
+        fs19.writeFileSync(
+          lockPath,
+          [
+            "# Codex Bridge stop-time review gate",
+            "# Presence of this file enables the Claude Code Stop hook for this project.",
+            "# Migrated from legacy state.json config.stopReviewGate=true.",
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      } catch {
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      }
+    }
+  }
+  const reviewGateSuppressionReason = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE ? "official-openai-codex-plugin-active" : officialPlugin.status === OFFICIAL_PLUGIN_STATUS.UNKNOWN ? "official-openai-codex-plugin-status-unknown" : null;
+  return {
+    enabled: lockExists && reviewGateSuppressionReason == null,
+    lockPath,
+    lockExists,
+    migratedFromLegacyConfig,
+    officialOpenAICodexPluginStatus: officialPlugin.status,
+    officialOpenAICodexPlugin: officialPlugin.plugin ?? null,
+    officialOpenAICodexPluginDetail: officialPlugin.detail ?? null,
+    reviewGateSuppressedByOfficialPlugin: officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE,
+    reviewGateLockIgnored: lockExists && reviewGateSuppressionReason != null,
+    reviewGateSuppressionReason
+  };
+}
+function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
+  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
+  if (enabled) {
+    try {
+      fs19.writeFileSync(
+        lockPath,
+        [
+          "# Codex Bridge stop-time review gate",
+          "# Presence of this file enables the Claude Code Stop hook for this project.",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+    } catch {
+    }
+  } else {
+    try {
+      fs19.rmSync(lockPath, { force: true });
+    } catch {
+    }
+    try {
+      setConfig(workspaceRoot, "stopReviewGate", false);
+    } catch {
+    }
+  }
+  return readStopReviewGate(workspaceRoot, officialPlugin);
+}
+function applyStopReviewGateSnapshot(snapshot) {
+  const gate = readStopReviewGate(snapshot.workspaceRoot);
+  return {
+    ...snapshot,
+    officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
+    officialOpenAICodexPlugin: gate.officialOpenAICodexPlugin,
+    officialOpenAICodexPluginDetail: gate.officialOpenAICodexPluginDetail,
+    reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
+    reviewGateLockIgnored: gate.reviewGateLockIgnored,
+    reviewGateSuppressionReason: gate.reviewGateSuppressionReason,
+    config: {
+      ...snapshot.config,
+      stopReviewGate: gate.enabled,
+      stopReviewGateLockPath: gate.lockPath,
+      stopReviewGateLockExists: gate.lockExists,
+      officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
+      reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
+      reviewGateLockIgnored: gate.reviewGateLockIgnored,
+      reviewGateSuppressionReason: gate.reviewGateSuppressionReason
+    },
+    needsReview: gate.enabled
+  };
+}
+async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
+  const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
+  const codexStatus = getCodexAvailability(cwd);
+  const authStatus = await getCodexAuthStatus(cwd);
+  const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
+  const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
+  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
+  const nextSteps = [];
+  if (!codexStatus.available) {
+    nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
+  }
+  if (codexStatus.available && !authStatus.loggedIn && authStatus.requiresOpenaiAuth) {
+    nextSteps.push("Run `!codex login`.");
+    nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
+  }
+  if (reviewGate.reviewGateSuppressedByOfficialPlugin) {
+    nextSteps.push("Use the official OpenAI Codex plugin for stop-time review; Codex Bridge review gate is disabled while it is enabled.");
+  } else if (reviewGate.reviewGateSuppressionReason === "official-openai-codex-plugin-status-unknown") {
+    nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
+  } else if (!reviewGate.enabled) {
+    nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
+  }
+  return {
+    ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
+    node: nodeStatus,
+    npm: npmStatus,
+    codex: codexStatus,
+    auth: authStatus,
+    active_backend: adapter2.name,
+    adapter_capabilities: adapter2.capabilities(),
+    sessionRuntime: getSessionRuntimeStatus(process12.env, workspaceRoot),
+    reviewGateEnabled: reviewGate.enabled,
+    reviewGateLockPath: reviewGate.lockPath,
+    reviewGateLockExists: reviewGate.lockExists,
+    officialOpenAICodexPluginStatus: reviewGate.officialOpenAICodexPluginStatus,
+    officialOpenAICodexPlugin: reviewGate.officialOpenAICodexPlugin,
+    officialOpenAICodexPluginDetail: reviewGate.officialOpenAICodexPluginDetail,
+    reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
+    reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
+    reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
+    actionsTaken,
+    nextSteps
+  };
+}
+async function handleSetup(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+  });
+  if (options["enable-review-gate"] && options["disable-review-gate"]) {
+    throw conflictError(
+      "Choose either --enable-review-gate or --disable-review-gate.",
+      "REVIEW_GATE_CONFLICT"
+    );
+  }
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const actionsTaken = [];
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd, maxAgeMs: 0 });
+  if (options["enable-review-gate"]) {
+    if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {
+      const reviewGate = setStopReviewGate(workspaceRoot, true, officialPlugin);
+      if (reviewGate.enabled && reviewGate.lockExists) {
+        actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
+      } else {
+        actionsTaken.push(
+          `Failed to create the stop-time review gate lock at ${reviewGate.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
+        );
+      }
+    } else if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE) {
+      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin is enabled.");
+    } else {
+      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin status could not be verified.");
+    }
+  } else if (options["disable-review-gate"]) {
+    const reviewGate = setStopReviewGate(workspaceRoot, false, officialPlugin);
+    if (reviewGate.lockExists) {
+      actionsTaken.push(
+        `Failed to remove the stop-time review gate lock at ${reviewGate.lockPath}; the gate is still active. Please remove the lock file manually.`
+      );
+    } else {
+      actionsTaken.push(
+        `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
+      );
+    }
+  }
+  const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
+  emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
+    json: options.json,
+    startedAt
+  });
+}
+async function handleVersion(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "backend"],
+    booleanOptions: ["json", "check-update"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot, backend: options.backend });
+  const codex = getCodexAvailability(cwd);
+  const update = await checkForUpdate({
+    currentVersion: BRIDGE_VERSION,
+    force: Boolean(options["check-update"])
+  });
+  const payload = {
+    version: BRIDGE_VERSION,
+    schema_version: BRIDGE_SCHEMA_VERSION,
+    node_version: process12.version,
+    codex: {
+      available: codex.available,
+      detail: codex.detail ?? null
+    },
+    capabilities: [...BRIDGE_CAPABILITIES],
+    active_backend: adapter2.name,
+    adapter_capabilities: adapter2.capabilities(),
+    update: {
+      latest_version: update.latestVersion ?? null,
+      has_update: Boolean(update.hasUpdate),
+      checked_at_age_ms: update.cacheAgeMs ?? null,
+      check_skipped: Boolean(update.skipped),
+      check_skip_reason: update.reason ?? null
+    }
+  };
+  const updateLine = formatUpdateNotice(update);
+  const rendered = [
+    `codex-bridge ${payload.version} (schema ${payload.schema_version})`,
+    `  node:  ${payload.node_version}`,
+    `  codex: ${codex.available ? codex.detail ?? "available" : "not installed"}`,
+    `  backend: ${payload.active_backend}`,
+    `  caps:  ${payload.capabilities.join(", ")}`,
+    updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
+  ].join("\n") + "\n";
+  emitSuccess("version", payload, rendered, { json: options.json, startedAt });
+}
+async function handleConfigShow(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const action = positionals[0] ?? "show";
+  if (action !== "show") {
+    throw usageError(
+      `config: unknown action '${action}'. Supported: show.`
+    );
+  }
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
+  const effective = getBridgeConfig(cwd, workspaceRoot);
+  const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+  const overrides = {};
+  for (const [k, v] of Object.entries(effective)) {
+    if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
+      overrides[k] = v;
+    }
+  }
+  const payload = {
+    sources: {
+      defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
+      skill_config_path: sources.skillConfigPath,
+      skill_config_exists: sources.skillConfigExists,
+      workspace_config_path: sources.workspaceConfigPath,
+      workspace_config_exists: sources.workspaceConfigExists,
+      override_config_path: sources.overrideConfigPath,
+      override_config_exists: sources.overrideConfigExists
+    },
+    effective_config: effective,
+    overrides_vs_defaults: overrides,
+    diagnostics,
+    warnings: diagnostics.filter((d) => d.severity === "warning"),
+    errors: diagnostics.filter((d) => d.severity === "error"),
+    precedence_order_low_to_high: [
+      "DEFAULT_CONFIG",
+      "skill-dir config.yaml",
+      "workspace-root config.yaml",
+      "cwd config.yaml"
+    ]
+  };
+  const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
+  const lines = [
+    "Config resolution (lowest \u2192 highest precedence):",
+    `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
+    `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
+    `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
+    `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
+    "",
+    "Effective config:"
+  ];
+  for (const [k, v] of Object.entries(effective)) {
+    const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
+    const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
+    lines.push(`  ${marker} ${k}: ${preview}`);
+  }
+  if (Object.keys(overrides).length > 0) {
+    lines.push("", "* = differs from DEFAULT_CONFIG");
+  }
+  if (diagnostics.length > 0) {
+    lines.push("", "Diagnostics:");
+    for (const diagnostic of diagnostics) {
+      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
+    }
+  }
+  const rendered = `${lines.join("\n")}
+`;
+  emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+}
+async function handleUpdate(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "force", "apply", "yes"]
+  });
+  const update = await checkForUpdate({
+    currentVersion: BRIDGE_VERSION,
+    force: Boolean(options.force)
+  });
+  const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const wantApply = Boolean(options.apply || options.yes);
+  if (wantApply && update.hasUpdate && update.latestVersion) {
+    const applyResult = runSkillsAddForApply(options.json);
+    const payload2 = {
+      current_version: BRIDGE_VERSION,
+      latest_version: update.latestVersion ?? null,
+      has_update: true,
+      update_check: {
+        cached: Boolean(update.cached),
+        skipped: Boolean(update.skipped),
+        reason: update.reason ?? null,
+        fetch_reason: update.fetchReason ?? null,
+        fetch_status: update.fetchStatus ?? null,
+        cache_age_ms: update.cacheAgeMs ?? null
+      },
+      apply: {
+        requested: true,
+        command: applyResult.command,
+        ok: applyResult.ok,
+        exit_code: applyResult.exitCode,
+        error: applyResult.error,
+        timed_out: Boolean(applyResult.timedOut)
+      },
+      applied: applyResult.ok,
+      apply_exit_code: applyResult.exitCode,
+      apply_error: applyResult.error,
+      install_command: installCommand
+    };
+    const rendered2 = applyResult.ok ? `Installed codex-bridge ${update.latestVersion} (was ${BRIDGE_VERSION}). Re-invoke the skill to pick up the new files.
+` : `Attempted to install ${update.latestVersion} (from ${BRIDGE_VERSION}) but the installer exited ${applyResult.exitCode}.
+` + (applyResult.error ? `  ${applyResult.error}
+` : "") + `Re-run manually: ${installCommand}
+`;
+    if (applyResult.ok) {
+      emitSuccess("update", payload2, rendered2, { json: options.json, startedAt });
+    } else {
+      const err = new CliError(
+        applyResult.timedOut ? "skills installer timed out" : `skills installer exited ${applyResult.exitCode}`,
+        {
+          class: "dependency_failed",
+          code: "UPDATE_APPLY_FAILED",
+          retryable: true,
+          suggestion: `Re-run manually: ${installCommand}`,
+          details: {
+            command: applyResult.command,
+            exitCode: applyResult.exitCode,
+            error: applyResult.error,
+            timedOut: Boolean(applyResult.timedOut)
+          },
+          nextAction: {
+            kind: "manual-update",
+            command: installCommand,
+            description: "Run the installer manually after checking npm/network availability."
+          }
+        }
+      );
+      emitError(err, { json: options.json, command: "update" });
+    }
+    return;
+  }
+  const payload = {
+    current_version: BRIDGE_VERSION,
+    latest_version: update.latestVersion ?? null,
+    has_update: Boolean(update.hasUpdate),
+    update_check: {
+      cached: Boolean(update.cached),
+      skipped: Boolean(update.skipped),
+      reason: update.reason ?? null,
+      fetch_reason: update.fetchReason ?? null,
+      fetch_status: update.fetchStatus ?? null,
+      cache_age_ms: update.cacheAgeMs ?? null
+    },
+    apply: {
+      requested: wantApply,
+      skipped: wantApply ? update.hasUpdate ? null : "no-update" : "not-requested",
+      command: installCommand
+    },
+    check_skipped: Boolean(update.skipped),
+    check_skip_reason: update.reason ?? null,
+    fetch_reason: update.fetchReason ?? null,
+    fetch_status: update.fetchStatus ?? null,
+    install_command: installCommand,
+    // --apply was requested but nothing to install: echo back the intent
+    // so scripted callers can tell "no action taken" from "skipped".
+    applied: wantApply && !update.hasUpdate ? false : null
+  };
+  let rendered;
+  if (update.skipped && !update.latestVersion) {
+    rendered = renderUpdateFailureHint(update, BRIDGE_VERSION);
+  } else if (update.hasUpdate) {
+    rendered = `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).
+To update, run:
+  ${installCommand}
+Or rerun with --apply to install automatically.
+`;
+  } else {
+    rendered = `codex-bridge is up to date (${BRIDGE_VERSION}${update.latestVersion ? `, latest ${update.latestVersion}` : ""}).
+`;
+  }
+  emitSuccess("update", payload, rendered, { json: options.json, startedAt });
+}
+function runSkillsAddForApply(jsonMode) {
+  const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const timeoutMs = 6e5;
+  try {
+    const result = spawnSync5(
+      "npx",
+      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+      {
+        stdio: jsonMode ? ["ignore", "pipe", "pipe"] : "inherit",
+        encoding: "utf8",
+        timeout: timeoutMs
+      }
+    );
+    if (result.error) {
+      return {
+        ok: false,
+        exitCode: null,
+        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.code === "ETIMEDOUT" ? `skills installer timed out after ${Math.round(timeoutMs / 1e3)}s` : result.error.message,
+        command,
+        timedOut: result.error.code === "ETIMEDOUT"
+      };
+    }
+    if (result.status !== 0) {
+      const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
+      return { ok: false, exitCode: result.status, error: stderrTail || null, command, timedOut: false };
+    }
+    return { ok: true, exitCode: 0, error: null, command, timedOut: false };
+  } catch (err) {
+    return { ok: false, exitCode: null, error: err?.message ?? String(err), command, timedOut: false };
+  }
+}
+function renderUpdateFailureHint(update, currentVersion) {
+  const reason = update.fetchReason ?? update.reason ?? "unknown";
+  const lines = [`Update check failed (current: ${currentVersion}, reason: ${reason}).`];
+  if (reason === "timeout" || reason === "network") {
+    lines.push("Network error reaching api.github.com. Retry in a moment.");
+  } else if (update.fetchStatus === 403) {
+    lines.push("GitHub returned 403 \u2014 likely the anonymous 60/hr rate limit. Wait an hour or re-run from a different IP.");
+  } else if (update.fetchStatus === 404) {
+    lines.push("GitHub returned 404. Re-run with --force; if it persists, the release endpoint may be temporarily unreachable.");
+  } else {
+    lines.push("Retry with --force; if it persists, check network connectivity to api.github.com.");
+  }
+  return lines.join("\n") + "\n";
+}
+async function handleAuthStatus(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const auth = await getCodexAuthStatus(cwd);
+  const status = auth.loggedIn ? "logged in" : "not logged in";
+  const provider = auth.provider ? ` via ${auth.provider}` : "";
+  const lines = [`Auth: ${status}${provider}.`];
+  if (auth.detail) lines.push(`  ${auth.detail}`);
+  if (!auth.loggedIn && auth.requiresOpenaiAuth) {
+    lines.push("  \u2192 Run `codex login` (or `codex login --device-auth`).");
+  }
+  emitSuccess("auth-status", auth, `${lines.join("\n")}
+`, {
+    json: options.json,
+    startedAt
+  });
+}
+function buildMachineReadableHelp() {
+  return {
+    version: BRIDGE_VERSION,
+    schema_version: BRIDGE_SCHEMA_VERSION,
+    commands: Object.entries(COMMANDS).map(([name, entry]) => ({
+      name,
+      synopsis: `codex-bridge ${entry.synopsis}`,
+      summary: entry.summary,
+      examples: entry.examples ?? []
+    })),
+    global_flags: [
+      { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
+      { flag: "--cwd <dir>", alias: "-C", description: "Override the working directory." },
+      { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
+    ],
+    exit_codes: {
+      0: "success",
+      1: "crash / unhandled internal error",
+      2: "usage (unknown subcommand, unknown flag, missing argument)",
+      3: "not_found (job, thread, resource)",
+      4: "auth (run `codex login`)",
+      5: "conflict (already running, state mismatch)",
+      6: "validation (bad input)",
+      7: "transient (timeout, network, rate-limit) \u2014 retry with backoff",
+      8: "partial_success (check result details)"
+    }
+  };
+}
+async function handleReviewCommand(argv, config) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["base", "scope", "model", "cwd", "backend", "brief", "task"],
+    repeatableValueOptions: ["concern"],
+    booleanOptions: ["json", "background", "wait"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+  const taskReview = options.task ? requireTaskReviewContext(options.task, options) : null;
+  const cwd = taskReview?.cwd ?? resolveCommandCwd(options);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  const focusText = positionals.join(" ").trim();
+  const target = resolveReviewTarget(cwd, {
+    base: taskReview?.base ?? options.base,
+    scope: taskReview?.scope ?? options.scope
+  });
+  let brief = null;
+  if (options.brief) {
+    const result = loadBrief(options.brief, { baseDir: cwd });
+    if (!result.ok) {
+      throw new CliError(result.message, {
+        code: result.code,
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+        details: result.details,
+        suggestion: result.code === "BRIEF_SCHEMA_VIOLATION" ? "Fix the brief JSON to match the schema. Common valid top-level keys are goal, worker_assignment, specific_concerns, acceptance_criteria, behavior_digest_seed, parent_task_id, backend_hint, iteration_max, and trust_budget_override." : void 0
+      });
+    }
+    brief = result.brief;
+  }
+  const opusConcerns = Array.isArray(options.concern) ? options.concern : options.concern ? [options.concern] : [];
+  config.validateRequest?.(target, focusText, { brief, opusConcerns });
+  const metadata = buildReviewJobMetadata(config.reviewName, target);
+  const job = createCompanionJob({
+    prefix: "review",
+    kind: metadata.kind,
+    title: metadata.title,
+    workspaceRoot,
+    jobClass: "review",
+    summary: metadata.summary
+  });
+  await runForegroundCommand(
+    job,
+    (progress) => executeReviewRun({
+      cwd,
+      base: taskReview?.base ?? options.base,
+      scope: taskReview?.scope ?? options.scope,
+      model: options.model,
+      backend: options.backend ?? null,
+      focusText,
+      brief,
+      opusConcerns,
+      reviewName: config.reviewName,
+      taskId: taskReview?.taskId ?? null,
+      reviewedBranchHeadSha: taskReview?.reviewedBranchHeadSha ?? null,
+      onProgress: progress
+    }),
+    {
+      json: options.json,
+      startedAt,
+      command: config.reviewName === "Adversarial Review" ? "adversarial-review" : "review"
+    }
+  );
+}
+async function handleReview(argv) {
+  return handleReviewCommand(argv, {
+    reviewName: "Review",
+    validateRequest: validateNativeReviewRequest
+  });
+}
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -14345,7 +14354,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path15.resolve(process11.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path16.resolve(process12.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -14461,7 +14470,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
   const onSigint = () => {
     interrupted = true;
   };
-  process11.on("SIGINT", onSigint);
+  process12.on("SIGINT", onSigint);
   try {
     while (true) {
       ticks += 1;
@@ -14481,14 +14490,14 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
         }))
       };
       if (json2) {
-        process11.stdout.write(`${JSON.stringify(tickEntry)}
+        process12.stdout.write(`${JSON.stringify(tickEntry)}
 `);
       } else {
-        process11.stdout.write(`\x1B[2J\x1B[H`);
-        process11.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
+        process12.stdout.write(`\x1B[2J\x1B[H`);
+        process12.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
 
 `);
-        process11.stdout.write(renderStatusReport(snapshot));
+        process12.stdout.write(renderStatusReport(snapshot));
       }
       if (activeCount === 0) {
         const summary = {
@@ -14510,7 +14519,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
       if (deadline && Date.now() >= deadline) {
         const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
         if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        else process11.stdout.write(`
+        else process12.stdout.write(`
 watch timed out after ${ticks} ticks with ${activeCount} active job(s).
 `);
         return;
@@ -14518,7 +14527,7 @@ watch timed out after ${ticks} ticks with ${activeCount} active job(s).
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   } finally {
-    process11.off("SIGINT", onSigint);
+    process12.off("SIGINT", onSigint);
   }
 }
 async function handleAwaitArtifact(argv) {
@@ -14535,7 +14544,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path15.isAbsolute(artifactPath) ? artifactPath : path15.resolve(cwd, artifactPath);
+  const resolvedPath = path16.isAbsolute(artifactPath) ? artifactPath : path16.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -14552,7 +14561,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs18.statSync(resolvedPath);
+      statInfo = fs19.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -14604,7 +14613,7 @@ async function handleAwaitArtifact(argv) {
         })
       };
       if (!statInfo) {
-        process11.exitCode = 7;
+        process12.exitCode = 7;
         emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
 `, {
           json: options.json,
@@ -14641,7 +14650,7 @@ async function handleAwaitArtifact(argv) {
           details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
         })
       };
-      process11.exitCode = 7;
+      process12.exitCode = 7;
       emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
 `, {
         json: options.json,
@@ -14668,7 +14677,7 @@ function pruneOrphanedJobs(cwd) {
     }
     let alive = false;
     try {
-      process11.kill(pid, 0);
+      process12.kill(pid, 0);
       alive = true;
     } catch (err) {
       if (err && err.code === "EPERM") {
@@ -14761,7 +14770,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
       for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
         if (!filePath) continue;
         try {
-          fs18.rmSync(filePath, { force: true });
+          fs19.rmSync(filePath, { force: true });
         } catch {
         }
       }
@@ -14845,7 +14854,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs18.readFileSync(eventsPath, "utf8");
+        const data = fs19.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -14862,13 +14871,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs18.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs19.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs18.existsSync(eventsPath)) {
+              if (fs19.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -14880,12 +14889,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs18.existsSync(eventsPath)) {
+    if (fs19.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs18.existsSync(eventsPath)) {
+        if (fs19.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -14928,7 +14937,7 @@ async function handleWait(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = TERMINAL_TAG_REGEX;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -14985,7 +14994,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     return {
       reference,
       job,
-      eventsPath: path15.join(sessionDir, `${job.threadId}.events`)
+      eventsPath: path16.join(sessionDir, `${job.threadId}.events`)
     };
   });
   const deadline = Date.now() + timeoutMs;
@@ -15038,7 +15047,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
 }
 function scanTerminalEvent(eventsPath, pattern) {
   try {
-    const data = fs18.readFileSync(eventsPath, "utf8");
+    const data = fs19.readFileSync(eventsPath, "utf8");
     for (const line of data.split("\n")) {
       const m = pattern.exec(line);
       if (m) return { timedOut: false, tag: m[1], line };
@@ -15082,7 +15091,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -15091,7 +15100,7 @@ async function handleEvents(argv) {
   const filter = parseTagList(options.filter);
   const exclude = parseTagList(options.exclude);
   const writeEventLine = (line) => {
-    if (!options.json) process11.stdout.write(line + "\n");
+    if (!options.json) process12.stdout.write(line + "\n");
   };
   const tagOf = (line) => {
     const m = /^\[([^\]]+)\]/.exec(line);
@@ -15113,8 +15122,8 @@ async function handleEvents(argv) {
   const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs18.existsSync(eventsPath)) {
-    initial = fs18.readFileSync(eventsPath, "utf8");
+  if (fs19.existsSync(eventsPath)) {
+    initial = fs19.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -15160,7 +15169,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs18.readFileSync(eventsPath, "utf8");
+        data = fs19.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -15182,13 +15191,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs18.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs19.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs18.existsSync(eventsPath)) {
+              if (fs19.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15199,11 +15208,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs18.existsSync(eventsPath)) {
+    if (fs19.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs18.existsSync(eventsPath)) {
+        if (fs19.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15285,7 +15294,7 @@ async function handleCancel(argv) {
   });
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process11.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process12.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
@@ -15384,13 +15393,13 @@ async function handleCancel(argv) {
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path15.resolve(cwd, positionals[0]);
+    const candidate = path16.resolve(cwd, positionals[0]);
     try {
-      if (fs18.existsSync(candidate) && fs18.statSync(candidate).isFile()) {
-        return fs18.readFileSync(candidate, "utf8");
+      if (fs19.existsSync(candidate) && fs19.statSync(candidate).isFile()) {
+        return fs19.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -15421,7 +15430,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs18.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs19.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -15502,9 +15511,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path15.join(dir, "meta.json"),
-    review_path: path15.join(dir, "review.json"),
-    verdict_path: path15.join(dir, "verdict.json"),
+    meta_path: path16.join(dir, "meta.json"),
+    review_path: path16.join(dir, "review.json"),
+    verdict_path: path16.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -15905,10 +15914,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path15.join(jobDir(taskId), "verdict.json");
+    const target = path16.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs18.existsSync(target)) {
-      fs18.rmSync(target, { force: true });
+    if (fs19.existsSync(target)) {
+      fs19.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -16486,7 +16495,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs18.readFileSync(session.ndjsonPath, "utf8");
+    content = fs19.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -16573,35 +16582,35 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   verdicts: handleVerdictsPending,
   iterate: handleIterate
 });
-process11.on("SIGPIPE", () => {
+process12.on("SIGPIPE", () => {
 });
-process11.stdout.on("error", (err) => {
+process12.stdout.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
-process11.stderr.on("error", (err) => {
+process12.stderr.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path15.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs18.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path16.join(os7.homedir(), ".codex-bridge", "crashes");
+    fs19.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path15.join(crashDir, `${ts}-${process11.pid}.log`);
+    const file = path16.join(crashDir, `${ts}-${process12.pid}.log`);
     const payload = {
       kind,
       ts,
-      pid: process11.pid,
-      argv: process11.argv,
-      cwd: process11.cwd(),
-      nodeVersion: process11.version,
+      pid: process12.pid,
+      argv: process12.argv,
+      cwd: process12.cwd(),
+      nodeVersion: process12.version,
       bridgeVersion: BRIDGE_VERSION,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs18.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs19.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
-      process11.stderr.write(
+      process12.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
 `
       );
@@ -16610,17 +16619,17 @@ function writeCrashLog(kind, error) {
   } catch {
   }
 }
-process11.on("unhandledRejection", (reason) => {
+process12.on("unhandledRejection", (reason) => {
   writeCrashLog("unhandledRejection", reason);
-  process11.exitCode = process11.exitCode || 1;
+  process12.exitCode = process12.exitCode || 1;
 });
-process11.on("uncaughtException", (err) => {
+process12.on("uncaughtException", (err) => {
   writeCrashLog("uncaughtException", err);
-  process11.exit(process11.exitCode || 1);
+  process12.exit(process12.exitCode || 1);
 });
 async function main() {
   const startedAt = Date.now();
-  const rawArgv = process11.argv.slice(2);
+  const rawArgv = process12.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
   maybeTriggerAutoApply(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
@@ -16647,7 +16656,7 @@ async function main() {
   await handler(argv);
 }
 main().catch((error) => {
-  const rawArgv = process11.argv.slice(2);
+  const rawArgv = process12.argv.slice(2);
   const json2 = detectJsonFlag(rawArgv);
   const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
   emitError(error, { json: json2, command });
