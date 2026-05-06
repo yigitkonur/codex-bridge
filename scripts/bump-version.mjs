@@ -11,6 +11,7 @@
 //   node scripts/bump-version.mjs           # bump and write files
 //   node scripts/bump-version.mjs --dry-run # compute next version, write nothing
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +124,19 @@ function main() {
   for (const f of VERSION_FILES) {
     bumpFile(f.path, f.kind, current, next);
     process.stdout.write(`  updated ${f.path}\n`);
+  }
+
+  // Bundles bake the version string into their output. Without this rebuild
+  // the committed bundles drift one version behind every patch bump and the
+  // "committed bundle matches fresh build" CI gate fails on every open PR.
+  process.stdout.write("  regenerating bundles...\n");
+  const build = spawnSync("npm", ["run", "build"], {
+    cwd: REPO_ROOT,
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (build.status !== 0) {
+    throw new Error(`npm run build exited with status ${build.status}`);
   }
 
   emitOutput("previous", current);
