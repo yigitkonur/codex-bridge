@@ -779,6 +779,7 @@ import process9 from "node:process";
 import fs11 from "node:fs";
 import path9 from "node:path";
 import process8 from "node:process";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/lib/fs.mjs
 import fs from "node:fs";
@@ -1693,7 +1694,7 @@ function createSubagentWorktree({
     };
   }
 }
-function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
+function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath, keepBranch = false }) {
   assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
@@ -1720,7 +1721,7 @@ function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot,
       throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
     }
   }
-  if (branch) {
+  if (branch && !keepBranch) {
     assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
     if (branchExists(repoRoot, branch)) {
       if (getCurrentBranch(repoRoot) === branch) {
@@ -4305,6 +4306,13 @@ function findSession(sessionDir, threadId) {
     return null;
   }
   return { ndjsonPath, eventsPath, sessionDir, threadId };
+}
+function readEvents(sessionOrPath, { maxBlocks = null } = {}) {
+  const eventsPath = typeof sessionOrPath === "string" ? sessionOrPath : sessionOrPath?.eventsPath;
+  if (!eventsPath || !fs7.existsSync(eventsPath)) return [];
+  const raw = fs7.readFileSync(eventsPath, "utf8");
+  const blocks = raw.split(/\n(?=\[[^\]]+\])/).map((block) => block.trim()).filter(Boolean);
+  return Number.isInteger(maxBlocks) && maxBlocks > 0 ? blocks.slice(-maxBlocks) : blocks;
 }
 function logNdjson(session, tag, method, data) {
   const entry = buildNdjsonEvent({
@@ -8528,6 +8536,10 @@ function validateConfigLayers(skillDir, overrideDir = null, workspaceRoot = null
 }
 
 // src/adapters/codex/index.mjs
+var ADAPTER_DIR = path9.dirname(fileURLToPath2(import.meta.url));
+var SOURCE_ROOT_DIR = path9.resolve(ADAPTER_DIR, "../..");
+var BUNDLE_ROOT_DIR = path9.resolve(ADAPTER_DIR, "..");
+var CONFIG_ROOT_DIR = fs11.existsSync(path9.join(SOURCE_ROOT_DIR, "schemas")) ? SOURCE_ROOT_DIR : fs11.existsSync(path9.join(BUNDLE_ROOT_DIR, "schemas")) ? BUNDLE_ROOT_DIR : null;
 function buildCapabilities() {
   return Object.freeze({
     supports_plan_mode: true,
@@ -8570,9 +8582,9 @@ var runtime = defaultRuntime;
 function normalizeAdapterOptions(options = {}) {
   return options && typeof options === "object" && !Array.isArray(options) ? options : {};
 }
-function defaultSessionDirForCwd(cwd) {
-  const config = getConfig(cwd);
-  return resolveSessionDir(config.session_dir ?? DEFAULT_CONFIG.session_dir);
+function defaultSessionDirForCwd(cwd, workspaceRoot = cwd) {
+  const config = loadConfig(CONFIG_ROOT_DIR, cwd, workspaceRoot);
+  return resolveSessionDir(config.session_dir, workspaceRoot);
 }
 function buildTurnOptions(prompt, options) {
   const adapterOptions = normalizeAdapterOptions(options.adapterOptions);
@@ -8601,6 +8613,124 @@ function eventTagForLine(line) {
   if (terminal) return terminal[1];
   const generic = /^\[([^\]]+)\]/.exec(line);
   return generic?.[1] ?? "ADAPTER:codex:event";
+}
+var EVENT_TERMINAL_PHASE = Object.freeze({
+  DONE: "done",
+  ERROR: "error",
+  INCOMPLETE: "incomplete",
+  PLAN: "plan-pending",
+  CANCELLED: "cancelled",
+  UNKNOWN: "error"
+});
+var SUCCESS_TERMINAL_TAGS = /* @__PURE__ */ new Set(["DONE", "PLAN"]);
+function workerTerminalTagForStatus(status) {
+  switch (status) {
+    case "completed":
+      return "DONE";
+    case "failed":
+    case "orphaned":
+      return "ERROR";
+    case "cancelled":
+      return "CANCELLED";
+    default:
+      return null;
+  }
+}
+function workerExitCodeForStatus(status) {
+  return status === "completed" ? 0 : 1;
+}
+function exitCodeForTerminalTag(tag, workerExitCode) {
+  if (!tag) return workerExitCode;
+  return SUCCESS_TERMINAL_TAGS.has(tag) ? 0 : 1;
+}
+function phaseForTerminalTag(tag, fallback) {
+  return EVENT_TERMINAL_PHASE[tag] ?? fallback ?? "error";
+}
+function firstEventLine(block) {
+  return String(block ?? "").split(/\r?\n/, 1)[0] ?? "";
+}
+function bracketTagForEventBlock(block) {
+  return /^\[([^\]]+)\]/.exec(firstEventLine(block))?.[1] ?? null;
+}
+function resolveStoredEventsPath(storedJob, threadId, cwd, workspaceRoot, options) {
+  const candidates = [
+    options.eventsPath,
+    storedJob?.result?.eventsPath,
+    storedJob?.result?.artifacts?.eventsPath,
+    storedJob?.eventsPath
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  if (!threadId) return null;
+  const eventDirs = [
+    options.sessionDir,
+    storedJob?.result?.eventsDir,
+    storedJob?.result?.artifacts?.eventsDir,
+    storedJob?.eventsDir
+  ];
+  const configuredEventDir = eventDirs.find((candidate) => typeof candidate === "string" && candidate.trim());
+  const sessionDir = configuredEventDir ? resolveSessionDir(configuredEventDir, workspaceRoot ?? cwd) : defaultSessionDirForCwd(cwd, workspaceRoot);
+  return path9.join(sessionDir, `${threadId}.events`);
+}
+function readEventTerminalState(eventsPath) {
+  if (!eventsPath || !fs11.existsSync(eventsPath)) {
+    return { found: false, eventsPath: eventsPath ?? null, eventsFileExists: false };
+  }
+  const events = readEvents(eventsPath);
+  let pipelineFailed = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const rawTag = bracketTagForEventBlock(events[index]);
+    if (rawTag === "PIPELINE:failed") {
+      pipelineFailed = {
+        tag: "INCOMPLETE",
+        rawTag,
+        line: firstEventLine(events[index])
+      };
+      continue;
+    }
+    if (TERMINAL_TAGS.includes(rawTag)) {
+      if (pipelineFailed && rawTag !== "ERROR") {
+        return {
+          found: true,
+          ...pipelineFailed,
+          eventsPath,
+          source: "pipeline-failed"
+        };
+      }
+      return {
+        found: true,
+        tag: rawTag,
+        rawTag,
+        line: firstEventLine(events[index]),
+        eventsPath,
+        source: "events-terminal"
+      };
+    }
+  }
+  if (pipelineFailed) {
+    return {
+      found: true,
+      ...pipelineFailed,
+      eventsPath,
+      source: "pipeline-failed"
+    };
+  }
+  return {
+    found: true,
+    tag: "UNKNOWN",
+    rawTag: null,
+    line: null,
+    eventsPath,
+    source: "events-missing-terminal"
+  };
+}
+function formatDiscrepancyReason(eventState, terminalTag, workerTerminalTag, workerExitCode) {
+  const eventTag = eventState.rawTag ? `[${eventState.rawTag}]` : "no terminal tag";
+  const classification = eventState.rawTag && eventState.rawTag !== terminalTag ? `, classified as [${terminalTag}]` : "";
+  return `events emitted ${eventTag}${classification} but worker status implied [${workerTerminalTag ?? "UNKNOWN"}] (workerExitCode=${workerExitCode})`;
 }
 async function dispatch(prompt, options = {}) {
   const normalized = normalizeAdapterOptions(options);
@@ -8677,13 +8807,26 @@ async function getResult(jobId, options = {}) {
   const cwd = normalized.cwd ?? process8.cwd();
   const { workspaceRoot, job } = resolveResultJob(cwd, jobId);
   const storedJob = readStoredJob(workspaceRoot, job.id);
-  const exitCode = job.status === "completed" ? 0 : 1;
+  const workerExitCode = workerExitCodeForStatus(job.status);
+  const workerTerminalTag = workerTerminalTagForStatus(job.status);
+  const eventsPath = resolveStoredEventsPath(storedJob, job.threadId ?? storedJob?.threadId ?? null, cwd, workspaceRoot, normalized);
+  const eventState = readEventTerminalState(eventsPath);
+  const terminalTag = eventState.found ? eventState.tag : workerTerminalTag;
+  const consistent = !eventState.found || workerTerminalTag === null || workerTerminalTag === terminalTag;
+  const phase = eventState.found ? phaseForTerminalTag(terminalTag, storedJob?.result?.phase ?? job.phase ?? storedJob?.phase ?? job.status ?? "error") : job.phase ?? storedJob?.phase ?? job.status ?? "error";
+  const exitCode = exitCodeForTerminalTag(terminalTag, workerExitCode);
   return {
     jobId: job.id,
     threadId: job.threadId ?? storedJob?.threadId ?? null,
-    phase: job.phase ?? storedJob?.phase ?? job.status ?? "error",
+    phase,
     exitCode,
-    terminalTag: job.status === "completed" ? "DONE" : job.status === "cancelled" ? "ERROR" : null,
+    terminalTag,
+    workerExitCode,
+    consistent,
+    discrepancyReason: consistent ? null : formatDiscrepancyReason(eventState, terminalTag, workerTerminalTag, workerExitCode),
+    eventsPath: eventState.eventsPath,
+    terminalSource: eventState.found ? eventState.source : "worker-status",
+    eventTerminalLine: eventState.line ?? null,
     summary: job.summary ?? storedJob?.summary ?? null,
     artifacts: storedJob?.result?.artifacts ?? {},
     raw: { job, storedJob }
@@ -9871,6 +10014,16 @@ function renderCancelReport(job) {
   if (job.summary) {
     lines.push(`- Summary: ${job.summary}`);
   }
+  if (job.cleanup?.worktreePath || job.cleanup?.branchName) {
+    const status = job.cleanup.succeeded ? "removed" : job.cleanup.reason;
+    lines.push(`- Worktree cleanup: ${status}`);
+    if (job.cleanup.worktreePath) {
+      lines.push(`  - Path: ${job.cleanup.worktreePath}`);
+    }
+    if (job.cleanup.branchName) {
+      lines.push(`  - Branch: ${job.cleanup.branchName}`);
+    }
+  }
   lines.push("- Check `codex-bridge status` for the updated queue.");
   return `${lines.join("\n").trimEnd()}
 `;
@@ -10688,9 +10841,13 @@ async function runAutoPipeline(options) {
     } catch {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
-    const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
-    const origin = `pipeline:${lastStage}`;
     const failingStage = error instanceof TimeoutError ? mapStageLabel(error.label) : error instanceof PipelineStageError ? error.stage : null;
+    const lastCompletedStage = completedStages[completedStages.length - 1] ?? null;
+    const origin = `pipeline:${failingStage ?? "pipeline"}`;
+    const reviewPayload = buildTerminalReviewPayload(completedStages, {
+      reviewVerdict,
+      reviewFindingCount
+    });
     const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
@@ -10710,17 +10867,17 @@ async function runAutoPipeline(options) {
       error: errorMessage,
       origin,
       failing_stage: failingStage,
+      lastCompletedStage,
       partial: true,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
       stage: "failed",
-      detail: `failing_stage=${failingStage ?? "unknown"} at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+      detail: `failing_stage=${failingStage ?? "unknown"} last_completed=${lastCompletedStage ?? "none"} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
     const completion = normalizeCompletionResult(
       { complete: false, missing_items: [], summary: null },
@@ -10735,11 +10892,12 @@ async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       diff: finalDiff,
+      origin,
       failing_stage: failingStage,
+      lastCompletedStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       completion,
       missingItems: [],
@@ -10747,6 +10905,18 @@ async function runAutoPipeline(options) {
       touchedFiles: fixFilesTouched
     };
   }
+}
+function buildTerminalReviewPayload(completedStages, { reviewVerdict, reviewFindingCount }) {
+  if (!completedStages.includes("review")) {
+    return {
+      reviewVerdict: null,
+      reviewFindingCount: null
+    };
+  }
+  return {
+    reviewVerdict,
+    reviewFindingCount
+  };
 }
 function normalizeCompletionResult(completionResult, missingItems, completionSummary, complete) {
   const source = completionResult && typeof completionResult === "object" && !Array.isArray(completionResult) ? completionResult : {};
@@ -10927,12 +11097,12 @@ import os6 from "node:os";
 // src/lib/runtime-paths.mjs
 import fs16 from "node:fs";
 import path15 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "2.2.0",
+  version: "2.2.1",
   description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
   type: "module",
   scripts: {
@@ -10957,7 +11127,7 @@ var package_default = {
 
 // src/lib/runtime-paths.mjs
 function resolveDispatcherDir() {
-  const here = path15.dirname(fileURLToPath2(import.meta.url));
+  const here = path15.dirname(fileURLToPath3(import.meta.url));
   if (fs16.existsSync(path15.join(here, "codex-bridge.mjs"))) return here;
   const parent = path15.resolve(here, "..");
   if (fs16.existsSync(path15.join(parent, "codex-bridge.mjs"))) return parent;
@@ -11711,8 +11881,8 @@ import fs19 from "node:fs";
 import os8 from "node:os";
 import path18 from "node:path";
 import process10 from "node:process";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
-var _DOCTOR_SCRIPT_DIR = path18.dirname(fileURLToPath3(import.meta.url));
+import { fileURLToPath as fileURLToPath4 } from "node:url";
+var _DOCTOR_SCRIPT_DIR = path18.dirname(fileURLToPath4(import.meta.url));
 var _DOCTOR_SKILL_DIR = fs19.existsSync(path18.join(_DOCTOR_SCRIPT_DIR, "..", "schemas")) ? path18.join(_DOCTOR_SCRIPT_DIR, "..") : path18.join(_DOCTOR_SCRIPT_DIR, "..", "..");
 function getBridgeConfig(cwd = null, workspaceRoot = null) {
   return loadConfig(_DOCTOR_SKILL_DIR, cwd, workspaceRoot);
@@ -15473,16 +15643,112 @@ async function handleTaskWorker(argv) {
     { logFile }
   );
 }
+function readCancelMeta(taskId) {
+  if (!taskId) return { meta: null, warning: null };
+  try {
+    return { meta: readMeta(taskId), warning: null };
+  } catch (error) {
+    return {
+      meta: null,
+      warning: `could not read task registry metadata: ${error?.message ?? error}`
+    };
+  }
+}
+function resolveCancelWorktree(job, existing, meta) {
+  const rawWorktree = [meta?.worktree, existing?.worktree, job?.worktree].find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate)) ?? {};
+  const value = (...candidates) => {
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim()) return candidate;
+    }
+    return null;
+  };
+  return {
+    isolation_mode: value(rawWorktree.isolation_mode, meta?.isolation_mode, existing?.isolation_mode, job?.isolation_mode),
+    path: value(rawWorktree.path, meta?.worktree_path, existing?.worktree?.path, job?.worktree?.path),
+    branch: value(rawWorktree.branch, meta?.branch, meta?.worktree_branch, existing?.worktree?.branch, job?.worktree?.branch),
+    previous_ref: value(rawWorktree.previous_ref, meta?.previous_ref, existing?.worktree?.previous_ref, job?.worktree?.previous_ref)
+  };
+}
+function cleanupCancelledWorktree({ workspaceRoot, job, existing, meta, keepWorktree, keepBranch }) {
+  const registryTaskId = existing?.registryTaskId ?? job?.registryTaskId ?? meta?.task_id ?? job?.id;
+  const worktree = resolveCancelWorktree(job, existing, meta);
+  const cleanup = {
+    attempted: false,
+    succeeded: false,
+    reason: "no-worktree",
+    worktreePath: worktree.path ?? null,
+    branchName: worktree.branch ?? null,
+    worktreeRemoved: false,
+    branchDeleted: false,
+    preservedWorktree: false,
+    preservedBranch: false,
+    failures: []
+  };
+  const branchLooksOwned = typeof worktree.branch === "string" && worktree.branch.startsWith("subagent/");
+  const pathLooksOwned = typeof worktree.path === "string" && worktree.path.includes(".codex-bridge-worktrees/");
+  const modeLooksOwned = worktree.isolation_mode === "worktree";
+  if (!modeLooksOwned && !branchLooksOwned && !pathLooksOwned) {
+    return cleanup;
+  }
+  if (keepWorktree) {
+    cleanup.reason = "preserved-by-user";
+    cleanup.preservedWorktree = Boolean(worktree.path);
+    cleanup.preservedBranch = Boolean(worktree.branch);
+    return cleanup;
+  }
+  cleanup.attempted = true;
+  const branchForCleanup = branchLooksOwned ? worktree.branch : null;
+  const effectiveKeepBranch = Boolean(keepBranch);
+  cleanup.preservedBranch = Boolean(worktree.branch && (effectiveKeepBranch || !branchForCleanup));
+  try {
+    const pruned = pruneWorktreeOnCancel({
+      cwd: workspaceRoot,
+      taskId: registryTaskId,
+      branch: branchForCleanup,
+      previousRef: worktree.previous_ref,
+      path: worktree.path,
+      keepBranch: effectiveKeepBranch
+    });
+    cleanup.worktreeRemoved = Boolean(pruned.pruned);
+    cleanup.branchDeleted = Boolean(pruned.branchDeleted);
+    cleanup.succeeded = Boolean(pruned.pruned) && (effectiveKeepBranch || !branchForCleanup || Boolean(pruned.branchDeleted));
+    cleanup.reason = cleanup.succeeded ? "cleaned" : "cleanup-incomplete";
+  } catch (error) {
+    cleanup.reason = "cleanup-failed";
+    cleanup.failures.push(error instanceof Error ? error.message : String(error));
+  }
+  return cleanup;
+}
+function writeCancelledMeta(taskId, meta, completedAt, cleanup) {
+  if (!taskId || !meta) return null;
+  const {
+    schema_version: _schemaVersion,
+    task_id: _taskId,
+    written_at: _writtenAt,
+    ...metaBody
+  } = meta;
+  writeMeta(taskId, {
+    ...metaBody,
+    phase: "cancelled",
+    cancelled_at: completedAt,
+    cleanup
+  });
+}
 async function handleCancel(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "keep-worktree", "keep-branch", "keep-all"]
   });
   const cwd = resolveCommandCwd(options);
+  const keepAll = Boolean(options["keep-all"]);
+  const keepWorktree = keepAll || Boolean(options["keep-worktree"]);
+  const keepBranch = keepAll || keepWorktree || Boolean(options["keep-branch"]);
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process15.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
+  const registryTaskId = existing.registryTaskId ?? job.registryTaskId ?? job.id;
+  const { meta: registryMeta, warning: registryWarning } = readCancelMeta(registryTaskId);
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
   const adapter2 = await resolveCommandAdapter({
@@ -15509,6 +15775,33 @@ async function handleCancel(argv) {
   if (terminate.attempted && !terminate.delivered) {
     warnings.push(`process ${job.pid} was already gone (method=${terminate.method ?? "unknown"})`);
   }
+  if (registryWarning) {
+    warnings.push(registryWarning);
+  }
+  if (keepWorktree && !options["keep-branch"] && !options["keep-all"]) {
+    warnings.push("preserving worktree also preserves its checked-out branch");
+  }
+  const cleanup = cleanupCancelledWorktree({
+    workspaceRoot,
+    job,
+    existing,
+    meta: registryMeta,
+    keepWorktree,
+    keepBranch
+  });
+  if (cleanup.attempted && cleanup.succeeded) {
+    appendLogLine(job.logFile, `Removed cancelled worktree artifacts for ${job.id}.`);
+  } else if (cleanup.reason === "preserved-by-user") {
+    appendLogLine(job.logFile, `Preserved cancelled worktree artifacts for ${job.id}.`);
+  } else if (cleanup.failures.length > 0) {
+    appendLogLine(job.logFile, `Worktree cleanup failed for ${job.id}: ${cleanup.failures.join("; ")}`);
+  }
+  for (const failure of cleanup.failures) {
+    warnings.push(`worktree cleanup failed: ${failure}`);
+  }
+  if (cleanup.preservedBranch && cleanup.branchName && !keepBranch) {
+    warnings.push(`skipped branch deletion for non-bridge branch: ${cleanup.branchName}`);
+  }
   const completedAt = nowIso2();
   const nextJob = {
     ...job,
@@ -15516,12 +15809,14 @@ async function handleCancel(argv) {
     phase: "cancelled",
     pid: null,
     completedAt,
-    errorMessage: "Cancelled by user."
+    errorMessage: "Cancelled by user.",
+    cleanup
   };
   writeJobFile(workspaceRoot, job.id, {
     ...existing,
     ...nextJob,
-    cancelledAt: completedAt
+    cancelledAt: completedAt,
+    cleanup
   });
   upsertJob(workspaceRoot, {
     id: job.id,
@@ -15529,8 +15824,16 @@ async function handleCancel(argv) {
     phase: "cancelled",
     pid: null,
     errorMessage: "Cancelled by user.",
-    completedAt
+    completedAt,
+    cleanup
   });
+  if (registryMeta) {
+    try {
+      writeCancelledMeta(registryTaskId, registryMeta, completedAt, cleanup);
+    } catch (error) {
+      warnings.push(`could not update task registry metadata: ${error?.message ?? error}`);
+    }
+  }
   const kindLabel = existing.kindLabel ?? job.kindLabel ?? job.jobClass ?? "task";
   const KIND_TITLE = {
     "task": "Codex Task",
@@ -15546,6 +15849,7 @@ async function handleCancel(argv) {
     processTerminated: Boolean(terminate.delivered),
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted,
+    cleanup,
     reason: "cancelled-by-user",
     warnings,
     title: normalizedTitle,
@@ -15569,7 +15873,8 @@ async function handleCancel(argv) {
         interruptReason: interrupt.reason ?? null,
         terminateAttempted: terminate.attempted,
         terminateDelivered: Boolean(terminate.delivered),
-        terminateMethod: terminate.method ?? null
+        terminateMethod: terminate.method ?? null,
+        cleanup
       }
     })
   };
