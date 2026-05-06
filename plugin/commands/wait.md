@@ -1,6 +1,6 @@
 ---
 description: Wait until one or more Codex Bridge jobs reach a terminal event
-argument-hint: "[--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]"
+argument-hint: "[--any] <job-id-or-thread-id...> | --group <name> --all [--timeout-ms <ms>] [--json]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---

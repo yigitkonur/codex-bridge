@@ -49,6 +49,27 @@ auto-pipeline check, standalone `review`, standalone `adversarial-review`, and
 the stop-time review gate run read-only by design; disable the stop-time review
 gate when enforcing sandbox pins.
 
+## Parallel dispatch
+
+For N >= 2 parallel jobs in a Claude Code plugin install, use
+`/codex-bridge:fan-out`:
+
+```bash
+/codex-bridge:fan-out --group <name> --prompt "..." --prompt "..." [--read-only|--write]
+```
+
+Do NOT use `Agent { subagent_type: "codex-bridge:codex-bridge-runner" }` for
+parallel dispatch. The runner is for single substantial handoffs; fan-out uses
+direct Bash dispatch and tags every job with the same group.
+
+After dispatch, track the group:
+
+```bash
+/codex-bridge:status --group <name>
+/codex-bridge:wait --group <name> --all
+/codex-bridge:bundle --group <name> --output ./audit.tar.gz
+```
+
 ## Identifiers (the single biggest source of derailment — read this first)
 
 Two kinds of IDs flow through every task. Use the right one or commands fail:

@@ -11,6 +11,7 @@ import {
   verifyBaselineContracts
 } from "../scripts/baseline-contracts.mjs";
 import { upsertJob, writeJobFile } from "../src/lib/state.mjs";
+import { SESSION_ID_ENV } from "../src/lib/tracked-jobs.mjs";
 
 const rootUrl = new URL("../", import.meta.url);
 const rootPath = fileURLToPath(rootUrl);
@@ -21,6 +22,7 @@ const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import
 function withCliFixture(run) {
   const previousBridgePluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
   const previousClaudePluginData = process.env.CLAUDE_PLUGIN_DATA;
+  const previousSessionId = process.env[SESSION_ID_ENV];
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-baseline-"));
   const workspace = path.join(root, "workspace");
   const pluginData = path.join(root, "plugin-data");
@@ -40,6 +42,7 @@ function withCliFixture(run) {
 
   process.env.CODEX_BRIDGE_PLUGIN_DATA = pluginData;
   delete process.env.CLAUDE_PLUGIN_DATA;
+  delete process.env[SESSION_ID_ENV];
 
   try {
     const threadId = "11111111-1111-4111-8111-111111111111";
@@ -50,6 +53,7 @@ function withCliFixture(run) {
       status: "completed",
       phase: "done",
       threadId,
+      group: "baseline-group",
       createdAt: "2026-04-30T00:00:00.000Z",
       updatedAt: "2026-04-30T00:00:01.000Z",
       completedAt: "2026-04-30T00:00:01.000Z",
@@ -70,6 +74,11 @@ function withCliFixture(run) {
       delete process.env.CLAUDE_PLUGIN_DATA;
     } else {
       process.env.CLAUDE_PLUGIN_DATA = previousClaudePluginData;
+    }
+    if (previousSessionId == null) {
+      delete process.env[SESSION_ID_ENV];
+    } else {
+      process.env[SESSION_ID_ENV] = previousSessionId;
     }
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -276,6 +285,17 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.equal(status.command, "status");
     assert.equal(status.result.workspaceRoot, fixture.workspace);
     assert.equal(status.result.latestFinished.id, fixture.job.id);
+
+    const groupStatus = parseEnvelope(runBridge(["status", "--group", "baseline-group", "--json", "--cwd", fixture.workspace], fixture));
+    assert.equal(groupStatus.command, "status");
+    assert.equal(groupStatus.result.group, "baseline-group");
+    assert.equal(groupStatus.result.latestFinished.id, fixture.job.id);
+
+    const groupWait = parseEnvelope(runBridge(["wait", "--group", "baseline-group", "--all", "--json", "--cwd", fixture.workspace], fixture));
+    assert.equal(groupWait.command, "wait");
+    assert.equal(groupWait.result.mode, "group-all");
+    assert.equal(groupWait.result.group, "baseline-group");
+    assert.equal(groupWait.result.total, 1);
 
     const result = parseEnvelope(runBridge(["result", fixture.job.id, "--json", "--cwd", fixture.workspace], fixture));
     assertExpectedProbe(report, "result <job-id> --json", result);
