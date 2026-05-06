@@ -16,10 +16,15 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 
 // All hooks wired in hooks/hooks.json, resolved to their plugin/hooks/ copy
 // (the copy that actually gets installed by the plugin).
+//
+// After PR #90, the hook layout consolidated to lifecycle.mjs, tool.mjs,
+// stop.mjs (3 dispatchers) plus standalone pre-tool-bash.mjs and
+// user-prompt-submit.mjs. The kill-switch check uses each dispatcher's
+// internal hook-name(s) rather than the legacy 1:1 file-name mapping.
 const WIRED_HOOKS = [
   {
     name: "session-lifecycle-hook",
-    file: "plugin/hooks/session-lifecycle-hook.mjs",
+    file: "plugin/hooks/lifecycle.mjs",
     event: "SessionStart",
     input: '{"session_id":"x","cwd":"/tmp"}',
   },
@@ -43,14 +48,14 @@ const WIRED_HOOKS = [
   },
   {
     name: "subagent-stop",
-    file: "plugin/hooks/subagent-stop.mjs",
-    event: null,
+    file: "plugin/hooks/stop.mjs",
+    event: "SubagentStop",
     input: '{"agent_type":"general","cwd":"/tmp"}',
   },
   {
     name: "stop-gate",
-    file: "plugin/hooks/stop-gate.mjs",
-    event: null,
+    file: "plugin/hooks/stop.mjs",
+    event: "Stop",
     input: '{"cwd":"/tmp"}',
   },
 ];
@@ -74,14 +79,18 @@ function runHook(hook, disableValue) {
   return { stdout: result.stdout, status: result.status, stderr: result.stderr };
 }
 
-test("CODEX_BRIDGE_HOOK_DISABLE=all produces empty stdout from every wired hook", () => {
+// Stop-class hooks (stop.mjs) intentionally emit {"continue":true} when the
+// kill-switch fires — the safest default if the gate itself is broken is to
+// allow. Other hooks emit no stdout when disabled.
+const PERMITTED_DISABLED_OUTPUTS = new Set(["", '{"continue":true}']);
+
+test("CODEX_BRIDGE_HOOK_DISABLE=all produces no decision-bearing stdout from every wired hook", () => {
   for (const hook of WIRED_HOOKS) {
     const { stdout, status } = runHook(hook, "all");
     assert.equal(status, 0, `${hook.name} should exit 0 when kill-switch=all`);
-    assert.equal(
-      stdout.trim(),
-      "",
-      `${hook.name}: expected empty stdout when CODEX_BRIDGE_HOOK_DISABLE=all, got: ${stdout.slice(0, 200)}`,
+    assert.ok(
+      PERMITTED_DISABLED_OUTPUTS.has(stdout.trim()),
+      `${hook.name}: expected empty or {"continue":true} when CODEX_BRIDGE_HOOK_DISABLE=all, got: ${stdout.slice(0, 200)}`,
     );
   }
 });
@@ -103,10 +112,9 @@ test("CODEX_BRIDGE_HOOK_DISABLE comma list silences all named hooks", () => {
     const hook = WIRED_HOOKS.find((h) => h.name === name);
     const { stdout, status } = runHook(hook, names.join(","));
     assert.equal(status, 0, `${name} should exit 0`);
-    assert.equal(
-      stdout.trim(),
-      "",
-      `${name} should be silent when in comma-separated disable list`,
+    assert.ok(
+      PERMITTED_DISABLED_OUTPUTS.has(stdout.trim()),
+      `${name} should emit no decision-bearing stdout when in comma-separated disable list, got: ${stdout.slice(0, 200)}`,
     );
   }
 });

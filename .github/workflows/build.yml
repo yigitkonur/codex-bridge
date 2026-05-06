@@ -69,8 +69,8 @@ jobs:
             plugin/commands/adversarial-review.md \
             plugin/agents/codex-bridge-runner.md \
             plugin/hooks/hooks.json \
-            plugin/hooks/session-lifecycle-hook.mjs \
-            plugin/hooks/stop-review-gate-hook.mjs; do
+            plugin/hooks/lifecycle.mjs \
+            plugin/hooks/stop.mjs; do
             test -s "$f" || { echo "missing or empty: $f"; exit 1; }
           done
 

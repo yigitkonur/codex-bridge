@@ -8,14 +8,22 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const HOOK_NAME = "stop-gate";
+import {
+  currentSessionId,
+  jobMatchesHookContext,
+  readJobMetadata,
+  resolveJobsDir,
+  resolveWorkspaceRoot,
+} from "./lib/workspace-state.mjs";
+
+const HOOK_NAME = "stop";
 const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 // hooks.json gives the Stop hook 15 minutes. Three nested timeout layers
 // share that ceiling, each shorter than its parent so the inner one fires
 // first and the outer ones serve as escalation safety nets:
 //
-//   900_000 ms  hooks.json Stop[].timeout (Claude Code reaps the hook)
+//    30_000 ms  hooks.json Stop[].timeout (Claude Code reaps the hook)
 //      ↓ -60 s
 //   840_000 ms  STOP_REVIEW_TIMEOUT_MS (spawnSync timeout + SIGKILL escalation)
 //      ↓ -60 s
@@ -30,9 +38,9 @@ const REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 // Pushing the watchdog inside the bridge ensures the turn is cancelled
 // before the hook escalates to a hard kill of the bridge child. Each 60 s
 // gap absorbs cleanup latency at its layer.
-const STOP_REVIEW_TIMEOUT_MINUTES = 14;
-const STOP_REVIEW_TIMEOUT_MS = STOP_REVIEW_TIMEOUT_MINUTES * 60 * 1000;
-const STOP_REVIEW_TURN_TIMEOUT_MS = (STOP_REVIEW_TIMEOUT_MINUTES - 1) * 60 * 1000;
+const STOP_REVIEW_TIMEOUT_MINUTES = 0.4;
+const STOP_REVIEW_TIMEOUT_MS = 24 * 1000;
+const STOP_REVIEW_TURN_TIMEOUT_MS = 20 * 1000;
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,7 +49,7 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 // hook is the highest-blast-radius hook in this set — it can hold a Claude
 // Code session at shutdown for up to 15 minutes — so an emergency disable
 // path is mandatory:
-//   CODEX_BRIDGE_HOOK_DISABLE=stop-gate     → disable just this hook
+//   CODEX_BRIDGE_HOOK_DISABLE=stop          → disable just this hook
 //   CODEX_BRIDGE_HOOK_DISABLE=all           → disable every codex-bridge hook
 // When disabled, the hook returns silently (no decision JSON), which Claude
 // Code interprets as "allow" — the safest default if the gate itself is
@@ -50,7 +58,11 @@ function isDisabled() {
   const list = (process.env.CODEX_BRIDGE_HOOK_DISABLE ?? "")
     .split(",")
     .map((entry) => entry.trim());
-  return list.includes(HOOK_NAME) || list.includes("all");
+  return list.includes(HOOK_NAME) ||
+    list.includes("subagent-stop") ||
+    list.includes("stop-gate") ||
+    list.includes("stop-review-gate-hook") ||
+    list.includes("all");
 }
 
 function logHookError(err) {
@@ -83,10 +95,164 @@ const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
+const BRIDGE_AGENT_TYPES = new Set([
+  "codex-bridge:codex-bridge-runner",
+  "codex-bridge:codex-bridge-reviewer",
+]);
+const TERMINAL_TAG_PATTERN = /\[(?:DONE|ERROR|INCOMPLETE|PLAN|CANCELLED)[^\]]*\]/;
+const JOB_ID_PATTERN = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/i;
+const JOB_ID_PATTERN_GLOBAL = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/gi;
+const BASH_DENIED_PATTERN = /\b(?:bash permission|permission denied|denied|not allowed|requires permission|need bash)\b/i;
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
   return raw ? JSON.parse(raw) : {};
+}
+
+function extractJobId(value, { latest = false } = {}) {
+  if (value == null) return null;
+  const text =
+    typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  if (latest) {
+    let lastMatch = null;
+    JOB_ID_PATTERN_GLOBAL.lastIndex = 0;
+    let match;
+    while ((match = JOB_ID_PATTERN_GLOBAL.exec(text)) !== null) {
+      lastMatch = match[0];
+    }
+    return lastMatch;
+  }
+  const match = JOB_ID_PATTERN.exec(text);
+  return match ? match[0] : null;
+}
+
+function extractJobIdFromTranscript(filePath) {
+  if (!filePath) return null;
+  try {
+    const stat = fs.statSync(filePath);
+    const maxBytes = 256 * 1024;
+    const start = Math.max(0, stat.size - maxBytes);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(stat.size - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      return extractJobId(buffer.toString("utf8"), { latest: true });
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (err) {
+    logHookError(err);
+  }
+  return null;
+}
+
+function resolveJobId(input) {
+  const directFields = [
+    input.job_id,
+    input.jobId,
+    input.last_assistant_message,
+    input.assistant_message,
+    input.subagent_result,
+    input.output,
+  ];
+  for (const field of directFields) {
+    const jobId = extractJobId(field);
+    if (jobId) return jobId;
+  }
+
+  return extractJobIdFromTranscript(
+    input.agent_transcript_path ?? input.transcript_path,
+  );
+}
+
+function extractSubagentText(input) {
+  const fields = [
+    input.last_assistant_message,
+    input.assistant_message,
+    input.subagent_result,
+    input.output,
+  ];
+  for (const field of fields) {
+    if (typeof field === "string" && field.trim()) return field.trim();
+    if (field && typeof field === "object") {
+      const text = JSON.stringify(field);
+      if (text.trim()) return text;
+    }
+  }
+  return null;
+}
+
+function formatNoDispatchBlock(agentType, reason, text) {
+  const preview = text
+    ? text.replace(/\s+/g, " ").slice(0, 500)
+    : "No bridge job id was present in the subagent result.";
+  return [
+    `## Codex-Bridge subagent did not dispatch (${agentType})`,
+    `reason: ${reason}`,
+    "",
+    "No `task-*` or `review-*` job id was found, so treat this subagent result as failed even if Claude Code labeled the Agent turn completed.",
+    "",
+    `Subagent output: ${preview}`,
+  ].join("\n");
+}
+
+function findTerminalTagForJob(input, jobId) {
+  const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const sessionId = currentSessionId(input);
+  const jobsRoot = resolveJobsDir(cwd);
+  const job = readJobMetadata(jobsRoot, jobId);
+  if (!jobMatchesHookContext(job, { workspaceRoot, sessionId })) return null;
+
+  const eventsPath = path.join(jobsRoot, jobId, "events.jsonl");
+  try {
+    const text = fs.readFileSync(eventsPath, "utf8");
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const match = TERMINAL_TAG_PATTERN.exec(lines[i]);
+      if (match) return { taskId: jobId, tag: match[0] };
+    }
+  } catch (err) {
+    if (err?.code !== "ENOENT") logHookError(err);
+  }
+  return null;
+}
+
+function handleSubagentStop(input) {
+  const agentType = input.agent_type ?? "";
+  if (!BRIDGE_AGENT_TYPES.has(agentType)) {
+    process.stdout.write('{"continue":true}');
+    return;
+  }
+
+  let block = null;
+  const jobId = resolveJobId(input);
+  if (!jobId) {
+    const text = extractSubagentText(input);
+    if (BASH_DENIED_PATTERN.test(text ?? "")) {
+      block = formatNoDispatchBlock(agentType, "BASH_DENIED", text);
+    }
+  } else {
+    const terminal = findTerminalTagForJob(input, jobId);
+    if (terminal) {
+      block = `## Codex-Bridge subagent finished (${agentType})\nTask ${terminal.taskId} -> ${terminal.tag}\nFull output: \`/codex-bridge:result ${terminal.taskId}\``;
+    }
+  }
+
+  if (!block) {
+    process.stdout.write('{"continue":true}');
+    return;
+  }
+
+  process.stdout.write(
+    JSON.stringify({
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: "SubagentStop",
+        additionalContext: block,
+      },
+    }),
+  );
 }
 
 function runBridge(cwd, input, args, options = {}) {
@@ -98,7 +264,7 @@ function runBridge(cwd, input, args, options = {}) {
     },
     encoding: "utf8",
     timeout: options.timeoutMs ?? 15000,
-    // The Stop hook leaves a 60-second margin under hooks.json's 900s ceiling
+    // The Stop hook leaves a small margin under hooks.json's 30s ceiling
     // (see STOP_REVIEW_TIMEOUT_MINUTES). That margin only protects us if the
     // bridge process actually exits when its timeout fires. spawnSync's
     // default killSignal is SIGTERM; the bundled bridge holds open app-server
@@ -423,6 +589,18 @@ function maybeMigrateLegacyGate(cwd, input, activation) {
 }
 
 function main() {
+  const eventName = process.argv[2] || "";
+  if (eventName === "SubagentStart") {
+    return;
+  }
+  if (eventName === "SubagentStop") {
+    const input = readHookInput();
+    handleSubagentStop(input);
+    return;
+  }
+  if (eventName && eventName !== "Stop") {
+    return;
+  }
   // The plugin-hook kill switch (CODEX_BRIDGE_HOOK_DISABLE) is honored
   // before any bridge spawn so an operator with a broken bridge has an
   // escape hatch without editing the lock file. But silently failing
@@ -444,12 +622,16 @@ function main() {
     }
     if (lockSnapshot?.active) {
       stderrLine(
-        `Codex Bridge stop-time review gate lock is present (${lockSnapshot.lockPath}), but CODEX_BRIDGE_HOOK_DISABLE is set — the gate is being skipped for this session. Unset CODEX_BRIDGE_HOOK_DISABLE (or remove "stop-gate"/"all" from it) to re-enable.`
+        `Codex Bridge stop-time review gate lock is present (${lockSnapshot.lockPath}), but CODEX_BRIDGE_HOOK_DISABLE is set — the gate is being skipped for this session. Unset CODEX_BRIDGE_HOOK_DISABLE (or remove "stop"/"all" from it) to re-enable.`
       );
     }
     return;
   }
   const input = readHookInput();
+  if (!eventName && input.hook_event_name === "SubagentStop") {
+    handleSubagentStop(input);
+    return;
+  }
   if (input.stop_hook_active === true) {
     return;
   }

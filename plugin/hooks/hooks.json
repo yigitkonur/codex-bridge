@@ -1,13 +1,13 @@
 {
-  "description": "Optional Codex Bridge session lifecycle and stop-time review gate hooks.",
+  "description": "Codex Bridge hooks (3-dispatcher architecture)",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-lifecycle-hook.mjs\" SessionStart",
-            "timeout": 5
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.mjs\" SessionStart",
+            "timeout": 8
           }
         ]
       }
@@ -17,13 +17,34 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-lifecycle-hook.mjs\" SessionEnd",
-            "timeout": 10
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.mjs\" SessionEnd",
+            "timeout": 12
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.mjs\"",
+            "timeout": 5
           }
         ]
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-bash.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "Agent",
         "hooks": [
@@ -47,12 +68,12 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
+    "SubagentStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.mjs\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.mjs\" SubagentStart",
             "timeout": 5
           }
         ]
@@ -63,7 +84,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-stop.mjs\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.mjs\" SubagentStop",
             "timeout": 5
           }
         ]
@@ -74,8 +95,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.mjs\"",
-            "timeout": 900
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.mjs\" Stop",
+            "timeout": 30
           }
         ]
       }

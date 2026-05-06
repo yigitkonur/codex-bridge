@@ -11,13 +11,25 @@ change.
 | Install path | `~/.agents/skills/codex-bridge/` (user-level skill, symlinked into `~/.claude/skills/`) | `${CLAUDE_PLUGIN_ROOT}` (Claude Code plugin) |
 | Distribution | `npx skills add yigitkonur/codex-bridge` | `/plugin marketplace add yigitkonur/codex-bridge`, then `/plugin install codex-bridge@codex-bridge` |
 | Teaching surface | large standalone skill reference set | slimmer plugin skill plus runtime help and GSD contributor docs |
-| Active hooks | 3 (SessionStart, SessionEnd, Stop) | SessionStart, SessionEnd, PreToolUse(Agent), PostToolUse(Bash\|Agent), UserPromptSubmit, SubagentStop, Stop |
+| Active hooks | 3 (SessionStart, SessionEnd, Stop) | Three dispatchers: `lifecycle.mjs`, `tool.mjs`, `stop.mjs` |
 | Worktree-per-dispatch | manual | explicit `--write --worktree-auto` |
 | Monitor auto-arm | manual (rule taught in SKILL.md) | automatic via PostToolUse hook |
 | Brief schema | none | `plugin/schemas/brief.schema.json` |
 | Iterate workflow | none | `/codex-bridge:iterate` task -> review -> verdict -> follow-up loop |
 | Verdict + merge gate | none | `/codex-bridge:verdict` + gated `/codex-bridge:merge` |
 | Adapter abstraction | none | `src/adapters/` (Codex-only runtime today; future backends need fresh requirements and tests) |
+
+## Hook entrypoints
+
+The v2.x hook surface now uses three dispatcher files under `hooks/`:
+`lifecycle.mjs`, `tool.mjs`, and `stop.mjs`. Forks or derivative plugins that
+referenced older per-event hook filenames should update their hook wiring to
+call the dispatcher with the Claude hook event name as `process.argv[2]`, for
+example `node "${CLAUDE_PLUGIN_ROOT}/hooks/tool.mjs" PreToolUse`.
+
+The previous hook state helper was replaced by `hooks/lib/workspace-state.mjs`
+and hook wiring now reaches shared hook helpers through the dispatchers. Do not
+reference the deleted old filenames from downstream `hooks.json` files.
 
 ## Compatibility
 

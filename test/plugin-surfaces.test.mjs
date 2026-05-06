@@ -334,6 +334,19 @@ const expectedCommands = [
   "wait.md"
 ];
 
+function copyDirectory(srcUrl, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcUrl, { withFileTypes: true })) {
+    const srcEntry = new URL(entry.name + (entry.isDirectory() ? "/" : ""), srcUrl);
+    const destEntry = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirectory(srcEntry, destEntry);
+    } else {
+      fs.copyFileSync(srcEntry, destEntry);
+    }
+  }
+}
+
 function makeStopGateHarness(fakeBridgeSource) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-stop-gate-"));
   const pluginRoot = path.join(tempRoot, "plugin");
@@ -343,18 +356,20 @@ function makeStopGateHarness(fakeBridgeSource) {
   fs.mkdirSync(hookDir, { recursive: true });
   fs.mkdirSync(scriptsDir, { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
-  fs.copyFileSync(new URL("plugin/hooks/stop-gate.mjs", root), path.join(hookDir, "stop-gate.mjs"));
+  // stop.mjs imports from ./lib/workspace-state.mjs — copy the whole hooks dir
+  copyDirectory(new URL("plugin/hooks/", root), hookDir);
   fs.writeFileSync(path.join(scriptsDir, "codex-bridge.mjs"), fakeBridgeSource);
   fs.writeFileSync(path.join(workspace, ".codex-bridge-stop-review-gate.lock"), "");
   return {
     tempRoot,
-    hookPath: path.join(hookDir, "stop-gate.mjs"),
+    hookPath: path.join(hookDir, "stop.mjs"),
     workspace
   };
 }
 
 function runStopGateHarness(harness, overrides = {}) {
-  return spawnSync(process.execPath, [harness.hookPath], {
+  // stop.mjs dispatches on process.argv[2]; pass "Stop" to trigger the Stop branch.
+  return spawnSync(process.execPath, [harness.hookPath, "Stop"], {
     cwd: harness.workspace,
     input: JSON.stringify({
       cwd: harness.workspace,
@@ -366,6 +381,7 @@ function runStopGateHarness(harness, overrides = {}) {
       ...process.env,
       CODEX_BRIDGE_PLUGIN_DATA: path.join(harness.tempRoot, "plugin-data"),
       CLAUDE_PLUGIN_DATA: path.join(harness.tempRoot, "claude-data"),
+      CLAUDE_PLUGIN_ROOT: path.join(harness.tempRoot, "plugin"),
       ...(overrides.env ?? {})
     }
   });
@@ -474,6 +490,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
       "SessionEnd",
       "SessionStart",
       "Stop",
+      "SubagentStart",
       "SubagentStop",
       "UserPromptSubmit",
     ].sort());
@@ -482,12 +499,14 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
       .filter((reference) => reference.startsWith("hooks/"))
       .sort();
     assert.deepEqual(hookScriptRefs, [
+      "hooks/lifecycle.mjs",
+      "hooks/lifecycle.mjs",
       "hooks/post-tool-bash.mjs",
       "hooks/pre-tool-agent.mjs",
-      "hooks/session-lifecycle-hook.mjs",
-      "hooks/session-lifecycle-hook.mjs",
-      "hooks/stop-gate.mjs",
-      "hooks/subagent-stop.mjs",
+      "hooks/pre-tool-bash.mjs",
+      "hooks/stop.mjs",
+      "hooks/stop.mjs",
+      "hooks/stop.mjs",
       "hooks/user-prompt-submit.mjs",
     ]);
 
@@ -496,7 +515,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
       assert.ok(exists(hookScriptPath), `${hookScriptRef} must exist in packaged plugin hooks`);
       const hookScript = readText(hookScriptPath);
       if (/BRIDGE_SCRIPT|resolveBundlePath/.test(hookScript)) {
-        assert.match(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "scripts", "codex-bridge\.mjs"\)|path\.join\(root, "scripts", "codex-bridge\.mjs"\)/);
+        assert.match(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "scripts", "codex-bridge\.mjs"\)|path\.join\(root, "scripts", "codex-bridge\.mjs"\)|CLAUDE_PLUGIN_ROOT.*"scripts".*"codex-bridge\.mjs"/);
       }
       assert.doesNotMatch(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "skill", "scripts", "codex-bridge\.mjs"\)/);
     }
@@ -861,8 +880,9 @@ test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => 
 test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () => {
   const manifest = readJson("plugin/.claude-plugin/plugin.json");
   const hooksConfig = readJson("plugin/hooks/hooks.json");
-  const sessionHook = readText("plugin/hooks/session-lifecycle-hook.mjs");
-  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  // 3-dispatcher architecture: session* → lifecycle.mjs, tool* → tool.mjs, stop* → stop.mjs
+  const sessionHook = readText("plugin/hooks/lifecycle.mjs");
+  const stopHook = readText("plugin/hooks/stop.mjs");
 
   assert.equal(manifest.hooks, undefined);
   assert.deepEqual(Object.keys(hooksConfig.hooks).sort(), [
@@ -871,15 +891,12 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
     "SessionEnd",
     "SessionStart",
     "Stop",
+    "SubagentStart",
     "SubagentStop",
     "UserPromptSubmit",
   ].sort());
-  assert.match(JSON.stringify(hooksConfig), /session-lifecycle-hook\.mjs/);
-  assert.match(JSON.stringify(hooksConfig), /pre-tool-agent\.mjs/);
-  assert.match(JSON.stringify(hooksConfig), /post-tool-bash\.mjs/);
-  assert.match(JSON.stringify(hooksConfig), /user-prompt-submit\.mjs/);
-  assert.match(JSON.stringify(hooksConfig), /subagent-stop\.mjs/);
-  assert.match(JSON.stringify(hooksConfig), /stop-gate\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /lifecycle\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /stop\.mjs/);
   assert.match(sessionHook, /CODEX_COMPANION_SESSION_ID/);
   assert.match(sessionHook, /CODEX_BRIDGE_PLUGIN_DATA/);
   assert.doesNotMatch(sessionHook, /appendEnvVar\(CLAUDE_PLUGIN_DATA_ENV/);
@@ -937,9 +954,10 @@ test("plugin SessionEnd hook logs prune failures while allowing shutdown", () =>
       "utf8",
     );
 
+    // SessionEnd is now handled by lifecycle.mjs with event name as argv[2]
     const result = spawnSync(
       process.execPath,
-      [fileURLToPath(new URL("plugin/hooks/session-end.mjs", root))],
+      [fileURLToPath(new URL("plugin/hooks/lifecycle.mjs", root)), "SessionEnd"],
       {
         cwd: fileURLToPath(root),
         env: {
@@ -1058,7 +1076,7 @@ test("SessionStart writes bridge env vars to CLAUDE_ENV_FILE", () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
   const result = spawnSync(
     process.execPath,
-    [path.join(rootPath, "plugin/hooks/session-lifecycle-hook.mjs"), "SessionStart"],
+    [path.join(rootPath, "plugin/hooks/lifecycle.mjs"), "SessionStart"],
     {
       cwd: rootPath,
       env: {
@@ -1129,8 +1147,9 @@ test("SubagentStop reports only the job id correlated from subagent output", () 
   writeJobMetadata(jobs, "task-cccccc-dddddd", workspace, "session-other");
   writeEvents(jobs, "task-cccccc-dddddd", "[ERROR] wrong session\n");
 
+  // SubagentStop is now handled by stop.mjs; hook_event_name fallback triggers the branch
   const output = runHook(
-    "plugin/hooks/subagent-stop.mjs",
+    "plugin/hooks/stop.mjs",
     {
       hook_event_name: "SubagentStop",
       agent_type: "codex-bridge:codex-bridge-runner",
@@ -1147,7 +1166,7 @@ test("SubagentStop reports only the job id correlated from subagent output", () 
   assert.doesNotMatch(output.hookSpecificOutput.additionalContext, /task-cccccc-dddddd/);
 
   const uncorrelated = runHook(
-    "plugin/hooks/subagent-stop.mjs",
+    "plugin/hooks/stop.mjs",
     {
       hook_event_name: "SubagentStop",
       agent_type: "codex-bridge:codex-bridge-runner",
@@ -1273,16 +1292,17 @@ if (command === "status") {
 
 test("plugin Stop hook leaves timeout margin for its blocking timeout result", () => {
   const hooksConfig = readJson("plugin/hooks/hooks.json");
-  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  const stopHook = readText("plugin/hooks/stop.mjs");
   const hookTimeoutMs = hooksConfig.hooks.Stop[0].hooks[0].timeout * 1000;
-  const match = stopHook.match(/const STOP_REVIEW_TIMEOUT_MINUTES = (\d+);/);
+  // New architecture uses STOP_REVIEW_TIMEOUT_MS (ms) directly instead of MINUTES.
+  const match = stopHook.match(/const STOP_REVIEW_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
 
-  assert.ok(match, "Stop hook must define its internal timeout in minutes");
-  assert.ok(Number(match[1]) * 60 * 1000 <= hookTimeoutMs - 60_000);
+  assert.ok(match, "Stop hook must define STOP_REVIEW_TIMEOUT_MS in seconds");
+  assert.ok(Number(match[1]) * 1000 < hookTimeoutMs, "STOP_REVIEW_TIMEOUT_MS must be less than hooks.json timeout");
 });
 
 test("plugin Stop hook migrates legacy gate state with setup's public fields", () => {
-  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  const stopHook = readText("plugin/hooks/stop.mjs");
 
   assert.doesNotMatch(stopHook, /stopReviewGateConfig/);
   assert.match(stopHook, /reviewGateLockExists/);
@@ -1307,7 +1327,7 @@ process.stderr.write("kill-switch test should never spawn the bridge");
 process.exit(99);
 `;
 
-  for (const value of ["stop-gate", "all", "session-end,stop-gate", "stop-gate,unrelated"]) {
+  for (const value of ["stop", "all", "session-end,stop", "stop,unrelated"]) {
     const harness = makeStopGateHarness(failingBridge);
     try {
       const result = runStopGateHarness(harness, {
@@ -1356,7 +1376,7 @@ process.exit(99);
   fs.rmSync(path.join(harness.workspace, ".codex-bridge-stop-review-gate.lock"), { force: true });
   try {
     const result = runStopGateHarness(harness, {
-      env: { CODEX_BRIDGE_HOOK_DISABLE: "stop-gate" }
+      env: { CODEX_BRIDGE_HOOK_DISABLE: "stop" }
     });
     assert.equal(result.status, 0);
     assert.equal(result.stdout, "");
@@ -1367,15 +1387,10 @@ process.exit(99);
 });
 
 test("plugin Stop hook enforces SIGKILL-based timeout for the long-running task spawn", () => {
-  // The 60-second margin between hooks.json's 900s ceiling and the
-  // 14-minute internal timeout only protects emitBlock if spawnSync
-  // actually reaps the child when its timeout fires. spawnSync's default
-  // killSignal is SIGTERM, which the bundled bridge may take seconds to
-  // honor while it tears down app-server sockets and detached workers.
   // The hook escalates to SIGKILL on the long-running `task` invocation
   // so the timeout is deterministic; the cheap status/setup probes keep
   // SIGTERM since they finish in milliseconds.
-  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  const stopHook = readText("plugin/hooks/stop.mjs");
   assert.match(stopHook, /killSignal:\s*"SIGKILL"/);
   // The task spawn must pass killSignal alongside the timeout.
   assert.match(
@@ -1385,29 +1400,25 @@ test("plugin Stop hook enforces SIGKILL-based timeout for the long-running task 
 });
 
 test("plugin Stop hook pushes a turn-level timeout into the bridge so the broker stops the upstream Codex turn", () => {
-  // The SIGKILL-on-timeout path only kills the bridge child. The
-  // bridge's app-server broker is shared across invocations
-  // (src/lib/broker-lifecycle.mjs), so when SIGKILL fires the broker
-  // can keep its upstream `appClient.request` running with no consumer
-  // for the notifications. Passing --turn-default-ms inside the bridge
-  // command makes Codex cancel the turn cleanly before the spawnSync
-  // watchdog escalates. The inner turn timeout must therefore be
-  // strictly less than the outer spawnSync timeout (which is itself
-  // strictly less than the hooks.json ceiling).
-  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  // Passing --turn-default-ms inside the bridge command makes Codex cancel
+  // the turn cleanly before the spawnSync watchdog escalates.
+  const stopHook = readText("plugin/hooks/stop.mjs");
   assert.match(stopHook, /STOP_REVIEW_TURN_TIMEOUT_MS/);
   assert.match(stopHook, /"--turn-default-ms"/);
-  const turnMatch = stopHook.match(/STOP_REVIEW_TURN_TIMEOUT_MS\s*=\s*\(STOP_REVIEW_TIMEOUT_MINUTES\s*-\s*(\d+)\)\s*\*\s*60\s*\*\s*1000/);
-  assert.ok(turnMatch, "Stop hook must define STOP_REVIEW_TURN_TIMEOUT_MS in terms of STOP_REVIEW_TIMEOUT_MINUTES");
-  assert.ok(Number(turnMatch[1]) >= 1, "the turn timeout must leave at least 60s of cleanup margin under the spawnSync timeout");
+  // In the 3-dispatcher architecture STOP_REVIEW_TURN_TIMEOUT_MS is defined
+  // directly in ms; verify it is strictly less than STOP_REVIEW_TIMEOUT_MS.
+  const spawnMs = stopHook.match(/const STOP_REVIEW_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
+  const turnMs = stopHook.match(/const STOP_REVIEW_TURN_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
+  assert.ok(spawnMs, "Stop hook must define STOP_REVIEW_TIMEOUT_MS");
+  assert.ok(turnMs, "Stop hook must define STOP_REVIEW_TURN_TIMEOUT_MS");
+  assert.ok(Number(turnMs[1]) < Number(spawnMs[1]), "STOP_REVIEW_TURN_TIMEOUT_MS must be less than STOP_REVIEW_TIMEOUT_MS");
 });
 
 test("plugin Stop hook ships the unified plugin-hook error trail", () => {
-  // Sibling plugin hooks (session-start, session-end, user-prompt-submit,
-  // subagent-stop) all log unhandled errors to ~/.codex-bridge/hook-errors/
-  // so operators can diagnose hook crashes after the session ends. The
-  // Stop hook joined that contract in T14.
-  const stopHook = readText("plugin/hooks/stop-gate.mjs");
+  // Sibling plugin hooks (lifecycle, stop) all log unhandled errors to
+  // ~/.codex-bridge/hook-errors/ so operators can diagnose hook crashes
+  // after the session ends.
+  const stopHook = readText("plugin/hooks/stop.mjs");
   assert.match(stopHook, /\.codex-bridge["'],\s*["']hook-errors/);
   assert.match(stopHook, /function logHookError/);
   assert.match(stopHook, /CODEX_BRIDGE_HOOK_DISABLE/);
@@ -1417,12 +1428,10 @@ test("plugin Stop hook ships the unified plugin-hook error trail", () => {
   assert.match(stopHook, /process\.exit\(0\);/);
 });
 
-test("plugin/hooks/hooks.json wires Stop with the bundled stop-gate.mjs and a 900s timeout", () => {
-  // Surface test for the plugin-layout hooks manifest (companion to the
-  // legacy hooks/hooks.json guard in "Claude plugin wires lifecycle hooks
-  // through the bundled bridge CLI"). Locks in the Stop entry's structure
-  // so a refactor that drops the entry, renames the script, or changes
-  // the timeout floor surfaces in CI rather than at session-stop time.
+test("plugin/hooks/hooks.json wires Stop with the bundled stop.mjs and a 30s timeout", () => {
+  // Surface test for the plugin-layout hooks manifest. Locks in the Stop
+  // entry's structure so a refactor that drops the entry, renames the
+  // script, or changes the timeout floor surfaces in CI.
   const hooksConfig = readJson("plugin/hooks/hooks.json");
   assert.ok(Array.isArray(hooksConfig.hooks?.Stop), "plugin/hooks/hooks.json must declare a Stop array");
   assert.equal(hooksConfig.hooks.Stop.length, 1);
@@ -1430,12 +1439,10 @@ test("plugin/hooks/hooks.json wires Stop with the bundled stop-gate.mjs and a 90
   assert.ok(Array.isArray(stopMatcher.hooks) && stopMatcher.hooks.length === 1);
   const stopEntry = stopMatcher.hooks[0];
   assert.equal(stopEntry.type, "command");
-  assert.match(stopEntry.command, /\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/stop-gate\.mjs/);
-  // 900s gives the hook 60s of margin under the inner 14-minute Codex
-  // turn timeout; see the "leaves timeout margin" test for the lower
-  // bound. We assert the upper bound here so anyone bumping the inner
-  // timeout above 14 minutes is forced to reconcile both.
-  assert.equal(stopEntry.timeout, 900);
+  // 3-dispatcher architecture: stop events go to stop.mjs
+  assert.match(stopEntry.command, /\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/stop\.mjs/);
+  // Brief specifies Stop timeout drop from 900s → 30s (Task 08).
+  assert.equal(stopEntry.timeout, 30);
 });
 
 test("setup owns project-scoped review gate lock creation", () => {
