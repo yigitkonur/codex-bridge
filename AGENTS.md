@@ -148,6 +148,14 @@ removes `skill/AGENTS.md` and `skill/CLAUDE.md` from release archives.
   official OpenAI Codex plugin is absent; `setup --json` reports the lock path,
   lock existence, official-plugin status, and whether the gate is suppressed.
   The Stop hook also checks both the lock and workspace state before blocking.
+- Stop and SubagentStop hooks emit `decision: "block"` only. The Claude Code
+  platform validator rejects any other value (including `"approve"`) and
+  silently drops the JSON. To allow Claude to stop, emit no `decision` field
+  at all (e.g. `{"continue": true}` or an empty object); to force Claude to
+  continue, emit `{"decision": "block", "reason": "..."}`. `hooks/stop-gate.mjs`
+  and `hooks/subagent-stop.mjs` follow this contract — preserve it when
+  editing either file. A `decision: "approve"` in a Stop or SubagentStop hook
+  is a bug regardless of where the snippet was copied from.
 - Update checks use the public GitHub releases API anonymously. Normal hot-path
   invocations can trigger a rate-limited detached `npx skills@latest add ...`
   auto-apply unless disabled with `CODEX_BRIDGE_NO_UPDATE_CHECK=1`; `update
