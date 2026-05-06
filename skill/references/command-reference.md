@@ -243,6 +243,7 @@ Check job status. The positional accepts either a job id (e.g. `task-mo2n0i8z-cb
 
 ```
 codex-bridge status [job-id-or-thread-id] [--all] [--wait]
+                    [--filter running|completed_success|completed_fail|completed_incomplete|cancelled|needs_attention]
                     [--watch [--interval <ms|5s>] [--watch-timeout-ms <ms>]]
                     [--prune-orphans | --cleanup]
                     [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]
@@ -251,6 +252,7 @@ codex-bridge status [job-id-or-thread-id] [--all] [--wait]
 | Flag | Description |
 |------|-------------|
 | `--all` | Show jobs from all Claude sessions |
+| `--filter <state>` | Return a script-friendly subset. Values: `running`, `completed_success`, `completed_fail`, `completed_incomplete`, `cancelled`, `needs_attention`. `completed_fail` is event-derived and includes jobs whose events contain `[ERROR]` or `[PIPELINE:failed]`. |
 | `--wait` | Poll until the single-job reaches a terminal state |
 | `--watch` | Repeatedly render the multi-job table and exit when every tracked job reaches a terminal state (Ctrl-C-safe). Rejects a positional job-id; mutually exclusive with `--wait` / `--prune-orphans` / `--cleanup`. Use for N-job orchestration. Under `--json` emits one NDJSON snapshot per tick. |
 | `--interval <ms>` | Tick cadence for `--watch` (default 10 000 = 10 s). Accepts plain ms or duration strings like `5s`. |
@@ -258,6 +260,8 @@ codex-bridge status [job-id-or-thread-id] [--all] [--wait]
 | `--prune-orphans` / `--cleanup` | Walk state-file jobs with `status:"running"` or `"queued"` and mark any whose PID no longer resolves as `status:"orphaned"`. Idempotent. Returns `{reaped, skipped, reapedCount, skippedCount}`. Mutually exclusive with `--wait`. |
 | `--timeout-ms <ms>` | Max wait time with `--wait` (default 240000) |
 | `--poll-interval-ms <ms>` | Poll cadence with `--wait` (default 2000) |
+
+Without a job id, `status --json` includes `result.summary`, `result.needs_attention`, and `result.by_state`. `summary.running === 0` only means the wave is terminal; check `summary.completed_fail`, `summary.completed_incomplete`, and `summary.awaiting_attention` before advancing a fan-out wave.
 
 ### status --prune-orphans / --cleanup
 

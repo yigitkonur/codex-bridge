@@ -257,6 +257,8 @@ done
 
 `status --watch --json` emits one NDJSON snapshot per tick so it's scriptable; without `--json` it re-renders a markdown table in place. Exits 0 when every tracked job is terminal; the summary payload's `reason` is `all-terminal`, `watch-timeout`, or `sigint`. `await-artifact` returns exit 7 on timeout **and** on "job terminated without producing the file"; the payload carries `exists`, `terminated`, and on non-success `reason: "timeout" | "job-<status>"` (e.g. `job-failed`, `job-cancelled`) so the caller can tell the cases apart.
 
+When polling `status --json` directly, do not treat `summary.running === 0` as success. It means only that the cohort is terminal; gate success on `summary.completed_fail === 0`, `summary.completed_incomplete === 0`, and an empty `needs_attention` list.
+
 
 ## Recovering from upstream state loss
 

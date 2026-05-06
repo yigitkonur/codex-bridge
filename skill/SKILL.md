@@ -409,7 +409,8 @@ done < .jobs.txt
 Rules:
 - One `result` call per job to read the structured outcome (`jq '.result.adapterResult.terminalTag, .result.adapterResult.phase, .result.adapterResult.consistent'`).
 - Don't try to stack N Monitor calls — stream ownership belongs to a single tail per `.events` file, and the LLM context can't reason about N parallel streams cleanly.
-- `status --watch` is the fan-in view; `await-artifact` is the success-gate per job.
+- `status --watch` is the fan-in view; `status --json` includes event-derived `summary.completed_fail` and `needs_attention`, so `summary.running === 0` is only the terminal-state barrier.
+- `await-artifact` is the success-gate per job.
 - Worked walkthrough with interleaved outputs in [references/orchestration-flows.md](references/orchestration-flows.md#running-n-jobs-in-parallel).
 
 ## Standalone Review

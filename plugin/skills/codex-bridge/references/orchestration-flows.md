@@ -115,3 +115,4 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" status --watch --interval 
 ```
 
 Each background task gets its own worktree, so they don't fight each other for the working tree. Review and verdict each individually.
+When polling `status --json` directly, do not treat `summary.running === 0` as success. It means only that the cohort is terminal; gate success on `summary.completed_fail === 0`, `summary.completed_incomplete === 0`, and an empty `needs_attention` list.

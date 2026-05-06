@@ -74,12 +74,14 @@ export const COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
-    summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
+    synopsis: "status [job-id] [--all] [--filter running|completed_success|completed_fail|completed_incomplete|cancelled|needs_attention] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "List jobs, or inspect one by id. Multi-job status includes event-derived summary counts and needs_attention for failed/incomplete/interrupted jobs; running === 0 is only the terminal-state barrier. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
       "codex-bridge status task-abc --wait --timeout-ms 600000",
       "codex-bridge status --all --json",
+      "codex-bridge status --filter completed_fail --json",
+      "codex-bridge status --filter needs_attention --json",
       "codex-bridge status --watch --interval 5s",
       "codex-bridge status --watch --all --json"
     ]

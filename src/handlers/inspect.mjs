@@ -93,7 +93,7 @@ import {
 export async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs", "filter"],
     booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
   });
 
@@ -111,6 +111,9 @@ export async function handleStatus(argv) {
     }
     if (options["prune-orphans"] || options.cleanup || options.wait) {
       throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
+    }
+    if (options.filter) {
+      throw usageError("`--filter` is mutually exclusive with `--watch`.");
     }
     const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 10_000 });
     const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
@@ -133,6 +136,9 @@ export async function handleStatus(argv) {
   // does but we can't signal. Either outcome means "pid exists (or did)";
   // only ESRCH is a clear reap signal.
   if (options["prune-orphans"] || options.cleanup) {
+    if (options.filter) {
+      throw usageError("`--filter` is mutually exclusive with `--prune-orphans`/`--cleanup`.");
+    }
     const report = options.cleanup
       ? cleanupTerminalJobs(cwd, {
           dryRun: Boolean(options["dry-run"]),
@@ -149,6 +155,9 @@ export async function handleStatus(argv) {
 
   const reference = positionals[0] ?? "";
   if (reference) {
+    if (options.filter) {
+      throw usageError("`status --filter` does not take a job-id argument.");
+    }
     const snapshot = options.wait
       ? await waitForSingleJobSnapshot(cwd, reference, {
           timeoutMs: options["timeout-ms"],
@@ -167,10 +176,49 @@ export async function handleStatus(argv) {
   }
 
   const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
-  emitSuccess("status", report, renderStatusReport(report), {
+  const filtered = options.filter ? filterStatusReport(report, options.filter) : report;
+  emitSuccess("status", filtered, renderStatusReport(filtered), {
     json: options.json,
     startedAt
   });
+}
+
+const STATUS_FILTERS = new Set([
+  "running",
+  "completed_success",
+  "completed_fail",
+  "completed_incomplete",
+  "cancelled",
+  "needs_attention",
+]);
+
+function filterStatusReport(report, filter) {
+  if (!STATUS_FILTERS.has(filter)) {
+    throw usageError(`Unknown status --filter value: ${filter}`);
+  }
+
+  if (filter === "needs_attention") {
+    return {
+      ...report,
+      filter,
+      filtered_jobs: report.needs_attention ?? [],
+      running: [],
+      latestFinished: null,
+      recent: [],
+    };
+  }
+
+  const jobs = report.by_state?.[filter] ?? [];
+  const filteredJobIds = new Set(jobs.map((job) => job.jobId ?? job.id));
+  return {
+    ...report,
+    filter,
+    filtered_jobs: jobs,
+    running: filter === "running" ? report.running : [],
+    latestFinished: null,
+    recent: [],
+    needs_attention: (report.needs_attention ?? []).filter((entry) => filteredJobIds.has(entry.jobId)),
+  };
 }
 
 // v1.4.1 — live multi-job status view. The sync fan-in primitive for N>1
@@ -194,6 +242,8 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json, st
         tick: ticks,
         ts: new Date().toISOString(),
         activeCount,
+        summary: snapshot.summary ?? null,
+        needsAttentionCount: snapshot.summary?.awaiting_attention ?? 0,
         running: (snapshot.running ?? []).map((j) => ({
           id: j.id,
           status: j.status,

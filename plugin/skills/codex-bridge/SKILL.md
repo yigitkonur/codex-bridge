@@ -86,7 +86,7 @@ You almost never have to remember the wiring — the hooks do it:
 
 - **PreToolUse(Agent)** intercepts Explore-class subagents and reroutes them through codex-bridge. Pass-through for Plan, general-purpose, and codex-bridge:* types.
 - **PostToolUse(Bash|Agent)** parses accepted bridge envelopes and emits an `additionalContext` block with the literal Monitor invocation. You arm it on the next turn — no manual derivation.
-- **SessionStart** injects running-job status into context, so you start every session oriented.
+- **SessionStart** injects running-job status into context, so you start every session oriented. For multi-job fan-in, treat `summary.running === 0` as a terminal-state barrier only; check `summary.completed_fail` and `needs_attention` before advancing.
 - **Stop** can run the opt-in stop-time review gate. Pending verdicts are surfaced through `verdicts --pending`; check and resolve them before exiting.
 
 When a hook misbehaves, set `CODEX_BRIDGE_HOOK_DISABLE=<name>` (or `=all`) and re-run.
