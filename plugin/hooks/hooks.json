@@ -41,7 +41,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-bash.mjs\"",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       },
