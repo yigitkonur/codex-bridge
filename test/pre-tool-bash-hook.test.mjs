@@ -5,9 +5,6 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 const root = new URL("../", import.meta.url);
 const hookPath = fileURLToPath(new URL("plugin/hooks/pre-tool-bash.mjs", root));
