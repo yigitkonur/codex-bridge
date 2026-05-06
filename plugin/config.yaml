@@ -96,6 +96,12 @@ codex_bridge:
   # pipeline_total_ms: 1800000    # Auto-pipeline total cap across all stages (30 min)
   # question_answer_ms: 300000    # requestUserInput wait before rejecting unanswered request (5 min)
 
+  # v2.2.0 — [STALL_WARNING] early-warning threshold. Fires before the terminal
+  # [ERROR] StallDetected (which fires at 3 × checkpoint interval, default 15 min).
+  # Set to 0 to disable STALL_WARNING without affecting the terminal stall.
+  # Override via env: CODEX_BRIDGE_STALL_WARNING_MS.
+  # stall_warning_threshold_ms: 300000   # 5 min (default)
+
   # Cleanup/redaction controls. Cleanup only runs when explicitly requested
   # through status --cleanup; these values define the default retention window.
   artifact_retention_jobs: 50

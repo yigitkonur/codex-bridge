@@ -146,6 +146,10 @@ import {
   formatPartialEvent,
   formatRetryingEvent,
   formatHandoffEvent,
+  formatStallWarningEvent,
+  formatNeedsAttentionEvent,
+  formatArtifactEvent,
+  formatDriftWarnEvent,
   TERMINAL_TAGS,
   TERMINAL_TAG_REGEX,
   DEFAULT_MONITOR_EXCLUDE,
@@ -502,6 +506,20 @@ function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs
       cwd,
     }));
     logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
+    // v2.2.0 — [NEEDS_ATTENTION] composite tag: orchestrators filtering a
+    // single tag across N parallel jobs can spot which jobs need attention.
+    try {
+      const firstQ = (params.questions ?? [])[0];
+      logEvent(session, formatNeedsAttentionEvent(session, {
+        underlyingTag: "QUESTION",
+        threadId,
+        summary: firstQ?.question ?? "Codex asked a question",
+        nextAction: `respond ${internalId} --question-id ${firstQ?.id ?? "q1"} --answer "<answer>"`,
+      }));
+      logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "QUESTION", requestId: internalId });
+    } catch {
+      // Observability failure must not kill the turn.
+    }
 
     const timeoutMs =
       questionAnswerMs ??
@@ -3031,6 +3049,40 @@ async function runBridgeTask(request) {
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          // v2.2.0 — [ARTIFACT] events: emit for each newly created file so the
+          // orchestrator gets an explicit "thing landed" signal without diffing.
+          // `item.changes` is an array of per-path change descriptors; each has
+          // `kind` (create/modify/delete) and `path`. We only fire on "create".
+          try {
+            const changes = Array.isArray(item.changes) ? item.changes : [];
+            for (const change of changes) {
+              const kind = change?.kind ?? change?.change ?? change?.op ?? "";
+              if (kind === "create" || kind === "add" || kind === "added" || kind === "created") {
+                const filePath = change?.path ?? "";
+                if (filePath) {
+                  logEvent(s, formatArtifactEvent(s, {
+                    filePath,
+                    sizeBytes: null,
+                    threadId: effectiveThreadId,
+                  }));
+                  logNdjson(s, "ARTIFACT", null, { filePath, kind, threadId: effectiveThreadId });
+                }
+              }
+            }
+          } catch {
+            // Artifact logging must not kill the turn.
+          }
+          // v2.2.0 — [DRIFT_WARN] heuristic: track all files Codex touches
+          // so we can compare against the prompt scope at checkpoint time.
+          try {
+            const changes = Array.isArray(item.changes) ? item.changes : [];
+            for (const change of changes) {
+              const touchedPath = change?.path ?? "";
+              if (touchedPath) driftState.touchedFiles.add(touchedPath);
+            }
+          } catch {
+            // Drift tracking must not kill the turn.
+          }
         } else if (itemType === "plan") {
           checkpointState.tools.push({
             type: "plan",
@@ -3146,6 +3198,16 @@ async function runBridgeTask(request) {
     Number(process.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0
       ? Number(process.env.CODEX_BRIDGE_STALL_CHECKPOINTS)
       : 3;
+  // v2.2.0 — [STALL_WARNING] fires at 1 barren checkpoint (default 5 min).
+  // Configurable via config.yaml `stall_warning_threshold_ms` (≥1) or env
+  // CODEX_BRIDGE_STALL_WARNING_MS. Set to 0 to disable.
+  const STALL_WARNING_THRESHOLD_MS =
+    Number(process.env.CODEX_BRIDGE_STALL_WARNING_MS) > 0
+      ? Number(process.env.CODEX_BRIDGE_STALL_WARNING_MS)
+      : Number(config.stall_warning_threshold_ms) > 0
+        ? Number(config.stall_warning_threshold_ms)
+        : DEFAULT_CONFIG.stall_warning_threshold_ms;
+  let stallWarnEmitted = false;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   // `terminalEmitted` is flipped by every explicit terminal-tag write
@@ -3166,6 +3228,18 @@ async function runBridgeTask(request) {
     actionableCount: 0,       // reset every checkpoint
     barrenCheckpoints: 0,     // consecutive checkpoints with actionableCount == 0
     seenFirstActionable: false, // gate for barren-counter start (prevents false stall on slow-to-start turns)
+  };
+
+  // v2.2.0 — [DRIFT_WARN] heuristic: extract file paths mentioned in the prompt
+  // as the "scope", then track all files Codex touches. If >30% are outside scope
+  // AND there are >3 drifted files, emit [DRIFT_WARN]. Conservative threshold to
+  // reduce false positives on tasks that intentionally touch broad file trees.
+  const DRIFT_WARN_RATIO_THRESHOLD = 0.3;
+  const DRIFT_WARN_MIN_DRIFTED = 3;
+  const promptScopePaths = extractPathsFromPrompt(request.prompt ?? "");
+  const driftState = {
+    touchedFiles: new Set(),   // all unique file paths Codex has touched
+    warnEmitted: false,        // only emit once per turn
   };
   // Checkpoint git helpers. Always run in the task's cwd; refuse to run if
   // no cwd was passed (otherwise spawnSync falls back to the bridge's own
@@ -3346,8 +3420,42 @@ async function runBridgeTask(request) {
           checkpointState.barrenCheckpoints += 1;
         } else {
           checkpointState.barrenCheckpoints = 0;
+          stallWarnEmitted = false; // reset so STALL_WARNING can re-fire after genuine stall recovery
         }
       }
+      // v2.2.0 — emit [STALL_WARNING] at the first barren checkpoint (≥5 min
+      // of no actionable progress by default) as an early-warning signal.
+      // The terminal [ERROR] StallDetected fires later at the full threshold.
+      if (
+        checkpointState.seenFirstActionable &&
+        checkpointState.barrenCheckpoints === 1 &&
+        !stallWarnEmitted &&
+        !terminalEmitted &&
+        STALL_WARNING_THRESHOLD_MS > 0
+      ) {
+        try {
+          const barrenDurationMs = CHECKPOINT_INTERVAL_MS;
+          const terminalWindowMs = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
+          logEvent(
+            heartbeatState.session,
+            formatStallWarningEvent(heartbeatState.session, {
+              durationMs: barrenDurationMs,
+              thresholdMs: STALL_WARNING_THRESHOLD_MS,
+              remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs),
+              lastMeaningfulAction: heartbeatState.lastItem,
+            })
+          );
+          logNdjson(heartbeatState.session, "STALL_WARNING", null, {
+            durationMs: barrenDurationMs,
+            thresholdMs: STALL_WARNING_THRESHOLD_MS,
+            remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs),
+          });
+          stallWarnEmitted = true;
+        } catch {
+          // Logging failure must not kill the turn.
+        }
+      }
+
       if (
         checkpointState.barrenCheckpoints >= STALL_CHECKPOINT_THRESHOLD &&
         !terminalEmitted
@@ -3390,6 +3498,45 @@ async function runBridgeTask(request) {
           stopHeartbeat();
         } catch {
           // Even a stall emission that fails silently is better than a crash.
+        }
+      }
+
+      // v2.2.0 — [DRIFT_WARN] heuristic check at each checkpoint.
+      // Only fires when: prompt had detectable scope paths, >3 drifted files,
+      // drift ratio >30%, and the warning has not already been emitted.
+      if (
+        !driftState.warnEmitted &&
+        !terminalEmitted &&
+        promptScopePaths.length > 0 &&
+        driftState.touchedFiles.size > 0 &&
+        heartbeatState.session
+      ) {
+        try {
+          const allTouched = Array.from(driftState.touchedFiles);
+          const driftedFiles = allTouched.filter(
+            (f) => !promptScopePaths.some((scope) => f.includes(scope) || scope.includes(f))
+          );
+          const driftRatio = driftedFiles.length / allTouched.length;
+          if (driftedFiles.length > DRIFT_WARN_MIN_DRIFTED && driftRatio > DRIFT_WARN_RATIO_THRESHOLD) {
+            logEvent(
+              heartbeatState.session,
+              formatDriftWarnEvent(heartbeatState.session, {
+                driftedFiles,
+                driftRatio,
+                promptScope: promptScopePaths,
+                threadId: heartbeatState.session.threadId,
+              })
+            );
+            logNdjson(heartbeatState.session, "DRIFT_WARN", null, {
+              driftedFiles: driftedFiles.slice(0, 20),
+              driftRatio,
+              totalTouched: allTouched.length,
+              promptScopeCount: promptScopePaths.length,
+            });
+            driftState.warnEmitted = true;
+          }
+        } catch {
+          // Drift warn failure must not kill the turn.
         }
       }
 
@@ -3728,6 +3875,18 @@ async function runBridgeTask(request) {
       cwd: request.cwd,
     }));
     logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
+    // v2.2.0 — [NEEDS_ATTENTION] alongside [ERROR]: single-tag attention routing.
+    try {
+      logEvent(session, formatNeedsAttentionEvent(session, {
+        underlyingTag: "ERROR",
+        threadId: result.threadId,
+        summary: `${errorCode}: ${errorMessage.slice(0, 120)}`,
+        nextAction: request.jobId ? `result ${request.jobId}` : null,
+      }));
+      logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "ERROR", errorCode });
+    } catch {
+      // Observability failure must not kill the turn.
+    }
     markTerminalEmitted();
 
     const nextAction = buildTurnErrorNextAction({
@@ -3759,6 +3918,19 @@ async function runBridgeTask(request) {
       scriptPath: SCRIPT_PATH,
       cwd: request.cwd,
     }));
+    // v2.2.0 — [NEEDS_ATTENTION] alongside [PLAN]: orchestrators filtering
+    // a single tag learn "job needs plan approval" across all parallel jobs.
+    try {
+      logEvent(session, formatNeedsAttentionEvent(session, {
+        underlyingTag: "PLAN",
+        threadId: result.threadId,
+        summary: result.planText.split("\n")[0]?.slice(0, 120) ?? "Plan ready",
+        nextAction: `send ${result.threadId} --mode default "Implement the plan."`,
+      }));
+      logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "PLAN", threadId: result.threadId });
+    } catch {
+      // Observability failure must not kill the turn.
+    }
     markTerminalEmitted();
     setPhase("plan-pending", {
       command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
@@ -3928,6 +4100,20 @@ function extractPlanSteps(planText) {
     }
   }
   return steps.length > 0 ? steps : [{ number: 1, text: planText?.split("\n")[0] ?? "Plan", status: "pending" }];
+}
+
+// v2.2.0 — Extract file paths mentioned in the prompt text. Used by the
+// [DRIFT_WARN] heuristic to determine the "scope" files Codex should touch.
+// Matches paths that look like `src/foo.ts`, `./lib/bar.mjs`, or
+// `/absolute/path/file.py`. Conservative: only obvious path-like tokens.
+function extractPathsFromPrompt(promptText) {
+  if (typeof promptText !== "string" || !promptText) return [];
+  const matches = promptText.match(/(?:^|[\s"'`(])(\.[./][^\s"'`()\n]+|[a-zA-Z][\w./\\-]+\.[a-zA-Z]{1,10})/g) ?? [];
+  return [...new Set(
+    matches
+      .map((m) => m.trim().replace(/^["'`(]/, ""))
+      .filter((p) => p.length > 3 && p.includes("/") || p.match(/\.\w{1,10}$/))
+  )];
 }
 
 async function handleTask(argv) {

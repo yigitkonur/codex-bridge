@@ -94,6 +94,13 @@ const DEFAULT_CONFIG = {
   artifact_retention_jobs: 50,
   artifact_retention_days: 30,
   redact_secrets: false,
+  // v2.2.0 — [STALL_WARNING] fires at this wall-clock gap of zero actionable
+  // progress. Default 5 min (one checkpoint interval). The terminal StallDetected
+  // fires after the full STALL_CHECKPOINT_THRESHOLD × checkpoint interval (15 min
+  // by default). Configurable so short-budget automation can widen or narrow the
+  // early-warning window. Set to 0 to disable [STALL_WARNING] (does not affect
+  // the terminal stall detector).
+  stall_warning_threshold_ms: 5 * 60 * 1000,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages.",
 };
 
