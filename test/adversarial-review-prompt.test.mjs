@@ -27,6 +27,13 @@ const BRIDGE_SRC = fs.readFileSync(
   new URL("../src/codex-bridge.mjs", import.meta.url),
   "utf8",
 );
+// COMMANDS table moved to src/commands-meta.mjs in the Phase 2 dispatcher
+// split. Tests that grep for `adversarial-review:` synopsis text now read
+// the meta file directly.
+const COMMANDS_META_SRC = fs.readFileSync(
+  new URL("../src/commands-meta.mjs", import.meta.url),
+  "utf8",
+);
 const PROMPT_HELPER_SRC = fs.readFileSync(
   new URL("../src/lib/adversarial-review-prompt.mjs", import.meta.url),
   "utf8",
@@ -190,7 +197,7 @@ test("handleReviewCommand declares brief + repeatable concern in its parseComman
 
 test("adversarial-review help advertises brief and repeatable concern flags", () => {
   const block =
-    BRIDGE_SRC.match(/"adversarial-review": \{[\s\S]*?\n  \},/)?.[0] ?? "";
+    COMMANDS_META_SRC.match(/"adversarial-review": \{[\s\S]*?\n  \},/)?.[0] ?? "";
   assert.ok(block.length > 0);
   assert.match(block, /--brief @<path>\.json/);
   assert.match(block, /--task <task_id>/);
