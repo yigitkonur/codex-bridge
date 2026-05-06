@@ -52,7 +52,16 @@ function stderrLine(message) {
 }
 
 function emitBlock(reason) {
-  process.stdout.write(`${JSON.stringify({ decision: "block", reason })}\n`);
+  process.stdout.write(
+    `${JSON.stringify({
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: "Stop",
+        decision: "block",
+        reason,
+      },
+    })}\n`,
+  );
 }
 
 function resolveProjectRoot(cwd) {
