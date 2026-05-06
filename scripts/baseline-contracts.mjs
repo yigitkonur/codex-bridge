@@ -12,6 +12,7 @@ const REQUIRED_JSON_PROBES = Object.freeze([
   "result",
   "wait",
   "events",
+  "bundle",
   "setup",
   "error"
 ]);
@@ -114,7 +115,7 @@ const JSON_ENVELOPE_PROBES = Object.freeze([
     test: "test/baseline-contracts.test.mjs"
   },
   {
-    command: "status --json",
+    command: "status --all --json",
     expected: ["result.workspaceRoot", "result.running", "result.latestFinished"],
     test: "test/baseline-contracts.test.mjs"
   },
@@ -131,6 +132,11 @@ const JSON_ENVELOPE_PROBES = Object.freeze([
   {
     command: "events <job-id> --json",
     expected: ["result.jobId", "result.threadId", "result.eventsPath"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "bundle <job-id> --json",
+    expected: ["result.taskId", "result.threadId", "result.bundlePath", "result.contents"],
     test: "test/baseline-contracts.test.mjs"
   },
   {
@@ -244,6 +250,12 @@ const COMMAND_COVERAGE = Object.freeze({
     mutation: "closed-loop task, adversarial review, verdict persistence, same-worktree follow-up, approval, and iteration-limit orchestration",
     success_tests: ["test/iterate-loop.test.mjs", "test/plugin-surfaces.test.mjs"],
     failure_tests: ["test/iterate-loop.test.mjs", "test/plugin-surfaces.test.mjs"],
+    baseline_gap: null
+  },
+  bundle: {
+    mutation: "forensic tarball artifact written to the requested output path",
+    success_tests: ["test/bundle-command.test.mjs"],
+    failure_tests: ["test/bundle-command.test.mjs"],
     baseline_gap: null
   }
 });

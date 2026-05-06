@@ -74,6 +74,7 @@ import {
   getConfig,
   listJobs,
   resolveJobFile,
+  resolveJobLogFile,
   setConfig,
   updateState,
   upsertJob,
@@ -132,6 +133,8 @@ import {
   resolveSessionDir,
   initSession,
   findSession,
+  readEvents,
+  readNdjson,
   writeSessionAliases,
   logNdjson,
   logEvent,
@@ -793,6 +796,15 @@ const COMMANDS = Object.freeze({
       "codex-bridge events task-abc --follow --exclude HEARTBEAT  # default Monitor shape",
       "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN  # narrow inclusion view",
       "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 600000"
+    ]
+  },
+  bundle: {
+    synopsis: "bundle <task-id> [--output <path>] [--no-include-rollout] [--json]",
+    summary: "Package all per-job artifacts into a forensic tarball. Includes manifest.json, timeline.txt, events, ndjson, diff, registry details, logs, worker stderr, and the Codex rollout unless excluded.",
+    examples: [
+      "codex-bridge bundle task-abc",
+      "codex-bridge bundle task-abc --output /tmp/task-abc.tar.gz",
+      "codex-bridge bundle task-abc --no-include-rollout --json"
     ]
   },
   cancel: {
@@ -5856,6 +5868,246 @@ async function handleEvents(argv) {
   );
 }
 
+function sanitizeBundleName(value) {
+  return String(value).replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "job";
+}
+
+function copyIfExists(src, dest, copied) {
+  if (!src || !fs.existsSync(src)) return false;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+  copied.push({ source: src, path: dest });
+  return true;
+}
+
+function listRelativeFiles(rootDir) {
+  const results = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        results.push(path.relative(rootDir, fullPath).split(path.sep).join("/"));
+      }
+    }
+  };
+  walk(rootDir);
+  return results.sort();
+}
+
+function formatBundleSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function findCodexRollout(threadId) {
+  if (!threadId) return null;
+  const root = path.join(os.homedir(), ".codex", "sessions");
+  if (!fs.existsSync(root)) return null;
+  const matches = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(`${threadId}.jsonl`)) {
+        matches.push(fullPath);
+      }
+    }
+  }
+  return matches.sort().at(-1) ?? null;
+}
+
+function resolveTarCommand() {
+  for (const candidate of ["tar", "/usr/bin/tar", "/bin/tar"]) {
+    if (candidate.includes(path.sep) && !fs.existsSync(candidate)) continue;
+    const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
+    if (result.error?.code === "ENOENT") continue;
+    if (!result.error) return candidate;
+  }
+  return "tar";
+}
+
+function synthesizeBundleTimeline({ taskId, job, eventsPath, ndjsonPath }) {
+  const lines = [
+    `Timeline for ${taskId}`,
+    `Thread: ${job.threadId ?? "unknown"}`,
+    `Status: ${job.status ?? "unknown"}`,
+    ""
+  ];
+
+  const events = readEvents(eventsPath);
+  if (events.length > 0) {
+    lines.push("Events");
+    for (const block of events) {
+      const head = block.split(/\r?\n/)[0];
+      if (head) lines.push(`- ${head}`);
+    }
+    lines.push("");
+  }
+
+  const entries = readNdjson(ndjsonPath);
+  if (entries.length > 0) {
+    lines.push("NDJSON");
+    for (const entry of entries) {
+      const ts = entry.ts ?? "no-ts";
+      const tag = entry.tag ?? "NO_TAG";
+      const method = entry.method ? ` ${entry.method}` : "";
+      lines.push(`- ${ts} [${tag}]${method}`);
+    }
+  }
+
+  if (events.length === 0 && entries.length === 0) {
+    lines.push("No event or NDJSON session entries were found for this job.");
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+async function handleBundle(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "output"],
+    booleanOptions: ["json", "no-include-rollout"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const taskId = positionals[0] ?? "";
+  if (!taskId) {
+    throw usageError("bundle requires <task-id>");
+  }
+
+  let job;
+  try {
+    job = resolveResultJob(cwd, taskId).job;
+  } catch (err) {
+    if (err?.code === "JOB_NOT_FINISHED") {
+      job = buildSingleJobSnapshot(cwd, taskId).job;
+    } else {
+      throw err;
+    }
+  }
+  const storedJob = readStoredJob(workspaceRoot, job.id) ?? job;
+  const effectiveJob = { ...job, ...storedJob };
+  if (!effectiveJob.threadId) {
+    throw notFoundError(`Job ${job.id} has no thread id yet.`, "JOB_HAS_NO_THREAD");
+  }
+
+  const safeTaskId = sanitizeBundleName(job.id);
+  const bundleName = `codex-bridge-bundle-${safeTaskId}`;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `${bundleName}-`));
+  const bundleDir = path.join(tmpDir, bundleName);
+  const copied = [];
+  const outPath = options.output ? path.resolve(cwd, options.output) : path.join(cwd, `${bundleName}.tar.gz`);
+
+  try {
+    for (const dir of ["events", "registry", "logs", "codex-rollout"]) {
+      fs.mkdirSync(path.join(bundleDir, dir), { recursive: true });
+    }
+
+    const config = getBridgeConfig(cwd, workspaceRoot);
+    const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+    const eventsPath = path.join(sessionDir, `${effectiveJob.threadId}.events`);
+    const ndjsonPath = path.join(sessionDir, `${effectiveJob.threadId}.ndjson`);
+    const diffPath = path.join(sessionDir, `${effectiveJob.threadId}.diff`);
+
+    copyIfExists(eventsPath, path.join(bundleDir, "events", `${effectiveJob.threadId}.events`), copied);
+    copyIfExists(ndjsonPath, path.join(bundleDir, "events", `${effectiveJob.threadId}.ndjson`), copied);
+    copyIfExists(diffPath, path.join(bundleDir, "events", `${effectiveJob.threadId}.diff`), copied);
+
+    const registryPath = resolveJobFile(workspaceRoot, job.id);
+    copyIfExists(registryPath, path.join(bundleDir, "registry", `${job.id}.json`), copied);
+
+    const logPath = effectiveJob.logFile ?? resolveJobLogFile(workspaceRoot, job.id);
+    copyIfExists(logPath, path.join(bundleDir, "logs", `${job.id}.log`), copied);
+    copyIfExists(`${logPath}.worker.err`, path.join(bundleDir, "logs", `${job.id}.log.worker.err`), copied);
+
+    let rolloutPath = null;
+    if (!options["no-include-rollout"]) {
+      rolloutPath = findCodexRollout(effectiveJob.threadId);
+      if (rolloutPath) {
+        copyIfExists(rolloutPath, path.join(bundleDir, "codex-rollout", path.basename(rolloutPath)), copied);
+      }
+    }
+
+    fs.writeFileSync(
+      path.join(bundleDir, "timeline.txt"),
+      synthesizeBundleTimeline({ taskId: job.id, job: effectiveJob, eventsPath, ndjsonPath }),
+      "utf8"
+    );
+
+    const manifest = {
+      bundle_version: "1.0",
+      task_id: job.id,
+      thread_id: effectiveJob.threadId,
+      created_at: new Date().toISOString(),
+      job_state: {
+        status: effectiveJob.status ?? null,
+        phase: effectiveJob.phase ?? null,
+        terminal_tag: effectiveJob.terminalTag ?? null,
+        created_at: effectiveJob.createdAt ?? null,
+        updated_at: effectiveJob.updatedAt ?? null,
+        completed_at: effectiveJob.completedAt ?? null,
+        duration_ms: effectiveJob.durationMs ?? effectiveJob.duration_ms ?? null
+      },
+      sources: {
+        workspace_root: workspaceRoot,
+        session_dir: sessionDir,
+        registry_path: registryPath,
+        log_path: logPath,
+        codex_rollout_path: rolloutPath
+      },
+      contents: []
+    };
+    fs.writeFileSync(path.join(bundleDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    manifest.contents = listRelativeFiles(bundleDir);
+    fs.writeFileSync(path.join(bundleDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    const tar = spawnSync(resolveTarCommand(), ["-czf", outPath, "-C", tmpDir, bundleName], {
+      encoding: "utf8"
+    });
+    if (tar.status !== 0) {
+      throw new CliError(`Failed to create bundle tarball: ${tar.stderr || tar.stdout || "tar exited non-zero"}`, {
+        class: "internal",
+        code: "BUNDLE_TAR_FAILED",
+        retryable: false,
+        details: { exitStatus: tar.status, stderr: tar.stderr ?? "", stdout: tar.stdout ?? "" }
+      });
+    }
+
+    const sizeBytes = fs.statSync(outPath).size;
+    const payload = {
+      taskId: job.id,
+      threadId: effectiveJob.threadId,
+      bundlePath: outPath,
+      sizeBytes,
+      contentsCount: manifest.contents.length,
+      contents: manifest.contents,
+      copiedSources: copied.map((entry) => entry.source)
+    };
+    emitSuccess(
+      "bundle",
+      payload,
+      `Wrote bundle: ${outPath} (${formatBundleSize(sizeBytes)})\n`,
+      { json: options.json, startedAt }
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 function handleTaskResumeCandidate(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
@@ -7679,6 +7931,7 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   result: handleResult,
   wait: handleWait,
   events: handleEvents,
+  bundle: handleBundle,
   "task-resume-candidate": handleTaskResumeCandidate,
   cancel: handleCancel,
   "await-artifact": handleAwaitArtifact,
@@ -7777,6 +8030,10 @@ async function main() {
   // rawArgv so the per-subcommand prompt-skipping in detectHelpFlag sees the
   // subcommand at index 0.
   if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
+    if (subcommand === "task" && rawArgv.includes("bundle")) {
+      printSubcommandUsage("bundle");
+      return;
+    }
     printSubcommandUsage(subcommand);
     return;
   }

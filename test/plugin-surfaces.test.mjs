@@ -311,6 +311,7 @@ const expectedCommands = [
   "adversarial-review.md",
   "auth-status.md",
   "await-artifact.md",
+  "bundle.md",
   "cancel.md",
   "config.md",
   "doctor.md",

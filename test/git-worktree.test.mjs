@@ -17,8 +17,8 @@ import { writeMeta } from "../src/lib/registry.mjs";
 const bridgePath = fileURLToPath(new URL("../src/codex-bridge.mjs", import.meta.url));
 
 function makeTempRepo() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-git-"));
-  const dir = path.join(root, "repo");
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-git-"));
+  const dir = path.join(parent, "repo");
   fs.mkdirSync(dir, { recursive: true });
   fs.rmSync(defaultWorktreeRootForRepo(dir), { recursive: true, force: true });
   execSync("git init -b main", { cwd: dir });

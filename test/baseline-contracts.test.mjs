@@ -148,7 +148,7 @@ test("baseline contract report verifies static gate, generated surfaces, and com
   assert.equal(report.static_gate.command, "npm run verify:static");
   assert.ok(report.generated_surfaces.some((surface) => surface.source === "src/codex-bridge.mjs"));
   assert.ok(report.generated_surfaces.some((surface) => surface.source === "hooks"));
-  assert.equal(report.json_envelope_probes.length, 9);
+  assert.equal(report.json_envelope_probes.length, 10);
   assert.deepEqual(report.ndjson_event_schema.fields, [
     "schema_version",
     "ts",
@@ -281,8 +281,8 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.equal(setup.result.active_backend, "codex");
     assert.equal(typeof setup.result.adapter_capabilities, "object");
 
-    const status = parseEnvelope(runBridge(["status", "--json", "--cwd", fixture.workspace], fixture));
-    assertExpectedProbe(report, "status --json", status);
+    const status = parseEnvelope(runBridge(["status", "--all", "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "status --all --json", status);
     assert.equal(status.command, "status");
     assert.equal(status.result.workspaceRoot, fixture.workspace);
     assert.ok(Object.hasOwn(status.result, "latestFinished"));
@@ -319,6 +319,14 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.equal(events.result.jobId, fixture.job.id);
     assert.equal(events.result.threadId, fixture.job.threadId);
     assert.doesNotMatch(events.stdout ?? JSON.stringify(events), /\[DONE\]/);
+
+    const bundle = parseEnvelope(runBridge(["bundle", fixture.job.id, "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "bundle <job-id> --json", bundle);
+    assert.equal(bundle.command, "bundle");
+    assert.equal(bundle.result.taskId, fixture.job.id);
+    assert.equal(bundle.result.threadId, fixture.job.threadId);
+    assert.ok(fs.existsSync(bundle.result.bundlePath));
+    assert.ok(bundle.result.contents.includes("manifest.json"));
 
     const error = runBridge(["does-not-exist", "--json"], fixture);
     assert.notEqual(error.status, 0);

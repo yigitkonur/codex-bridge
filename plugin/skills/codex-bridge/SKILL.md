@@ -140,6 +140,8 @@ Two IDs flow through every task. Use the right one or commands fail:
 
 **Don't pattern-match `[codex] Thread ready (019d…)` from stderr** — that's a threadId, not a task_id. The `--json` envelope (`result.jobId`, `result.threadId`, `result.eventsPath`, `result.monitor.tool_hint`) is the only canonical source — `result.jobId` is the canonical task handle.
 
+For bug reports, run `bundle <task_id>` to create `./codex-bridge-bundle-<task_id>.tar.gz` with manifest, timeline, session files, registry detail, logs, worker stderr, and the Codex rollout when found. Add `--no-include-rollout` when conversation privacy or tarball size matters.
+
 ## Worktrees and merges
 
 Write-mode tasks land in `<repo>/../.codex-bridge-worktrees/<task_id>` on a `subagent/codex/<task_id>` branch. The worktree is **not** auto-removed on successful completion — you must:
