@@ -17,7 +17,7 @@ Use the literal `tool_hint` from the envelope in the parent thread. Do not wrap 
 
 Why these defaults:
 
-- `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` — heartbeats are pure liveness and full checkpoints are verbose forensic blocks. `[CHECKPOINT_SUMMARY]` remains visible; future tags pass through (forward-compat).
+- `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` — heartbeats are pure liveness, directives are startup/runtime echoes, and full checkpoints are verbose forensic blocks. `[CHECKPOINT_SUMMARY]` remains visible; future tags pass through (forward-compat).
 - `--timeout-ms 1800000` (30 min) — covers most write-mode tasks; adjust manually for unusually long runs.
 - `persistent: false` — Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`/`[PLAN]`/`[CANCELLED]` and shouldn't keep running.
 

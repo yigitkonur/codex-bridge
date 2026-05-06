@@ -84,7 +84,7 @@ The claim that default Monitor should include a mid-stage progress signal is cor
 | Existing users expected verbose checkpoint in default Monitor stream | Verbose `[CHECKPOINT]` is still written and visible with `--exclude HEARTBEAT` | Revert `DEFAULT_MONITOR_EXCLUDE` only; keep summary event harmless |
 | Summary line accidentally grows too large | Cap `last` with `compactPreview`; keep focus/tool breakdown bounded | Reduce summary fields to phase/tools/last |
 | Docs drift from generated scripts | Run build after source/docs edits | Re-run build from source of truth |
-| Existing users expected `[DIRECTIVES]` in the default live stream | `.events` still persists `[DIRECTIVES]`; Monitor users can opt in with `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` or no exclude | Revert only the `DIRECTIVES` entry and related docs/tests if this proves too quiet |
+| Existing users expected `[DIRECTIVES]` in the default live stream | `.events` still persists `[DIRECTIVES]`; Monitor users can opt in with `--exclude HEARTBEAT,CHECKPOINT` or no exclude | Revert only the `DIRECTIVES` entry and related docs/tests if this proves too quiet |
 
 ## Acceptance Criteria
 

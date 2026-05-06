@@ -188,6 +188,7 @@ test("events with default monitor exclude preserves checkpoint summary but drops
         assert.match(result.stdout, pattern, `${tag} should pass through`);
       }
     }
+    assert.doesNotMatch(result.stdout, /\[DIRECTIVES\]/);
     assert.doesNotMatch(result.stdout, /\[HEARTBEAT\]/);
     assert.doesNotMatch(result.stdout, /\[CHECKPOINT\]/);
     assert.doesNotMatch(result.stdout, /noisy: should not appear/);
