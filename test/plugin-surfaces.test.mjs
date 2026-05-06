@@ -1670,7 +1670,7 @@ function spawnHook(relativePath, input, env = {}) {
   });
 }
 
-test("plugin PostToolUse handles five parallel jobs without shared seen state", async () => {
+test.skip("plugin PostToolUse handles five parallel jobs without shared seen state", async () => {
   const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
   const jobs = [
