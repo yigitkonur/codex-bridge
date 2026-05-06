@@ -42,6 +42,7 @@ const TASK_VALUE_FLAGS = new Set([
   "--question-timeout-ms",
   "--intercepted-from",
   "--cwd",
+  "-C",
   "--brief",
   "--backend",
   "--base-ref",
@@ -376,7 +377,7 @@ function collectPromptText(tokens, taskIndex, cwd) {
 
 function resolveInvocationCwd(input, tokens, taskIndex) {
   const base = input.cwd ? path.resolve(input.cwd) : process.cwd();
-  const cwdFlag = flagValue(tokens, taskIndex, "--cwd");
+  const cwdFlag = flagValue(tokens, taskIndex, "--cwd") ?? flagValue(tokens, taskIndex, "-C");
   if (cwdFlag) return path.resolve(base, cwdFlag);
 
   const separatorIndex = tokens.findIndex((token, index) => index < taskIndex && isShellSeparator(token));
