@@ -18,6 +18,22 @@ see the "Adding an entry" section at the bottom for the workflow.
 ### Fixed
 
 - Made `PIPELINE_ERROR` payloads internally consistent: `origin` now matches `failing_stage`, `lastCompletedStage` carries prior progress, and review verdict/count fields are `null` unless review actually completed.
+- Rewired the `pre-tool-bash.mjs` worktree-isolation safety hook into
+  `hooks.json` under `PreToolUse` matcher `Bash`. The hook had drifted into
+  source-of-truth limbo (present in `plugin/hooks/` but missing from `hooks/`
+  and from `hooks.json`), so `task --write` invocations without
+  `--worktree-auto` were no longer being denied. Restored the source under
+  `hooks/pre-tool-bash.mjs`, registered it in both authored and packaged
+  manifests, and pinned the wiring with a regression test.
+
+### Removed
+
+- Deleted three orphan hook scripts that were never wired into `hooks.json`:
+  `hooks/stop-review-gate-hook.mjs` (superseded by `hooks/stop.mjs`),
+  `plugin/hooks/session-start.mjs`, and `plugin/hooks/session-end.mjs`
+  (both superseded by `hooks/lifecycle.mjs`). Updated the build workflow's
+  existence check and the `src/lib/state.mjs` comments to point at the live
+  Stop hook.
 
 ## [2.2.0] — 2026-05-05
 

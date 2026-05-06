@@ -70,6 +70,7 @@ jobs:
             plugin/agents/codex-bridge-runner.md \
             plugin/hooks/hooks.json \
             plugin/hooks/lifecycle.mjs \
+            plugin/hooks/pre-tool-bash.mjs \
             plugin/hooks/stop.mjs; do
             test -s "$f" || { echo "missing or empty: $f"; exit 1; }
           done

@@ -37,6 +37,31 @@ function isAllowed(output) {
   return output.hookSpecificOutput?.permissionDecision === "allow";
 }
 
+test("hooks.json wires pre-tool-bash.mjs as a PreToolUse Bash hook in both source and plugin layouts", () => {
+  // The safety hook is only enforced if hooks.json registers it. A previous
+  // refactor lost the wiring and the file went orphan; this test pins the
+  // PreToolUse(Bash) entry so the rescue cannot silently regress.
+  for (const relPath of ["hooks/hooks.json", "plugin/hooks/hooks.json"]) {
+    const cfgPath = fileURLToPath(new URL(relPath, root));
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const preToolUse = cfg.hooks?.PreToolUse ?? [];
+    const bashEntry = preToolUse.find((entry) => entry.matcher === "Bash");
+    assert.ok(
+      bashEntry,
+      `${relPath} must declare a PreToolUse matcher for "Bash"`,
+    );
+    assert.ok(Array.isArray(bashEntry.hooks) && bashEntry.hooks.length === 1);
+    const hook = bashEntry.hooks[0];
+    assert.equal(hook.type, "command");
+    assert.match(
+      hook.command,
+      /\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/pre-tool-bash\.mjs/,
+    );
+    assert.equal(typeof hook.timeout, "number");
+    assert.ok(hook.timeout > 0);
+  }
+});
+
 test("PreToolUse(Bash) auto-approves the bundled bridge task command after safety gates pass", () => {
   const output = runHook('node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "audit"');
 

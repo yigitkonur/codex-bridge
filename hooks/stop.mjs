@@ -45,7 +45,8 @@ const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude t
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 // Kill switch + structured error trail, matching every other plugin hook
-// (session-start, session-end, user-prompt-submit, subagent-stop). The Stop
+// (session-lifecycle-hook, user-prompt-submit, subagent-stop, pre-tool-agent,
+// pre-tool-bash, post-tool-bash). The Stop
 // hook is the highest-blast-radius hook in this set — it can hold a Claude
 // Code session at shutdown for up to 15 minutes — so an emergency disable
 // path is mandatory:
@@ -788,12 +789,12 @@ try {
   // Persist a structured error trail under ~/.codex-bridge/hook-errors/ so
   // operators can diagnose hook crashes after the session ends. Mirrors the
   // failure-mode contract documented in the sibling plugin/hooks (see
-  // session-start.mjs:35-43, user-prompt-submit.mjs:40-48).
+  // session-lifecycle-hook.mjs and user-prompt-submit.mjs:40-48).
   logHookError(error);
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
 }
-// Always exit 0, matching every other plugin hook (session-start.mjs:213,
-// session-end.mjs, user-prompt-submit.mjs:166, subagent-stop.mjs:159).
+// Always exit 0, matching every other plugin hook (session-lifecycle-hook.mjs,
+// user-prompt-submit.mjs:166, subagent-stop.mjs:159).
 // Rationale: Claude Code interprets a Stop hook crash as "allow" only if
 // stdout did not contain a blocking decision; emitting a non-zero exit
 // code is unnecessary and would only complicate downstream tooling that

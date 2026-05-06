@@ -1017,6 +1017,7 @@ test("plugin SessionEnd hook logs prune failures while allowing shutdown", () =>
   }
 });
 
+
 test("UserPromptSubmit resume intent reads Claude's documented prompt field", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
   const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));

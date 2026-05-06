@@ -385,7 +385,7 @@ export function getConfig(cwd) {
 // `git rev-parse --show-toplevel`. Falls back to workspaceRoot when the
 // directory is not inside a git working tree (or git is unavailable).
 // The Stop hook reads the lock from the same project root, so this must
-// stay in sync with hooks/stop-review-gate-hook.mjs's `resolveProjectRoot`.
+// stay in sync with hooks/stop.mjs's `resolveProjectRoot`.
 function resolveProjectRoot(workspaceRoot) {
   try {
     const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
@@ -404,7 +404,7 @@ function resolveProjectRoot(workspaceRoot) {
 
 // Activation contract for the stop-time review gate.
 //
-// The Stop hook (hooks/stop-review-gate-hook.mjs) gates on the existence
+// The Stop hook (hooks/stop.mjs) gates on the existence
 // of `.codex-bridge-stop-review-gate.lock` at the git project root —
 // state.json alone is not enough because the hook runs in a fresh node
 // process without the bridge's state machinery. This helper owns that
