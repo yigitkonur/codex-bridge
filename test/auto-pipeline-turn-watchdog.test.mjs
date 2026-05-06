@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runAutoPipeline } from "../src/adapters/codex/pipeline.mjs";
+import { isPlanModeHalt, runAutoPipeline } from "../src/adapters/codex/pipeline.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -171,6 +171,76 @@ test("auto-pipeline fallback budgets match calibrated runtime defaults", async (
   }
 });
 
+test("auto-pipeline emits PLAN_READY for plan-mode halt", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const reviewCalls = [];
+    const turnCalls = [];
+
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-watchdog",
+      cwd: root,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "Check completion",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub(turnCalls),
+      runAppServerReview: makeReviewStub(reviewCalls),
+      jobId: "job-watchdog",
+      taskMode: "plan",
+      assistantMessage: "## Plan\n1. Implement the requested change.\n2. Run tests.",
+      stageTimeoutMs: 10_000,
+      totalTimeoutMs: 20_000,
+    });
+
+    assert.equal(result.complete, false);
+    assert.equal(result.partial, true);
+    assert.equal(result.planReady, true);
+    assert.equal(result.planClassification, "code_write");
+    assert.deepEqual(result.completedStages, ["diff"]);
+    assert.equal(reviewCalls.length, 0, "plan-ready halt must not run review");
+    assert.equal(turnCalls.length, 0, "plan-ready halt must not run fix or completion check");
+
+    const events = fs.readFileSync(session.eventsPath, "utf8");
+    assert.match(events, /^\[PLAN_READY\] thread-watchdog \| classification=code_write/m);
+    assert.match(events, /approve: node '\/fake\/script\.mjs' send .* thread-watchdog --mode default "Implement the plan\."/);
+    assert.doesNotMatch(events, /^\[INCOMPLETE\]/m);
+
+    const ndjson = fs.readFileSync(session.ndjsonPath, "utf8");
+    assert.match(ndjson, /"tag":"PLAN_READY"/);
+    assert.match(ndjson, /"classification":"code_write"/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("plan-mode halt detection requires plan mode, plan text, and empty diff", () => {
+  assert.equal(isPlanModeHalt({
+    taskMode: "plan",
+    assistantMessage: "[PLAN]\nImplement the task.",
+    diff: { files: [] },
+  }), true);
+  assert.equal(isPlanModeHalt({
+    taskMode: "default",
+    assistantMessage: "[PLAN]\nImplement the task.",
+    diff: { files: [] },
+  }), false);
+  assert.equal(isPlanModeHalt({
+    taskMode: "plan",
+    assistantMessage: "Done.",
+    diff: { files: [] },
+  }), false);
+  assert.equal(isPlanModeHalt({
+    taskMode: "plan",
+    assistantMessage: "## Plan\nImplement the task.",
+    diff: { files: ["M src/file.mjs (+1 -0)"] },
+  }), false);
+});
 test("auto-pipeline treats qualified clean review wording as approved", async () => {
   const { root, session } = makeTempSession();
   try {

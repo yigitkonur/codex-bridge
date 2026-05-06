@@ -774,6 +774,51 @@ export function formatPlanEvent(session, { turnId, planTitle, steps, planPath, s
   return lines.join("\n");
 }
 
+export function classifyPlanContent(planText) {
+  const text = String(planText ?? "").toLowerCase();
+  if (!text.trim()) return "read_only";
+  if (/\b(rm\s+-rf|delete|drop\s+table|force[- ]push|reset\s+--hard|truncate)\b/.test(text)) {
+    return "destructive";
+  }
+  if (/\b(deploy|publish|push\s+to\s+(?:main|origin|remote)|release|api\s+call|webhook|http(?:s)?:\/\/)/.test(text)) {
+    return "external";
+  }
+  if (/\b(write|edit|modify|implement|refactor|create\s+file|add\s+function|patch|fix)\b/.test(text)) {
+    return "code_write";
+  }
+  return "read_only";
+}
+
+export function formatPlanReadyEvent(session, {
+  summary = "",
+  classification = "code_write",
+  scriptPath,
+  jobId = null,
+  cwd = null,
+  stateCwd = null,
+}) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const lines = [`[PLAN_READY] ${session.threadId} | classification=${classification}`];
+  if (summary && summary.trim()) {
+    const trimmed = summary.trim();
+    const maxSummaryChars = 4_000;
+    const display = trimmed.length > maxSummaryChars
+      ? `${trimmed.slice(0, maxSummaryChars)}\n... (truncated, ${trimmed.length - maxSummaryChars} more chars)`
+      : trimmed;
+    lines.push("  summary:");
+    for (const line of display.split("\n")) {
+      lines.push(`    ${line}`);
+    }
+  }
+  lines.push("  next_action:");
+  lines.push(`    approve: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} --mode default "Implement the plan."`);
+  lines.push(`    revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "Revise: <your feedback>"`);
+  if (jobId) {
+    lines.push(`    cancel:  ${commandPrefix(scriptPath, "cancel", jobCwd)} ${jobId}`);
+  }
+  return lines.join("\n");
+}
+
 export function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }

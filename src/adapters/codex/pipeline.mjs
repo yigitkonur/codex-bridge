@@ -6,10 +6,12 @@ import {
   captureGitDiff,
   writePlan,
   writeReview,
+  classifyPlanContent,
   formatDoneEvent,
   formatErrorEvent,
   formatIncompleteEvent,
   formatPipelineEvent,
+  formatPlanReadyEvent,
   fmtSeconds,
 } from "../../lib/session-log.mjs";
 import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "../../lib/config.mjs";
@@ -25,6 +27,20 @@ import { readMeta } from "../../lib/registry.mjs";
 // DEFAULT_CONFIG `pipeline_stage_ms` / `pipeline_total_ms`.
 const PIPELINE_TIMEOUT_MS_DEFAULT = 1_800_000; // 30 minutes total
 const STAGE_TIMEOUT_MS_DEFAULT = 720_000;      // 12 minutes per stage
+
+export function isPlanModeHalt({ taskMode, assistantMessage, diff }) {
+  if (taskMode !== "plan") return false;
+  if (diff && Array.isArray(diff.files) && diff.files.length > 0) return false;
+  const text = typeof assistantMessage === "string" ? assistantMessage.trim() : "";
+  if (!text) return false;
+  return (
+    text.startsWith("[PLAN]") ||
+    /^\*\*Assumption/m.test(text) ||
+    /^### Plan\b/m.test(text) ||
+    /^## Plan\b/m.test(text) ||
+    /^# Plan\b/m.test(text)
+  );
+}
 
 function loadExecuteInstructions(rootDir) {
   const p = path.join(rootDir, "templates", "execute-instructions.md");
@@ -49,6 +65,8 @@ export async function runAutoPipeline(options) {
     stateCwd = cwd,
     stageTimeoutMs = null,
     totalTimeoutMs = null,
+    taskMode = null,
+    assistantMessage = null,
   } = options;
 
   // Resolve per-stage and total budgets: caller override → built-in default.
@@ -116,6 +134,56 @@ export async function runAutoPipeline(options) {
     completedStages.push("diff");
     logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
     checkPipelineTimeout();
+
+    if (isPlanModeHalt({ taskMode, assistantMessage, diff: diff1 })) {
+      const summaryText = typeof assistantMessage === "string" ? assistantMessage : "";
+      const planClassification = classifyPlanContent(summaryText);
+      logEvent(session, formatPlanReadyEvent(session, {
+        summary: summaryText,
+        classification: planClassification,
+        scriptPath,
+        jobId,
+        cwd,
+        stateCwd,
+      }));
+      logNdjson(session, "PLAN_READY", null, {
+        threadId,
+        classification: planClassification,
+        diffStat: diff1.diffStat,
+        summaryLength: summaryText.length,
+      });
+      logEvent(session, formatPipelineEvent(session, {
+        stage: "done",
+        detail: `stages=${completedStages.join(",")} complete=false partial=true plan_ready=true`,
+      }));
+      return {
+        complete: false,
+        partial: true,
+        planReady: true,
+        planClassification,
+        completedStages,
+        duration: Math.round((Date.now() - startTime) / 1000),
+        diff: diff1,
+        workspaceDiff: diff1,
+        failing_stage: null,
+        stageTimeoutMs: stageMs,
+        totalTimeoutMs: totalMs,
+        reviewVerdict: null,
+        reviewFindingCount: null,
+        fixFilesTouched: [],
+        noWorkReason: null,
+        completion: normalizeCompletionResult(
+          { complete: false, missing_items: [], summary: "plan-ready awaiting approval" },
+          [],
+          "plan-ready awaiting approval",
+          false
+        ),
+        missingItems: [],
+        completionSummary: "plan-ready awaiting approval",
+        taskTouchedFiles: [],
+        touchedFiles: [],
+      };
+    }
 
     // Stage 2: Auto-review (if configured)
     let unstructuredReviewAttention = false;
