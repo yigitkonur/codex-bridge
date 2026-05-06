@@ -42,7 +42,7 @@ Monitor handling:
 - When live progress is useful, pass `result.monitor.tool_hint` directly to the Monitor tool. Do not assume a hook already armed it; verify that Monitor starts streaming within a few seconds.
 - For N > 1 parallel background tasks, do not arm one Monitor per job. Use `wait --any --predicate both <job-id...> --json` to wake on the next actionable job, `wait --all --jobs "<job ids>" --json` as the wave barrier, or `/codex-bridge:status --watch` for a live table.
 - Do not wrap Monitor in an Agent subagent. Monitor is the parent-thread tool for this job and should return only on terminal tags.
-- If Monitor is not available, the equivalent command is `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" events <job-id> --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`.
+- If Monitor is not available, the equivalent command is `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" events <job-id> --follow --exclude HEARTBEAT,CHECKPOINT`.
 - Do not fabricate completion while Monitor is still running. Report status only, then wait for the terminal `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, or `[CANCELLED]` tag.
 
 Operating rules:

@@ -19,13 +19,13 @@ test -f "$EVENTS_FILE" && echo "ready" || echo "waiting"
 
 If not ready, wait 1-2 seconds and check again. The events file is created when the task starts.
 
-## Preset A: `events --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` (default, preferred)
+## Preset A: `events --follow --exclude HEARTBEAT,CHECKPOINT` (default, preferred)
 
 Use for every task. Self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[CANCELLED]`), even if the tag was already present in the initial dump. Handles file rotation; filter is prefix-aware on the head tag (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix]`, `[PIPELINE:review:done]`, …). Continuation lines of multi-line blocks inherit the header's decision, so verbose `[CHECKPOINT]` blocks are fully excluded while `[CHECKPOINT_SUMMARY]` stays visible.
 
 ```bash
 node "$SCRIPT_PATH" events "$JOB_ID" --follow \
-  --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000
+  --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000
 ```
 
 **Why exclusion, not inclusion (v1.4.0).** Pre-1.4.0 the canonical shape was `--filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING` — an explicit inclusion list. Any tag the bridge emitted that *wasn't* on that list was silently dropped at the filter boundary, which meant adding a new tag in a future bridge version would make existing orchestrators deaf to it. The default stays exclusion-based: every tag passes through except the high-frequency liveness pulse, startup/runtime echo, and verbose checkpoint body. Future tags reach the orchestrator by default; noise stays out.
@@ -34,7 +34,7 @@ node "$SCRIPT_PATH" events "$JOB_ID" --follow \
 
 Monitor params: `persistent: false, timeout_ms: 1800000` (30 min — matches the raised turn-budget default). Match the `--timeout-ms` on the subcommand to the Monitor tool's outer deadline so they expire together.
 
-Every `task --json` launch returns `result.monitor.tool_hint` — an object with exactly the shape the `Monitor` tool expects (`description`, `command`, `timeout_ms`, `persistent`). Paste it verbatim in the parent thread instead of re-templating; do not wrap Monitor in an Agent subagent. The shipped hint already uses `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`.
+Every `task --json` launch returns `result.monitor.tool_hint` — an object with exactly the shape the `Monitor` tool expects (`description`, `command`, `timeout_ms`, `persistent`). Paste it verbatim in the parent thread instead of re-templating; do not wrap Monitor in an Agent subagent. The shipped hint already uses `--exclude HEARTBEAT,CHECKPOINT`.
 
 ### Final-envelope shape with `--json --follow`
 
@@ -49,7 +49,7 @@ When `--json --follow` closes the stream, `events` emits a terminal envelope so 
     "eventsPath": "/abs/path/to/events",
     "followed": true,
     "filter": null,
-    "exclude": "HEARTBEAT,DIRECTIVES,CHECKPOINT",
+    "exclude": "HEARTBEAT,CHECKPOINT",
     "timedOut": false,
     "terminalTag": "DONE",
     "terminalLine": "[DONE] 019d… completed in 4s | 1 files | +2 -0",
@@ -60,11 +60,11 @@ When `--json --follow` closes the stream, `events` emits a terminal envelope so 
 
 `terminalTag` is `"DONE"` / `"ERROR"` / `"INCOMPLETE"` / `"PLAN"` / `"CANCELLED"` on happy-path close, `null` on `--timeout-ms` expiry. Same field shape as `wait --json` (Preset D), so orchestrators can use identical branching logic for either. Exactly one of `filter` / `exclude` is non-null in the envelope — they're mutually exclusive by CLI contract.
 
-Events received with the default exclude-HEARTBEAT,DIRECTIVES,CHECKPOINT shape: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[CHECKPOINT_SUMMARY]`, `[STALL_WARNING]`, `[PIPELINE:*]`, `[PIPELINE:*:done]`, `[PIPELINE:done]` / `[PIPELINE:failed]`, `[WARNING]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]` / `[CANCELLED]`, and any future tag the bridge adds. `[PLAN]` and `[CANCELLED]` are terminal for wait/follow; `[QUESTION]` is interrupt-class but not terminal. Typical volume: 1 checkpoint summary every 5 min + a handful of interrupt tags per task.
+Events received with the default exclude-HEARTBEAT,CHECKPOINT shape: `[PLAN]`, `[QUESTION]`, `[CONFIRMED]`, `[CHECKPOINT_SUMMARY]`, `[STALL_WARNING]`, `[PIPELINE:*]`, `[PIPELINE:*:done]`, `[PIPELINE:done]` / `[PIPELINE:failed]`, `[WARNING]`, `[DONE]` / `[ERROR]` / `[INCOMPLETE]` / `[CANCELLED]`, and any future tag the bridge adds. `[PLAN]` and `[CANCELLED]` are terminal for wait/follow; `[QUESTION]` is interrupt-class but not terminal. Typical volume: 1 checkpoint summary every 5 min + a handful of interrupt tags per task.
 
 ### Tag reference
 
-Canonical source: `.planning/codebase/ADAPTERS.md`. The table below is the practical view for Monitor consumers; new tags pass through the default `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` filter.
+Canonical source: `.planning/codebase/ADAPTERS.md`. The table below is the practical view for Monitor consumers; new tags pass through the default `--exclude HEARTBEAT,CHECKPOINT` filter.
 
 | Tag | Category | Cadence / trigger | Action |
 |---|---|---|---|
@@ -108,7 +108,7 @@ done
 
 ## Preset B: Progress (long tasks)
 
-Same as Preset A. The `events --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` command shows every actionable tag as it lands (including any future tag added in later bridge versions). To debug with full checkpoint bodies, use `--exclude HEARTBEAT` instead.
+Same as Preset A. The `events --follow --exclude HEARTBEAT,CHECKPOINT` command shows every actionable tag as it lands (including any future tag added in later bridge versions). To debug with full checkpoint bodies, use `--exclude HEARTBEAT` instead.
 
 ## Preset C: Heartbeat (session-long)
 

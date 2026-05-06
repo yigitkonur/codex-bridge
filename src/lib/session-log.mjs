@@ -1002,11 +1002,10 @@ export const TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN|CANCELLED)\]/m
 // inclusion so new tags introduced by future bridge versions pass through
 // automatically. Pre-1.4.0 the default was an inclusion list that silently
 // dropped any tag not on the list — the "nothing is happening" class of
-// failure. HEARTBEAT is excluded by default (every 60 s, pure liveness),
-// DIRECTIVES is startup metadata, and verbose CHECKPOINT is excluded because
-// CHECKPOINT_SUMMARY carries the live progress signal. Interrupt and terminal
-// tags (DONE, ERROR, INCOMPLETE, PLAN, CANCELLED, QUESTION) pass through.
-export const DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "DIRECTIVES", "CHECKPOINT"]);
+// failure. HEARTBEAT is excluded by default (every 60 s, pure liveness), and
+// verbose CHECKPOINT is excluded because CHECKPOINT_SUMMARY carries the live
+// progress signal. Interrupt and terminal tags (DONE, ERROR, INCOMPLETE, PLAN, CANCELLED, QUESTION) pass through.
+export const DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "CHECKPOINT"]);
 
 // Canonical tail invocation — reused by every `.events` block's `tail:`
 // line and by `buildMonitorHint`. One builder so a change to the default

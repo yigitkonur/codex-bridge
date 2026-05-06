@@ -13,7 +13,7 @@ The events-file `[ERROR]` fires for any turn-level failure, including a sub-stag
 
 ## Forward-compat rule
 
-Default Monitor invocation is `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` (not `--filter X,Y,Z`). Reason: any new tag a future bridge version emits passes through automatically. An inclusion-based filter silently drops unknown tags. `[CHECKPOINT_SUMMARY]` remains visible while verbose `[CHECKPOINT]` is opt-in. Keep `--exclude` patterns; don't switch to `--filter` unless you specifically want a closed vocabulary.
+Default Monitor invocation is `--exclude HEARTBEAT,CHECKPOINT` (not `--filter X,Y,Z`). Reason: any new tag a future bridge version emits passes through automatically. An inclusion-based filter silently drops unknown tags. `[CHECKPOINT_SUMMARY]` remains visible while verbose `[CHECKPOINT]` is opt-in. Keep `--exclude` patterns; don't switch to `--filter` unless you specifically want a closed vocabulary.
 
 ## Branch movement
 
