@@ -14,11 +14,14 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 | `brief.mjs` | Structured brief loading, validation, hashing, and Markdown rendering |
 | `broker-endpoint.mjs` | Unix socket / Windows pipe endpoint formatting and parsing |
 | `broker-lifecycle.mjs` | Shared broker session spawn, readiness, persistence, teardown |
+| `bridge-config.mjs` | Runtime config/cache helpers and adapter resolution used by handlers and task runtime |
 | `cli-errors.mjs` | Exit-code taxonomy, Codex error normalization, retry/handoff envelopes |
 | `../adapters/codex/codex.mjs` | Codex app-server turn/review/auth runtime wrapper and notification capture |
 | `config.mjs` | Config schema validation, diagnostics, layering, collaboration mode, sandbox policy |
+| `envelope-helpers.mjs` | Shared CLI envelope, prompt, recovery, and monitor-hint helpers |
 | `fs.mjs` | Small filesystem helpers and stdin/text sniffing |
 | `git.mjs` | Review target resolution and review-context collection |
+| `handler-utils.mjs` | Shared command argv/cwd/workspace/prompt normalization for handler modules |
 | `iterate-loop.mjs` | Closed-loop task review / verdict / follow-up orchestration |
 | `job-control.mjs` | Job lookup/enrichment/status/result/cancel resolution |
 | `official-plugin.mjs` | Official OpenAI Codex Claude plugin detection |
@@ -29,8 +32,11 @@ into CLI behavior. Keep rules here tied to the current module code and tests.
 | `render.mjs` | Human-readable CLI rendering |
 | `review-result.mjs` | Native/adversarial review result normalization and finding validation |
 | `runtime-options.mjs` | Hard-coded default config values, effort/model resolution, sandbox construction |
+| `runtime-paths.mjs` | Source-vs-bundled path constants, bridge version, schemas, and capability metadata |
 | `session-log.mjs` | Session artifacts, event blocks, terminal tag constants |
 | `state.mjs` | Workspace-scoped persistent state and job files |
+| `stop-review-gate.mjs` | Project-scoped stop review gate lock read/write and status snapshot projection |
+| `task-runtime.mjs` | Task/review execution runtime, background launcher helpers, request handling, retries, and session artifacts |
 | `thread-id.mjs` | UUID thread-id validation |
 | `tracked-jobs.mjs` | Job record creation, progress logs, tracked job execution |
 | `update-check.mjs` | Anonymous GitHub release check and apply-rate cache |
@@ -220,6 +226,27 @@ separate `respond` processes need disk IPC.
 
 Native `review` uses app-server `review/start`. `adversarial-review` builds a
 prompt and uses `turn/start` with the JSON schema from `src/schemas`.
+
+## Task Runtime
+
+`task-runtime.mjs` is the integration layer for task and review execution. It
+exports `runBridgeTask`, `executeTaskRun`, and `executeReviewRun`, plus shared
+launch helpers used by task handlers.
+
+Preserve these boundaries:
+
+- Task and review handlers should call `executeTaskRun`, `executeReviewRun`, or
+  `runBridgeTask`; do not duplicate prompt decoration, session logging,
+  request handling, retry, or auto-pipeline behavior in handlers.
+- Background task paths should use `enqueueBackgroundTask`,
+  `spawnDetachedTaskWorker`, and `runForegroundCommand` from this module so
+  foreground and background launches share job metadata and logging behavior.
+- `createBridgeServerRequestHandler` is the only task path that should answer
+  `item/tool/requestUserInput`; keep it disk-backed through
+  `pending-requests.mjs`.
+- Task runtime and handlers both import `getBridgeConfig` from
+  `bridge-config.mjs`; keep that module's config cache as the single shared
+  instance.
 
 ## Auto-Pipeline
 
