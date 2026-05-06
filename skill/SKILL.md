@@ -471,6 +471,11 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs config show
 # Idempotent; safe to run repeatedly.
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs status --prune-orphans --json
 
+# Broader health report: stale jobs, orphan task worktrees/branches, old
+# session files, disk usage, and Codex CLI/auth status. Add --clean --yes
+# for non-interactive cleanup; dirty worktrees require --force.
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs doctor --json
+
 # CLI exited with status 1 and no obvious error? Check the crash log.
 ls -lt ~/.codex-bridge/crashes/ | head -5
 # Each file is a JSON dump of the unhandled rejection / exception that

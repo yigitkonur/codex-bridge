@@ -1,10 +1,10 @@
 // src/codex-bridge.mjs
-import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
-import fs18 from "node:fs";
-import os8 from "node:os";
-import path16 from "node:path";
-import process10 from "node:process";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { spawn as spawn3, spawnSync as spawnSync5 } from "node:child_process";
+import fs19 from "node:fs";
+import os9 from "node:os";
+import path17 from "node:path";
+import process11 from "node:process";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // package.json
 var package_default = {
@@ -11529,6 +11529,359 @@ function uninstallSandboxEnforcement(settingsPath = resolveClaudeSettingsPath())
   };
 }
 
+// src/lib/doctor-checks.mjs
+import { spawnSync as spawnSync4 } from "node:child_process";
+import fs18 from "node:fs";
+import os8 from "node:os";
+import path16 from "node:path";
+import process10 from "node:process";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var _DOCTOR_SCRIPT_DIR = path16.dirname(fileURLToPath2(import.meta.url));
+var _DOCTOR_SKILL_DIR = fs18.existsSync(path16.join(_DOCTOR_SCRIPT_DIR, "..", "schemas")) ? path16.join(_DOCTOR_SCRIPT_DIR, "..") : path16.join(_DOCTOR_SCRIPT_DIR, "..", "..");
+function getBridgeConfig(cwd = null, workspaceRoot = null) {
+  return loadConfig(_DOCTOR_SKILL_DIR, cwd, workspaceRoot);
+}
+var OLD_SESSION_AGE_DAYS = 30;
+var WORKTREE_ROOT_NAME = ".codex-bridge-worktrees";
+var BRANCH_PREFIX = "subagent/codex/";
+function pidIsAlive2(pid) {
+  const normalized = Number(pid);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return false;
+  }
+  try {
+    process10.kill(normalized, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    return true;
+  }
+}
+function ageMsFrom(value, now = Date.now()) {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? Math.max(0, now - parsed) : null;
+}
+function liveJobStatuses() {
+  return /* @__PURE__ */ new Set(["queued", "running"]);
+}
+function buildJobMap(jobs) {
+  return new Map(jobs.filter((job) => job?.id).map((job) => [job.id, job]));
+}
+function defaultWorktreeRoot2(repoRoot) {
+  return path16.resolve(repoRoot, "..", WORKTREE_ROOT_NAME);
+}
+function safeReadDir(dir) {
+  try {
+    return fs18.readdirSync(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+function directorySizeBytes(dir) {
+  if (!dir || !fs18.existsSync(dir)) {
+    return { path: dir, exists: false, bytes: 0, error: null };
+  }
+  const result = runCommand("du", ["-sk", dir], { timeout: 2e4 });
+  if (!result.error && result.status === 0) {
+    const kb = Number(result.stdout.trim().split(/\s+/)[0]);
+    return {
+      path: dir,
+      exists: true,
+      bytes: Number.isFinite(kb) ? kb * 1024 : 0,
+      error: null
+    };
+  }
+  return {
+    path: dir,
+    exists: true,
+    bytes: 0,
+    error: result.error?.message ?? result.stderr.trim() ?? result.stdout.trim() ?? `exit ${result.status}`
+  };
+}
+function listLocalBranches(repoRoot) {
+  const result = spawnSync4("git", ["branch", "--list", `${BRANCH_PREFIX}*`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 1e4
+  });
+  if (result.status !== 0) return [];
+  return result.stdout.split(/\r?\n/).map((line) => line.trim().replace(/^\*\s+/, "")).filter((line) => line.startsWith(BRANCH_PREFIX));
+}
+function listGitWorktrees(repoRoot) {
+  const result = spawnSync4("git", ["worktree", "list", "--porcelain"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 1e4
+  });
+  if (result.status !== 0) return [];
+  const entries = [];
+  let current = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      if (current) entries.push(current);
+      current = { path: line.slice("worktree ".length), branch: null };
+    } else if (line.startsWith("branch ") && current) {
+      current.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+function checkStaleJobs(workspaceRoot, options = {}) {
+  const now = options.now ?? Date.now();
+  const findings = [];
+  for (const job of listJobs(workspaceRoot, { raw: true })) {
+    if (job?.status !== "running" && job?.status !== "queued") continue;
+    const pid = Number(job.pid);
+    if (pidIsAlive2(pid)) continue;
+    findings.push({
+      type: "stale_job",
+      severity: "error",
+      action: "mark_orphaned",
+      cleanable: true,
+      jobId: job.id,
+      pid: Number.isFinite(pid) && pid > 0 ? pid : null,
+      status: job.status,
+      message: job.pid ? `registry says ${job.status}, PID ${job.pid} not alive` : `registry says ${job.status}, no PID recorded`,
+      age_ms: ageMsFrom(job.updatedAt ?? job.createdAt, now)
+    });
+  }
+  return findings;
+}
+function checkOrphanWorktrees(repoRoot, workspaceRoot, options = {}) {
+  const now = options.now ?? Date.now();
+  const jobs = buildJobMap(listJobs(workspaceRoot, { raw: true }));
+  const worktreeRoot = defaultWorktreeRoot2(repoRoot);
+  const findings = [];
+  for (const entry of safeReadDir(worktreeRoot)) {
+    if (!entry.isDirectory() || !entry.name.startsWith("task-")) continue;
+    const taskId = entry.name;
+    const job = jobs.get(taskId);
+    if (job && liveJobStatuses().has(job.status)) continue;
+    const worktreePath = path16.join(worktreeRoot, entry.name);
+    let stat = null;
+    try {
+      stat = fs18.statSync(worktreePath);
+    } catch {
+    }
+    findings.push({
+      type: "orphan_worktree",
+      severity: "warning",
+      action: "remove_worktree",
+      cleanable: true,
+      taskId,
+      path: worktreePath,
+      jobStatus: job?.status ?? null,
+      message: job ? `worktree exists for non-live job (${job.status})` : "worktree has no registry entry",
+      age_ms: stat ? Math.max(0, now - stat.mtimeMs) : null
+    });
+  }
+  return findings;
+}
+function checkOrphanBranches(repoRoot, workspaceRoot) {
+  const jobs = buildJobMap(listJobs(workspaceRoot, { raw: true }));
+  const worktreeBranches = new Set(listGitWorktrees(repoRoot).map((entry) => entry.branch).filter(Boolean));
+  const findings = [];
+  for (const branch of listLocalBranches(repoRoot)) {
+    const taskId = branch.slice(BRANCH_PREFIX.length);
+    const job = jobs.get(taskId);
+    if (job && liveJobStatuses().has(job.status) && worktreeBranches.has(branch)) continue;
+    if (job && liveJobStatuses().has(job.status) && !worktreeBranches.has(branch)) {
+      findings.push({
+        type: "orphan_branch",
+        severity: "warning",
+        action: "delete_branch",
+        cleanable: true,
+        taskId,
+        branch,
+        jobStatus: job.status,
+        message: "branch has a live registry entry but no corresponding worktree"
+      });
+      continue;
+    }
+    findings.push({
+      type: "orphan_branch",
+      severity: "warning",
+      action: "delete_branch",
+      cleanable: true,
+      taskId,
+      branch,
+      jobStatus: job?.status ?? null,
+      message: job ? `branch exists for non-live job (${job.status})` : "branch has no registry entry"
+    });
+  }
+  return findings;
+}
+function checkOldSessionFiles(cwd, workspaceRoot, options = {}) {
+  const now = options.now ?? Date.now();
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+  const cutoffMs = now - OLD_SESSION_AGE_DAYS * 24 * 60 * 60 * 1e3;
+  let count = 0;
+  let oldestMs = null;
+  for (const entry of safeReadDir(sessionDir)) {
+    if (!entry.isFile() || !/\.(events|ndjson)$/.test(entry.name)) continue;
+    const filePath = path16.join(sessionDir, entry.name);
+    let stat;
+    try {
+      stat = fs18.statSync(filePath);
+    } catch {
+      continue;
+    }
+    if (stat.mtimeMs >= cutoffMs) continue;
+    count += 1;
+    oldestMs = oldestMs == null ? stat.mtimeMs : Math.min(oldestMs, stat.mtimeMs);
+  }
+  if (count === 0) return [];
+  return [{
+    type: "old_session_files",
+    severity: "warning",
+    action: null,
+    cleanable: false,
+    path: sessionDir,
+    count,
+    older_than_days: OLD_SESSION_AGE_DAYS,
+    age_ms: oldestMs == null ? null : Math.max(0, now - oldestMs),
+    message: `${count} session event/log file(s) older than ${OLD_SESSION_AGE_DAYS} days`
+  }];
+}
+function checkDiskUsage(cwd, workspaceRoot) {
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+  const checks = [
+    { type: "disk_usage", severity: "info", label: "sessions_dir", ...directorySizeBytes(sessionDir) },
+    { type: "disk_usage", severity: "info", label: "jobs_dir", ...directorySizeBytes(resolveJobsDir(workspaceRoot)) },
+    { type: "disk_usage", severity: "info", label: "codex_rollouts", ...directorySizeBytes(path16.join(os8.homedir(), ".codex", "sessions")) }
+  ];
+  return checks.map((check) => ({
+    ...check,
+    action: null,
+    cleanable: false,
+    message: check.error ? `unable to measure ${check.label}: ${check.error}` : `${check.label}: ${check.bytes} bytes`
+  }));
+}
+async function checkCodexCli(cwd) {
+  const availability = getCodexAvailability(cwd);
+  const auth = availability.available ? await getCodexAuthStatus(cwd) : null;
+  return [{
+    type: "codex_cli",
+    severity: availability.available && auth?.loggedIn ? "info" : "warning",
+    action: null,
+    cleanable: false,
+    available: availability.available,
+    version: availability.detail ?? null,
+    auth: auth ? {
+      loggedIn: Boolean(auth.loggedIn),
+      detail: auth.detail ?? null,
+      source: auth.source ?? null,
+      provider: auth.provider ?? null
+    } : null,
+    message: availability.available ? `Codex CLI available; auth ${auth?.loggedIn ? "logged in" : "not logged in"}` : `Codex CLI unavailable: ${availability.detail}`
+  }];
+}
+async function runDoctorChecks(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  let repoRoot = workspaceRoot;
+  const gitRoot = spawnSync4("git", ["rev-parse", "--show-toplevel"], {
+    cwd: workspaceRoot,
+    encoding: "utf8",
+    timeout: 5e3
+  });
+  if (gitRoot.status === 0 && gitRoot.stdout.trim()) {
+    repoRoot = gitRoot.stdout.trim();
+  }
+  const actionableFindings = [
+    ...checkStaleJobs(workspaceRoot),
+    ...checkOrphanWorktrees(repoRoot, workspaceRoot),
+    ...checkOrphanBranches(repoRoot, workspaceRoot)
+  ];
+  const informationalFindings = [
+    ...checkOldSessionFiles(cwd, workspaceRoot),
+    ...checkDiskUsage(cwd, workspaceRoot),
+    ...await checkCodexCli(cwd)
+  ];
+  return {
+    workspaceRoot,
+    repoRoot,
+    findings: [...actionableFindings, ...informationalFindings]
+  };
+}
+function assertSafeBranch(branch) {
+  if (typeof branch !== "string" || !branch.startsWith(BRANCH_PREFIX) || /[\s;|&`$()<>"'\\]/.test(branch)) {
+    throw new Error(`unsafe branch name: ${JSON.stringify(branch)}`);
+  }
+}
+function worktreeStatus(worktreePath) {
+  const result = spawnSync4("git", ["-C", worktreePath, "status", "--porcelain", "--untracked-files=all"], {
+    encoding: "utf8",
+    timeout: 1e4
+  });
+  if (result.status !== 0) return null;
+  return result.stdout.trim();
+}
+function applyDoctorAction(finding, context, options = {}) {
+  if (!finding?.cleanable) {
+    return { finding, action: finding?.action ?? null, cleaned: false, skipped: true, reason: "not-cleanable" };
+  }
+  if (finding.action === "mark_orphaned") {
+    const ts = (/* @__PURE__ */ new Date()).toISOString();
+    const existing = listJobs(context.workspaceRoot, { raw: true }).find((job) => job.id === finding.jobId) ?? {};
+    const record = {
+      ...existing,
+      id: finding.jobId,
+      status: "orphaned",
+      phase: "orphaned",
+      pid: null,
+      completedAt: ts,
+      errorMessage: `Marked orphaned by doctor at ${ts}.`
+    };
+    updateState(context.workspaceRoot, (state) => {
+      state.jobs = (state.jobs ?? []).map((job) => job.id === finding.jobId ? { ...job, ...record } : job);
+    });
+    writeJobFile(context.workspaceRoot, finding.jobId, record);
+    upsertJob(context.workspaceRoot, record);
+    return { finding, action: finding.action, cleaned: true, skipped: false };
+  }
+  if (finding.action === "remove_worktree") {
+    const dirty = worktreeStatus(finding.path);
+    if (dirty && !options.force) {
+      return { finding, action: finding.action, cleaned: false, skipped: true, reason: "dirty-worktree", detail: dirty };
+    }
+    const remove = spawnSync4("git", ["worktree", "remove", "--force", finding.path], {
+      cwd: context.repoRoot,
+      encoding: "utf8",
+      timeout: 3e4
+    });
+    if (remove.status !== 0 && finding.path.includes(`${path16.sep}${WORKTREE_ROOT_NAME}${path16.sep}`)) {
+      fs18.rmSync(finding.path, { recursive: true, force: true });
+    }
+    return {
+      finding,
+      action: finding.action,
+      cleaned: !fs18.existsSync(finding.path),
+      skipped: false,
+      detail: remove.status === 0 ? null : remove.stderr.trim() || remove.stdout.trim() || null
+    };
+  }
+  if (finding.action === "delete_branch") {
+    assertSafeBranch(finding.branch);
+    const result = spawnSync4("git", ["branch", "-D", finding.branch], {
+      cwd: context.repoRoot,
+      encoding: "utf8",
+      timeout: 3e4
+    });
+    return {
+      finding,
+      action: finding.action,
+      cleaned: result.status === 0,
+      skipped: false,
+      detail: result.status === 0 ? null : result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`
+    };
+  }
+  return { finding, action: finding.action, cleaned: false, skipped: true, reason: "unknown-action" };
+}
+
 // src/codex-bridge.mjs
 function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
   return {
@@ -11543,15 +11896,15 @@ function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, de
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
   try {
-    if (!fs18.existsSync(diffPath)) return null;
-    return writeDiffArtifact(taskId, fs18.readFileSync(diffPath, "utf8"));
+    if (!fs19.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs19.readFileSync(diffPath, "utf8"));
   } catch {
     return null;
   }
 }
 function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
-    if (process10.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
+    if (process11.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
     if (detectJsonFlag(rawArgv)) return;
     if (detectHelpFlag(rawArgv)) return;
     if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
@@ -11568,32 +11921,32 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path16.join(os8.homedir(), ".codex-bridge");
-    fs18.mkdirSync(logDir, { recursive: true });
-    const logFile = path16.join(logDir, "auto-update.log");
+    const logDir = path17.join(os9.homedir(), ".codex-bridge");
+    fs19.mkdirSync(logDir, { recursive: true });
+    const logFile = path17.join(logDir, "auto-update.log");
     try {
-      const stat = fs18.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs18.truncateSync(logFile, 0);
+      const stat = fs19.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs19.truncateSync(logFile, 0);
     } catch {
     }
-    const fd = fs18.openSync(logFile, "a");
+    const fd = fs19.openSync(logFile, "a");
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-      fs18.writeSync(fd, banner);
+      fs19.writeSync(fd, banner);
       const child = spawn3(
         "npx",
         ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
         {
           detached: true,
           stdio: ["ignore", fd, fd],
-          env: process10.env
+          env: process11.env
         }
       );
       child.on("error", () => {
         try {
-          fs18.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+          fs19.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
 `, "utf8");
         } catch {
         }
@@ -11601,19 +11954,19 @@ function spawnDetachedAutoApply(targetVersion) {
       child.unref();
     } finally {
       try {
-        fs18.closeSync(fd);
+        fs19.closeSync(fd);
       } catch {
       }
     }
   } catch {
   }
 }
-var SCRIPT_DIR = path16.dirname(fileURLToPath2(import.meta.url));
-var SCRIPT_PATH = path16.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs18.existsSync(path16.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path16.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path16.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path16.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path16.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var SCRIPT_DIR = path17.dirname(fileURLToPath3(import.meta.url));
+var SCRIPT_PATH = path17.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs19.existsSync(path17.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path17.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path17.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path17.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path17.join(ROOT_DIR, "templates", "plan-enforcement.md");
 function shellQuote2(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -11678,7 +12031,7 @@ var DEVELOPER_INSTRUCTIONS_FALLBACK = {
 function loadDeveloperInstructions(mode) {
   const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
   try {
-    return fs18.readFileSync(templatePath, "utf8");
+    return fs19.readFileSync(templatePath, "utf8");
   } catch {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
@@ -11707,7 +12060,7 @@ var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
 var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 var BRIDGE_CONFIG_SKILL_LAYER = null;
-function getBridgeConfig(cwd = null, workspaceRoot = null) {
+function getBridgeConfig2(cwd = null, workspaceRoot = null) {
   if (!cwd && !workspaceRoot) {
     if (!BRIDGE_CONFIG_SKILL_LAYER) {
       BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
@@ -11733,7 +12086,7 @@ async function resolveCommandAdapter({
     metaBackend,
     taskMetadata,
     subagentType,
-    env: process10.env
+    env: process11.env
   });
 }
 function ensureCodexRuntimeAdapter(adapter2) {
@@ -11867,8 +12220,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path17 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path17}`.trim();
+      const path18 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path18}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -12090,6 +12443,16 @@ var COMMANDS = Object.freeze({
     synopsis: "verdicts --pending [--json]",
     summary: "Flat list of approved-but-unmerged or needs-attention verdicts. Used by the Stop gate hook to decide whether to block session exit. Idempotent.",
     examples: ["codex-bridge verdicts --pending --json"]
+  },
+  doctor: {
+    synopsis: "doctor [--clean [--yes] [--force]] [--json]",
+    summary: "Health check: stale jobs, orphan worktrees, orphan branches, disk usage, Codex CLI status. Use --clean to interactively remove orphans; --clean --yes to skip prompts.",
+    examples: [
+      "codex-bridge doctor",
+      "codex-bridge doctor --json",
+      "codex-bridge doctor --clean",
+      "codex-bridge doctor --clean --yes"
+    ]
   }
 });
 var EXIT_CODE_DOC = [
@@ -12195,17 +12558,17 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path16.resolve(process10.cwd(), options.cwd) : process10.cwd();
+  return options.cwd ? path17.resolve(process11.cwd(), options.cwd) : process11.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path16.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path17.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs18.existsSync(lockPath);
+  let lockExists = fs19.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -12216,7 +12579,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs18.writeFileSync(
+        fs19.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -12252,7 +12615,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs18.writeFileSync(
+      fs19.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -12265,7 +12628,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs18.rmSync(lockPath, { force: true });
+      fs19.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -12375,7 +12738,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     auth: authStatus,
     active_backend: adapter2.name,
     adapter_capabilities: adapter2.capabilities(),
-    sessionRuntime: getSessionRuntimeStatus(process10.env, workspaceRoot),
+    sessionRuntime: getSessionRuntimeStatus(process11.env, workspaceRoot),
     reviewGateEnabled: reviewGate.enabled,
     reviewGateLockPath: reviewGate.lockPath,
     reviewGateLockExists: reviewGate.lockExists,
@@ -12491,7 +12854,7 @@ async function handleVersion(argv) {
   const payload = {
     version: BRIDGE_VERSION,
     schema_version: BRIDGE_SCHEMA_VERSION,
-    node_version: process10.version,
+    node_version: process11.version,
     codex: {
       available: codex.available,
       detail: codex.detail ?? null
@@ -12535,7 +12898,7 @@ async function handleConfig(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   if (action === "show") {
     const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
-    const effective = getBridgeConfig(cwd, workspaceRoot);
+    const effective = getBridgeConfig2(cwd, workspaceRoot);
     const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
     const layers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
     const provenance = {};
@@ -12613,7 +12976,7 @@ async function handleConfig(argv) {
   }
   if (action === "path") {
     const filePath = resolveLocalConfigPath(workspaceRoot);
-    const exists = fs18.existsSync(filePath);
+    const exists = fs19.existsSync(filePath);
     const payload = { path: filePath, exists };
     const rendered = `${filePath}${exists ? "" : " (does not exist yet)"}
 `;
@@ -12905,7 +13268,7 @@ function runSkillsAddForApply(jsonMode) {
   const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
   const timeoutMs = 6e5;
   try {
-    const result = spawnSync4(
+    const result = spawnSync5(
       "npx",
       ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
       {
@@ -13054,7 +13417,7 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 function getCurrentClaudeSessionId() {
-  return process10.env[SESSION_ID_ENV] ?? null;
+  return process11.env[SESSION_ID_ENV] ?? null;
 }
 function filterJobsForCurrentClaudeSession(jobs) {
   const sessionId = getCurrentClaudeSessionId();
@@ -13115,7 +13478,7 @@ async function executeReviewRun(request) {
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
   const startedAt = Date.now();
-  const reviewConfig = getBridgeConfig(request.cwd, resolveWorkspaceRoot(request.cwd));
+  const reviewConfig = getBridgeConfig2(request.cwd, resolveWorkspaceRoot(request.cwd));
   const reviewSessionDir = resolveSessionDir(reviewConfig.session_dir, resolveWorkspaceRoot(request.cwd));
   const logReviewTerminalEvent = (session, result2, { reviewKind, targetLabel }) => {
     if (result2.status === 0) {
@@ -13439,9 +13802,9 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 function safeRealPath(filePath) {
   try {
-    return fs18.realpathSync.native ? fs18.realpathSync.native(filePath) : fs18.realpathSync(filePath);
+    return fs19.realpathSync.native ? fs19.realpathSync.native(filePath) : fs19.realpathSync(filePath);
   } catch {
-    return path16.resolve(filePath);
+    return path17.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -13479,10 +13842,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path16.resolve(worktreePath);
-  if (options.cwd && !samePath(path16.resolve(process10.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path17.resolve(worktreePath);
+  if (options.cwd && !samePath(path17.resolve(process11.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path16.resolve(process10.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path17.resolve(process11.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -13644,14 +14007,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path17.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs18.readFileSync(absPath, "utf8");
+    return fs19.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -13743,7 +14106,7 @@ async function runForegroundCommand(job, runner, options = {}) {
       emitError(errLike, { json: true, command });
     } else {
       if (execution.rendered) {
-        process10.stdout.write(execution.rendered);
+        process11.stdout.write(execution.rendered);
       }
       emitError(errLike, { json: false, command });
     }
@@ -13761,12 +14124,12 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs18.openSync(stderrPath, "a");
+      const stderrFd = fs19.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
   }
-  const child = spawn3(process10.execPath, [
+  const child = spawn3(process11.execPath, [
     scriptPath,
     "task-worker",
     "--cwd",
@@ -13777,7 +14140,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
     jobId
   ], {
     cwd,
-    env: process10.env,
+    env: process11.env,
     detached: true,
     stdio: stdioConfig,
     windowsHide: true
@@ -13785,7 +14148,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs18.closeSync(stdioConfig[2]);
+      fs19.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -13851,7 +14214,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       request: spawnedRecord.request
     });
   }
-  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir, job.workspaceRoot);
+  const resolvedSessionDir = resolveSessionDir(getBridgeConfig2(cwd ?? null, job.workspaceRoot).session_dir, job.workspaceRoot);
   return {
     payload: {
       jobId: job.id,
@@ -13949,7 +14312,7 @@ async function handleReview(argv) {
 async function runBridgeTask(request) {
   const stateCwd = request.stateCwd ?? request.cwd;
   const workspaceRoot = resolveWorkspaceRoot(stateCwd);
-  const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
+  const config = getBridgeConfig2(request.cwd ?? null, workspaceRoot);
   const adapter2 = await resolveCommandAdapter({
     cwd: request.cwd ?? null,
     workspaceRoot,
@@ -14187,10 +14550,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     turnTimeoutMs: null
   };
   let heartbeatTimer = null;
-  const HEARTBEAT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
-  const CHECKPOINT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
-  const STALL_CHECKPOINT_THRESHOLD = Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
-  const STALL_WARNING_THRESHOLD_MS = Number(process10.env.CODEX_BRIDGE_STALL_WARNING_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_WARNING_MS) : Number(config.stall_warning_threshold_ms) > 0 ? Number(config.stall_warning_threshold_ms) : DEFAULT_CONFIG.stall_warning_threshold_ms;
+  const HEARTBEAT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
+  const CHECKPOINT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
+  const STALL_CHECKPOINT_THRESHOLD = Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
+  const STALL_WARNING_THRESHOLD_MS = Number(process11.env.CODEX_BRIDGE_STALL_WARNING_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_STALL_WARNING_MS) : Number(config.stall_warning_threshold_ms) > 0 ? Number(config.stall_warning_threshold_ms) : DEFAULT_CONFIG.stall_warning_threshold_ms;
   let stallWarnEmitted = false;
   let checkpointTimer = null;
   let checkpointInFlight = false;
@@ -14229,7 +14592,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitHead = () => {
     if (!gitCwd) return null;
     try {
-      const r = spawnSync4("git", ["rev-parse", "HEAD"], {
+      const r = spawnSync5("git", ["rev-parse", "HEAD"], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -14242,7 +14605,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitLogRange = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return [];
     try {
-      const r = spawnSync4(
+      const r = spawnSync5(
         "git",
         ["log", "--no-color", "--no-decorate", "-n", "50", "--pretty=%h %s", `${from}..${to}`],
         { cwd: gitCwd, encoding: "utf8", timeout: 5e3 }
@@ -14259,7 +14622,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitDiffStat = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return null;
     try {
-      const r = spawnSync4("git", ["diff", "--shortstat", `${from}..${to}`], {
+      const r = spawnSync5("git", ["diff", "--shortstat", `${from}..${to}`], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -14283,7 +14646,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
             phase: heartbeatState.phase,
             lastItem: heartbeatState.lastItem,
             lastItemAgeMs: heartbeatState.lastItemAt ? now - heartbeatState.lastItemAt : null,
-            pid: process10.pid,
+            pid: process11.pid,
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
@@ -14326,7 +14689,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
               elapsedMs,
               phase: heartbeatState.phase,
               intervalMs,
-              pid: process10.pid,
+              pid: process11.pid,
               jobId: request.jobId ?? null,
               lastAssistantMessage: checkpointState.lastAssistantMessage,
               tools: toolsSnapshot,
@@ -14510,7 +14873,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path16.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path17.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -14584,10 +14947,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path16.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path16.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path16.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path16.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path17.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path17.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path17.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path17.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -15077,7 +15440,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path16.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path17.resolve(process11.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -15201,7 +15564,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, j
   const onSigint = () => {
     interrupted = true;
   };
-  process10.on("SIGINT", onSigint);
+  process11.on("SIGINT", onSigint);
   try {
     while (true) {
       ticks += 1;
@@ -15221,14 +15584,14 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, j
         }))
       };
       if (json2) {
-        process10.stdout.write(`${JSON.stringify(tickEntry)}
+        process11.stdout.write(`${JSON.stringify(tickEntry)}
 `);
       } else {
-        process10.stdout.write(`\x1B[2J\x1B[H`);
-        process10.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
+        process11.stdout.write(`\x1B[2J\x1B[H`);
+        process11.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
 
 `);
-        process10.stdout.write(renderStatusReport(snapshot));
+        process11.stdout.write(renderStatusReport(snapshot));
       }
       if (activeCount === 0) {
         const summary = {
@@ -15250,7 +15613,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, j
       if (deadline && Date.now() >= deadline) {
         const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
         if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        else process10.stdout.write(`
+        else process11.stdout.write(`
 watch timed out after ${ticks} ticks with ${activeCount} active job(s).
 `);
         return;
@@ -15258,7 +15621,7 @@ watch timed out after ${ticks} ticks with ${activeCount} active job(s).
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   } finally {
-    process10.off("SIGINT", onSigint);
+    process11.off("SIGINT", onSigint);
   }
 }
 async function handleAwaitArtifact(argv) {
@@ -15275,7 +15638,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path16.isAbsolute(artifactPath) ? artifactPath : path16.resolve(cwd, artifactPath);
+  const resolvedPath = path17.isAbsolute(artifactPath) ? artifactPath : path17.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -15292,7 +15655,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs18.statSync(resolvedPath);
+      statInfo = fs19.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -15344,7 +15707,7 @@ async function handleAwaitArtifact(argv) {
         })
       };
       if (!statInfo) {
-        process10.exitCode = 7;
+        process11.exitCode = 7;
         emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
 `, {
           json: options.json,
@@ -15381,7 +15744,7 @@ async function handleAwaitArtifact(argv) {
           details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
         })
       };
-      process10.exitCode = 7;
+      process11.exitCode = 7;
       emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
 `, {
         json: options.json,
@@ -15408,7 +15771,7 @@ function pruneOrphanedJobs(cwd) {
     }
     let alive = false;
     try {
-      process10.kill(pid, 0);
+      process11.kill(pid, 0);
       alive = true;
     } catch (err) {
       if (err && err.code === "EPERM") {
@@ -15480,7 +15843,7 @@ function renderPruneOrphansReport(report) {
 }
 function cleanupTerminalJobs(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getBridgeConfig(cwd, workspaceRoot);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
   const retentionDays = options.retentionDays ?? (Number(config.artifact_retention_days) || 30);
   const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
   const dryRun = Boolean(options.dryRun);
@@ -15501,7 +15864,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
       for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
         if (!filePath) continue;
         try {
-          fs18.rmSync(filePath, { force: true });
+          fs19.rmSync(filePath, { force: true });
         } catch {
         }
       }
@@ -15585,7 +15948,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs18.readFileSync(eventsPath, "utf8");
+        const data = fs19.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -15602,13 +15965,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs18.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs19.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs18.existsSync(eventsPath)) {
+              if (fs19.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15620,12 +15983,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs18.existsSync(eventsPath)) {
+    if (fs19.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs18.existsSync(eventsPath)) {
+        if (fs19.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15680,9 +16043,9 @@ async function handleWait(argv) {
       "JOB_HAS_NO_THREAD"
     );
   }
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path17.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = TERMINAL_TAG_REGEX;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -15767,7 +16130,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     throw usageError("wait --any requires at least two job ids or thread ids.");
   }
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const TERMINAL = TERMINAL_TAG_REGEX;
   const targets = refs.map((reference) => {
@@ -15787,7 +16150,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     return {
       reference,
       job,
-      eventsPath: path16.join(sessionDir, `${job.threadId}.events`)
+      eventsPath: path17.join(sessionDir, `${job.threadId}.events`)
     };
   });
   const deadline = Date.now() + timeoutMs;
@@ -15840,7 +16203,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
 }
 function scanTerminalEvent(eventsPath, pattern) {
   try {
-    const data = fs18.readFileSync(eventsPath, "utf8");
+    const data = fs19.readFileSync(eventsPath, "utf8");
     for (const line of data.split("\n")) {
       const m = pattern.exec(line);
       if (m) return { timedOut: false, tag: m[1], line };
@@ -15882,9 +16245,9 @@ async function handleEvents(argv) {
       "JOB_HAS_NO_THREAD"
     );
   }
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path17.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -15893,7 +16256,7 @@ async function handleEvents(argv) {
   const filter = parseTagList(options.filter);
   const exclude = parseTagList(options.exclude);
   const writeEventLine = (line) => {
-    if (!options.json) process10.stdout.write(line + "\n");
+    if (!options.json) process11.stdout.write(line + "\n");
   };
   const tagOf = (line) => {
     const m = /^\[([^\]]+)\]/.exec(line);
@@ -15915,8 +16278,8 @@ async function handleEvents(argv) {
   const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs18.existsSync(eventsPath)) {
-    initial = fs18.readFileSync(eventsPath, "utf8");
+  if (fs19.existsSync(eventsPath)) {
+    initial = fs19.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -15962,7 +16325,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs18.readFileSync(eventsPath, "utf8");
+        data = fs19.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -15984,13 +16347,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs18.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs19.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs18.existsSync(eventsPath)) {
+              if (fs19.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -16001,11 +16364,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs18.existsSync(eventsPath)) {
+    if (fs19.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs18.existsSync(eventsPath)) {
+        if (fs19.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -16087,7 +16450,7 @@ async function handleCancel(argv) {
   });
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process10.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process11.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
@@ -16184,15 +16547,164 @@ async function handleCancel(argv) {
     startedAt
   });
 }
+function formatDoctorBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+}
+function formatDoctorAge(ageMs) {
+  if (ageMs == null) return "age unknown";
+  const minutes = Math.floor(ageMs / 6e4);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+function renderDoctorReport(report, cleaned = [], options = {}) {
+  const lines = ["Codex Bridge Doctor - health report", ""];
+  const stale = report.findings.filter((entry) => entry.type === "stale_job");
+  const worktrees = report.findings.filter((entry) => entry.type === "orphan_worktree");
+  const branches = report.findings.filter((entry) => entry.type === "orphan_branch");
+  const oldSessions = report.findings.filter((entry) => entry.type === "old_session_files");
+  const disk = report.findings.filter((entry) => entry.type === "disk_usage");
+  const codex = report.findings.filter((entry) => entry.type === "codex_cli");
+  appendDoctorSection(lines, "Stale jobs", stale, (entry) => `${entry.jobId} (${entry.message}; stale for ${formatDoctorAge(entry.age_ms)})`);
+  appendDoctorSection(lines, "Orphan worktrees", worktrees, (entry) => `${entry.path} (${entry.message}${entry.age_ms == null ? "" : `; age ${formatDoctorAge(entry.age_ms)}`})`);
+  appendDoctorSection(lines, "Orphan branches", branches, (entry) => `${entry.branch} (${entry.message})`);
+  appendDoctorSection(lines, "Old session files", oldSessions, (entry) => `${entry.path} (${entry.message}; oldest ${formatDoctorAge(entry.age_ms)})`);
+  lines.push("[Disk usage]");
+  for (const entry of disk) {
+    lines.push(`  - ${entry.label}: ${entry.exists ? formatDoctorBytes(entry.bytes) : "not found"}${entry.error ? ` (${entry.error})` : ""}`);
+  }
+  lines.push("");
+  lines.push("[Codex CLI]");
+  for (const entry of codex) {
+    const marker = entry.available && entry.auth?.loggedIn ? "+" : "!";
+    lines.push(`  ${marker} ${entry.message}`);
+    if (entry.version) lines.push(`    ${entry.version}`);
+    if (entry.auth?.detail) lines.push(`    ${entry.auth.detail}`);
+  }
+  lines.push("");
+  const cleanableCount = report.findings.filter((entry) => entry.cleanable).length;
+  if (cleanableCount === 0) {
+    lines.push("All clear: no stale jobs, orphan worktrees, or orphan branches.");
+  } else if (!options.clean) {
+    lines.push("To clean up: codex-bridge doctor --clean");
+  } else {
+    const removed = cleaned.filter((entry) => entry.cleaned).length;
+    lines.push(`Cleaned ${removed} of ${cleanableCount} cleanable finding(s).`);
+  }
+  return `${lines.join("\n")}
+`;
+}
+function appendDoctorSection(lines, title, entries, formatEntry) {
+  lines.push(`[${title}]`);
+  if (entries.length === 0) {
+    lines.push("  + none");
+  } else {
+    for (const entry of entries) {
+      lines.push(`  ! ${formatEntry(entry)}`);
+    }
+  }
+  lines.push("");
+}
+function cleanPromptForFinding(finding) {
+  if (finding.type === "stale_job") return `Mark stale job ${finding.jobId} orphaned`;
+  if (finding.type === "orphan_worktree") return `Remove orphan worktree ${finding.path}`;
+  if (finding.type === "orphan_branch") return `Delete orphan branch ${finding.branch}`;
+  return `Apply cleanup for ${finding.type}`;
+}
+function promptDoctorAction(finding) {
+  if (!process11.stdin.isTTY) {
+    return Promise.resolve("no");
+  }
+  const question = `${cleanPromptForFinding(finding)}? (y/N/all/quit) `;
+  process11.stdout.write(question);
+  process11.stdin.setEncoding("utf8");
+  process11.stdin.resume();
+  return new Promise((resolve) => {
+    const onData = (chunk) => {
+      process11.stdin.pause();
+      process11.stdin.off("data", onData);
+      const answer = String(chunk).trim().toLowerCase();
+      if (answer === "y" || answer === "yes") resolve("yes");
+      else if (answer === "all" || answer === "a") resolve("all");
+      else if (answer === "quit" || answer === "q") resolve("quit");
+      else resolve("no");
+    };
+    process11.stdin.on("data", onData);
+  });
+}
+async function cleanDoctorFindings(report, options = {}) {
+  const results = [];
+  let applyAll = Boolean(options.yes);
+  for (const finding of report.findings.filter((entry) => entry.cleanable)) {
+    if (!applyAll) {
+      const answer = await promptDoctorAction(finding);
+      if (answer === "quit") break;
+      if (answer === "all") applyAll = true;
+      if (answer === "no") {
+        results.push({ finding, action: finding.action, cleaned: false, skipped: true, reason: "declined" });
+        continue;
+      }
+    }
+    const result = applyDoctorAction(finding, report, { force: options.force });
+    results.push(result);
+    if (!options.json) {
+      process11.stdout.write(result.cleaned ? "Removed.\n" : `Skipped: ${result.reason ?? result.detail ?? "not cleaned"}
+`);
+    }
+  }
+  return results;
+}
+async function handleDoctor(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "clean", "yes", "force"]
+  });
+  if (positionals.length > 0) {
+    throw usageError("`doctor` does not take positional arguments.");
+  }
+  if (options.yes && !options.clean) {
+    throw usageError("`doctor --yes` requires `--clean`.");
+  }
+  const cwd = resolveCommandCwd(options);
+  const report = await runDoctorChecks(cwd);
+  let cleaned = [];
+  if (options.clean) {
+    cleaned = await cleanDoctorFindings(report, {
+      yes: Boolean(options.yes),
+      force: Boolean(options.force),
+      json: Boolean(options.json)
+    });
+  }
+  emitSuccess("doctor", {
+    ...report,
+    clean: Boolean(options.clean),
+    cleaned,
+    cleanedCount: cleaned.filter((entry) => entry.cleaned).length
+  }, renderDoctorReport(report, cleaned, { clean: Boolean(options.clean) }), {
+    json: options.json,
+    startedAt
+  });
+}
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path17.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path16.resolve(cwd, positionals[0]);
+    const candidate = path17.resolve(cwd, positionals[0]);
     try {
-      if (fs18.existsSync(candidate) && fs18.statSync(candidate).isFile()) {
-        return fs18.readFileSync(candidate, "utf8");
+      if (fs19.existsSync(candidate) && fs19.statSync(candidate).isFile()) {
+        return fs19.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -16223,7 +16735,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs18.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs19.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -16304,9 +16816,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path16.join(dir, "meta.json"),
-    review_path: path16.join(dir, "review.json"),
-    verdict_path: path16.join(dir, "verdict.json"),
+    meta_path: path17.join(dir, "meta.json"),
+    review_path: path17.join(dir, "review.json"),
+    verdict_path: path17.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -16624,7 +17136,7 @@ async function handleIterate(argv) {
   guardCapability(adapter2, "supports_adversarial_review");
   ensureCodexAvailable(cwd);
   if (!input.taskId) ensureGitRepository(cwd);
-  const config = getBridgeConfig(cwd, workspaceRoot);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
   const model = normalizeRequestedModel(options.model ?? config.model);
   const effort = normalizeReasoningEffort(options.effort ?? config.effort);
   const payload = await runIterateLoop({
@@ -16707,10 +17219,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path16.join(jobDir(taskId), "verdict.json");
+    const target = path17.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs18.existsSync(target)) {
-      fs18.rmSync(target, { force: true });
+    if (fs19.existsSync(target)) {
+      fs19.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -17001,7 +17513,7 @@ async function handleSend(argv) {
     throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
   }
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getBridgeConfig(cwd, workspaceRoot);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
   const adapter2 = await resolveCommandAdapter({
     cwd,
     workspaceRoot,
@@ -17191,7 +17703,7 @@ async function handleSteer(argv) {
   guardCapability(adapter2, "supports_steering");
   ensureCodexAvailable(cwd);
   await adapter2.steer(threadId, turnId, prompt, { cwd });
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const session = findSession(sessionDir, threadId);
   if (session) {
@@ -17214,7 +17726,7 @@ async function handleRespond(argv) {
     throw usageError("respond requires <request-id>");
   }
   const cwd = resolveCommandCwd(options);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const adapter2 = await resolveCommandAdapter({
     cwd,
@@ -17276,7 +17788,7 @@ async function handleSummary(argv) {
     throw usageError("summary requires <thread-id>");
   }
   const cwd = resolveCommandCwd(options);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const session = findSession(sessionDir, threadId);
   if (!session) {
@@ -17288,7 +17800,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs18.readFileSync(session.ndjsonPath, "utf8");
+    content = fs19.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -17373,37 +17885,38 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   merge: handleMerge,
   verdict: handleVerdict,
   verdicts: handleVerdictsPending,
-  iterate: handleIterate
+  iterate: handleIterate,
+  doctor: handleDoctor
 });
-process10.on("SIGPIPE", () => {
+process11.on("SIGPIPE", () => {
 });
-process10.stdout.on("error", (err) => {
+process11.stdout.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
-process10.stderr.on("error", (err) => {
+process11.stderr.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path16.join(os8.homedir(), ".codex-bridge", "crashes");
-    fs18.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path17.join(os9.homedir(), ".codex-bridge", "crashes");
+    fs19.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path16.join(crashDir, `${ts}-${process10.pid}.log`);
+    const file = path17.join(crashDir, `${ts}-${process11.pid}.log`);
     const payload = {
       kind,
       ts,
-      pid: process10.pid,
-      argv: process10.argv,
-      cwd: process10.cwd(),
-      nodeVersion: process10.version,
+      pid: process11.pid,
+      argv: process11.argv,
+      cwd: process11.cwd(),
+      nodeVersion: process11.version,
       bridgeVersion: package_default.version,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs18.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs19.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
-      process10.stderr.write(
+      process11.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
 `
       );
@@ -17412,17 +17925,17 @@ function writeCrashLog(kind, error) {
   } catch {
   }
 }
-process10.on("unhandledRejection", (reason) => {
+process11.on("unhandledRejection", (reason) => {
   writeCrashLog("unhandledRejection", reason);
-  process10.exitCode = process10.exitCode || 1;
+  process11.exitCode = process11.exitCode || 1;
 });
-process10.on("uncaughtException", (err) => {
+process11.on("uncaughtException", (err) => {
   writeCrashLog("uncaughtException", err);
-  process10.exit(process10.exitCode || 1);
+  process11.exit(process11.exitCode || 1);
 });
 async function main() {
   const startedAt = Date.now();
-  const rawArgv = process10.argv.slice(2);
+  const rawArgv = process11.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
   maybeTriggerAutoApply(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
@@ -17449,7 +17962,7 @@ async function main() {
   await handler(argv);
 }
 main().catch((error) => {
-  const rawArgv = process10.argv.slice(2);
+  const rawArgv = process11.argv.slice(2);
   const json2 = detectJsonFlag(rawArgv);
   const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
   emitError(error, { json: json2, command });

@@ -149,6 +149,11 @@ Write-mode tasks land in `<repo>/../.codex-bridge-worktrees/<task_id>` on a `sub
 3. If `verdict=approved`: `/codex-bridge:merge <task_id>` (gated; refuses if verdict isn't approved). `verdicts --pending` shows approved-but-unmerged work. Do not manually `git merge subagent/codex/*` except as recovery from a bridge failure.
 4. If `verdict=needs-attention` or `must-fix`: use `/codex-bridge:iterate <task_id>` or start a fresh worktree task with a corrected prompt; `/codex-bridge:verdict <task_id> --discard` abandons unwanted work.
 
+Use `/codex-bridge:doctor` when long sessions accumulate stale jobs, orphan
+`<repo>/../.codex-bridge-worktrees/task-*` directories, or
+`subagent/codex/task-*` branches. `doctor --clean --yes` removes clean orphans
+non-interactively; dirty worktrees are skipped unless `--force` is set.
+
 ## Pointers
 
 Everything below is owned by another canonical surface. Read those when you need the detail; don't expect SKILL.md to mirror them.
