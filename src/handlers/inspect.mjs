@@ -93,11 +93,15 @@ import {
 export async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    valueOptions: ["cwd", "group", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
     booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
   });
 
   const cwd = resolveCommandCwd(options);
+  const group = options.group != null ? String(options.group).trim() : null;
+  if (options.group != null && !group) {
+    throw usageError("--group requires a non-empty name.");
+  }
 
   // `--watch`: repeatedly render the multi-job status table until every
   // tracked job reaches a terminal state (or the overall timeout expires, or
@@ -118,6 +122,7 @@ export async function handleStatus(argv) {
       intervalMs,
       overallTimeoutMs,
       all: options.all,
+      group,
       json: options.json,
       startedAt,
     });
@@ -148,6 +153,9 @@ export async function handleStatus(argv) {
   }
 
   const reference = positionals[0] ?? "";
+  if (group && reference) {
+    throw usageError("`status --group` does not take a job id.");
+  }
   if (reference) {
     const snapshot = options.wait
       ? await waitForSingleJobSnapshot(cwd, reference, {
@@ -166,7 +174,7 @@ export async function handleStatus(argv) {
     throw usageError("`status --wait` requires a job id.");
   }
 
-  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
+  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all, group }));
   emitSuccess("status", report, renderStatusReport(report), {
     json: options.json,
     startedAt
@@ -177,7 +185,7 @@ export async function handleStatus(argv) {
 // orchestration. Exits when every tracked job is terminal
 // (status !== "queued" && !== "running"), on overall timeout, or on
 // Ctrl-C. Returns a summary envelope via emitSuccess once stable.
-async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json, startedAt }) {
+async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, json, startedAt }) {
   const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
   let ticks = 0;
   let interrupted = false;
@@ -187,7 +195,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json, st
   try {
     while (true) {
       ticks += 1;
-      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all }));
+      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all, group }));
       const activeCount = snapshot.running?.length ?? 0;
       const tickEntry = {
         schema_version: "1.0",
@@ -667,11 +675,25 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
 export async function handleWait(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms"],
-    booleanOptions: ["json", "any"]
+    valueOptions: ["cwd", "group", "timeout-ms"],
+    booleanOptions: ["json", "any", "all"]
   });
 
   const cwd = resolveCommandCwd(options);
+  const group = options.group != null ? String(options.group).trim() : null;
+  if (options.group != null && !group) {
+    throw usageError("--group requires a non-empty name.");
+  }
+  if (group) {
+    if (options.any || positionals.length > 0) {
+      throw usageError("`wait --group` cannot be combined with --any or job ids.");
+    }
+    if (!options.all) {
+      throw usageError("`wait --group <name>` requires --all.");
+    }
+    await handleWaitGroupAll(cwd, group, options, startedAt);
+    return;
+  }
   if (options.any) {
     await handleWaitAny(cwd, positionals, options, startedAt);
     return;
@@ -731,6 +753,58 @@ export async function handleWait(argv) {
     `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1000)}s\n`,
     { json: options.json, startedAt }
   );
+}
+
+async function handleWaitGroupAll(cwd, group, options, startedAt) {
+  const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
+  const deadline = Date.now() + timeoutMs;
+  let jobs = [];
+
+  while (Date.now() <= deadline) {
+    const workspaceRoot = resolveWorkspaceRoot(cwd);
+    jobs = sortJobsNewestFirst(listJobs(workspaceRoot).filter((job) => job.group === group));
+    if (jobs.length === 0) {
+      throw notFoundError(`No jobs found in group "${group}".`, "GROUP_NOT_FOUND");
+    }
+    const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
+    if (active.length === 0) {
+      const elapsedMs = Date.now() - startedAt;
+      const payload = {
+        mode: "group-all",
+        group,
+        total: jobs.length,
+        terminal: jobs.length,
+        jobs: jobs.map((job) => ({
+          jobId: job.id,
+          threadId: job.threadId ?? null,
+          status: job.status,
+          phase: job.phase ?? null,
+        })),
+        elapsedMs,
+      };
+      emitSuccess(
+        "wait",
+        payload,
+        `Group ${group} reached terminal state for ${jobs.length} job(s) after ${Math.round(elapsedMs / 1000)}s\n`,
+        { json: options.json, startedAt }
+      );
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  throw new CliError(`Group ${group} still has active jobs after ${Math.round(timeoutMs / 1000)}s.`, {
+    class: "timeout",
+    code: "WAIT_TIMEOUT",
+    retryable: true,
+    suggestion: `Run \`status --group ${group}\` to inspect live group state.`,
+    details: {
+      group,
+      active: jobs
+        .filter((job) => job.status === "queued" || job.status === "running")
+        .map((job) => ({ jobId: job.id, status: job.status, phase: job.phase ?? null })),
+    },
+  });
 }
 
 export async function handleWaitAny(cwd, references, options, startedAt) {
