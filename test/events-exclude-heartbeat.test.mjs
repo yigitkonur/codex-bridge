@@ -106,9 +106,9 @@ test("events --exclude HEARTBEAT drops both header and continuation lines", () =
   }
 });
 
-// Companion: the documented Monitor preset excludes heartbeat, directives,
-// and verbose checkpoint body while preserving concise checkpoint summaries.
-test("events with default monitor exclude preserves checkpoint summary but drops runtime echoes", () => {
+// Companion: the documented Monitor preset excludes heartbeat and verbose
+// checkpoint body while preserving concise checkpoint summaries.
+test("events with default monitor exclude preserves checkpoint summary but drops verbose checkpoint", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-exclude-heartbeat-vocab-"));
   const workspace = path.join(root, "workspace");
   const pluginData = path.join(root, "plugin-data");
@@ -179,10 +179,15 @@ test("events with default monitor exclude preserves checkpoint summary but drops
     // as a member, doubled trailing backslash) that happened to work for our
     // test data but would mis-escape any tag containing brackets/backslashes.
     const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    for (const tag of ["CHECKPOINT_SUMMARY", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "STALL_WARNING", "WARNING", "INCOMPLETE"]) {
-      assert.match(result.stdout, new RegExp(`\\[${escapeRegExp(tag)}\\]`), `${tag} should pass through`);
+    const excludedTags = new Set(DEFAULT_MONITOR_EXCLUDE);
+    for (const tag of ["DIRECTIVES", "CHECKPOINT_SUMMARY", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "STALL_WARNING", "WARNING", "INCOMPLETE"]) {
+      const pattern = new RegExp(`\\[${escapeRegExp(tag)}\\]`);
+      if (excludedTags.has(tag)) {
+        assert.doesNotMatch(result.stdout, pattern, `${tag} should be excluded by the default preset`);
+      } else {
+        assert.match(result.stdout, pattern, `${tag} should pass through`);
+      }
     }
-    assert.doesNotMatch(result.stdout, /\[DIRECTIVES\]/);
     assert.doesNotMatch(result.stdout, /\[HEARTBEAT\]/);
     assert.doesNotMatch(result.stdout, /\[CHECKPOINT\]/);
     assert.doesNotMatch(result.stdout, /noisy: should not appear/);

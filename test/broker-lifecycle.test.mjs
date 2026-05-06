@@ -131,7 +131,7 @@ test(
       await assert.rejects(
         () => ensureBrokerSession(workspace, {
           scriptPath,
-          timeoutMs: 1,
+          timeoutMs: 150,
           env: {
             ...process.env,
             BROKER_TEST_CHILD_PID_FILE: childPidFile
@@ -175,7 +175,7 @@ test("startup timeout still uses an injected killProcess", async () => {
     await assert.rejects(
       () => ensureBrokerSession(workspace, {
         scriptPath,
-        timeoutMs: 1,
+        timeoutMs: 150,
         killProcess(pid) {
           killCalls.push(pid);
         },

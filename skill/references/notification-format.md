@@ -169,10 +169,10 @@ Emitted when the bridge samples the task cwd's current branch and sees it change
 [HEARTBEAT] {threadId} t={elapsed} | phase={plan|execute} | pid={pid}
   lastItem: {itemType} (age {ageSeconds})
   budget: {remaining} remaining
-  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000
+  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000
 ```
 
-Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter excludes `HEARTBEAT` and verbose `CHECKPOINT` (see `DEFAULT_MONITOR_EXCLUDE` in `src/lib/session-log.mjs`) so pure-liveness pulses and rich checkpoint bodies don't flood LLM context; omit the default exclude to see every event including the pulse, or pass `--filter HEARTBEAT` for a heartbeat-only view.
+Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter excludes `HEARTBEAT`, startup/runtime `DIRECTIVES`, and verbose `CHECKPOINT` (see `DEFAULT_MONITOR_EXCLUDE` in `src/lib/session-log.mjs`) so pure-liveness pulses, startup/runtime echoes, and rich checkpoint bodies don't flood LLM context; omit the default exclude to see every event including the pulse, or pass `--filter HEARTBEAT` for a heartbeat-only view.
 
 Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not alive — the caller can short-circuit their wait and investigate (`kill -0 <pid>` on the heartbeat's `pid`, or `pgrep -f codex-bridge`). The `tail:` line in each block is a ready-to-paste re-attach command so an agent that lost its Monitor session can recover from the most recent events-file line alone.
 
@@ -194,7 +194,7 @@ Emitted immediately before a verbose `[CHECKPOINT]` whenever the checkpoint inte
     - {sha} {subject}
   diff-since-last-checkpoint: {diffStat}             # only when diffStat truthy
   files-changed-since-turn-start: {summary}          # only when truthy
-  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000   # only when scriptPath + jobId both present
+  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000   # only when scriptPath + jobId both present
 ```
 
 Both `t={elapsed}` and `interval={…}` render through the same duration formatter (`fmtSeconds`) — short windows show as `Xs`, longer ones as `Xm` or `XmYYs`, never as raw milliseconds.

@@ -28,7 +28,7 @@ node "$SCRIPT_PATH" events "$JOB_ID" --follow \
   --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000
 ```
 
-**Why exclusion, not inclusion (v1.4.0).** Pre-1.4.0 the canonical shape was `--filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING` — an explicit inclusion list. Any tag the bridge emitted that *wasn't* on that list was silently dropped at the filter boundary, which meant adding a new tag in a future bridge version would make existing orchestrators deaf to it. The default stays exclusion-based: every tag passes through except the high-frequency liveness pulse and verbose checkpoint body. Future tags reach the orchestrator by default; noise stays out.
+**Why exclusion, not inclusion (v1.4.0).** Pre-1.4.0 the canonical shape was `--filter DONE,ERROR,INCOMPLETE,PLAN,QUESTION,PIPELINE,WARNING` — an explicit inclusion list. Any tag the bridge emitted that *wasn't* on that list was silently dropped at the filter boundary, which meant adding a new tag in a future bridge version would make existing orchestrators deaf to it. The default stays exclusion-based: every tag passes through except the high-frequency liveness pulse, startup/runtime echo, and verbose checkpoint body. Future tags reach the orchestrator by default; noise stays out.
 
 **When to use `--filter` instead (rare).** You specifically want a narrow view — e.g. only terminal tags during a quick sanity check: `--filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED`. Passing both `--filter` and `--exclude` exits 2 with `USAGE_ERROR`.
 

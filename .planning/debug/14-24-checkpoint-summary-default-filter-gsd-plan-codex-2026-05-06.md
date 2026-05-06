@@ -45,7 +45,7 @@ The claim that default Monitor should include a mid-stage progress signal is cor
 | Stall-warning visibility | Adjacent but not required. `[STALL_WARNING]` handles barren progress; `[CHECKPOINT_SUMMARY]` handles normal progress. |
 | Event-noise cluster | Same audience-density theme, but this case should not redesign all events. |
 | Monitor filter defaults | Direct fix surface. Must remain exclusion-based for forward compatibility. |
-| `DIRECTIVES` default filtering | Adjacent noise concern but out of scope for this case. `[DIRECTIVES]` should continue passing through the default stream unless a separate event-noise issue changes that contract. |
+| `DIRECTIVES` default filtering | Same Monitor-noise surface. `[DIRECTIVES]` stays persisted in `.events` for forensics, but the default live Monitor stream excludes it along with heartbeats and verbose checkpoint bodies. |
 
 # Phase 2 — GSD Implementation Plan
 
@@ -73,7 +73,7 @@ The claim that default Monitor should include a mid-stage progress signal is cor
 | Cluster | Behavior Change | Contract Fixed | Verification |
 |---|---|---|---|
 | Checkpoint event shape | Emit `[CHECKPOINT_SUMMARY] ... tools=N (...) ... last="..."` before existing verbose `[CHECKPOINT]` | Live progress has a concise tag; forensic detail remains available | `formatCheckpointSummaryEvent` unit test; event fixture keeps summary while dropping verbose body |
-| Monitor default contract | Default Monitor command becomes `events <id> --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000` | Default stream includes `[CHECKPOINT_SUMMARY]` and excludes heartbeat liveness plus verbose `[CHECKPOINT]` | `DEFAULT_MONITOR_EXCLUDE` assertion; plugin surface expected hint |
+| Monitor default contract | Default Monitor command becomes `events <id> --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000` | Default stream includes `[CHECKPOINT_SUMMARY]` and excludes heartbeat liveness plus verbose `[CHECKPOINT]` | `DEFAULT_MONITOR_EXCLUDE` assertion; plugin surface expected hint |
 | Documentation | References explain default-visible summary and verbose opt-in via `--exclude HEARTBEAT` | Agents stop hand-authoring brittle inclusion filters or noisy defaults | `rg` stale-string scan |
 | Generated outputs | Bundled scripts reflect source constants and examples | Installed skill/plugin behave like source checkout | `npm run build`; grep generated `DEFAULT_MONITOR_EXCLUDE` |
 
@@ -84,21 +84,21 @@ The claim that default Monitor should include a mid-stage progress signal is cor
 | Existing users expected verbose checkpoint in default Monitor stream | Verbose `[CHECKPOINT]` is still written and visible with `--exclude HEARTBEAT` | Revert `DEFAULT_MONITOR_EXCLUDE` only; keep summary event harmless |
 | Summary line accidentally grows too large | Cap `last` with `compactPreview`; keep focus/tool breakdown bounded | Reduce summary fields to phase/tools/last |
 | Docs drift from generated scripts | Run build after source/docs edits | Re-run build from source of truth |
-| Existing users expected `[DIRECTIVES]` in the default live stream | Preserved: `[DIRECTIVES]` is not part of the default exclude list for this fix | No rollback needed for this case |
+| Existing users expected `[DIRECTIVES]` in the default live stream | `.events` still persists `[DIRECTIVES]`; Monitor users can opt in with `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` or no exclude | Revert only the `DIRECTIVES` entry and related docs/tests if this proves too quiet |
 
 ## Acceptance Criteria
 
 | Case | Check |
 |---|---|
-| 14.24 | A fixture containing `[DIRECTIVES]`, `[CHECKPOINT_SUMMARY]`, verbose `[CHECKPOINT]`, and terminal tags streamed with `--exclude HEARTBEAT,CHECKPOINT` shows directives, summary, terminal tags, and hides the verbose checkpoint body. |
+| 14.24 | A fixture containing `[DIRECTIVES]`, `[CHECKPOINT_SUMMARY]`, verbose `[CHECKPOINT]`, and terminal tags streamed with `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` shows summary and terminal tags, and shows directives and hides the verbose checkpoint body. |
 | 14.24 | `DEFAULT_MONITOR_EXCLUDE` equals `["HEARTBEAT", "CHECKPOINT"]`. |
-| 14.24 | `result.monitor.tool_hint.command` contains `--exclude HEARTBEAT,CHECKPOINT`. |
+| 14.24 | `result.monitor.tool_hint.command` contains `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`. |
 | 14.24 | Generated `skill/scripts/codex-bridge.mjs` and `plugin/scripts/codex-bridge.mjs` contain the same default exclude list. |
 
 ## Out Of Scope
 
 - Global event taxonomy redesign beyond the checkpoint pair.
 - Stall detector semantics beyond ensuring `[STALL_WARNING]` remains default-visible.
-- Hiding `[DIRECTIVES]` by default.
+- Redesigning the full event vocabulary beyond the Monitor default noise filter.
 - Multi-job fan-in UX beyond preserving a concise per-job checkpoint line.
 - Any broader issues from feedback docs `00-13`, `15`, or other per-issue files.

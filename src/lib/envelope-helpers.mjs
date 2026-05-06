@@ -58,8 +58,6 @@ export function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
   // - HEARTBEAT excluded by default: 60-s liveness pulse is pure signal
   //   for the .events file (and the 90-s liveness heuristic), but
   //   floods an LLM's context in a long run.
-  // - DIRECTIVES excluded by default: the effective runtime-config echo is
-  //   useful in `.events` for forensics but redundant in Monitor fan-out.
   // - CHECKPOINT_SUMMARY stays in the stream: it is the one-line live
   //   progress signal. Verbose CHECKPOINT is still written for forensics
   //   and can be opted into explicitly.

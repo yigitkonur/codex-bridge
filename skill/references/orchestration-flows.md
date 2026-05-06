@@ -113,17 +113,17 @@ Use when you want to tail progress without hand-rolling `tail -f`. Steers toolin
 ```
 task --background --write "prompt"      → jobId + result.monitor hint
   → events <jobId> --follow \
-           --exclude HEARTBEAT,CHECKPOINT \
+           --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT \
            --timeout-ms 1800000         → line-stream of non-noise tags
   → self-terminates on terminal tag
   → result <jobId> --json               → full rendered result + stored job record
 ```
 
-The `result.monitor.tool_hint` object in the launch payload has the exact shape the `Monitor` tool expects and already bakes in `--exclude HEARTBEAT,CHECKPOINT` — paste it directly, don't re-template.
+The `result.monitor.tool_hint` object in the launch payload has the exact shape the `Monitor` tool expects and already bakes in `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` — paste it directly, don't re-template.
 
 ### Handling unknown tags (forward-compat)
 
-The v1.4.0 exclusion-based default (`--exclude HEARTBEAT,CHECKPOINT`) means any tag a future bridge version emits reaches the orchestrator verbatim — including `[CHECKPOINT_SUMMARY]`, `[STALL_WARNING]`, and tags your code doesn't know about. The canonical extractor for the head tag is the regex `/^\[([^\]]+)\]/` (match anything between leading brackets). Split on `:` for the subtype (`[PIPELINE:review]` → head `PIPELINE`, subtype `review`). Don't assume the tag vocabulary is closed; if you see a tag you don't recognize, surface the line verbatim to the user/log and keep watching — the bridge only self-terminates on `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, or `[CANCELLED]`.
+The v1.4.0 exclusion-based default (`--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`) means any tag a future bridge version emits reaches the orchestrator verbatim — including `[CHECKPOINT_SUMMARY]`, `[STALL_WARNING]`, and tags your code doesn't know about. The canonical extractor for the head tag is the regex `/^\[([^\]]+)\]/` (match anything between leading brackets). Split on `:` for the subtype (`[PIPELINE:review]` → head `PIPELINE`, subtype `review`). Don't assume the tag vocabulary is closed; if you see a tag you don't recognize, surface the line verbatim to the user/log and keep watching — the bridge only self-terminates on `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, or `[CANCELLED]`.
 
 ## Waiting without streaming
 
