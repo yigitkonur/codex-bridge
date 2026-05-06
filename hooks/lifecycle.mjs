@@ -22,6 +22,11 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_SCRIPT = process.env.CLAUDE_PLUGIN_ROOT
   ? path.join(process.env.CLAUDE_PLUGIN_ROOT, "scripts", "codex-bridge.mjs")
   : path.resolve(SCRIPT_DIR, "..", "scripts", "codex-bridge.mjs");
+const DEFAULT_SESSION_BRIEF_CONFIG = {
+  mode: "plan",
+  effort: "xhigh",
+  sandbox_policy: "danger-full-access",
+};
 
 function isDisabled() {
   const list = (process.env.CODEX_BRIDGE_HOOK_DISABLE ?? "")
@@ -49,6 +54,53 @@ function sessionEnv(input) {
   };
 }
 
+function readConfig(cwd, env) {
+  const result = spawnSync(process.execPath, [BRIDGE_SCRIPT, "config", "show", "--json"], {
+    cwd,
+    env,
+    encoding: "utf8",
+    timeout: 5000,
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  if (result.error || result.status !== 0) return DEFAULT_SESSION_BRIEF_CONFIG;
+  try {
+    const envelope = JSON.parse(result.stdout);
+    return envelope?.result?.effective_config ?? envelope?.result?.config ?? envelope?.result?.effective ?? DEFAULT_SESSION_BRIEF_CONFIG;
+  } catch {
+    return DEFAULT_SESSION_BRIEF_CONFIG;
+  }
+}
+
+function formatSessionBrief(config) {
+  const mode = config.mode ?? DEFAULT_SESSION_BRIEF_CONFIG.mode;
+  const effort = config.effort ?? DEFAULT_SESSION_BRIEF_CONFIG.effort;
+  const sandbox = config.sandbox_policy ?? DEFAULT_SESSION_BRIEF_CONFIG.sandbox_policy;
+  return [
+    "codex-bridge is configured. The user has set:",
+    `- autonomy mode: ${mode}`,
+    `- sandbox: ${sandbox} (enforced — read-only requests will be auto-upgraded)`,
+    '- plan-mode: triggers on user prompt containing "plan", "planning", "plana", or related words',
+    "",
+    "To delegate substantial implementation, review, or audit work to codex, use:",
+    "- /codex-bridge:task <prompt> — background work; Monitor arms automatically",
+    "- /codex-bridge:review — adversarial review of current branch",
+    "- /codex-bridge:status — list active jobs",
+    "- /codex-bridge:respond <req-id> <answer> — answer a [QUESTION] event",
+    "",
+    `Effort flag: --effort {low|medium|high|xhigh} (default ${effort} per config).`,
+    "",
+    "Decision principles for when to use codex-bridge vs native subagents:",
+    "- Substantial implementation (multi-file, scaffolding, migrations) → /codex-bridge:task --effort high",
+    "- Adversarial review of current branch → /codex-bridge:review",
+    "- Read-only investigation that doesn't need a fresh context → native Explore subagent",
+    "- Quick lookups and single-symbol greps → just do it inline",
+    "",
+    'When the user\'s prompt mentions "plan", "planning", "plana", or related words, the dispatch will run in plan-mode (review-before-execute). Trust this default; override only when the user explicitly asks for direct execution.',
+    "",
+    "When you are blocked or genuinely stuck, the user has authorized one clarifying question via the request_user_input tool. Use it sparingly; prefer to make defensible defaults explicit in the dispatch prompt and proceed."
+  ].join("\n");
+}
+
 function handleSessionStart(input) {
   const cwd = resolveHookCwd(input);
   appendEnvVars({
@@ -57,6 +109,14 @@ function handleSessionStart(input) {
     [BRIDGE_WORKSPACE_HASH_ENV]: computeWorkspaceHash(cwd),
     [BRIDGE_PLUGIN_DATA_ENV]: resolveBridgePluginData(),
   });
+  const config = readConfig(cwd, sessionEnv(input));
+  process.stdout.write(JSON.stringify({
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: formatSessionBrief(config)
+    }
+  }));
 }
 
 function logHookError(label, err, detail = "") {

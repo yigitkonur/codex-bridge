@@ -924,7 +924,7 @@ test("SessionStart hook emits mission-shaped bridge brief", () => {
   const envFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-env-")), "env");
   const result = spawnSync(
     process.execPath,
-    [path.join(rootPath, "plugin/hooks/session-lifecycle-hook.mjs"), "SessionStart"],
+    [path.join(rootPath, "plugin/hooks/lifecycle.mjs"), "SessionStart"],
     {
       cwd: rootPath,
       input: JSON.stringify({ session_id: "session-brief-test", cwd: rootPath }),
