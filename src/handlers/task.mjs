@@ -67,8 +67,10 @@ import {
   ensureCodexAvailable,
   executeReviewRun,
   extractPlanSteps,
+  findWorktreePromptAbsolutePathConflicts,
   filterJobsForCurrentClaudeSession,
   findLatestResumableTaskJob,
+  formatWorktreePromptAbsolutePathConflict,
   getCurrentClaudeSessionId,
   parseDurationOption,
   parsePositiveMsOption,
@@ -199,6 +201,27 @@ export async function handleTask(argv) {
   // and spend a billed Codex turn. Mirrors the check the --background path already does.
   requireTaskRequest(prompt, resumeLast);
   const write = Boolean(options.write);
+  if (write && options["worktree-auto"]) {
+    const launchConfig = getBridgeConfig(cwd, workspaceRoot);
+    const executionConfig = getBridgeConfig(workspaceRoot, workspaceRoot);
+    const promptFooters = [
+      launchConfig.prompt_footer || null,
+      executionConfig.prompt_footer || null,
+    ].filter((value, index, values) => value && values.indexOf(value) === index);
+    const guardText = [
+      prompt,
+      brief ? renderBriefAsMarkdown(brief) : null,
+      ...promptFooters,
+    ].filter(Boolean).join("\n\n");
+    const pathConflicts = findWorktreePromptAbsolutePathConflicts(guardText, workspaceRoot, [cwd, stateCwd]);
+    if (pathConflicts.length > 0) {
+      throw validationError(
+        formatWorktreePromptAbsolutePathConflict(pathConflicts, workspaceRoot),
+        "WORKTREE_ABSOLUTE_PATH_CONFLICT",
+        "Use repo-relative paths before dispatching with --worktree-auto.",
+      );
+    }
+  }
   // `--read-only` forces sandboxPolicy: { type: "readOnly" } regardless of
   // `config.sandbox_policy` (including `danger-full-access`). Mutually
   // exclusive with `--write` — that combination is incoherent. Used by the
@@ -521,6 +544,7 @@ function writeCancelledMeta(taskId, meta, completedAt, cleanup) {
     cancelled_at: completedAt,
     cleanup,
   });
+  return taskId;
 }
 
 export async function handleCancel(argv) {
@@ -670,6 +694,7 @@ export async function handleCancel(argv) {
     turnInterrupted: interrupt.interrupted,
     cleanup,
     reason: "cancelled-by-user",
+    cleanup,
     warnings,
     title: normalizedTitle,
     dispatchTitle: job.title ?? null,

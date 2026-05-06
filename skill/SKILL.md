@@ -24,6 +24,11 @@ Codex is the executor; you are the orchestrator. Your job is judgment: when to d
 
 Tasks are read-only unless the command opts into writes or config sets a wider sandbox. For file-changing work, use `--write`; for bridge-managed isolation, pair it with `--worktree-auto`.
 
+When using `--worktree-auto`, prompts and brief text must name repo-relative
+paths (`src/file.ts`), not absolute paths inside the launch checkout. Absolute
+checkout paths still point at the main workspace, so the bridge rejects them
+before creating the task worktree.
+
 **Sandbox enforcement:** users who pin a sandbox policy can opt into enforcement
 that orchestrators cannot silently downgrade with `--read-only`:
 

@@ -42,6 +42,7 @@ const TASK_VALUE_FLAGS = new Set([
   "--question-timeout-ms",
   "--intercepted-from",
   "--cwd",
+  "-C",
   "--brief",
   "--backend",
   "--base-ref",
@@ -352,6 +353,8 @@ function collectPromptText(tokens, taskIndex, cwd) {
       parts.push(...tokens.slice(i + 1));
       break;
     }
+    // Stop at pipe — anything after a bare pipe is a shell command, not a Codex prompt argument.
+    if (token === "|") break;
     const promptFileInline = inlineValue(token, "--prompt-file");
     if (promptFileInline !== null) {
       parts.push(readPromptFile(cwd, promptFileInline));
@@ -374,7 +377,7 @@ function collectPromptText(tokens, taskIndex, cwd) {
 
 function resolveInvocationCwd(input, tokens, taskIndex) {
   const base = input.cwd ? path.resolve(input.cwd) : process.cwd();
-  const cwdFlag = flagValue(tokens, taskIndex, "--cwd");
+  const cwdFlag = flagValue(tokens, taskIndex, "--cwd") ?? flagValue(tokens, taskIndex, "-C");
   if (cwdFlag) return path.resolve(base, cwdFlag);
 
   const separatorIndex = tokens.findIndex((token, index) => index < taskIndex && isShellSeparator(token));
@@ -433,15 +436,43 @@ function pathIsInsideRoot(candidate, root) {
   return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function collectSpaceRootCandidates(text, roots) {
+  const candidates = [];
+  for (const root of roots) {
+    if (!/\s/.test(root)) continue;
+    let start = text.indexOf(root);
+    while (start !== -1) {
+      const next = text[start + root.length];
+      if (!next || next === path.sep || /[\s),.;:\]]/.test(next)) {
+        let end = start + root.length;
+        while (end < text.length && !/[\s'"`<>]/.test(text[end])) end += 1;
+        candidates.push(text.slice(start, end));
+      }
+      start = text.indexOf(root, start + 1);
+    }
+  }
+  return candidates;
+}
+
 function findWorkspaceAbsolutePathConflicts(promptText, workspaceRoot, aliases = []) {
   const roots = uniquePathRoots([workspaceRoot, ...aliases]);
+  const text = String(promptText ?? "");
   const conflicts = [];
-  for (const match of String(promptText ?? "").matchAll(ABSOLUTE_PATH_PATTERN)) {
+  const seen = new Set();
+  const addConflict = (candidate) => {
+    if (!seen.has(candidate)) { seen.add(candidate); conflicts.push(candidate); }
+  };
+  for (const match of text.matchAll(ABSOLUTE_PATH_PATTERN)) {
     const candidate = normalizeAbsolutePathCandidate(match[0]);
     if (!path.isAbsolute(candidate)) continue;
     const resolved = path.resolve(candidate);
-    if (!roots.some((root) => pathIsInsideRoot(resolved, root))) continue;
-    if (!conflicts.includes(candidate)) conflicts.push(candidate);
+    if (roots.some((root) => pathIsInsideRoot(resolved, root))) addConflict(candidate);
+  }
+  // For workspace roots containing spaces, the regex stops at the space;
+  // use string search to catch the full path.
+  for (const candidate of collectSpaceRootCandidates(text, roots)) {
+    const normalized = normalizeAbsolutePathCandidate(candidate);
+    if (roots.some((root) => pathIsInsideRoot(normalized, root))) addConflict(normalized);
   }
   return conflicts;
 }

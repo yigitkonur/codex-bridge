@@ -10,7 +10,7 @@ const root = new URL("../", import.meta.url);
 const hookPath = fileURLToPath(new URL("plugin/hooks/pre-tool-bash.mjs", root));
 const rootPath = fileURLToPath(root);
 
-function runHook(command, extraEnv = {}, cwd = undefined) {
+function runHook(command, extraEnv = {}, cwd = rootPath) {
   const inputObj = { tool_name: "Bash", tool_input: { command } };
   if (cwd !== undefined) inputObj.cwd = cwd;
   const input = JSON.stringify(inputObj);
@@ -133,24 +133,60 @@ test("PreToolUse(Bash) rejects worktree-auto prompts with absolute workspace pat
   assert.match(explicit.hookSpecificOutput.additionalContext, /repo-relative paths/);
 });
 
-test("PreToolUse(Bash) checks simple wrapped bridge task invocations", () => {
-  const output = runHook(`cd "${rootPath}" && codex-bridge task --write --worktree-auto "write ${rootPath}src/foo.ts"`, {}, "/tmp");
+test("PreToolUse(Bash) rejects worktree-auto prompts when the workspace root contains spaces", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex bridge hook "));
+  try {
+    const filePath = path.join(workspace, "src", "foo.ts");
+    const output = runHook(`codex-bridge task --write --worktree-auto "write ${filePath}"`, {}, workspace);
 
-  assert.equal(isDenied(output), true);
-  assert.match(output.hookSpecificOutput.permissionDecisionReason, /absolute workspace paths/);
+    assert.equal(isDenied(output), true);
+    assert.match(output.hookSpecificOutput.additionalContext, /src\/foo\.ts/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
 });
 
-test("PreToolUse(Bash) scans prompt files for absolute workspace paths", () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-prompt-"));
+test("PreToolUse(Bash) resolves simple cd wrappers before absolute path checks", () => {
+  const filePath = path.join(rootPath, "src", "foo.ts");
+  const output = runHook(
+    `cd "${rootPath}" && codex-bridge task --write --worktree-auto "write ${filePath}"`,
+    {},
+    "/tmp",
+  );
+
+  assert.equal(isDenied(output), true);
+  assert.match(output.hookSpecificOutput.additionalContext, /src\/foo\.ts/);
+});
+
+test("PreToolUse(Bash) checks against git workspace root from subdirectories and -C", () => {
+  const filePath = path.join(rootPath, "README.md");
+  const fromSubdir = runHook(
+    `codex-bridge task --write --worktree-auto "write ${filePath}"`,
+    {},
+    path.join(rootPath, "src"),
+  );
+  const withCwdFlag = runHook(
+    `codex-bridge task --write --worktree-auto -C "${path.join(rootPath, "src")}" "write ${filePath}"`,
+    {},
+    "/tmp",
+  );
+
+  assert.equal(isDenied(fromSubdir), true);
+  assert.equal(isDenied(withCwdFlag), true);
+  assert.match(withCwdFlag.hookSpecificOutput.additionalContext, /README\.md/);
+});
+
+test("PreToolUse(Bash) scans prompt-file content for absolute workspace paths", () => {
+  const promptFile = path.join(os.tmpdir(), `codex-bridge-hook-prompt-${Date.now()}.md`);
+  const filePath = path.join(rootPath, "src", "foo.ts");
+  fs.writeFileSync(promptFile, `write ${filePath}\n`, "utf8");
   try {
-    const promptFile = path.join(temp, "prompt.md");
-    fs.writeFileSync(promptFile, `write ${rootPath}src/from-prompt.ts\n`, "utf8");
     const output = runHook(`codex-bridge task --write --worktree-auto --prompt-file "${promptFile}"`);
 
     assert.equal(isDenied(output), true);
-    assert.match(output.hookSpecificOutput.additionalContext, /from-prompt\.ts/);
+    assert.match(output.hookSpecificOutput.additionalContext, /src\/foo\.ts/);
   } finally {
-    fs.rmSync(temp, { recursive: true, force: true });
+    fs.rmSync(promptFile, { force: true });
   }
 });
 
@@ -158,6 +194,13 @@ test("PreToolUse(Bash) allows worktree-auto prompts with outside absolute paths"
   assert.deepEqual(runHook('codex-bridge task --write --worktree-auto "inspect /tmp/outside.txt"'), {
     continue: true,
   });
+});
+
+test("PreToolUse(Bash) ignores absolute paths after a pipe", () => {
+  assert.deepEqual(
+    runHook(`codex-bridge task --write --worktree-auto "edit src/foo.ts" | tee "${path.join(rootPath, "task.log")}"`),
+    { continue: true },
+  );
 });
 
 test("PreToolUse(Bash) does not match flags inside quoted prompt text", () => {
@@ -180,36 +223,17 @@ test("PreToolUse(Bash) denies bridge tasks at non-bundled paths consistently wit
   assert.equal(isDenied(output), true);
 });
 
-test("PreToolUse(Bash) denies read-only bridge tasks when sandbox enforcement is enabled", () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-sandbox-enforce-"));
-  try {
-    fs.writeFileSync(path.join(temp, "config.yaml"), "codex_bridge:\n  sandbox_enforce: true\n");
-    const output = runHook('codex-bridge task --read-only "audit"', {}, temp);
-
-    assert.equal(isDenied(output), true);
-    assert.match(output.hookSpecificOutput.permissionDecisionReason, /sandbox\.enforce: true/);
-    assert.match(output.hookSpecificOutput.permissionDecisionReason, /--read-only is forbidden/);
-  } finally {
-    fs.rmSync(temp, { recursive: true, force: true });
-  }
-});
-
-test("PreToolUse(Bash) honors cwd sandbox enforcement opt-out over workspace config", () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-sandbox-precedence-"));
-  try {
-    const workspace = path.join(temp, "workspace");
-    const child = path.join(workspace, "child");
-    fs.mkdirSync(child, { recursive: true });
-    spawnSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
-    fs.writeFileSync(path.join(workspace, "config.yaml"), "codex_bridge:\n  sandbox_enforce: true\n");
-    fs.writeFileSync(path.join(child, "config.yaml"), "codex_bridge:\n  sandbox_enforce: false\n");
-
-    assert.deepEqual(runHook('codex-bridge task --read-only "audit"', {}, child), {
-      continue: true,
-    });
-  } finally {
-    fs.rmSync(temp, { recursive: true, force: true });
-  }
+test("PreToolUse(Bash) rewrite suggestion does not corrupt task-bearing paths", () => {
+  const output = runHook('node /opt/task-runner/codex-bridge.mjs task --write "edit"');
+  assert.equal(isDenied(output), true);
+  assert.match(
+    output.hookSpecificOutput.additionalContext,
+    /\/opt\/task-runner\/codex-bridge\.mjs task --worktree-auto --write/,
+  );
+  assert.doesNotMatch(
+    output.hookSpecificOutput.additionalContext,
+    /task --worktree-auto-runner/,
+  );
 });
 
 test("PreToolUse(Bash) denies read-only bridge tasks when sandbox enforcement is enabled", () => {

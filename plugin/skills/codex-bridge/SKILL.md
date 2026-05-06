@@ -25,6 +25,11 @@ Tasks are read-only unless the command explicitly opts into writes or config
 sets a wider sandbox. For file-changing work, use `--write`; for bridge-managed
 isolation, pair it with `--worktree-auto`.
 
+When using `--worktree-auto`, prompts and brief text must name repo-relative
+paths (`src/file.ts`), not absolute paths inside the launch checkout. Absolute
+checkout paths still point at the main workspace, so the bridge rejects them
+before creating the task worktree.
+
 Sandbox enforcement is opt-in for users who pin a sandbox policy and do not
 want orchestrators to silently downgrade it with `--read-only`:
 

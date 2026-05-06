@@ -9,7 +9,7 @@
 export const COMMANDS = Object.freeze({
   task: {
     synopsis: "task [--group <name>] [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree; prompts must use repo-relative paths, not absolute paths inside the launch checkout. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',

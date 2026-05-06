@@ -1118,6 +1118,88 @@ export function requireTaskRequest(prompt, resumeLast) {
   }
 }
 
+const ABSOLUTE_PATH_PATTERN = /\/[^\s'"`<>]+/g;
+
+function normalizeAbsolutePathCandidate(raw) {
+  let value = String(raw ?? "");
+  while (/[),.;:\]]$/.test(value)) value = value.slice(0, -1);
+  value = value.replace(/:\d+(?::\d+)?$/, "");
+  return path.normalize(value);
+}
+
+function uniquePathRoots(paths) {
+  const roots = [];
+  for (const input of paths) {
+    if (!input || !path.isAbsolute(input)) continue;
+    const normalized = path.resolve(input);
+    roots.push(normalized);
+    try {
+      const real = fs.realpathSync.native(normalized);
+      if (real !== normalized) roots.push(real);
+    } catch {
+      // Best effort; a missing alias should not disable validation.
+    }
+  }
+  return [...new Set(roots)];
+}
+
+function pathIsInsideRoot(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function collectSpaceRootCandidates(promptText, roots) {
+  const text = String(promptText ?? "");
+  const candidates = [];
+  for (const root of roots) {
+    if (!/\s/.test(root)) continue;
+    let start = text.indexOf(root);
+    while (start !== -1) {
+      const next = text[start + root.length];
+      if (!next || next === path.sep || /[\s),.;:\]]/.test(next)) {
+        let end = start + root.length;
+        while (end < text.length && !/[\s'"`<>]/.test(text[end])) end += 1;
+        candidates.push(text.slice(start, end));
+      }
+      start = text.indexOf(root, start + 1);
+    }
+  }
+  return candidates;
+}
+
+export function findWorktreePromptAbsolutePathConflicts(promptText, workspaceRoot, aliases = []) {
+  if (!promptText || !workspaceRoot) return [];
+  const roots = uniquePathRoots([workspaceRoot, ...aliases]);
+  if (roots.length === 0) return [];
+
+  const conflicts = new Set();
+  const candidates = [
+    ...String(promptText).matchAll(ABSOLUTE_PATH_PATTERN),
+    ...collectSpaceRootCandidates(promptText, roots),
+  ];
+  for (const raw of candidates) {
+    const candidate = normalizeAbsolutePathCandidate(Array.isArray(raw) ? raw[0] : raw);
+    if (!path.isAbsolute(candidate)) continue;
+    if (roots.some((root) => pathIsInsideRoot(candidate, root))) {
+      conflicts.add(candidate);
+    }
+  }
+  return [...conflicts].sort();
+}
+
+export function formatWorktreePromptAbsolutePathConflict(conflicts, workspaceRoot) {
+  const listed = conflicts.map((entry) => `- ${entry}`).join("\n");
+  return [
+    "task --worktree-auto prompt contains absolute paths inside the launch workspace.",
+    "",
+    `Launch workspace: ${workspaceRoot}`,
+    "Conflicting paths:",
+    listed,
+    "",
+    "Use repo-relative paths in the prompt so the worker resolves files inside the isolated task worktree.",
+  ].join("\n");
+}
+
 // Parse a positive-milliseconds CLI flag. Returns null when unset (so callers
 // fall through to config → built-in default). Throws `usage` (exit 2) on a
 // malformed value rather than silently ignoring it, so users notice typos
