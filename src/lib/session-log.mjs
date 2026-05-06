@@ -4,6 +4,15 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
+export const NDJSON_EVENT_SCHEMA_VERSION = "1.0";
+export const NDJSON_EVENT_FIELDS = Object.freeze([
+  "schema_version",
+  "ts",
+  "tag",
+  "method",
+  "threadId",
+  "data",
+]);
 
 export function resolveSessionDir(configDir, baseDir = process.cwd()) {
   const configured = configDir ?? "~/.codex-bridge/sessions";
@@ -68,9 +77,10 @@ export function readNdjson(sessionOrPath, { maxEntries = null } = {}) {
   const selected = Number.isInteger(maxEntries) && maxEntries > 0 ? lines.slice(-maxEntries) : lines;
   return selected.map((line, index) => {
     try {
-      return JSON.parse(line);
+      return canonicalizeNdjsonEvent(JSON.parse(line));
     } catch (error) {
       return {
+        schema_version: NDJSON_EVENT_SCHEMA_VERSION,
         ts: null,
         tag: "CORRUPT_NDJSON_LINE",
         method: null,
@@ -97,19 +107,41 @@ export function readEvents(sessionOrPath, { maxBlocks = null } = {}) {
 }
 
 export function logNdjson(session, tag, method, data) {
-  const entry = {
+  const entry = buildNdjsonEvent({
     ts: new Date().toISOString(),
     tag,
-    method: method ?? null,
+    method,
     threadId: session.threadId,
-    data: data ?? {},
-  };
+    data,
+  });
   try {
     fs.appendFileSync(session.ndjsonPath, redactText(JSON.stringify(entry), session) + "\n");
   } catch {
     // Logging failure must not kill the task
   }
 }
+
+export function buildNdjsonEvent({ ts, tag, method = null, threadId = null, data = {} }) {
+  return {
+    schema_version: NDJSON_EVENT_SCHEMA_VERSION,
+    ts,
+    tag,
+    method: method ?? null,
+    threadId,
+    data: data ?? {},
+  };
+}
+
+function canonicalizeNdjsonEvent(entry) {
+  return buildNdjsonEvent({
+    ts: entry?.ts ?? null,
+    tag: entry?.tag ?? null,
+    method: entry?.method ?? null,
+    threadId: entry?.threadId ?? null,
+    data: entry?.data ?? {},
+  });
+}
+
 
 export function logEvent(session, formattedBlock) {
   try {

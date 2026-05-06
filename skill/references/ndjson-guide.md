@@ -6,6 +6,14 @@
 
 NDJSON captures a curated slice of the run — **not every wire-level notification.** Per-item deltas (`item/agentMessage/delta`, `item/reasoning/*Delta`, etc.) and the bare `thread/started` / `turn/started` events are not persisted. Finalized `item/completed` events **are** persisted (as `ITEM_COMPLETED`), with a truncated `text` field sufficient for transcript replay. NDJSON is for retrospective queries on turn outcomes, per-item completions, questions, pipeline stages, steers, and errors.
 
+Each line uses the canonical event shape:
+
+```json
+{"schema_version":"1.0","ts":"2026-05-06T00:00:00.000Z","tag":"DONE","method":"turn/completed","threadId":"...","data":{}}
+```
+
+Readers should treat `data` as tag-specific and forward-compatible. The shared top-level fields are stable: `schema_version`, `ts`, `tag`, `method`, `threadId`, and `data`.
+
 ## Persisted tags
 
 | Tag | When | Typical `data` fields | Writer |

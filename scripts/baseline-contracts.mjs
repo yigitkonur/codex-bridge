@@ -145,6 +145,16 @@ const JSON_ENVELOPE_PROBES = Object.freeze([
   }
 ]);
 
+const NDJSON_EVENT_SCHEMA = Object.freeze({
+  version_export: "NDJSON_EVENT_SCHEMA_VERSION",
+  version: "1.0",
+  fields_export: "NDJSON_EVENT_FIELDS",
+  fields: ["schema_version", "ts", "tag", "method", "threadId", "data"],
+  writer: "src/lib/session-log.mjs::logNdjson",
+  reader: "src/lib/session-log.mjs::readNdjson",
+  test: "test/session-log.test.mjs"
+});
+
 const COMMAND_COVERAGE = Object.freeze({
   setup: {
     mutation: "project stop-review-gate lock and persisted setup state when enable/disable flags are used",
@@ -465,6 +475,7 @@ export function buildBaselineContracts(rootDir = process.cwd()) {
     },
     generated_surfaces: GENERATED_SURFACES,
     json_envelope_probes: JSON_ENVELOPE_PROBES,
+    ndjson_event_schema: NDJSON_EVENT_SCHEMA,
     mutating_command_coverage: COMMAND_COVERAGE,
     read_only_commands: READ_ONLY_COMMANDS,
     dispatch_commands: dispatchCommands,
@@ -479,6 +490,7 @@ export function buildBaselineContracts(rootDir = process.cwd()) {
       mutating_commands: Object.keys(COMMAND_COVERAGE).length,
       read_only_commands: READ_ONLY_COMMANDS.length,
       json_probe_targets: JSON_ENVELOPE_PROBES.length,
+      ndjson_event_fields: NDJSON_EVENT_SCHEMA.fields.length,
       generated_surface_sources: GENERATED_SURFACES.length
     }
   };
@@ -550,6 +562,8 @@ export function verifyBaselineContracts(rootDir = process.cwd(), report = buildB
       }
       if (!pathExists(rootDir, probe.test)) failures.push(`JSON probe references missing test file: ${probe.test}`);
     }
+
+    failures.push(...verifyNdjsonEventSchema(rootDir, report.ndjson_event_schema));
   } finally {
     if (expectedBundleRoot) {
       fs.rmSync(expectedBundleRoot, { recursive: true, force: true });
@@ -560,6 +574,47 @@ export function verifyBaselineContracts(rootDir = process.cwd(), report = buildB
     ok: failures.length === 0,
     failures
   };
+}
+
+function verifyNdjsonEventSchema(rootDir, schema) {
+  const failures = [];
+  if (!schema || typeof schema !== "object") {
+    return ["missing ndjson_event_schema contract"];
+  }
+  if (schema.version !== "1.0") failures.push("ndjson_event_schema.version must be 1.0");
+  if (!Array.isArray(schema.fields) || schema.fields.length === 0) {
+    failures.push("ndjson_event_schema.fields must be non-empty");
+  } else {
+    const expectedFields = ["schema_version", "ts", "tag", "method", "threadId", "data"];
+    if (JSON.stringify(schema.fields) !== JSON.stringify(expectedFields)) {
+      failures.push(`ndjson_event_schema.fields must be ${expectedFields.join(",")}`);
+    }
+  }
+  if (!schema.test?.startsWith("test/") || !schema.test.endsWith(".test.mjs")) {
+    failures.push("ndjson_event_schema.test must reference a test file");
+  } else if (!pathExists(rootDir, schema.test)) {
+    failures.push(`ndjson_event_schema references missing test file: ${schema.test}`);
+  }
+
+  const sessionLog = readText(rootDir, "src/lib/session-log.mjs");
+  if (!sessionLog.includes(`export const ${schema.version_export} = "${schema.version}"`)) {
+    failures.push("session-log does not export the canonical NDJSON schema version");
+  }
+  if (!sessionLog.includes(`export const ${schema.fields_export} = Object.freeze([`)) {
+    failures.push("session-log does not export the canonical NDJSON field list");
+  }
+  for (const field of schema.fields ?? []) {
+    if (!sessionLog.includes(`"${field}"`)) {
+      failures.push(`session-log canonical NDJSON fields missing ${field}`);
+    }
+  }
+  if (!sessionLog.includes("buildNdjsonEvent({")) {
+    failures.push("logNdjson must write through buildNdjsonEvent");
+  }
+  if (!sessionLog.includes("canonicalizeNdjsonEvent(JSON.parse(line))")) {
+    failures.push("readNdjson must canonicalize parsed events");
+  }
+  return failures;
 }
 
 function printUsage() {

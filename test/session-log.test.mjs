@@ -16,6 +16,8 @@ import {
   initSession,
   logEvent,
   logNdjson,
+  NDJSON_EVENT_FIELDS,
+  NDJSON_EVENT_SCHEMA_VERSION,
   readEvents,
   readNdjson,
   resolveSessionDir,
@@ -181,7 +183,10 @@ test("session replay helpers read append-only ndjson/events and preserve corrupt
 
   const ndjson = readNdjson(replaySession);
   assert.equal(ndjson.length, 3);
+  assert.deepEqual(Object.keys(ndjson[0]), NDJSON_EVENT_FIELDS);
+  assert.equal(ndjson[0].schema_version, NDJSON_EVENT_SCHEMA_VERSION);
   assert.equal(ndjson[0].tag, "TURN_PARAMS");
+  assert.equal(ndjson[1].schema_version, NDJSON_EVENT_SCHEMA_VERSION);
   assert.equal(ndjson[1].tag, "CORRUPT_NDJSON_LINE");
   assert.match(ndjson[1].data.raw, /not json/);
   assert.equal(ndjson[2].tag, "DONE");
@@ -190,6 +195,24 @@ test("session replay helpers read append-only ndjson/events and preserve corrupt
   const events = readEvents(replaySession);
   assert.deepEqual(events, ["[PLAN] first\nbody", "[PIPELINE:review] start", "[DONE] second"]);
   assert.deepEqual(readEvents(replaySession, { maxBlocks: 1 }), ["[DONE] second"]);
+});
+
+test("logNdjson writes the canonical event schema", (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-ndjson-schema-"));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+
+  const runtimeSession = initSession(tempRoot, "thread-schema");
+  logNdjson(runtimeSession, "DONE", "turn/completed", { status: "completed" });
+
+  const [rawLine] = fs.readFileSync(runtimeSession.ndjsonPath, "utf8").trim().split("\n");
+  const event = JSON.parse(rawLine);
+  assert.deepEqual(Object.keys(event), NDJSON_EVENT_FIELDS);
+  assert.equal(event.schema_version, NDJSON_EVENT_SCHEMA_VERSION);
+  assert.match(event.ts, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(event.tag, "DONE");
+  assert.equal(event.method, "turn/completed");
+  assert.equal(event.threadId, "thread-schema");
+  assert.deepEqual(event.data, { status: "completed" });
 });
 
 test("PLAN is a terminal event tag for wait/follow consumers", () => {
