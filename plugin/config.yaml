@@ -92,8 +92,8 @@ codex_bridge:
   # idle_timeout_ms: 300000       # No-event watchdog — max gap between app-server notifications (5 min)
   # turn_plan_ms: 1800000         # Per-turn ceiling for plan turns (30 min)
   # turn_default_ms: 1800000      # Per-turn ceiling for execute turns (30 min)
-  # pipeline_stage_ms: 300000     # Auto-pipeline per-stage cap — review / fix / check (5 min)
-  # pipeline_total_ms: 900000     # Auto-pipeline total cap across all stages (15 min)
+  # pipeline_stage_ms: 720000     # Auto-pipeline per-stage cap — review / fix / check (12 min)
+  # pipeline_total_ms: 1800000    # Auto-pipeline total cap across all stages (30 min)
   # question_answer_ms: 300000    # requestUserInput wait before rejecting unanswered request (5 min)
 
   # Cleanup/redaction controls. Cleanup only runs when explicitly requested

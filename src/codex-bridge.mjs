@@ -3814,7 +3814,7 @@ async function runBridgeTask(request) {
       const nextAction = pipelineErrored
         ? {
             command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
-            description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`,
+            description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, rerun with a larger --pipeline-stage-timeout-ms / --pipeline-total-timeout-ms budget.`,
           }
         : {
             command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,

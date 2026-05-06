@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   captureGitDiff,
   formatDoneEvent,
+  formatErrorEvent,
   formatHeartbeatEvent,
   formatPlanEvent,
   formatQuestionEvent,
@@ -83,6 +84,24 @@ test("event action commands preserve originating cwd", () => {
     }),
     /events --cwd '\/tmp\/project with spaces' job-1 --follow/
   );
+});
+
+test("pipeline timeout error actions surface timeout relaunch budget", () => {
+  const event = formatErrorEvent(session, {
+    errorCode: "ClientTimeout",
+    message: "auto-review exceeded 12m",
+    phase: "pipeline (completed: diff)",
+    origin: "pipeline:diff",
+    failingStage: "review",
+    scriptPath: "/bridge/codex-bridge.mjs",
+    jobId: "job-1",
+    cwd: "/tmp/project",
+  });
+
+  assert.match(event, /inspect:\s+node '\/bridge\/codex-bridge\.mjs' result --cwd '\/tmp\/project' job-1/);
+  assert.match(event, /rerun-review:\s+node '\/bridge\/codex-bridge\.mjs' review --cwd '\/tmp\/project' --scope working-tree/);
+  assert.match(event, /extend-timeout:\s+node '\/bridge\/codex-bridge\.mjs' task --cwd '\/tmp\/project' --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000 "<same prompt>"/);
+  assert.match(event, /see: skill\/references\/error-recovery\.md#pipeline-stage-timeout/);
 });
 
 test("session aliases map task ids to thread artifact paths", () => {

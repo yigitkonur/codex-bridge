@@ -33,8 +33,8 @@ All four layers are honored. Before 1.1.0, only the skill config layer was read 
 | `idle_timeout_ms` | integer | `300000` | No-event idle watchdog: max wall-clock gap between app-server notifications before a turn is failed with `ClientTimeout`. CLI override: `--idle-timeout-ms`. |
 | `turn_plan_ms` | integer | `1800000` | Per-turn timeout for plan turns. Raised to 30 min in 1.3.0 — matches `turn_default_ms`; pre-1.3.0 the plan budget was 5 min (300 000 ms) and routinely killed live plans mid-reasoning. CLI override: `--turn-plan-ms` (task) / `--turn-timeout-ms` (send when `--mode plan`). |
 | `turn_default_ms` | integer | `1800000` | Per-turn timeout for execute turns (also covers send turns in default mode). Raised to 30 min in 1.3.0 — pre-1.3.0 was 600 000 ms (10 min), and interrupted multi-file ports that were still actively writing. CLI override: `--turn-default-ms` (task) / `--turn-timeout-ms` (send). |
-| `pipeline_stage_ms` | integer | `300000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
-| `pipeline_total_ms` | integer | `900000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
+| `pipeline_stage_ms` | integer | `720000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
+| `pipeline_total_ms` | integer | `1800000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
 | `question_answer_ms` | integer | `300000` | How long `requestUserInput` waits for a response before logging `QUESTION_TIMEOUT` and replying to the upstream server request with `result: { answers: {} }` (an empty-answer success response, not a rejection — see `src/codex-bridge.mjs:2197`). CLI override: `--question-timeout-ms`. |
 | `default_backend` | string | `"codex"` fallback | Backend selected when no `--backend`, `CODEX_BRIDGE_BACKEND`, task metadata backend, or matching `adapter_routing` entry is set. In this build only `codex` is implemented. |
 | `adapter_routing` | object | unset | Optional map of subagent type to `{ backend }`. Routing entries from all config layers are checked before any `default_backend` layer; cwd routing wins over workspace routing, which wins over skill config routing. |
@@ -161,11 +161,11 @@ codex_bridge:
 ```yaml
 codex_bridge:
   turn_default_ms: 1800000       # 30 min per execute turn
-  pipeline_stage_ms: 600000      # 10 min per review/fix/check stage
-  pipeline_total_ms: 1800000     # 30 min total pipeline cap
+  pipeline_stage_ms: 1200000     # 20 min per review/fix/check stage
+  pipeline_total_ms: 3600000     # 60 min total pipeline cap
 ```
 
-Use for multi-file bootstrap tasks (Xcode/SPM projects, large migrations). Per-invocation alternative: pass `--turn-default-ms 1800000 --pipeline-stage-timeout-ms 600000 --pipeline-total-timeout-ms 1800000` on `task` instead of editing the config.
+Use for multi-file bootstrap tasks (Xcode/SPM projects, large migrations). Per-invocation alternative: pass `--turn-default-ms 1800000 --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000` on `task` instead of editing the config.
 
 ### Human-in-the-loop questions (slow answering)
 ```yaml

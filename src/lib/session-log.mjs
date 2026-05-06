@@ -505,12 +505,14 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
 
   if (typeof origin === "string" && origin.startsWith("pipeline:")) {
     // Pipeline origin: the main task may still have succeeded; only the
-    // review/fix/check stage stalled. Guide the reader to inspect and rerun
-    // review rather than retry the whole task.
+    // review/fix/check stage stalled. Guide the reader to inspect, rerun the
+    // review from the current worktree, or relaunch with a wider pipeline
+    // budget when the same stage repeatedly times out.
     const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
     lines.push(
       `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
       `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
+      `    extend-timeout: ${commandPrefix(scriptPath, "task", cwd)} --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000 "<same prompt>"`,
       see("pipeline-stage-timeout"),
     );
     return lines;

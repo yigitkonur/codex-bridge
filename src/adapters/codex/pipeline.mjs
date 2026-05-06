@@ -20,11 +20,11 @@ import { readMeta } from "../../lib/registry.mjs";
 // Default budgets. Runtime callers may override via `stageTimeoutMs` /
 // `totalTimeoutMs` on runAutoPipeline options, which in turn resolve from
 // CLI flag → config.yaml → these defaults. Pre-1.2.5 both were constants
-// with no escape hatch; large diffs that legitimately needed >5 min review
+// with no escape hatch; large diffs that legitimately needed more review
 // time had no recourse short of editing the source. See config.mjs
 // DEFAULT_CONFIG `pipeline_stage_ms` / `pipeline_total_ms`.
-const PIPELINE_TIMEOUT_MS_DEFAULT = 900_000; // 15 minutes total
-const STAGE_TIMEOUT_MS_DEFAULT = 300_000;    // 5 minutes per stage
+const PIPELINE_TIMEOUT_MS_DEFAULT = 1_800_000; // 30 minutes total
+const STAGE_TIMEOUT_MS_DEFAULT = 720_000;      // 12 minutes per stage
 
 function loadExecuteInstructions(rootDir) {
   const p = path.join(rootDir, "templates", "execute-instructions.md");

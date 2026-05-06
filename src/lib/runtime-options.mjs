@@ -80,8 +80,12 @@ const DEFAULT_CONFIG = {
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
   // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
-  pipeline_stage_ms: 300_000,
-  pipeline_total_ms: 900_000,
+  // Raise the default stage budget from the old 5-minute floor to a
+  // 12-minute median-task budget; pipeline total follows at 30 minutes so
+  // review + fix + check can all complete without making runaway calls
+  // unbounded. Small tasks still finish as soon as their model calls return.
+  pipeline_stage_ms: 720_000,
+  pipeline_total_ms: 1_800_000,
   // How long `requestUserInput` waits for a human/orchestrator to answer
   // before rejecting the server request. Five minutes is tight for thoughtful
   // decisions; make it configurable so a slow loop can widen the window

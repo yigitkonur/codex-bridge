@@ -118,6 +118,7 @@ Everything below is owned by another canonical surface. Read those when you need
 - **Per-subcommand reference** — `node …/codex-bridge.mjs <sub> --help`. The `--json` envelope's `error.code`, `error.suggestion`, and `result.next_action.command` are also self-documenting.
 - **Event stream** — `events --help` shows the supported filters. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary.
 - **Config keys** — `config show --json` prints the merged config. Edit `~/.codex-bridge/config.yaml`, `<workspace>/config.yaml`, or the cwd `config.yaml`; the resolution order is documented there.
+- **Pipeline timeouts** — per-stage pipeline default is 12 min; for very large reviews use `task --pipeline-stage-timeout-ms <ms> --pipeline-total-timeout-ms <ms>`.
 - **Error decision tree** — `references/error-recovery.md` (decision tree by `error.code` + `origin`).
 - **Brief composition** — `references/brief-composition.md` (full schema + when to use which field).
 - **One canonical orchestration flow** — `references/orchestration-flows.md`.
