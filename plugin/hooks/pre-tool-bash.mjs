@@ -71,6 +71,40 @@ function isWorktreeOptOut() {
   return v === "1" || v === "true" || v === "yes";
 }
 
+function configTextEnforcesSandbox(text) {
+  if (!text) return null;
+  const flat = text.match(/^\s*(?:sandbox_enforce|enforce_sandbox)\s*:\s*(true|false)\s*(?:#.*)?$/m);
+  if (flat) return flat[1] === "true";
+  const sandboxBlock = text.match(/^\s*sandbox\s*:\s*(?:#.*)?\n((?:\s{2,}[^\n]*\n?)*)/m);
+  const nested = sandboxBlock?.[1]?.match(/^\s+enforce\s*:\s*(true|false)\s*(?:#.*)?$/m);
+  return nested ? nested[1] === "true" : null;
+}
+
+function fileEnforcesSandbox(file) {
+  try {
+    return configTextEnforcesSandbox(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function sandboxEnforced(cwd) {
+  const base = cwd ? path.resolve(cwd) : process.cwd();
+  const workspaceRoot = findGitRepoRoot(base);
+  const candidates = [
+    path.join(workspaceRoot, "config.yaml"),
+    path.join(workspaceRoot, ".claude", "codex-bridge.local.md"),
+    path.join(base, "config.yaml"),
+    path.join(base, ".claude", "codex-bridge.local.md"),
+  ];
+  let enforced = false;
+  for (const file of [...new Set(candidates)]) {
+    const value = fileEnforcesSandbox(file);
+    if (value !== null) enforced = value;
+  }
+  return enforced;
+}
+
 function readStdinJson() {
   const raw = fs.readFileSync(0, "utf8");
   if (!raw.trim()) return {};
@@ -424,21 +458,28 @@ function classifyCommand(input) {
   const isWrite = booleanFlagEnabled(tokens, taskIndex, "--write");
   const isReadOnly = booleanFlagEnabled(tokens, taskIndex, "--read-only");
   const worktreeAutoValue = booleanFlagValue(tokens, taskIndex, "--worktree-auto");
+  const cwd = resolveInvocationCwd(input, tokens, taskIndex);
 
   if (isWrite && isReadOnly) {
     return { decision: "conflict" };
   }
+  if (isReadOnly && sandboxEnforced(cwd)) {
+    return { decision: "sandbox-read-only-denied" };
+  }
   if (!isWrite) {
     return { decision: "pass-through" };
   }
-  const effectiveWorktreeAuto =
-    worktreeAutoValue === true ||
-    (worktreeAutoValue !== false && !isWorktreeOptOut());
-  if (!effectiveWorktreeAuto) {
-    return { decision: "manual-permission" };
+  // Worktree isolation is required for write tasks. Accept only when the
+  // flag is explicitly enabled (--worktree-auto or --worktree-auto=true).
+  // When the env opt-out is active, fall back to Claude's normal Bash
+  // permission flow (manual-permission). Otherwise deny with a suggestion.
+  if (worktreeAutoValue !== true) {
+    if (isWorktreeOptOut()) {
+      return { decision: "manual-permission" };
+    }
+    return { decision: "worktree-required", command };
   }
 
-  const cwd = resolveInvocationCwd(input, tokens, taskIndex);
   const workspaceRoot = findGitRepoRoot(cwd);
   const promptText = collectPromptText(tokens, taskIndex, cwd);
   const conflicts = findWorkspaceAbsolutePathConflicts(promptText, workspaceRoot, [cwd]);
@@ -448,6 +489,25 @@ function classifyCommand(input) {
   return { decision: "pass-through" };
 }
 
+function buildRewriteSuggestion(command) {
+  const m = BRIDGE_TASK_PATTERN.exec(command);
+  if (!m) return command;
+  const insertAt = m.index + m[0].length;
+  return `${command.slice(0, insertAt)} --worktree-auto${command.slice(insertAt)}`;
+}
+
+function denyWorktreeRequired(command) {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason:
+        "codex-bridge task --write requires worktree isolation. Add --worktree-auto to run in an isolated worktree.",
+      additionalContext: buildRewriteSuggestion(command),
+    },
+  };
+}
+
 function denyConflict() {
   return {
     hookSpecificOutput: {
@@ -455,6 +515,19 @@ function denyConflict() {
       permissionDecision: "deny",
       permissionDecisionReason:
         "codex-bridge task: --write and --read-only are mutually exclusive. Choose one and re-run.",
+    },
+  };
+}
+
+function denySandboxReadOnly() {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason:
+        "sandbox.enforce: true (workspace policy). --read-only is forbidden. Re-run with --write or omit the flag.",
+      additionalContext:
+        "To opt out, set codex_bridge.sandbox_enforce: false in config.yaml or remove sandbox.enforce: true from .claude/codex-bridge.local.md.",
     },
   };
 }
@@ -515,8 +588,18 @@ function main() {
     return;
   }
 
+  if (classification.decision === "worktree-required") {
+    process.stdout.write(JSON.stringify(denyWorktreeRequired(classification.command)));
+    return;
+  }
+
   if (classification.decision === "conflict") {
     process.stdout.write(JSON.stringify(denyConflict()));
+    return;
+  }
+
+  if (classification.decision === "sandbox-read-only-denied") {
+    process.stdout.write(JSON.stringify(denySandboxReadOnly()));
     return;
   }
 
