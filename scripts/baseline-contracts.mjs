@@ -216,6 +216,12 @@ const COMMAND_COVERAGE = Object.freeze({
     failure_tests: ["test/state.test.mjs"],
     baseline_gap: null
   },
+  doctor: {
+    mutation: "state file, orphan worktree directories, and subagent branches only when --clean is requested",
+    success_tests: ["test/doctor-command.test.mjs"],
+    failure_tests: ["test/doctor-command.test.mjs"],
+    baseline_gap: null
+  },
   cancel: {
     mutation: "job state transitions to cancelled and process termination is attempted",
     success_tests: ["test/job-control.test.mjs"],

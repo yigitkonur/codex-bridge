@@ -291,6 +291,7 @@ const expectedCommands = [
   "await-artifact.md",
   "cancel.md",
   "config.md",
+  "doctor.md",
   "events.md",
   "fan-out.md",
   "iterate.md",
