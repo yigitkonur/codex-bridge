@@ -21,7 +21,7 @@ Plan-mode vs execute-mode changes what Codex expects:
 
 | Mode | Codex expects | Tuning |
 |---|---|---|
-| `--mode plan` (default) | Analyze, ask questions, produce a `[PLAN]` — no file writes | `effort: "xhigh"` forced; sandbox per `sandbox_policy` (ships as `"danger-full-access"` — plan mode is a reasoning constraint, not a sandbox one); `turn_plan_ms` = 30 min default |
+| `--mode plan` (default) | Analyze, ask questions, produce a `[PLAN]` — no file writes | `effort: "xhigh"` by default, explicit `--effort` wins; sandbox per `sandbox_policy` (ships as `"danger-full-access"` — plan mode is a reasoning constraint, not a sandbox one); `turn_plan_ms` = 30 min default |
 | `--mode default` | Execute directly; produce a diff; may still ask questions via `requestUserInput` | `effort` from `config.effort` (shipped default `xhigh`) or `--effort`; sandbox per `sandbox_policy`; `turn_default_ms` = 30 min default |
 
 ## Every Prompt Should Answer
