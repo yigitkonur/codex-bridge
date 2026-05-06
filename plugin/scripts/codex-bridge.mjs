@@ -5085,6 +5085,78 @@ function formatDriftWarnEvent(session, { driftedFiles, driftRatio, promptScope, 
   lines.push("  note: Codex is touching files outside the inferred prompt scope. Review or cancel to contain scope.");
   return lines.join("\n");
 }
+var WORKER_STDERR_TAIL_BYTES = 500;
+function classifyStderr(content) {
+  const text = String(content ?? "");
+  if (!text) return "unknown";
+  if (/RateLimit|429\b/.test(text)) return "rate_limit";
+  if (/ENETUNREACH|ETIMEDOUT|ECONNRESET|EHOSTUNREACH|ECONNREFUSED/.test(text)) return "network";
+  if (/EACCES|permission denied/i.test(text)) return "permission";
+  if (/segmentation fault|SIGSEGV|SIGBUS|SIGABRT/i.test(text)) return "crash";
+  if (/Unable to find|No such file|MODULE_NOT_FOUND|command not found/i.test(text)) return "missing_dependency";
+  return "unknown";
+}
+function readWorkerErrTail(filePath, bytes = WORKER_STDERR_TAIL_BYTES) {
+  if (!filePath) {
+    return { tail: "", truncated: false, totalBytes: 0 };
+  }
+  let stat;
+  try {
+    stat = fs7.statSync(filePath);
+  } catch {
+    return { tail: "", truncated: false, totalBytes: 0 };
+  }
+  const totalBytes = stat.size;
+  if (totalBytes === 0) {
+    return { tail: "", truncated: false, totalBytes: 0 };
+  }
+  const limit = Math.max(1, Math.floor(bytes));
+  const truncated = totalBytes > limit;
+  const start = truncated ? totalBytes - limit : 0;
+  let buffer;
+  let fd = -1;
+  try {
+    fd = fs7.openSync(filePath, "r");
+    buffer = Buffer.alloc(totalBytes - start);
+    fs7.readSync(fd, buffer, 0, buffer.length, start);
+  } catch {
+    return { tail: "", truncated: false, totalBytes };
+  } finally {
+    if (fd >= 0) {
+      try {
+        fs7.closeSync(fd);
+      } catch {
+      }
+    }
+  }
+  const tail = buffer.toString("utf8");
+  return { tail, truncated, totalBytes };
+}
+function formatWorkerStderrEvent(session, {
+  path: workerErrPath,
+  sizeBytes,
+  deltaBytes = null,
+  tail = "",
+  truncated = false,
+  errorClassHint = "unknown"
+}) {
+  const lines = [
+    `[WORKER_STDERR] ${session.threadId} | size=${sizeBytes} bytes${Number.isFinite(deltaBytes) && deltaBytes > 0 ? ` | delta=${deltaBytes} bytes` : ""} | class=${errorClassHint}`
+  ];
+  if (workerErrPath) {
+    lines.push(`  path: ${workerErrPath}`);
+  }
+  if (truncated) {
+    lines.push(`  [truncated: showing last ${tail.length} of ${sizeBytes} bytes]`);
+  }
+  if (tail) {
+    lines.push("  tail:");
+    for (const line of tail.split(/\r?\n/)) {
+      lines.push(`    ${line}`);
+    }
+  }
+  return lines.join("\n");
+}
 
 // src/lib/job-control.mjs
 import fs9 from "node:fs";
@@ -8897,6 +8969,22 @@ async function cancel(_jobId, options = {}) {
     reason: result.detail ?? null
   };
 }
+function buildWorkerErrSummary(job, storedJob) {
+  const logFile = job?.logFile ?? storedJob?.logFile ?? null;
+  if (!logFile) return null;
+  const workerErrPath = `${logFile}.worker.err`;
+  const tailInfo = readWorkerErrTail(workerErrPath, WORKER_STDERR_TAIL_BYTES);
+  if (!tailInfo || tailInfo.totalBytes === 0) {
+    return null;
+  }
+  return {
+    path: workerErrPath,
+    size_bytes: tailInfo.totalBytes,
+    tail: tailInfo.tail,
+    truncated: Boolean(tailInfo.truncated),
+    error_class_hint: classifyStderr(tailInfo.tail)
+  };
+}
 async function getResult(jobId, options = {}) {
   const normalized = normalizeAdapterOptions(options);
   const cwd = normalized.cwd ?? process8.cwd();
@@ -8910,6 +8998,7 @@ async function getResult(jobId, options = {}) {
   const consistent = !eventState.found || workerTerminalTag === null || workerTerminalTag === terminalTag;
   const phase = eventState.found ? phaseForTerminalTag(terminalTag, storedJob?.result?.phase ?? job.phase ?? storedJob?.phase ?? job.status ?? "error") : job.phase ?? storedJob?.phase ?? job.status ?? "error";
   const exitCode = exitCodeForTerminalTag(terminalTag, workerExitCode);
+  const workerErr = buildWorkerErrSummary(job, storedJob);
   return {
     jobId: job.id,
     threadId: job.threadId ?? storedJob?.threadId ?? null,
@@ -8924,6 +9013,7 @@ async function getResult(jobId, options = {}) {
     eventTerminalLine: eventState.line ?? null,
     summary: job.summary ?? storedJob?.summary ?? null,
     artifacts: storedJob?.result?.artifacts ?? {},
+    workerErr,
     raw: { job, storedJob }
   };
 }
@@ -14693,6 +14783,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       heartbeatState.turnTimeoutMs = info.turnParams?.turnTimeoutMs ?? heartbeatState.turnTimeoutMs;
       startHeartbeat();
       startCheckpoint();
+      startWorkerErrWatcher();
       const s = heartbeatState.session;
       breakerState.recent.length = 0;
       breakerState.tripped = false;
@@ -15116,6 +15207,93 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       checkpointTimer = null;
     }
   };
+  const WORKER_STDERR_POLL_MS = 5e3;
+  const WORKER_STDERR_EMIT_MIN_INTERVAL_MS = 3e4;
+  const workerErrPath = request.logFile ? `${request.logFile}.worker.err` : null;
+  let workerErrTimer = null;
+  const workerErrState = {
+    lastSize: 0,
+    lastEmitAt: 0,
+    pendingDelta: 0
+  };
+  if (workerErrPath) {
+    try {
+      const stat = fs19.statSync(workerErrPath);
+      workerErrState.lastSize = stat.size;
+    } catch {
+      workerErrState.lastSize = 0;
+    }
+  }
+  const tickWorkerErr = (force = false) => {
+    if (!workerErrPath || !heartbeatState.session) return;
+    let stat;
+    try {
+      stat = fs19.statSync(workerErrPath);
+    } catch {
+      return;
+    }
+    const currentSize = stat.size;
+    if (currentSize > workerErrState.lastSize) {
+      workerErrState.pendingDelta += currentSize - workerErrState.lastSize;
+      workerErrState.lastSize = currentSize;
+    }
+    if (workerErrState.pendingDelta <= 0) return;
+    const now = Date.now();
+    const sinceLastEmit = now - workerErrState.lastEmitAt;
+    if (!force && sinceLastEmit < WORKER_STDERR_EMIT_MIN_INTERVAL_MS) {
+      return;
+    }
+    let tailInfo;
+    try {
+      tailInfo = readWorkerErrTail(workerErrPath, WORKER_STDERR_TAIL_BYTES);
+    } catch {
+      return;
+    }
+    const errorClassHint = classifyStderr(tailInfo.tail);
+    try {
+      logEvent(
+        heartbeatState.session,
+        formatWorkerStderrEvent(heartbeatState.session, {
+          path: workerErrPath,
+          sizeBytes: tailInfo.totalBytes,
+          deltaBytes: workerErrState.pendingDelta,
+          tail: tailInfo.tail,
+          truncated: tailInfo.truncated,
+          errorClassHint
+        })
+      );
+      logNdjson(heartbeatState.session, "WORKER_STDERR", null, {
+        path: workerErrPath,
+        sizeBytes: tailInfo.totalBytes,
+        deltaBytes: workerErrState.pendingDelta,
+        truncated: tailInfo.truncated,
+        errorClassHint
+      });
+    } catch {
+    }
+    workerErrState.lastEmitAt = now;
+    workerErrState.pendingDelta = 0;
+  };
+  const startWorkerErrWatcher = () => {
+    if (workerErrTimer || !workerErrPath) return;
+    workerErrTimer = setInterval(() => {
+      try {
+        tickWorkerErr(false);
+      } catch {
+      }
+    }, WORKER_STDERR_POLL_MS);
+    workerErrTimer.unref?.();
+  };
+  const stopWorkerErrWatcher = () => {
+    if (workerErrTimer) {
+      clearInterval(workerErrTimer);
+      workerErrTimer = null;
+    }
+    try {
+      tickWorkerErr(true);
+    } catch {
+    }
+  };
   let result;
   let session;
   const turnStartSnapshot = captureGitSnapshot(request.cwd);
@@ -15458,6 +15636,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   } finally {
     stopHeartbeat();
     stopCheckpoint();
+    stopWorkerErrWatcher();
     const backstopSession = heartbeatState.session ?? session ?? null;
     if (!terminalEmitted && backstopSession && backstopSession.eventsPath) {
       try {

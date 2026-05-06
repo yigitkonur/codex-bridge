@@ -1123,3 +1123,100 @@ export function formatDriftWarnEvent(session, { driftedFiles, driftRatio, prompt
   lines.push("  note: Codex is touching files outside the inferred prompt scope. Review or cancel to contain scope.");
   return lines.join("\n");
 }
+
+// Tail size for [WORKER_STDERR] events and `result.workerErr.tail`. The full
+// file is always reachable via the `path` field; the tail is a triage hint.
+// 500 bytes lines up with the F-44 spec — long enough to read the typical
+// stack-trace tail, short enough to keep .events blocks bounded.
+export const WORKER_STDERR_TAIL_BYTES = 500;
+
+// Pattern-match common error classes from worker.err content. Cheap regex
+// pass over the tail; misses are surfaced as "unknown" so the orchestrator
+// reads the tail itself instead of trusting a wrong hint. Order matters:
+// rate-limit ("RateLimit / 429") is checked before the generic network
+// pattern because a 429 *is* over the network but the specific class is
+// more actionable.
+export function classifyStderr(content) {
+  const text = String(content ?? "");
+  if (!text) return "unknown";
+  if (/RateLimit|429\b/.test(text)) return "rate_limit";
+  if (/ENETUNREACH|ETIMEDOUT|ECONNRESET|EHOSTUNREACH|ECONNREFUSED/.test(text)) return "network";
+  if (/EACCES|permission denied/i.test(text)) return "permission";
+  if (/segmentation fault|SIGSEGV|SIGBUS|SIGABRT/i.test(text)) return "crash";
+  if (/Unable to find|No such file|MODULE_NOT_FOUND|command not found/i.test(text)) return "missing_dependency";
+  return "unknown";
+}
+
+// Read the last `bytes` of a file. Returns `{ tail, truncated, totalBytes }`.
+// Truncated reads carry a `[truncated: showing last N of M bytes]` marker so
+// a reader who only sees the tail knows there is more upstream.
+export function readWorkerErrTail(filePath, bytes = WORKER_STDERR_TAIL_BYTES) {
+  if (!filePath) {
+    return { tail: "", truncated: false, totalBytes: 0 };
+  }
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return { tail: "", truncated: false, totalBytes: 0 };
+  }
+  const totalBytes = stat.size;
+  if (totalBytes === 0) {
+    return { tail: "", truncated: false, totalBytes: 0 };
+  }
+  const limit = Math.max(1, Math.floor(bytes));
+  const truncated = totalBytes > limit;
+  const start = truncated ? totalBytes - limit : 0;
+  let buffer;
+  let fd = -1;
+  try {
+    fd = fs.openSync(filePath, "r");
+    buffer = Buffer.alloc(totalBytes - start);
+    fs.readSync(fd, buffer, 0, buffer.length, start);
+  } catch {
+    return { tail: "", truncated: false, totalBytes };
+  } finally {
+    if (fd >= 0) {
+      try { fs.closeSync(fd); } catch { /* noop */ }
+    }
+  }
+  const tail = buffer.toString("utf8");
+  return { tail, truncated, totalBytes };
+}
+
+// v2.3.0 — emitted when the detached worker writes to its `.log.worker.err`
+// stderr sidecar (see `spawnDetachedTaskWorker`). Worker stderr captures
+// network errors, rate-limit replies, codex-CLI parser failures, sandbox
+// denials, and process-level crashes — but the file is two directories
+// deep; without a tagged event in `.events` an orchestrator reading the
+// stream sees only a generic terminal tag and has to dig manually. The
+// block carries a 500-byte tail and a heuristic `error_class_hint` so
+// first-pass triage stays in-stream. Non-terminal — pairs with whatever
+// terminal tag (DONE / ERROR / INCOMPLETE / PLAN) the turn ends with.
+export function formatWorkerStderrEvent(session, {
+  path: workerErrPath,
+  sizeBytes,
+  deltaBytes = null,
+  tail = "",
+  truncated = false,
+  errorClassHint = "unknown",
+}) {
+  const lines = [
+    `[WORKER_STDERR] ${session.threadId} | size=${sizeBytes} bytes${
+      Number.isFinite(deltaBytes) && deltaBytes > 0 ? ` | delta=${deltaBytes} bytes` : ""
+    } | class=${errorClassHint}`,
+  ];
+  if (workerErrPath) {
+    lines.push(`  path: ${workerErrPath}`);
+  }
+  if (truncated) {
+    lines.push(`  [truncated: showing last ${tail.length} of ${sizeBytes} bytes]`);
+  }
+  if (tail) {
+    lines.push("  tail:");
+    for (const line of tail.split(/\r?\n/)) {
+      lines.push(`    ${line}`);
+    }
+  }
+  return lines.join("\n");
+}

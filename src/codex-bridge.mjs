@@ -160,6 +160,10 @@ import {
   formatNeedsAttentionEvent,
   formatArtifactEvent,
   formatDriftWarnEvent,
+  formatWorkerStderrEvent,
+  classifyStderr,
+  readWorkerErrTail,
+  WORKER_STDERR_TAIL_BYTES,
   TERMINAL_TAGS,
   TERMINAL_TAG_REGEX,
   DEFAULT_MONITOR_EXCLUDE,
@@ -3285,6 +3289,7 @@ async function runBridgeTask(request) {
       heartbeatState.turnTimeoutMs = info.turnParams?.turnTimeoutMs ?? heartbeatState.turnTimeoutMs;
       startHeartbeat();
       startCheckpoint();
+      startWorkerErrWatcher();
       // Reuse the session the heartbeat wiring just resolved — one
       // findSession/initSession call per turn, not two, so we don't re-init
       // the session file + ndjson stream under the heartbeat's nose.
@@ -3908,6 +3913,122 @@ async function runBridgeTask(request) {
     }
   };
 
+  // [WORKER_STDERR] watcher — Task 20 / F-44.
+  //
+  // The detached background worker dup's its stderr fd into
+  // `<logFile>.worker.err` (see `spawnDetachedTaskWorker`). Pre-Task-20 that
+  // file was visible only to an operator who already knew its path; a
+  // network error, rate-limit reply, codex-CLI parser failure, sandbox
+  // denial, or crash trace would write there silently while events
+  // upstream emitted only a generic `[ERROR]`. This watcher polls the
+  // file from inside `runBridgeTask` (the worker IS the bridge process,
+  // so it can self-tail its own stderr sidecar) and emits a tagged
+  // `[WORKER_STDERR]` block with a 500-byte tail and a heuristic class
+  // hint so first-pass triage stays in-stream.
+  //
+  // Polling rather than `fs.watch`: poll-based is portable across Linux
+  // / macOS / network filesystems, and the cost is one stat per 5 s. The
+  // emit itself is throttled to at most one block every 30 s with delta
+  // aggregation — large stderr volumes flood `.events` otherwise.
+  const WORKER_STDERR_POLL_MS = 5_000;
+  const WORKER_STDERR_EMIT_MIN_INTERVAL_MS = 30_000;
+  const workerErrPath = request.logFile ? `${request.logFile}.worker.err` : null;
+  let workerErrTimer = null;
+  const workerErrState = {
+    lastSize: 0,
+    lastEmitAt: 0,
+    pendingDelta: 0,
+  };
+  // Best-effort initial size capture so a *delta* is what we report.
+  // Pre-existing stderr from a previous run on the same job id (rare —
+  // log paths include the job id, but a re-run via `task-resume-candidate`
+  // re-uses the path) shouldn't be re-emitted as fresh worker noise.
+  if (workerErrPath) {
+    try {
+      const stat = fs.statSync(workerErrPath);
+      workerErrState.lastSize = stat.size;
+    } catch {
+      workerErrState.lastSize = 0;
+    }
+  }
+
+  const tickWorkerErr = (force = false) => {
+    if (!workerErrPath || !heartbeatState.session) return;
+    let stat;
+    try {
+      stat = fs.statSync(workerErrPath);
+    } catch {
+      return;
+    }
+    const currentSize = stat.size;
+    if (currentSize > workerErrState.lastSize) {
+      workerErrState.pendingDelta += currentSize - workerErrState.lastSize;
+      workerErrState.lastSize = currentSize;
+    }
+    // Nothing to emit. The throttle case relies on pendingDelta > 0 from a
+    // previous tick; force-drain on stop must still emit those queued bytes.
+    if (workerErrState.pendingDelta <= 0) return;
+    const now = Date.now();
+    const sinceLastEmit = now - workerErrState.lastEmitAt;
+    if (!force && sinceLastEmit < WORKER_STDERR_EMIT_MIN_INTERVAL_MS) {
+      return;
+    }
+    let tailInfo;
+    try {
+      tailInfo = readWorkerErrTail(workerErrPath, WORKER_STDERR_TAIL_BYTES);
+    } catch {
+      return;
+    }
+    const errorClassHint = classifyStderr(tailInfo.tail);
+    try {
+      logEvent(
+        heartbeatState.session,
+        formatWorkerStderrEvent(heartbeatState.session, {
+          path: workerErrPath,
+          sizeBytes: tailInfo.totalBytes,
+          deltaBytes: workerErrState.pendingDelta,
+          tail: tailInfo.tail,
+          truncated: tailInfo.truncated,
+          errorClassHint,
+        })
+      );
+      logNdjson(heartbeatState.session, "WORKER_STDERR", null, {
+        path: workerErrPath,
+        sizeBytes: tailInfo.totalBytes,
+        deltaBytes: workerErrState.pendingDelta,
+        truncated: tailInfo.truncated,
+        errorClassHint,
+      });
+    } catch {
+      // Logging failure must never kill the worker.
+    }
+    workerErrState.lastEmitAt = now;
+    workerErrState.pendingDelta = 0;
+  };
+
+  const startWorkerErrWatcher = () => {
+    if (workerErrTimer || !workerErrPath) return;
+    workerErrTimer = setInterval(() => {
+      try {
+        tickWorkerErr(false);
+      } catch {
+        // Interval failures must not kill the turn.
+      }
+    }, WORKER_STDERR_POLL_MS);
+    workerErrTimer.unref?.();
+  };
+  const stopWorkerErrWatcher = () => {
+    if (workerErrTimer) {
+      clearInterval(workerErrTimer);
+      workerErrTimer = null;
+    }
+    // One last drain so late stderr writes (race between the worker
+    // emitting a final stack trace and the lifecycle finally) still land
+    // in `.events` instead of staying invisible on disk. `force=true`
+    // bypasses the 30-s throttle for this last emit.
+    try { tickWorkerErr(true); } catch { /* finally must not throw */ }
+  };
+
   let result;
   let session;
   // v1.5.0 — snapshot HEAD before the turn so the terminal-failure path can
@@ -4382,6 +4503,12 @@ async function runBridgeTask(request) {
     //      lands on the missing branch instead of another patch round.
     stopHeartbeat();
     stopCheckpoint();
+    // Drain any late worker stderr (network errors, codex CLI parser failures,
+    // sandbox denials, crash traces). The bypass-throttle force-tick fires
+    // once here so a stack trace written milliseconds before the worker
+    // exits still lands as a `[WORKER_STDERR]` block instead of staying
+    // invisible on disk.
+    stopWorkerErrWatcher();
     // Backstop uses the in-process `terminalEmitted` flag instead of
     // reading the events file — O(1) vs potentially several MB of heartbeat
     // + checkpoint history on long runs. Every terminal-tag write site
