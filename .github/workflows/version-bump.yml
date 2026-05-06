@@ -10,6 +10,13 @@ name: version-bump
 # `vX.Y.Z` tag + pushes both. The tag push is what fans into release.yml to
 # package and attach the release artifacts.
 #
+# Race handling: when N PRs merge within seconds, GitHub Actions queues N
+# workflow runs. Each must produce a DISTINCT patch increment (one per merge).
+# The bump+push step is wrapped in a fetch-rebase-retry loop: on push failure
+# we re-fetch origin/main, re-read the now-current version, recompute the
+# next, and retry. This converts a "non-fast-forward" race into "next bump on
+# top of whatever just landed."
+#
 # Cascade caveat: GitHub does NOT trigger downstream workflows for tags pushed
 # with the default GITHUB_TOKEN. To get the release pipeline to fire
 # automatically on each bump, set repo secret RELEASE_PAT to a personal access
@@ -26,14 +33,16 @@ permissions:
 
 concurrency:
   # Serialize bumps so two near-simultaneous merges produce two distinct
-  # patch versions instead of racing on the same one.
+  # patch versions instead of racing on the same one. The retry loop below is
+  # belt-and-braces — it covers the window where Actions has scheduled two
+  # runs before the first finishes pushing.
   group: version-bump
   cancel-in-progress: false
 
 jobs:
   bump:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 6
     # Skip the bot's own bump commits and explicit "[skip ci]" / chore(release)
     # commits so we don't loop.
     if: >-
@@ -53,29 +62,79 @@ jobs:
         with:
           node-version: 22
 
-      - name: bump version
-        id: bump
-        run: node scripts/bump-version.mjs
-
       - name: configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: commit version bump
+      - name: bump, commit, tag, push (with rebase-on-race retry)
+        id: bump
         run: |
-          git add package.json .claude-plugin/plugin.json plugin/.claude-plugin/plugin.json skill/SKILL.md plugin/skills/codex-bridge/SKILL.md
-          git commit -m "chore(release): bump v${{ steps.bump.outputs.previous }} → v${{ steps.bump.outputs.next }} [skip ci]"
+          set -euo pipefail
+          MAX_ATTEMPTS=8
+          attempt=1
+          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+            echo "::group::attempt $attempt"
 
-      - name: tag release
-        run: git tag "v${{ steps.bump.outputs.next }}"
+            # Reset to a clean tip-of-main and recompute the bump from the
+            # NOW-CURRENT version, not the version that was current when the
+            # workflow was scheduled. Crucial when multiple workflows race.
+            git fetch origin main --tags --quiet
+            git reset --hard origin/main
 
-      - name: push commit and tag
-        run: |
-          git push origin HEAD:main
-          git push origin "v${{ steps.bump.outputs.next }}"
+            node scripts/bump-version.mjs
+
+            # capture previous/next from the script's GITHUB_OUTPUT writes —
+            # they're appended each iteration, so read the LAST occurrence.
+            PREVIOUS=$(grep '^previous=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+            NEXT=$(grep '^next=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+            echo "computed: $PREVIOUS → $NEXT"
+
+            # If the tag we want to create already exists upstream, the prior
+            # workflow run beat us to this slot — fetch and retry to land on
+            # the next slot.
+            if git ls-remote --tags --exit-code origin "v${NEXT}" >/dev/null 2>&1; then
+              echo "v${NEXT} already exists upstream — racing, retrying"
+              attempt=$((attempt + 1))
+              # Drop any partial work; next iter resets to fresh main.
+              git restore --staged --worktree -- . 2>/dev/null || true
+              echo "::endgroup::"
+              sleep 2
+              continue
+            fi
+
+            git add \
+              package.json \
+              .claude-plugin/plugin.json \
+              plugin/.claude-plugin/plugin.json \
+              skill/SKILL.md \
+              plugin/skills/codex-bridge/SKILL.md
+            git commit -m "chore(release): bump v${PREVIOUS} → v${NEXT} [skip ci]"
+            git tag "v${NEXT}"
+
+            if git push origin HEAD:main && git push origin "v${NEXT}"; then
+              echo "::endgroup::"
+              {
+                echo "previous=${PREVIOUS}"
+                echo "next=${NEXT}"
+              } >> "$GITHUB_OUTPUT"
+              echo "::notice::version bumped: v${PREVIOUS} → v${NEXT}"
+              exit 0
+            fi
+
+            echo "push failed (race) — discarding local commit and retrying"
+            git tag -d "v${NEXT}" 2>/dev/null || true
+            git reset --hard "origin/main"
+            echo "::endgroup::"
+            attempt=$((attempt + 1))
+            sleep 2
+          done
+
+          echo "::error::version-bump failed after $MAX_ATTEMPTS attempts; manual intervention required"
+          exit 1
 
       - name: summary
+        if: always() && steps.bump.outputs.next != ''
         run: |
           {
             echo "### Version bumped"
