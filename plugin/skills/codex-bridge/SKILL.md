@@ -134,7 +134,7 @@ Everything below is owned by another canonical surface. Read those when you need
 
 - **Per-subcommand reference** — `node …/codex-bridge.mjs <sub> --help`. The `--json` envelope's `error.code`, `error.suggestion`, and `result.next_action.command` are also self-documenting.
 - **Event stream** — `events --help` shows the supported filters. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary. v2.2.0 adds `[STALL_WARNING]` (early stall at 5 min), `[NEEDS_ATTENTION]` (alongside QUESTION/PLAN/ERROR for fan-out attention routing), `[ARTIFACT]` (new file created in worktree), and `[DRIFT_WARN]` (heuristic out-of-scope file detection).
-- **Config keys** — `config show --json` prints the merged config. Edit `~/.codex-bridge/config.yaml`, `<workspace>/config.yaml`, or the cwd `config.yaml`; the resolution order is documented there.
+- **Config keys** — `/codex-bridge:config show` prints the merged config with provenance; `/codex-bridge:config set <key>=<value>` writes a key to the workspace `.claude/codex-bridge.local.md`; `/codex-bridge:config explain <key>` describes a knob. After set/reset: restart Claude Code.
 - **Pipeline timeouts** — per-stage pipeline default is 12 min; for very large reviews use `task --pipeline-stage-timeout-ms <ms> --pipeline-total-timeout-ms <ms>`.
 - **Error decision tree** — `references/error-recovery.md` (decision tree by `error.code` + `origin`).
 - **Brief composition** — `references/brief-composition.md` (full schema + when to use which field).

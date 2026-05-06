@@ -1,7 +1,7 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
 import fs17 from "node:fs";
-import os8 from "node:os";
+import os7 from "node:os";
 import path15 from "node:path";
 import process10 from "node:process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -4274,15 +4274,6 @@ import path7 from "node:path";
 import os3 from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
-var NDJSON_EVENT_SCHEMA_VERSION = "1.0";
-var NDJSON_EVENT_FIELDS = Object.freeze([
-  "schema_version",
-  "ts",
-  "tag",
-  "method",
-  "threadId",
-  "data"
-]);
 function resolveSessionDir(configDir, baseDir = process.cwd()) {
   const configured = configDir ?? "~/.codex-bridge/sessions";
   const expanded = configured.replace(/^~/, os3.homedir());
@@ -4335,27 +4326,17 @@ function findSession(sessionDir, threadId) {
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
 function logNdjson(session, tag, method, data) {
-  const entry = buildNdjsonEvent({
+  const entry = {
     ts: (/* @__PURE__ */ new Date()).toISOString(),
     tag,
-    method,
+    method: method ?? null,
     threadId: session.threadId,
-    data
-  });
+    data: data ?? {}
+  };
   try {
     fs7.appendFileSync(session.ndjsonPath, redactText(JSON.stringify(entry), session) + "\n");
   } catch {
   }
-}
-function buildNdjsonEvent({ ts, tag, method = null, threadId = null, data = {} }) {
-  return {
-    schema_version: NDJSON_EVENT_SCHEMA_VERSION,
-    ts,
-    tag,
-    method: method ?? null,
-    threadId,
-    data: data ?? {}
-  };
 }
 function logEvent(session, formattedBlock) {
   try {
@@ -4667,7 +4648,6 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
       `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
-      `    extend-timeout: ${commandPrefix(scriptPath, "task", cwd)} --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000 "<same prompt>"`,
       see("pipeline-stage-timeout")
     );
     return lines;
@@ -4992,47 +4972,6 @@ function formatWarningEvent(session, { reason, family, threshold, sampleCommand,
   ];
   if (sampleCommand) lines.push(`  sample: ${sampleCommand.slice(0, 120)}`);
   lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
-  return lines.join("\n");
-}
-function formatStallWarningEvent(session, { durationMs, thresholdMs, remainingMs, lastMeaningfulAction = null }) {
-  const lines = [
-    `[STALL_WARNING] ${session.threadId} no progress for ${fmtSeconds(durationMs)} | terminal in ${fmtSeconds(remainingMs)}`,
-    `  threshold: ${fmtSeconds(thresholdMs)}`
-  ];
-  if (lastMeaningfulAction) lines.push(`  last_action: ${lastMeaningfulAction}`);
-  lines.push("  note: Codex is alive (heartbeats present) but no commands/file-changes/plans in this window.");
-  return lines.join("\n");
-}
-function formatNeedsAttentionEvent(session, { underlyingTag, threadId, summary = null, nextAction = null }) {
-  const lines = [
-    `[NEEDS_ATTENTION] ${threadId ?? session.threadId} | underlying=${underlyingTag}`
-  ];
-  if (summary) lines.push(`  summary: ${String(summary).slice(0, 200)}`);
-  if (nextAction) lines.push(`  next_action: ${String(nextAction).slice(0, 200)}`);
-  return lines.join("\n");
-}
-function formatArtifactEvent(session, { filePath, sizeBytes = null, threadId }) {
-  const lines = [
-    `[ARTIFACT] ${threadId ?? session.threadId} created ${filePath}`
-  ];
-  if (sizeBytes != null && Number.isFinite(sizeBytes)) lines.push(`  size_bytes: ${sizeBytes}`);
-  return lines.join("\n");
-}
-function formatDriftWarnEvent(session, { driftedFiles, driftRatio, promptScope, threadId }) {
-  const lines = [
-    `[DRIFT_WARN] ${threadId ?? session.threadId} | ${driftedFiles.length} out-of-scope files | ratio=${Math.round(driftRatio * 100)}%`
-  ];
-  if (promptScope && promptScope.length > 0) {
-    lines.push(`  prompt_scope: ${promptScope.slice(0, 5).join(", ")}${promptScope.length > 5 ? ` (+${promptScope.length - 5} more)` : ""}`);
-  }
-  if (driftedFiles.length > 0) {
-    lines.push("  drifted:");
-    for (const f of driftedFiles.slice(0, 10)) {
-      lines.push(`    - ${f}`);
-    }
-    if (driftedFiles.length > 10) lines.push(`    ... and ${driftedFiles.length - 10} more`);
-  }
-  lines.push("  note: Codex is touching files outside the inferred prompt scope. Review or cancel to contain scope.");
   return lines.join("\n");
 }
 
@@ -5571,7 +5510,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -8226,8 +8165,6 @@ var DEFAULT_CONFIG = {
   // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
   // sandbox`. See skill/references/config-reference.md for the full matrix.
   sandbox_policy: "danger-full-access",
-  sandbox_enforce: false,
-  forbid_codex_direct: true,
   // When true, prepend a strong orchestrator directive telling Codex to skip
   // any internal planning / ceremony / meta-skill chains it would normally
   // walk before execution (framework-agnostic — covers any skill that
@@ -8280,12 +8217,8 @@ var DEFAULT_CONFIG = {
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
   // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
-  // Raise the default stage budget from the old 5-minute floor to a
-  // 12-minute median-task budget; pipeline total follows at 30 minutes so
-  // review + fix + check can all complete without making runaway calls
-  // unbounded. Small tasks still finish as soon as their model calls return.
-  pipeline_stage_ms: 72e4,
-  pipeline_total_ms: 18e5,
+  pipeline_stage_ms: 3e5,
+  pipeline_total_ms: 9e5,
   // How long `requestUserInput` waits for a human/orchestrator to answer
   // before rejecting the server request. Five minutes is tight for thoughtful
   // decisions; make it configurable so a slow loop can widen the window
@@ -8294,13 +8227,6 @@ var DEFAULT_CONFIG = {
   artifact_retention_jobs: 50,
   artifact_retention_days: 30,
   redact_secrets: false,
-  // v2.2.0 — [STALL_WARNING] fires at this wall-clock gap of zero actionable
-  // progress. Default 5 min (one checkpoint interval). The terminal StallDetected
-  // fires after the full STALL_CHECKPOINT_THRESHOLD × checkpoint interval (15 min
-  // by default). Configurable so short-budget automation can widen or narrow the
-  // early-warning window. Set to 0 to disable [STALL_WARNING] (does not affect
-  // the terminal stall detector).
-  stall_warning_threshold_ms: 5 * 60 * 1e3,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function resolveEffort(config, options = {}) {
@@ -8367,8 +8293,6 @@ var CONFIG_SCHEMA = {
   allow_questions: { type: "boolean" },
   session_dir: { type: "string" },
   sandbox_policy: { type: "enum", values: ["danger-full-access", "workspace-write", "read-only"] },
-  sandbox_enforce: { type: "boolean" },
-  forbid_codex_direct: { type: "boolean" },
   skip_meta_skills: { type: "boolean" },
   command_failure_circuit_breaker: { type: "boolean" },
   idle_timeout_ms: { type: "positive-number" },
@@ -8382,12 +8306,63 @@ var CONFIG_SCHEMA = {
   redact_secrets: { type: "boolean" },
   prompt_footer: { type: "string" },
   default_backend: { type: "string" },
-  adapter_routing: { type: "object" },
-  stall_warning_threshold_ms: { type: "positive-number" }
+  adapter_routing: { type: "object" }
 };
 function isConfigValueValid(schema2, value) {
   return schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
 }
+function parseConfigValue(key, rawValue) {
+  const schema2 = CONFIG_SCHEMA[key];
+  if (!schema2) {
+    return { ok: false, error: `Unknown config key '${key}'.` };
+  }
+  if (schema2.type === "boolean") {
+    if (rawValue === "true" || rawValue === "1") return { ok: true, value: true };
+    if (rawValue === "false" || rawValue === "0") return { ok: true, value: false };
+    return { ok: false, error: `Invalid value for '${key}'; expected boolean (true/false).` };
+  }
+  if (schema2.type === "positive-number") {
+    const n = Number(rawValue);
+    if (!Number.isFinite(n) || n <= 0) {
+      return { ok: false, error: `Invalid value for '${key}'; expected a positive number.` };
+    }
+    return { ok: true, value: n };
+  }
+  if (schema2.type === "enum") {
+    if (!schema2.values.includes(rawValue)) {
+      return { ok: false, error: `Invalid value for '${key}'; expected one of: ${schema2.values.join(", ")}.` };
+    }
+    return { ok: true, value: rawValue };
+  }
+  if (schema2.type === "string") {
+    return { ok: true, value: rawValue };
+  }
+  return { ok: false, error: `Config key '${key}' has type 'object' and cannot be set via command line.` };
+}
+var CONFIG_KEY_DOCS = {
+  mode: "Execution mode: 'plan' (default) sends a planning turn first, then an execute turn. 'default' skips the plan turn and executes directly. Valid values: plan | default.",
+  model: "Codex model to use. Example: 'gpt-5.4'. Can be overridden per-invocation with --model.",
+  effort: "Reasoning effort for execute turns. Plan turns are always forced to 'xhigh'. Valid values: none | minimal | low | medium | high | xhigh.",
+  auto_review: "When true, runs a native code review after every successful execute turn (the auto-pipeline). Set to false to skip review and finish immediately. Boolean.",
+  post_task_prompt: "Prompt appended after the task prompt asking Codex to self-review its own work. Set to empty string to disable.",
+  allow_questions: "When true, Codex may ask clarifying questions mid-task (via item/tool/requestUserInput). Use 'respond <task-id>' to answer. Boolean.",
+  session_dir: "Directory where session artifacts (.events, .ndjson, .diff, .plan.md, .review.json) are stored. Defaults to ~/.codex-bridge/sessions.",
+  sandbox_policy: "Filesystem sandbox applied to Codex. 'danger-full-access' = no sandbox (default). 'workspace-write' = writes restricted to cwd. 'read-only' = no writes. Valid values: danger-full-access | workspace-write | read-only.",
+  skip_meta_skills: "When true, prepends a directive telling Codex to skip internal meta-skill planning scaffolding (docs/, plans/ etc). Reduces overhead for orchestrator-driven flows. Boolean.",
+  command_failure_circuit_breaker: "When true, monitors repeated same-family command failures (osascript, open -a, AppleScript, computer-use/*) and emits a [WARNING] event after 3 consecutive failures. Boolean.",
+  idle_timeout_ms: "Max milliseconds between app-server notifications before the turn is declared stuck (ClientTimeout). Default: 300000 (5 min). Positive number.",
+  turn_plan_ms: "Wall-clock ceiling per plan turn in milliseconds. Default: 1800000 (30 min). Positive number.",
+  turn_default_ms: "Wall-clock ceiling per execute turn in milliseconds. Default: 1800000 (30 min). Positive number.",
+  pipeline_stage_ms: "Per-stage timeout for the auto-pipeline (review, fix, check) in milliseconds. Default: 300000 (5 min). Positive number.",
+  pipeline_total_ms: "Total wall-clock budget for the entire auto-pipeline in milliseconds. Default: 900000 (15 min). Positive number.",
+  question_answer_ms: "How long to wait for a 'respond' answer to a Codex question before timing out. Default: 300000 (5 min). Positive number.",
+  artifact_retention_jobs: "Max number of terminal jobs to keep when running 'status --cleanup'. Positive number.",
+  artifact_retention_days: "Max age in days of terminal job artifacts to keep when running 'status --cleanup'. Positive number.",
+  redact_secrets: "When true, scrub likely-secret strings from persisted event and NDJSON text. Boolean.",
+  prompt_footer: "Text appended to every task prompt. Useful for project-wide instructions. String.",
+  default_backend: "Override the backend adapter. Normally auto-detected. String.",
+  adapter_routing: "Advanced: per-adapter routing rules. Object (cannot be set via config set; edit the file directly)."
+};
 function parseConfigFile(filePath, source) {
   if (!filePath || !fs10.existsSync(filePath)) {
     return { config: {}, diagnostics: [] };
@@ -8413,6 +8388,9 @@ function parseConfigFile(filePath, source) {
       }]
     };
   }
+}
+function readConfigFile(filePath) {
+  return parseConfigFile(filePath, "config").config;
 }
 function validateConfigLayer(layer, source, pathValue) {
   const diagnostics = [];
@@ -8504,6 +8482,14 @@ function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
 }
 function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
+}
+function resolveConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
+  const sources = resolveConfigSources(skillDir, overrideDir, workspaceRoot);
+  return {
+    skillConfig: sources.skillConfigExists ? readConfigFile(sources.skillConfigPath) : {},
+    workspaceConfig: sources.workspaceConfigExists ? readConfigFile(sources.workspaceConfigPath) : {},
+    cwdConfig: sources.overrideConfigExists ? readConfigFile(sources.overrideConfigPath) : {}
+  };
 }
 function validateConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).diagnostics;
@@ -9355,6 +9341,91 @@ function buildAdversarialReviewPrompt(rootDir, context, focusText, opusConcerns 
   );
 }
 
+// src/lib/local-config.mjs
+import fs14 from "node:fs";
+import path12 from "node:path";
+var LOCAL_CONFIG_RELATIVE_PATH = path12.join(".claude", "codex-bridge.local.md");
+var FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+var DEFAULT_BODY = [
+  "",
+  "# Codex Bridge \u2014 project-local configuration",
+  "",
+  "This file holds project-local overrides for the codex-bridge plugin.",
+  "Settings live in the YAML frontmatter at the top of the file. Edit the",
+  "frontmatter or use the `/codex-bridge:config` slash command. Markdown",
+  "below the closing `---` is preserved across edits and is yours to use",
+  "for notes.",
+  ""
+].join("\n");
+function resolveLocalConfigPath(workspaceRoot) {
+  if (!workspaceRoot || typeof workspaceRoot !== "string") {
+    throw new TypeError("resolveLocalConfigPath requires a workspaceRoot string");
+  }
+  return path12.join(workspaceRoot, LOCAL_CONFIG_RELATIVE_PATH);
+}
+function readLocalConfig(workspaceRoot) {
+  const filePath = resolveLocalConfigPath(workspaceRoot);
+  if (!fs14.existsSync(filePath)) {
+    return {
+      filePath,
+      exists: false,
+      frontmatter: {},
+      body: "",
+      parseError: null
+    };
+  }
+  const raw = fs14.readFileSync(filePath, "utf8");
+  const match = FRONTMATTER_REGEX.exec(raw);
+  if (!match) {
+    return {
+      filePath,
+      exists: true,
+      frontmatter: {},
+      body: raw,
+      parseError: null
+    };
+  }
+  const [, frontmatterRaw, body] = match;
+  let frontmatter = {};
+  let parseError = null;
+  try {
+    const parsed = jsYaml.load(frontmatterRaw) ?? {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      frontmatter = parsed;
+    } else {
+      parseError = "frontmatter must be a YAML mapping (key: value pairs)";
+    }
+  } catch (error) {
+    parseError = error?.message ?? String(error);
+  }
+  return {
+    filePath,
+    exists: true,
+    frontmatter,
+    body: body ?? "",
+    parseError
+  };
+}
+function writeLocalConfig(workspaceRoot, frontmatter, body) {
+  const filePath = resolveLocalConfigPath(workspaceRoot);
+  fs14.mkdirSync(path12.dirname(filePath), { recursive: true });
+  const serialized = serializeLocalConfig(frontmatter, body);
+  fs14.writeFileSync(filePath, serialized, "utf8");
+  return filePath;
+}
+function serializeLocalConfig(frontmatter, body) {
+  const safeFrontmatter = frontmatter && typeof frontmatter === "object" && !Array.isArray(frontmatter) ? frontmatter : {};
+  const yamlText = Object.keys(safeFrontmatter).length === 0 ? "" : jsYaml.dump(safeFrontmatter, { lineWidth: 100, noRefs: true, sortKeys: false });
+  const normalizedBody = typeof body === "string" && body.length > 0 ? body : DEFAULT_BODY;
+  const bodyWithLeadingNewline = normalizedBody.startsWith("\n") ? normalizedBody : `
+${normalizedBody}`;
+  return `---
+${yamlText}---${bodyWithLeadingNewline}`;
+}
+function getDefaultLocalConfigBody() {
+  return DEFAULT_BODY;
+}
+
 // src/lib/render.mjs
 function severityRank(severity) {
   switch (severity) {
@@ -9564,18 +9635,10 @@ function renderSetupReport(report) {
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
-    `- monitor hook mirror: ${report.monitorHookInstalled ? "installed" : "not installed"} (${report.monitorHookSettingsPath ?? "n/a"})`,
-    `- sandbox enforcement: ${report.sandboxEnforcementInstalled ? "installed" : "not installed"} (${report.sandboxEnforcementSettingsPath ?? "n/a"})`,
     ""
   ];
   if (report.reviewGateSuppressionReason) {
     lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
-  }
-  if (report.monitorHookSettingsParseError) {
-    lines.push(`Monitor hook settings warning: ${report.monitorHookSettingsParseError}`, "");
-  }
-  if (report.sandboxEnforcementSettingsParseError) {
-    lines.push(`Sandbox enforcement settings warning: ${report.sandboxEnforcementSettingsParseError}`, "");
   }
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");
@@ -9841,8 +9904,8 @@ function renderCancelReport(job) {
 }
 
 // src/adapters/codex/pipeline.mjs
-import fs14 from "node:fs";
-import path12 from "node:path";
+import fs15 from "node:fs";
+import path13 from "node:path";
 
 // src/lib/review-result.mjs
 var REVIEW_RESULT_SCHEMA_VERSION = "1.0";
@@ -10122,12 +10185,12 @@ function reviewResultTypeError(message, field) {
 }
 
 // src/adapters/codex/pipeline.mjs
-var PIPELINE_TIMEOUT_MS_DEFAULT = 18e5;
-var STAGE_TIMEOUT_MS_DEFAULT = 72e4;
+var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;
+var STAGE_TIMEOUT_MS_DEFAULT = 3e5;
 function loadExecuteInstructions(rootDir) {
-  const p = path12.join(rootDir, "templates", "execute-instructions.md");
+  const p = path13.join(rootDir, "templates", "execute-instructions.md");
   try {
-    return fs14.readFileSync(p, "utf8");
+    return fs15.readFileSync(p, "utf8");
   } catch {
     return "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed.";
   }
@@ -10581,7 +10644,7 @@ function readCapturedDiffContent(diff) {
     return "";
   }
   try {
-    return fs14.readFileSync(diff.diffPath, "utf8");
+    return fs15.readFileSync(diff.diffPath, "utf8");
   } catch {
     return "";
   }
@@ -10716,8 +10779,8 @@ function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
 }
 
 // src/lib/update-check.mjs
-import fs15 from "node:fs";
-import path13 from "node:path";
+import fs16 from "node:fs";
+import path14 from "node:path";
 import os6 from "node:os";
 var DEFAULT_CACHE_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_FETCH_TIMEOUT_MS = 2500;
@@ -10726,12 +10789,12 @@ var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/relea
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
-  const root = pluginDataDir ? path13.join(pluginDataDir, "codex-bridge-update.json") : path13.join(os6.homedir(), ".codex-bridge", "update-cache.json");
+  const root = pluginDataDir ? path14.join(pluginDataDir, "codex-bridge-update.json") : path14.join(os6.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
   try {
-    const raw = fs15.readFileSync(cachePath(), "utf8");
+    const raw = fs16.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
     return parsed;
@@ -10742,8 +10805,8 @@ function readCache() {
 function writeCache(entry) {
   try {
     const p = cachePath();
-    fs15.mkdirSync(path13.dirname(p), { recursive: true });
-    fs15.writeFileSync(p, JSON.stringify(entry, null, 2));
+    fs16.mkdirSync(path14.dirname(p), { recursive: true });
+    fs16.writeFileSync(p, JSON.stringify(entry, null, 2));
     return true;
   } catch {
     return false;
@@ -10757,9 +10820,9 @@ function cacheLockPath() {
 }
 function removeStaleLock(lockPath, staleMs) {
   try {
-    const stat = fs15.statSync(lockPath);
+    const stat = fs16.statSync(lockPath);
     if (Date.now() - stat.mtimeMs <= staleMs) return false;
-    fs15.unlinkSync(lockPath);
+    fs16.unlinkSync(lockPath);
     return true;
   } catch (err) {
     return err?.code === "ENOENT";
@@ -10768,15 +10831,15 @@ function removeStaleLock(lockPath, staleMs) {
 function acquireCacheLock(staleMs) {
   const lockPath = cacheLockPath();
   try {
-    fs15.mkdirSync(path13.dirname(lockPath), { recursive: true });
+    fs16.mkdirSync(path14.dirname(lockPath), { recursive: true });
   } catch {
     return null;
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = fs15.openSync(lockPath, "wx");
+      const fd = fs16.openSync(lockPath, "wx");
       try {
-        fs15.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+        fs16.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
       } catch {
       }
       return { fd, lockPath };
@@ -10789,11 +10852,11 @@ function acquireCacheLock(staleMs) {
 }
 function releaseCacheLock(lock) {
   try {
-    fs15.closeSync(lock.fd);
+    fs16.closeSync(lock.fd);
   } catch {
   }
   try {
-    fs15.unlinkSync(lock.lockPath);
+    fs16.unlinkSync(lock.lockPath);
   } catch {
   }
 }
@@ -11254,125 +11317,6 @@ async function runIterateLoop(options = {}) {
   };
 }
 
-// src/lib/sandbox-enforcement.mjs
-import fs16 from "node:fs";
-import os7 from "node:os";
-import path14 from "node:path";
-var SANDBOX_ENFORCEMENT_MARKER_KEY = "_codex_bridge_sandbox_enforce";
-var SANDBOX_ENFORCEMENT_MARKER_VALUE = "codex-bridge";
-var SANDBOX_ENFORCEMENT_DENY_RULES = Object.freeze([
-  {
-    tool: "Bash",
-    matcher: { command: ".*codex-bridge(?:\\.mjs)?\\s+task\\b.*--read-only" },
-    reason: "sandbox.enforce: true (workspace policy) - --read-only forbidden",
-    [SANDBOX_ENFORCEMENT_MARKER_KEY]: SANDBOX_ENFORCEMENT_MARKER_VALUE
-  },
-  {
-    tool: "Bash",
-    matcher: {
-      command: ".*codex\\s+(?:exec\\s+)?.*(?:--sandbox(?:\\s+|=)|-s(?:\\s+|=))(?:read-only|workspace-write)"
-    },
-    reason: "Direct codex CLI sandbox downgrade forbidden",
-    [SANDBOX_ENFORCEMENT_MARKER_KEY]: SANDBOX_ENFORCEMENT_MARKER_VALUE
-  }
-]);
-function resolveClaudeSettingsPath() {
-  return path14.join(os7.homedir(), ".claude", "settings.json");
-}
-function readClaudeSettings(settingsPath = resolveClaudeSettingsPath()) {
-  if (!fs16.existsSync(settingsPath)) {
-    return { exists: false, settings: {}, parseError: null };
-  }
-  try {
-    const raw = fs16.readFileSync(settingsPath, "utf8");
-    const parsed = raw.trim() ? JSON.parse(raw) : {};
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {
-        exists: true,
-        settings: null,
-        parseError: "settings file must contain a JSON object"
-      };
-    }
-    return { exists: true, settings: parsed, parseError: null };
-  } catch (err) {
-    return {
-      exists: true,
-      settings: null,
-      parseError: err instanceof Error ? err.message : String(err)
-    };
-  }
-}
-function writeClaudeSettings(settingsPath, settings) {
-  fs16.mkdirSync(path14.dirname(settingsPath), { recursive: true });
-  const tmpPath = `${settingsPath}.tmp-${process.pid}-${Date.now()}`;
-  fs16.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
-`, "utf8");
-  fs16.renameSync(tmpPath, settingsPath);
-}
-function hasSandboxEnforcement(settings) {
-  const deny = settings?.permissions?.deny;
-  return Array.isArray(deny) && deny.filter(
-    (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] === SANDBOX_ENFORCEMENT_MARKER_VALUE
-  ).length === SANDBOX_ENFORCEMENT_DENY_RULES.length;
-}
-function getSandboxEnforcementStatus(settingsPath = resolveClaudeSettingsPath()) {
-  const read = readClaudeSettings(settingsPath);
-  return {
-    installed: read.settings ? hasSandboxEnforcement(read.settings) : false,
-    settingsPath,
-    settingsExists: read.exists,
-    settingsParseError: read.parseError,
-    markerKey: SANDBOX_ENFORCEMENT_MARKER_KEY
-  };
-}
-function assertSettingsShape(settingsPath, read, action) {
-  if (read.parseError) {
-    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: ${read.parseError}.`);
-  }
-  const settings = read.settings ?? {};
-  if (settings.permissions == null) settings.permissions = {};
-  if (!settings.permissions || typeof settings.permissions !== "object" || Array.isArray(settings.permissions)) {
-    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: permissions must be a JSON object.`);
-  }
-  if (settings.permissions.deny == null) settings.permissions.deny = [];
-  if (!Array.isArray(settings.permissions.deny)) {
-    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: permissions.deny must be an array.`);
-  }
-  return settings;
-}
-function installSandboxEnforcement(settingsPath = resolveClaudeSettingsPath()) {
-  const read = readClaudeSettings(settingsPath);
-  const settings = assertSettingsShape(settingsPath, read, "install");
-  const alreadyInstalled = hasSandboxEnforcement(settings);
-  if (!alreadyInstalled) {
-    settings.permissions.deny = settings.permissions.deny.filter(
-      (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] !== SANDBOX_ENFORCEMENT_MARKER_VALUE
-    );
-    settings.permissions.deny.push(...SANDBOX_ENFORCEMENT_DENY_RULES);
-    writeClaudeSettings(settingsPath, settings);
-  }
-  return {
-    alreadyInstalled,
-    status: getSandboxEnforcementStatus(settingsPath)
-  };
-}
-function uninstallSandboxEnforcement(settingsPath = resolveClaudeSettingsPath()) {
-  const read = readClaudeSettings(settingsPath);
-  const settings = assertSettingsShape(settingsPath, read, "uninstall");
-  const before = settings.permissions.deny.length;
-  settings.permissions.deny = settings.permissions.deny.filter(
-    (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] !== SANDBOX_ENFORCEMENT_MARKER_VALUE
-  );
-  const removed = before - settings.permissions.deny.length;
-  if (removed > 0 || !read.exists) {
-    writeClaudeSettings(settingsPath, settings);
-  }
-  return {
-    removed,
-    status: getSandboxEnforcementStatus(settingsPath)
-  };
-}
-
 // src/codex-bridge.mjs
 function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
   return {
@@ -11412,7 +11356,7 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path15.join(os8.homedir(), ".codex-bridge");
+    const logDir = path15.join(os7.homedir(), ".codex-bridge");
     fs17.mkdirSync(logDir, { recursive: true });
     const logFile = path15.join(logDir, "auto-update.log");
     try {
@@ -11628,17 +11572,6 @@ function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs
       cwd
     }));
     logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
-    try {
-      const firstQ = (params.questions ?? [])[0];
-      logEvent(session, formatNeedsAttentionEvent(session, {
-        underlyingTag: "QUESTION",
-        threadId,
-        summary: firstQ?.question ?? "Codex asked a question",
-        nextAction: `respond ${internalId} --question-id ${firstQ?.id ?? "q1"} --answer "<answer>"`
-      }));
-      logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "QUESTION", requestId: internalId });
-    } catch {
-    }
     const timeoutMs = questionAnswerMs ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : DEFAULT_CONFIG.question_answer_ms);
     return waitForResponse(sessionDir, threadId, timeoutMs, internalId).then((response) => {
       clearPendingRequest(sessionDir, threadId);
@@ -11892,9 +11825,20 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge update --json", "codex-bridge update --force"]
   },
   config: {
-    synopsis: "config show [--json]",
-    summary: "Show effective merged config + which files the values came from (defaults < skill-dir < workspace-root < cwd). Use when a config knob seems to have no effect.",
-    examples: ["codex-bridge config show", "codex-bridge config show --json"]
+    synopsis: "config <show|set|reset|explain|path|validate|template> [args] [--json]",
+    summary: "Conversational config editor. 'show' prints effective config with provenance; 'set key=value' writes to .claude/codex-bridge.local.md; 'reset [key]' restores defaults; 'explain key' describes a knob; 'path' prints the config file path; 'validate' schema-checks the workspace config; 'template' prints a blank config template. After set/reset: restart Claude Code (hooks load at session start).",
+    examples: [
+      "codex-bridge config show",
+      "codex-bridge config show --json",
+      "codex-bridge config set mode=default",
+      "codex-bridge config set idle_timeout_ms=600000",
+      "codex-bridge config reset mode",
+      "codex-bridge config reset",
+      "codex-bridge config explain mode",
+      "codex-bridge config path",
+      "codex-bridge config validate",
+      "codex-bridge config template"
+    ]
   },
   "auth-status": {
     synopsis: "auth-status [--json]",
@@ -12146,28 +12090,6 @@ function firstMeaningfulLine2(text, fallback) {
   const line = String(text ?? "").split(/\r?\n/).map((value) => value.trim()).find(Boolean);
   return line ?? fallback;
 }
-function installSandboxEnforcementForSetup() {
-  try {
-    return installSandboxEnforcement();
-  } catch (err) {
-    throw validationError(
-      err instanceof Error ? err.message : String(err),
-      "SANDBOX_ENFORCEMENT_INSTALL_FAILED",
-      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --enforce-sandbox."
-    );
-  }
-}
-function uninstallSandboxEnforcementForSetup() {
-  try {
-    return uninstallSandboxEnforcement();
-  } catch (err) {
-    throw validationError(
-      err instanceof Error ? err.message : String(err),
-      "SANDBOX_ENFORCEMENT_UNINSTALL_FAILED",
-      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --disable-sandbox-enforcement."
-    );
-  }
-}
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -12177,7 +12099,6 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
-  const sandboxEnforcement = getSandboxEnforcementStatus();
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -12192,11 +12113,6 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
   } else if (!reviewGate.enabled) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
-  }
-  if (sandboxEnforcement.settingsParseError) {
-    nextSteps.push(`Sandbox enforcement status could not read ${sandboxEnforcement.settingsPath}: ${sandboxEnforcement.settingsParseError}.`);
-  } else if (!sandboxEnforcement.installed) {
-    nextSteps.push("Optional: run `codex-bridge setup --enforce-sandbox` to deny sandbox downgrades at the Claude permission layer.");
   }
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
@@ -12216,10 +12132,6 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
     reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
     reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
-    sandboxEnforcementInstalled: sandboxEnforcement.installed,
-    sandboxEnforcementSettingsPath: sandboxEnforcement.settingsPath,
-    sandboxEnforcementSettingsExists: sandboxEnforcement.settingsExists,
-    sandboxEnforcementSettingsParseError: sandboxEnforcement.settingsParseError,
     actionsTaken,
     nextSteps
   };
@@ -12228,18 +12140,12 @@ async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "enforce-sandbox", "disable-sandbox-enforcement"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
   });
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw conflictError(
       "Choose either --enable-review-gate or --disable-review-gate.",
       "REVIEW_GATE_CONFLICT"
-    );
-  }
-  if (options["enforce-sandbox"] && options["disable-sandbox-enforcement"]) {
-    throw conflictError(
-      "Choose either --enforce-sandbox or --disable-sandbox-enforcement.",
-      "SANDBOX_ENFORCEMENT_CONFLICT"
     );
   }
   const cwd = resolveCommandCwd(options);
@@ -12272,17 +12178,6 @@ async function handleSetup(argv) {
         `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
       );
     }
-  }
-  if (options["enforce-sandbox"]) {
-    const result = installSandboxEnforcementForSetup();
-    actionsTaken.push(
-      result.alreadyInstalled ? `Sandbox enforcement deny rules already present in ${result.status.settingsPath}.` : `Installed sandbox enforcement deny rules in ${result.status.settingsPath}.`
-    );
-  } else if (options["disable-sandbox-enforcement"]) {
-    const result = uninstallSandboxEnforcementForSetup();
-    actionsTaken.push(
-      result.removed > 0 ? `Removed ${result.removed} sandbox enforcement deny rule${result.removed === 1 ? "" : "s"} from ${result.status.settingsPath}.` : `Sandbox enforcement deny rules were not present in ${result.status.settingsPath}.`
-    );
   }
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
@@ -12349,78 +12244,276 @@ async function handleVersion(argv) {
   ].join("\n") + "\n";
   emitSuccess("version", payload, rendered, { json: options.json, startedAt });
 }
-async function handleConfigShow(argv) {
+async function handleConfig(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "lenient"]
   });
   const action = positionals[0] ?? "show";
-  if (action !== "show") {
+  const SUPPORTED_ACTIONS = ["show", "set", "reset", "explain", "path", "validate", "template"];
+  if (!SUPPORTED_ACTIONS.includes(action)) {
     throw usageError(
-      `config: unknown action '${action}'. Supported: show.`
+      `config: unknown action '${action}'. Supported: ${SUPPORTED_ACTIONS.join(", ")}.`
     );
   }
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
-  const effective = getBridgeConfig(cwd, workspaceRoot);
-  const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
-  const overrides = {};
-  for (const [k, v] of Object.entries(effective)) {
-    if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
-      overrides[k] = v;
+  if (action === "show") {
+    const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
+    const effective = getBridgeConfig(cwd, workspaceRoot);
+    const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+    const layers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+    const provenance = {};
+    for (const k of Object.keys(effective)) {
+      if (Object.prototype.hasOwnProperty.call(layers.cwdConfig, k)) {
+        provenance[k] = "cwd config.yaml";
+      } else if (Object.prototype.hasOwnProperty.call(layers.workspaceConfig, k)) {
+        provenance[k] = "workspace-root config.yaml";
+      } else if (Object.prototype.hasOwnProperty.call(layers.skillConfig, k)) {
+        provenance[k] = "skill-dir config.yaml";
+      } else {
+        provenance[k] = "plugin defaults";
+      }
     }
-  }
-  const payload = {
-    sources: {
-      defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
-      skill_config_path: sources.skillConfigPath,
-      skill_config_exists: sources.skillConfigExists,
-      workspace_config_path: sources.workspaceConfigPath,
-      workspace_config_exists: sources.workspaceConfigExists,
-      override_config_path: sources.overrideConfigPath,
-      override_config_exists: sources.overrideConfigExists
-    },
-    effective_config: effective,
-    overrides_vs_defaults: overrides,
-    diagnostics,
-    warnings: diagnostics.filter((d) => d.severity === "warning"),
-    errors: diagnostics.filter((d) => d.severity === "error"),
-    precedence_order_low_to_high: [
-      "DEFAULT_CONFIG",
-      "skill-dir config.yaml",
-      "workspace-root config.yaml",
-      "cwd config.yaml"
-    ]
-  };
-  const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
-  const lines = [
-    "Config resolution (lowest \u2192 highest precedence):",
-    `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
-    `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
-    `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
-    `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
-    "",
-    "Effective config:"
-  ];
-  for (const [k, v] of Object.entries(effective)) {
-    const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
-    const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
-    lines.push(`  ${marker} ${k}: ${preview}`);
-  }
-  if (Object.keys(overrides).length > 0) {
-    lines.push("", "* = differs from DEFAULT_CONFIG");
-  }
-  if (diagnostics.length > 0) {
-    lines.push("", "Diagnostics:");
-    for (const diagnostic of diagnostics) {
-      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
+    const overrides = {};
+    for (const [k, v] of Object.entries(effective)) {
+      if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
+        overrides[k] = v;
+      }
     }
-  }
-  const rendered = `${lines.join("\n")}
+    const payload = {
+      sources: {
+        defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
+        skill_config_path: sources.skillConfigPath,
+        skill_config_exists: sources.skillConfigExists,
+        workspace_config_path: sources.workspaceConfigPath,
+        workspace_config_exists: sources.workspaceConfigExists,
+        override_config_path: sources.overrideConfigPath,
+        override_config_exists: sources.overrideConfigExists
+      },
+      effective_config: effective,
+      overrides_vs_defaults: overrides,
+      provenance,
+      diagnostics,
+      warnings: diagnostics.filter((d) => d.severity === "warning"),
+      errors: diagnostics.filter((d) => d.severity === "error"),
+      precedence_order_low_to_high: [
+        "DEFAULT_CONFIG",
+        "skill-dir config.yaml",
+        "workspace-root config.yaml",
+        "cwd config.yaml"
+      ]
+    };
+    const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
+    const lines = [
+      "Config resolution (lowest \u2192 highest precedence):",
+      `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
+      `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
+      `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
+      `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
+      "",
+      "Effective config:"
+    ];
+    const globPattern = positionals[1];
+    for (const [k, v] of Object.entries(effective)) {
+      if (globPattern && !k.includes(globPattern.replace(/\*/g, ""))) continue;
+      const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
+      const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
+      const src = provenance[k] ? `  # \u2190 ${provenance[k]}` : "";
+      lines.push(`  ${marker} ${k}: ${preview}${src}`);
+    }
+    if (Object.keys(overrides).length > 0) {
+      lines.push("", "* = differs from DEFAULT_CONFIG");
+    }
+    if (diagnostics.length > 0) {
+      lines.push("", "Diagnostics:");
+      for (const diagnostic of diagnostics) {
+        lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
+      }
+    }
+    const rendered = `${lines.join("\n")}
 `;
-  emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "path") {
+    const filePath = resolveLocalConfigPath(workspaceRoot);
+    const exists = fs17.existsSync(filePath);
+    const payload = { path: filePath, exists };
+    const rendered = `${filePath}${exists ? "" : " (does not exist yet)"}
+`;
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "template") {
+    const template = serializeLocalConfig({}, getDefaultLocalConfigBody());
+    const payload = { template };
+    emitSuccess("config", payload, template, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "explain") {
+    const key = positionals[1];
+    if (!key) {
+      throw usageError("config explain: missing key. Usage: config explain <key>");
+    }
+    const doc = CONFIG_KEY_DOCS[key];
+    if (!doc) {
+      throw usageError(
+        `config explain: unknown key '${key}'. Known keys: ${Object.keys(CONFIG_SCHEMA).join(", ")}.`
+      );
+    }
+    const payload = { key, doc, valid_values: CONFIG_SCHEMA[key] };
+    const rendered = `${key}:
+  ${doc}
+`;
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "validate") {
+    const local = readLocalConfig(workspaceRoot);
+    if (!local.exists) {
+      const payload2 = { valid: true, path: local.filePath, exists: false, diagnostics: [] };
+      const rendered2 = `No local config found at ${local.filePath} \u2014 nothing to validate.
+`;
+      emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
+      return;
+    }
+    if (local.parseError) {
+      const payload2 = {
+        valid: false,
+        path: local.filePath,
+        exists: true,
+        diagnostics: [{ severity: "error", code: "CONFIG_PARSE_ERROR", message: local.parseError }]
+      };
+      const rendered2 = `ERROR: Could not parse ${local.filePath}: ${local.parseError}
+`;
+      emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
+      return;
+    }
+    const diagnostics = [];
+    for (const [k, v] of Object.entries(local.frontmatter)) {
+      const schema2 = CONFIG_SCHEMA[k];
+      if (!schema2) {
+        diagnostics.push({
+          severity: "warning",
+          code: "CONFIG_UNKNOWN_KEY",
+          key: k,
+          message: `Unknown config key '${k}' \u2014 will be ignored by the bridge runtime.`
+        });
+        continue;
+      }
+      const valid2 = schema2.type === "boolean" ? typeof v === "boolean" : schema2.type === "positive-number" ? typeof v === "number" && v > 0 : schema2.type === "enum" ? typeof v === "string" && schema2.values.includes(v) : schema2.type === "string" ? typeof v === "string" : schema2.type === "object" ? v && typeof v === "object" && !Array.isArray(v) : true;
+      if (!valid2) {
+        const hint = schema2.type === "enum" ? `expected one of: ${schema2.values.join(", ")}` : `expected ${schema2.type}`;
+        diagnostics.push({
+          severity: "error",
+          code: "CONFIG_INVALID_VALUE",
+          key: k,
+          message: `Invalid value for '${k}' (${JSON.stringify(v)}); ${hint}.`
+        });
+      }
+    }
+    const valid = !diagnostics.some((d) => d.severity === "error");
+    const payload = { valid, path: local.filePath, exists: true, diagnostics };
+    let rendered;
+    if (diagnostics.length === 0) {
+      rendered = `OK \u2014 ${local.filePath} is valid.
+`;
+    } else {
+      const lines = [`${valid ? "WARNINGS" : "ERRORS"} in ${local.filePath}:`];
+      for (const d of diagnostics) {
+        lines.push(`  ${d.severity.toUpperCase()} ${d.code} ${d.key ?? ""} \u2014 ${d.message}`);
+      }
+      rendered = `${lines.join("\n")}
+`;
+    }
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "set") {
+    const assignment = positionals[1];
+    if (!assignment || !assignment.includes("=")) {
+      throw usageError(
+        "config set: expected <key>=<value>. Example: config set mode=default"
+      );
+    }
+    const eqIdx = assignment.indexOf("=");
+    const key = assignment.slice(0, eqIdx);
+    const rawValue = assignment.slice(eqIdx + 1);
+    if (!CONFIG_SCHEMA[key]) {
+      throw usageError(
+        `config set: unknown key '${key}'. Known keys: ${Object.keys(CONFIG_SCHEMA).join(", ")}.`
+      );
+    }
+    const parsed = parseConfigValue(key, rawValue);
+    if (!parsed.ok && !options.lenient) {
+      throw usageError(`config set: ${parsed.error}`);
+    }
+    const value = parsed.ok ? parsed.value : rawValue;
+    const local = readLocalConfig(workspaceRoot);
+    if (local.parseError) {
+      throw usageError(
+        `config set: cannot write \u2014 ${local.filePath} has a YAML parse error: ${local.parseError}`
+      );
+    }
+    const previousValue = local.frontmatter[key];
+    local.frontmatter[key] = value;
+    const writtenPath = writeLocalConfig(workspaceRoot, local.frontmatter, local.body);
+    const payload = {
+      key,
+      value,
+      previous_value: previousValue ?? null,
+      path: writtenPath,
+      requires_restart: true
+    };
+    const prevStr = previousValue !== void 0 ? JSON.stringify(previousValue) : "(unset)";
+    const rendered = [
+      `Set ${key} = ${JSON.stringify(value)} (was ${prevStr}).`,
+      `Wrote to: ${writtenPath}`,
+      `NOTE: Hooks load at session start \u2014 restart Claude Code to apply this change.`
+    ].join("\n") + "\n";
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "reset") {
+    const key = positionals[1];
+    const local = readLocalConfig(workspaceRoot);
+    if (local.parseError) {
+      throw usageError(
+        `config reset: cannot write \u2014 ${local.filePath} has a YAML parse error: ${local.parseError}`
+      );
+    }
+    let removed;
+    if (key) {
+      if (!Object.prototype.hasOwnProperty.call(local.frontmatter, key)) {
+        const payload2 = { key, removed: false, path: local.filePath };
+        const rendered2 = `Key '${key}' was not set in ${local.filePath} \u2014 nothing to reset.
+`;
+        emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
+        return;
+      }
+      removed = { [key]: local.frontmatter[key] };
+      delete local.frontmatter[key];
+    } else {
+      removed = { ...local.frontmatter };
+      local.frontmatter = {};
+    }
+    const writtenPath = writeLocalConfig(workspaceRoot, local.frontmatter, local.body);
+    const payload = {
+      key: key ?? null,
+      removed,
+      path: writtenPath,
+      requires_restart: true
+    };
+    const what = key ? `key '${key}'` : "all keys";
+    const rendered = [
+      `Reset ${what} in ${writtenPath}.`,
+      `NOTE: Hooks load at session start \u2014 restart Claude Code to apply this change.`
+    ].join("\n") + "\n";
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
 }
 async function handleUpdate(argv) {
   const startedAt = Date.now();
@@ -13736,32 +13829,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
-          try {
-            const changes = Array.isArray(item.changes) ? item.changes : [];
-            for (const change of changes) {
-              const kind = change?.kind ?? change?.change ?? change?.op ?? "";
-              if (kind === "create" || kind === "add" || kind === "added" || kind === "created") {
-                const filePath = change?.path ?? "";
-                if (filePath) {
-                  logEvent(s, formatArtifactEvent(s, {
-                    filePath,
-                    sizeBytes: null,
-                    threadId: effectiveThreadId
-                  }));
-                  logNdjson(s, "ARTIFACT", null, { filePath, kind, threadId: effectiveThreadId });
-                }
-              }
-            }
-          } catch {
-          }
-          try {
-            const changes = Array.isArray(item.changes) ? item.changes : [];
-            for (const change of changes) {
-              const touchedPath = change?.path ?? "";
-              if (touchedPath) driftState.touchedFiles.add(touchedPath);
-            }
-          } catch {
-          }
         } else if (itemType === "plan") {
           checkpointState.tools.push({
             type: "plan",
@@ -13822,8 +13889,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const HEARTBEAT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
   const CHECKPOINT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
   const STALL_CHECKPOINT_THRESHOLD = Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
-  const STALL_WARNING_THRESHOLD_MS = Number(process10.env.CODEX_BRIDGE_STALL_WARNING_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_WARNING_MS) : Number(config.stall_warning_threshold_ms) > 0 ? Number(config.stall_warning_threshold_ms) : DEFAULT_CONFIG.stall_warning_threshold_ms;
-  let stallWarnEmitted = false;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
@@ -13847,15 +13912,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     // consecutive checkpoints with actionableCount == 0
     seenFirstActionable: false
     // gate for barren-counter start (prevents false stall on slow-to-start turns)
-  };
-  const DRIFT_WARN_RATIO_THRESHOLD = 0.3;
-  const DRIFT_WARN_MIN_DRIFTED = 3;
-  const promptScopePaths = extractPathsFromPrompt(request.prompt ?? "");
-  const driftState = {
-    touchedFiles: /* @__PURE__ */ new Set(),
-    // all unique file paths Codex has touched
-    warnEmitted: false
-    // only emit once per turn
   };
   const gitCwd = request.cwd && typeof request.cwd === "string" ? request.cwd : null;
   const readGitHead = () => {
@@ -13985,29 +14041,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           checkpointState.barrenCheckpoints += 1;
         } else {
           checkpointState.barrenCheckpoints = 0;
-          stallWarnEmitted = false;
-        }
-      }
-      if (checkpointState.seenFirstActionable && checkpointState.barrenCheckpoints === 1 && !stallWarnEmitted && !terminalEmitted && STALL_WARNING_THRESHOLD_MS > 0) {
-        try {
-          const barrenDurationMs = CHECKPOINT_INTERVAL_MS;
-          const terminalWindowMs = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
-          logEvent(
-            heartbeatState.session,
-            formatStallWarningEvent(heartbeatState.session, {
-              durationMs: barrenDurationMs,
-              thresholdMs: STALL_WARNING_THRESHOLD_MS,
-              remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs),
-              lastMeaningfulAction: heartbeatState.lastItem
-            })
-          );
-          logNdjson(heartbeatState.session, "STALL_WARNING", null, {
-            durationMs: barrenDurationMs,
-            thresholdMs: STALL_WARNING_THRESHOLD_MS,
-            remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs)
-          });
-          stallWarnEmitted = true;
-        } catch {
         }
       }
       if (checkpointState.barrenCheckpoints >= STALL_CHECKPOINT_THRESHOLD && !terminalEmitted) {
@@ -14035,34 +14068,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           terminalEmitted = true;
           stopCheckpoint();
           stopHeartbeat();
-        } catch {
-        }
-      }
-      if (!driftState.warnEmitted && !terminalEmitted && promptScopePaths.length > 0 && driftState.touchedFiles.size > 0 && heartbeatState.session) {
-        try {
-          const allTouched = Array.from(driftState.touchedFiles);
-          const driftedFiles = allTouched.filter(
-            (f) => !promptScopePaths.some((scope) => f.includes(scope) || scope.includes(f))
-          );
-          const driftRatio = driftedFiles.length / allTouched.length;
-          if (driftedFiles.length > DRIFT_WARN_MIN_DRIFTED && driftRatio > DRIFT_WARN_RATIO_THRESHOLD) {
-            logEvent(
-              heartbeatState.session,
-              formatDriftWarnEvent(heartbeatState.session, {
-                driftedFiles,
-                driftRatio,
-                promptScope: promptScopePaths,
-                threadId: heartbeatState.session.threadId
-              })
-            );
-            logNdjson(heartbeatState.session, "DRIFT_WARN", null, {
-              driftedFiles: driftedFiles.slice(0, 20),
-              driftRatio,
-              totalTouched: allTouched.length,
-              promptScopeCount: promptScopePaths.length
-            });
-            driftState.warnEmitted = true;
-          }
         } catch {
         }
       }
@@ -14309,16 +14314,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         cwd: request.cwd
       }));
       logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
-      try {
-        logEvent(session, formatNeedsAttentionEvent(session, {
-          underlyingTag: "ERROR",
-          threadId: result.threadId,
-          summary: `${errorCode}: ${errorMessage.slice(0, 120)}`,
-          nextAction: request.jobId ? `result ${request.jobId}` : null
-        }));
-        logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "ERROR", errorCode });
-      } catch {
-      }
       markTerminalEmitted();
       const nextAction = buildTurnErrorNextAction({
         origin,
@@ -14346,16 +14341,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         scriptPath: SCRIPT_PATH,
         cwd: request.cwd
       }));
-      try {
-        logEvent(session, formatNeedsAttentionEvent(session, {
-          underlyingTag: "PLAN",
-          threadId: result.threadId,
-          summary: result.planText.split("\n")[0]?.slice(0, 120) ?? "Plan ready",
-          nextAction: `send ${result.threadId} --mode default "Implement the plan."`
-        }));
-        logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "PLAN", threadId: result.threadId });
-      } catch {
-      }
       markTerminalEmitted();
       setPhase("plan-pending", {
         command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
@@ -14390,7 +14375,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         const failedStage = pipelineResult.failing_stage ?? (pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff");
         const nextAction = pipelineErrored ? {
           command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
-          description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, rerun with a larger --pipeline-stage-timeout-ms / --pipeline-total-timeout-ms budget.`
+          description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`
         } : {
           command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
           description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."
@@ -14462,13 +14447,6 @@ function extractPlanSteps(planText) {
     }
   }
   return steps.length > 0 ? steps : [{ number: 1, text: planText?.split("\n")[0] ?? "Plan", status: "pending" }];
-}
-function extractPathsFromPrompt(promptText) {
-  if (typeof promptText !== "string" || !promptText) return [];
-  const matches = promptText.match(/(?:^|[\s"'`(])(\.[./][^\s"'`()\n]+|[a-zA-Z][\w./\\-]+\.[a-zA-Z]{1,10})/g) ?? [];
-  return [...new Set(
-    matches.map((m) => m.trim().replace(/^["'`(]/, "")).filter((p) => p.length > 3 && p.includes("/") || p.match(/\.\w{1,10}$/))
-  )];
 }
 async function handleTask(argv) {
   const startedAt = Date.now();
@@ -16909,7 +16887,7 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
   update: handleUpdate,
-  config: handleConfigShow,
+  config: handleConfig,
   "auth-status": handleAuthStatus,
   review: handleReview,
   "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),
@@ -16943,7 +16921,7 @@ process10.stderr.on("error", (err) => {
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path15.join(os8.homedir(), ".codex-bridge", "crashes");
+    const crashDir = path15.join(os7.homedir(), ".codex-bridge", "crashes");
     fs17.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
     const file = path15.join(crashDir, `${ts}-${process10.pid}.log`);

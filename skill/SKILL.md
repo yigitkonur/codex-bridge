@@ -399,7 +399,22 @@ Edit `${CLAUDE_SKILL_DIR}/config.yaml` to customize behavior. The keys you're mo
 
 **Six timeout keys** (`idle_timeout_ms`, `turn_plan_ms`, `turn_default_ms`, `pipeline_stage_ms`, `pipeline_total_ms`, `question_answer_ms`) — see the matrix in the "Timeout budgets" section above, or [references/error-recovery.md](references/error-recovery.md#timeout-values) for the full flag-to-config mapping.
 
-Run `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs config show` to print the effective merged config plus which of the four source files are being read. Use it to debug "why isn't my config taking effect?".
+### Conversational config editing
+
+Use `/codex-bridge:config` to read or change config without manually editing YAML:
+
+```
+/codex-bridge:config show              # see all settings + provenance
+/codex-bridge:config set mode=default
+/codex-bridge:config set idle_timeout_ms=600000
+/codex-bridge:config explain mode
+/codex-bridge:config reset             # restore plugin defaults
+/codex-bridge:config validate          # check the workspace config for errors
+```
+
+After any `set` or `reset`: restart Claude Code to apply (hooks load at session start).
+
+From the CLI: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs config show` prints the effective merged config plus which of the four source files are being read. Use it to debug "why isn't my config taking effect?".
 
 Full documentation: [references/config-reference.md](references/config-reference.md).
 
