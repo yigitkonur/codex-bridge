@@ -296,6 +296,10 @@ Each stage emits a start tag (`[PIPELINE:review]`) and a done tag (`[PIPELINE:re
    branches, run `result`, review or `adversarial-review`, record/inspect the
    `verdict`, then use `merge <task_id>`. Manual `git merge subagent/codex/*`
    is a recovery path, not the normal happy path.
+7. **Cancel cleans up abandoned worktree tasks.** `cancel <job-id>` removes the
+   bridge-created worktree and `subagent/*/<task_id>` branch by default. Use
+   `--keep-worktree`, `--keep-branch`, or `--keep-all` only when you explicitly
+   need to inspect the cancelled checkout afterward.
 
 Common follow-ups:
 - Standalone review: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs review`
@@ -317,7 +321,7 @@ The sync envelope may return `ok:true, result.phase: "workspace-dirty"` when Cod
 
 Emitted when `command_failure_circuit_breaker: true` (default) detects 3 of 5 same-family command failures (osascript / applescript / open-app / computer-use) — typically Codex flailing in a headless environment. The event carries `family`, `threshold`, `sample`, and `turnInterrupted: no` (today, logging-only). Monitor does **not** self-terminate on `[WARNING]` — the stream keeps flowing. On seeing one, decide:
 
-- Cancel: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs cancel <job-id>` if the environment genuinely can't run the family
+- Cancel: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs cancel <job-id>` if the environment genuinely can't run the family; add `--keep-all` only if you need to inspect a cancelled worktree
 - Steer: `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs steer <thread-id> <turn-id> "This environment is headless — move on"` to redirect
 
 ### [ERROR] — Something failed

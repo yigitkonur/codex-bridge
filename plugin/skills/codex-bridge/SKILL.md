@@ -142,7 +142,7 @@ Two IDs flow through every task. Use the right one or commands fail:
 
 ## Worktrees and merges
 
-Write-mode tasks land in `<repo>/../.codex-bridge-worktrees/<task_id>` on a `subagent/codex/<task_id>` branch. The worktree is **not** auto-removed on completion — you must:
+Write-mode tasks land in `<repo>/../.codex-bridge-worktrees/<task_id>` on a `subagent/codex/<task_id>` branch. The worktree is **not** auto-removed on successful completion — you must:
 
 1. Read `<jobs>/<task_id>/meta.json`, then run `adversarial-review --cwd <worktree.path> --base <worktree.base_ref>` with the same brief.
 2. Inspect the verdict: `/codex-bridge:verdict <task_id>` or read `<jobs>/<task_id>/verdict.json`.
@@ -153,6 +153,11 @@ Use `/codex-bridge:doctor` when long sessions accumulate stale jobs, orphan
 `<repo>/../.codex-bridge-worktrees/task-*` directories, or
 `subagent/codex/task-*` branches. `doctor --clean --yes` removes clean orphans
 non-interactively; dirty worktrees are skipped unless `--force` is set.
+
+Cancelling is different: `cancel <task_id>` removes the bridge-created
+worktree and `subagent/*/<task_id>` branch by default. Pass `--keep-worktree`,
+`--keep-branch`, or `--keep-all` only when you intentionally want cancelled
+artifacts left behind for inspection.
 
 ## Pointers
 

@@ -17,9 +17,9 @@ import { writeMeta } from "../src/lib/registry.mjs";
 const bridgePath = fileURLToPath(new URL("../src/codex-bridge.mjs", import.meta.url));
 
 function makeTempRepo() {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-git-parent-"));
-  const dir = path.join(parent, "repo");
-  fs.mkdirSync(dir);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-git-"));
+  const dir = path.join(root, "repo");
+  fs.mkdirSync(dir, { recursive: true });
   fs.rmSync(defaultWorktreeRootForRepo(dir), { recursive: true, force: true });
   execSync("git init -b main", { cwd: dir });
   execSync('git config user.email "test@example.com"', { cwd: dir });
@@ -45,10 +45,13 @@ function cleanup(repo) {
   } catch {
     // Best-effort.
   }
+  const parent = path.dirname(repo);
   fs.rmSync(repo, { recursive: true, force: true });
   // Sibling dir for worktrees.
   fs.rmSync(defaultWorktreeRootForRepo(repo), { recursive: true, force: true });
-  fs.rmSync(path.dirname(repo), { recursive: true, force: true });
+  if (path.basename(parent).startsWith("codex-bridge-git-")) {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
 }
 
 function writeTaskMeta(registry, taskId, meta) {
