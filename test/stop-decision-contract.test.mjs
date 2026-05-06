@@ -17,10 +17,8 @@ import test from "node:test";
 const root = fileURLToPath(new URL("../", import.meta.url));
 
 const STOP_HOOK_FILES = [
-  "hooks/stop-gate.mjs",
-  "hooks/subagent-stop.mjs",
-  "plugin/hooks/stop-gate.mjs",
-  "plugin/hooks/subagent-stop.mjs",
+  "hooks/stop.mjs",
+  "plugin/hooks/stop.mjs",
 ];
 
 const DECISION_VALUE_RE = /["']decision["']\s*:\s*["']([^"']+)["']/g;
@@ -45,7 +43,7 @@ test("stop-gate runtime output never contains decision: 'approve'", () => {
   // Drive the hook with minimal input. Without a real bridge it will reach the
   // allow-stop or error path; neither may emit "approve" — the only valid
   // decision value is "block", and allow-stop omits the field entirely.
-  const hookPath = path.join(root, "plugin/hooks/stop-gate.mjs");
+  const hookPath = path.join(root, "plugin/hooks/stop.mjs");
   const result = spawnSync(process.execPath, [hookPath], {
     input: '{"cwd":"/tmp"}',
     encoding: "utf8",
