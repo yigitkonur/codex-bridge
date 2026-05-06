@@ -17,6 +17,8 @@ const adapterEventVocabulary = fs.readFileSync(
 // layout changed.
 const runtimePaths = fs.readFileSync(new URL("../src/lib/runtime-paths.mjs", import.meta.url), "utf8");
 const envelopeHelpers = fs.readFileSync(new URL("../src/lib/envelope-helpers.mjs", import.meta.url), "utf8");
+const taskRuntime = fs.readFileSync(new URL("../src/lib/task-runtime.mjs", import.meta.url), "utf8");
+const updateCheck = fs.readFileSync(new URL("../src/lib/update-check.mjs", import.meta.url), "utf8");
 
 test("broker forwards server requests and tracks downstream responses", () => {
   assert.match(broker, /setServerRequestHandler\(routeServerRequest\)/);
@@ -56,12 +58,12 @@ test("wait terminal matching is anchored to event headers", () => {
 });
 
 test("task retry binds same-thread retry to the failed thread id", () => {
-  assert.doesNotMatch(bridge, /const retryResult = await executeTaskRun\(bridgeRequest\);/);
-  assert.match(bridge, /resumeThreadId: result\.threadId/);
+  assert.doesNotMatch(taskRuntime, /const retryResult = await executeTaskRun\(bridgeRequest\);/);
+  assert.match(taskRuntime, /resumeThreadId: result\.threadId/);
 });
 
 test("resume task chooses default continue prompt before prompt decorators", () => {
-  const task = bridge.match(/async function runBridgeTask[\s\S]*?const activeMode = isPlanMode \? "plan" : "default";/)?.[0] ?? "";
+  const task = taskRuntime.match(/async function runBridgeTask[\s\S]*?const activeMode = isPlanMode \? "plan" : "default";/)?.[0] ?? "";
   const defaultPromptIndex = task.indexOf("const baseTaskPrompt = request.resumeLast && !String(request.prompt ?? \"\").trim()");
   const footerIndex = task.indexOf("const promptWithFooter = config.prompt_footer");
   assert.notEqual(defaultPromptIndex, -1);
@@ -76,12 +78,12 @@ test("resume task chooses default continue prompt before prompt decorators", () 
 
 test("task brief is delivered into effective worker prompt", () => {
   // appendRenderedBriefToPrompt was extracted to envelope-helpers.mjs in
-  // Phase 0; runBridgeTask still calls it from the dispatcher.
+  // Phase 0; runBridgeTask calls it from task-runtime.mjs after Phase 1.
   assert.match(envelopeHelpers, /function appendRenderedBriefToPrompt\(prompt, brief\)/);
   assert.match(envelopeHelpers, /CODEX-BRIDGE STRUCTURED BRIEF/);
   assert.match(envelopeHelpers, /renderBriefAsMarkdown\(brief\)/);
-  assert.match(bridge, /appendRenderedBriefToPrompt\(baseTaskPrompt, request\.brief \?\? null\)/);
-  assert.match(bridge, /brief: brief \?\? null/);
+  assert.match(taskRuntime, /appendRenderedBriefToPrompt\(baseTaskPrompt, request\.brief \?\? null\)/);
+  assert.match(taskRuntime, /brief: brief \?\? null/);
   assert.match(bridge, /brief,\n\s+write,/);
 });
 
@@ -107,26 +109,29 @@ test("respond and summary resolve cwd before loading config", () => {
 });
 
 test("session directories resolve relative to canonical workspace roots", () => {
-  const callSites = [...bridge.matchAll(/resolveSessionDir\(config\.session_dir, resolveWorkspaceRoot\(cwd\)\)/g)];
+  const callSites = [
+    ...bridge.matchAll(/resolveSessionDir\(config\.session_dir, resolveWorkspaceRoot\(cwd\)\)/g),
+    ...taskRuntime.matchAll(/resolveSessionDir\(config\.session_dir, resolveWorkspaceRoot\(cwd\)\)/g),
+  ];
   assert.ok(callSites.length >= 6, "interactive commands should pass workspace root as session_dir base");
-  assert.match(bridge, /resolveSessionDir\(config\.session_dir, workspaceRoot\)/);
-  assert.match(bridge, /resolveSessionDir\(reviewConfig\.session_dir, resolveWorkspaceRoot\(request\.cwd\)\)/);
-  assert.match(bridge, /resolveSessionDir\(getBridgeConfig\(cwd \?\? null, job\.workspaceRoot\)\.session_dir, job\.workspaceRoot\)/);
+  assert.match(taskRuntime, /resolveSessionDir\(config\.session_dir, workspaceRoot\)/);
+  assert.match(taskRuntime, /resolveSessionDir\(reviewConfig\.session_dir, resolveWorkspaceRoot\(request\.cwd\)\)/);
+  assert.match(taskRuntime, /resolveSessionDir\(getBridgeConfig\(cwd \?\? null, job\.workspaceRoot\)\.session_dir, job\.workspaceRoot\)/);
 });
 
 test("v2.2 ergonomics hooks are wired into runtime surfaces", () => {
   assert.match(bridge, /validateConfigLayers\(ROOT_DIR, cwd, workspaceRoot\)/);
   assert.match(bridge, /function cleanupTerminalJobs/);
   assert.match(bridge, /retention-days/);
-  assert.match(bridge, /prepareRuntimeSession/);
-  assert.match(bridge, /writeSessionAliases\(session, jobId\)/);
-  assert.match(bridge, /assistantPreview: checkpointState\.lastAssistantMessage/);
+  assert.match(taskRuntime, /prepareRuntimeSession/);
+  assert.match(taskRuntime, /writeSessionAliases\(session, jobId\)/);
+  assert.match(taskRuntime, /assistantPreview: checkpointState\.lastAssistantMessage/);
   assert.match(bridge, /update_check:/);
   assert.match(bridge, /apply:/);
 });
 
 test("auto-apply stays inert for help and json discovery paths", () => {
-  const autoApply = bridge.match(/function maybeTriggerAutoApply[\s\S]*?function spawnDetachedAutoApply/)?.[0] ?? "";
+  const autoApply = updateCheck.match(/function maybeTriggerAutoApply[\s\S]*?function spawnDetachedAutoApply/)?.[0] ?? "";
   assert.match(autoApply, /detectJsonFlag\(rawArgv\)/);
   assert.match(autoApply, /detectHelpFlag\(rawArgv\)/);
   assert.match(autoApply, /subcommand === "version" \|\| subcommand === "update"/);
@@ -163,7 +168,7 @@ test("send emits plan event instead of terminal done for plan results", () => {
 });
 
 test("task plan-pending path marks terminal emission before returning", () => {
-  const task = bridge.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
+  const task = taskRuntime.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
   const planBranch = task.match(
     /if \(result\.planDetected && result\.planText\) \{[\s\S]*?return \{ \.\.\.result, session, planPath \};/
   )?.[0] ?? "";
@@ -174,7 +179,7 @@ test("task plan-pending path marks terminal emission before returning", () => {
 });
 
 test("sandbox workspace-dirty returns before terminal error emission", () => {
-  const task = bridge.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
+  const task = taskRuntime.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
   const errorStart = task.indexOf("if (result.exitStatus !== 0 && result.error) {");
   const planStart = task.indexOf("// If plan was detected");
   assert.notEqual(errorStart, -1);
@@ -203,10 +208,10 @@ test("sandbox workspace-dirty returns before terminal error emission", () => {
 });
 
 test("tracked failed task results persist handoff error envelope", () => {
-  assert.match(bridge, /buildErrorEnvelope\(classifyError\(errLike\), \{ command, partial, handoff, origin, nextAction \}\)/);
-  assert.match(bridge, /payload:\s*\{\s*\.\.\.payload,\s*error\s*\}/);
+  assert.match(taskRuntime, /buildErrorEnvelope\(classifyError\(errLike\), \{ command, partial, handoff, origin, nextAction \}\)/);
+  assert.match(taskRuntime, /payload:\s*\{\s*\.\.\.payload,\s*error\s*\}/);
 
-  const foreground = bridge.match(/async function runForegroundCommand[\s\S]*?function spawnDetachedTaskWorker/)?.[0] ?? "";
+  const foreground = taskRuntime.match(/async function runForegroundCommand[\s\S]*?function spawnDetachedTaskWorker/)?.[0] ?? "";
   assert.match(
     foreground,
     /async \(\) => persistFailureErrorInPayload\(await runner\(progress\), command\)/
@@ -220,15 +225,15 @@ test("tracked failed task results persist handoff error envelope", () => {
 });
 
 test("task failures attach cause-aware next action to the error object", () => {
-  const errorBranch = bridge.match(/if \(result\.exitStatus !== 0 && result\.error\) \{[\s\S]*?return \{ \.\.\.result, session \};/)?.[0] ?? "";
-  assert.match(bridge, /function buildTurnErrorNextAction/);
+  const errorBranch = taskRuntime.match(/if \(result\.exitStatus !== 0 && result\.error\) \{[\s\S]*?return \{ \.\.\.result, session \};/)?.[0] ?? "";
+  assert.match(taskRuntime, /function buildTurnErrorNextAction/);
   assert.match(errorBranch, /const nextAction = buildTurnErrorNextAction/);
   assert.match(errorBranch, /result\.error\.origin = origin/);
   assert.match(errorBranch, /result\.error\.nextAction = nextAction/);
 });
 
 test("background task enqueue persists queued record before spawning worker", () => {
-  const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
+  const enqueue = taskRuntime.match(/function enqueueBackgroundTask[\s\S]*?async function runBridgeTask/)?.[0] ?? "";
   const writeQueued = enqueue.indexOf("writeJobFile(job.workspaceRoot, job.id, queuedRecord);");
   const upsertQueued = enqueue.indexOf("upsertJob(job.workspaceRoot, queuedRecord);");
   const spawnWorker = enqueue.indexOf("spawnDetachedTaskWorker(cwd, job.workspaceRoot, job.id, logFile);");
@@ -245,7 +250,7 @@ test("background task enqueue persists queued record before spawning worker", ()
 });
 
 test("review sessions emit terminal events", () => {
-  const review = bridge.match(/async function executeReviewRun[\s\S]*?async function executeTaskRun/)?.[0] ?? "";
+  const review = taskRuntime.match(/async function executeReviewRun[\s\S]*?async function executeTaskRun/)?.[0] ?? "";
   assert.match(review, /logReviewTerminalEvent/);
   assert.match(review, /formatDoneEvent/);
   assert.match(review, /formatErrorEvent/);
@@ -268,7 +273,7 @@ test("adapter canonical tag contract includes live auto-pipeline stages", () => 
 });
 
 test("task pipeline envelope preserves partial-completion proof fields", () => {
-  const taskPipeline = bridge.match(/const pipelineResult = await runAutoPipeline[\s\S]*?return \{ \.\.\.result, session, pipeline: pipelineResult \};/)?.[0] ?? "";
+  const taskPipeline = taskRuntime.match(/const pipelineResult = await runAutoPipeline[\s\S]*?return \{ \.\.\.result, session, pipeline: pipelineResult \};/)?.[0] ?? "";
   assert.match(taskPipeline, /pipelineResult\.failing_stage/);
   assert.match(taskPipeline, /setPhase\("incomplete"[\s\S]*\{ pipeline: pipelineResult, monitor \}/);
   assert.match(taskPipeline, /setPhase\("done"[\s\S]*\{ pipeline: pipelineResult, monitor \}/);
@@ -299,7 +304,7 @@ test("auto-pipeline final diff is task-base aware and check events include missi
 });
 
 test("working-tree review empty check includes untracked files", () => {
-  const review = bridge.match(/async function executeReviewRun[\s\S]*?async function executeTaskRun/)?.[0] ?? "";
+  const review = taskRuntime.match(/async function executeReviewRun[\s\S]*?async function executeTaskRun/)?.[0] ?? "";
   const workingTreeCheck = review.match(
     /if \(target\.mode === "working-tree"\) \{[\s\S]*?throw new CliError\("No working-tree changes to review\."/,
   )?.[0] ?? "";
@@ -329,7 +334,7 @@ test("setup json exposes backend adapter capability contract", () => {
 });
 
 test("task execution routes through backend adapter dispatch", () => {
-  const executeTask = bridge.match(/async function executeTaskRun[\s\S]*?function buildReviewJobMetadata/)?.[0] ?? "";
+  const executeTask = taskRuntime.match(/async function executeTaskRun[\s\S]*?function buildReviewJobMetadata/)?.[0] ?? "";
   assert.match(executeTask, /const adapter = request\.adapter \?\? await resolveCommandAdapter/);
   assert.match(executeTask, /adapter\.dispatch\(request\.prompt/);
   assert.match(executeTask, /rawResult/);
@@ -363,7 +368,7 @@ test("result command asks the selected adapter for normalized result", () => {
 });
 
 test("background task writes job record before spawning worker", () => {
-  const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
+  const enqueue = taskRuntime.match(/function enqueueBackgroundTask[\s\S]*?async function runBridgeTask/)?.[0] ?? "";
   const writeIdx = enqueue.indexOf("writeJobFile(job.workspaceRoot, job.id, queuedRecord)");
   const spawnIdx = enqueue.indexOf("spawnDetachedTaskWorker(cwd, job.workspaceRoot, job.id, logFile)");
   assert.ok(writeIdx >= 0, "queued job record must be written");
@@ -374,7 +379,7 @@ test("background task writes job record before spawning worker", () => {
 });
 
 test("resume-last task prompt avoids undefined template output", () => {
-  const runBridgeTask = bridge.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
+  const runBridgeTask = taskRuntime.match(/async function runBridgeTask[\s\S]*?function extractPlanSteps/)?.[0] ?? "";
   assert.match(runBridgeTask, /const baseTaskPrompt = request\.resumeLast && !String\(request\.prompt \?\? ""\)\.trim\(\)/);
   assert.match(runBridgeTask, /const taskPrompt = appendRenderedBriefToPrompt\(baseTaskPrompt, request\.brief \?\? null\)/);
   assert.match(runBridgeTask, /DEFAULT_CONTINUE_PROMPT/);
@@ -382,7 +387,7 @@ test("resume-last task prompt avoids undefined template output", () => {
 });
 
 test("workspace-dirty recovery emits incomplete before generic error handling", () => {
-  const errorBranch = bridge.match(/if \(result\.exitStatus !== 0 && result\.error\) \{[\s\S]*?setPhase\("error"/)?.[0] ?? "";
+  const errorBranch = taskRuntime.match(/if \(result\.exitStatus !== 0 && result\.error\) \{[\s\S]*?setPhase\("error"/)?.[0] ?? "";
   const workspaceDirtyIdx = errorBranch.indexOf('codexErrorInfo?.code === "SandboxError"');
   const errorEventIdx = errorBranch.indexOf("formatErrorEvent(session");
   assert.ok(workspaceDirtyIdx >= 0, "workspace-dirty recovery branch must exist");
@@ -399,7 +404,7 @@ test("worktree-auto keeps job state anchored to the launch workspace", () => {
 });
 
 test("background task-worker receives the original workspace root", () => {
-  assert.match(bridge, /function spawnDetachedTaskWorker\(cwd, workspaceRoot, jobId, logFile = null\)/);
+  assert.match(taskRuntime, /function spawnDetachedTaskWorker\(cwd, workspaceRoot, jobId, logFile = null\)/);
 });
 
 test("background task-worker reads queued jobs from original workspace root", () => {
@@ -410,7 +415,7 @@ test("background task-worker reads queued jobs from original workspace root", ()
 
 test("worktree-auto exposes the returned task id as the registry id", () => {
   const task = bridge.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
-  const enqueue = bridge.match(/function enqueueBackgroundTask[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
+  const enqueue = taskRuntime.match(/function enqueueBackgroundTask[\s\S]*?async function runBridgeTask/)?.[0] ?? "";
   assert.match(task, /job\.registryTaskId = job\.id;/);
   assert.match(enqueue, /registryTaskId: job\.registryTaskId \?\? null/);
 });
