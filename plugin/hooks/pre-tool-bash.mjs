@@ -469,11 +469,15 @@ function classifyCommand(input) {
   if (!isWrite) {
     return { decision: "pass-through" };
   }
-  const effectiveWorktreeAuto =
-    worktreeAutoValue === true ||
-    (worktreeAutoValue !== false && !isWorktreeOptOut());
-  if (!effectiveWorktreeAuto) {
-    return { decision: "manual-permission" };
+  // Worktree isolation is required for write tasks. Accept only when the
+  // flag is explicitly enabled (--worktree-auto or --worktree-auto=true).
+  // When the env opt-out is active, fall back to Claude's normal Bash
+  // permission flow (manual-permission). Otherwise deny with a suggestion.
+  if (worktreeAutoValue !== true) {
+    if (isWorktreeOptOut()) {
+      return { decision: "manual-permission" };
+    }
+    return { decision: "worktree-required", command };
   }
 
   const workspaceRoot = findGitRepoRoot(cwd);
@@ -483,6 +487,25 @@ function classifyCommand(input) {
     return { decision: "absolute-path-conflict", conflicts, workspaceRoot };
   }
   return { decision: "pass-through" };
+}
+
+function buildRewriteSuggestion(command) {
+  const m = BRIDGE_TASK_PATTERN.exec(command);
+  if (!m) return command;
+  const insertAt = m.index + m[0].length;
+  return `${command.slice(0, insertAt)} --worktree-auto${command.slice(insertAt)}`;
+}
+
+function denyWorktreeRequired(command) {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason:
+        "codex-bridge task --write requires worktree isolation. Add --worktree-auto to run in an isolated worktree.",
+      additionalContext: buildRewriteSuggestion(command),
+    },
+  };
 }
 
 function denyConflict() {
@@ -562,6 +585,11 @@ function main() {
 
   if (classification.decision === "manual-permission") {
     process.stdout.write('{"continue":true}');
+    return;
+  }
+
+  if (classification.decision === "worktree-required") {
+    process.stdout.write(JSON.stringify(denyWorktreeRequired(classification.command)));
     return;
   }
 
