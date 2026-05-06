@@ -3,19 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
-
-// Single source of truth for the bridge version: package.json. esbuild inlines
-// the JSON content into the bundled distributable at build time, so the
-// installed skill/scripts/bundle stays in sync with the published version
-// without a manual string sweep. Pre-1.2.5 the version was hard-coded here at
-// line ~620 and drifted (package.json bumped to 1.2.4 while the const still
-// read "1.2.3"), causing `version --json` and the update checker to report a
-// stale number.
-import packageJson from "../package.json" with { type: "json" };
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
-import { guardCapability, resolveAdapterForRuntime } from "./adapters/index.mjs";
+import { guardCapability } from "./adapters/index.mjs";
 import {
   CliError,
   emitError,
@@ -116,7 +106,6 @@ import {
   renderTaskResult
 } from "./lib/render.mjs";
 import {
-  loadConfig,
   buildCollaborationMode,
   buildSandboxPolicy,
   COMPLETION_CHECK_SCHEMA,
@@ -152,7 +141,6 @@ import {
   formatReviewEvent,
   formatWarningEvent,
   formatDirectivesEvent,
-  formatTailCommand,
   formatPartialEvent,
   formatRetryingEvent,
   formatHandoffEvent,
@@ -166,7 +154,6 @@ import {
   WORKER_STDERR_TAIL_BYTES,
   TERMINAL_TAGS,
   TERMINAL_TAG_REGEX,
-  DEFAULT_MONITOR_EXCLUDE,
   writeReview as writeSessionReview
 } from "./lib/session-log.mjs";
 import {
@@ -185,17 +172,36 @@ import {
 import { runIterateLoop } from "./lib/iterate-loop.mjs";
 import { getSandboxEnforcementStatus, installSandboxEnforcement, uninstallSandboxEnforcement } from "./lib/sandbox-enforcement.mjs";
 import { runDoctorChecks, applyDoctorAction } from "./lib/doctor-checks.mjs";
-
-function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
-  return {
-    schema_version: "1.0",
-    reason,
-    retryable: Boolean(retryable),
-    next_actions: nextActions,
-    artifacts,
-    details,
-  };
-}
+import {
+  BRIDGE_CAPABILITIES,
+  BRIDGE_SCHEMA_VERSION,
+  BRIDGE_VERSION,
+  DEFAULT_STATUS_POLL_INTERVAL_MS,
+  DEFAULT_STATUS_WAIT_TIMEOUT_MS,
+  EXECUTE_INSTRUCTIONS_PATH,
+  MODEL_ALIASES,
+  PLAN_ENFORCEMENT_PATH,
+  REVIEW_SCHEMA,
+  ROOT_DIR,
+  SCRIPT_DIR,
+  SCRIPT_PATH,
+  STOP_REVIEW_GATE_LOCK_FILE,
+  STOP_REVIEW_TASK_MARKER,
+  VALID_REASONING_EFFORTS,
+} from "./lib/runtime-paths.mjs";
+import {
+  ensureCodexRuntimeAdapter,
+  getBridgeConfig,
+  loadDeveloperInstructions,
+  resolveCommandAdapter,
+} from "./lib/bridge-config.mjs";
+import {
+  appendRenderedBriefToPrompt,
+  bridgeCommand,
+  buildMonitorHint,
+  buildRecovery,
+  extractItemText,
+} from "./lib/envelope-helpers.mjs";
 
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
@@ -302,25 +308,6 @@ function spawnDetachedAutoApply(targetVersion) {
   }
 }
 
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT_PATH = path.join(SCRIPT_DIR, "codex-bridge.mjs");
-// In dev: src/ → schemas are at src/schemas/
-// After bundle: skill/scripts/ → schemas are at skill/schemas/ (one level up)
-const ROOT_DIR = fs.existsSync(path.join(SCRIPT_DIR, "schemas"))
-  ? SCRIPT_DIR
-  : path.resolve(SCRIPT_DIR, "..");
-const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
-const EXECUTE_INSTRUCTIONS_PATH = path.join(ROOT_DIR, "templates", "execute-instructions.md");
-const PLAN_ENFORCEMENT_PATH = path.join(ROOT_DIR, "templates", "plan-enforcement.md");
-
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
-}
-
-function bridgeCommand(subcommand, cwd = null) {
-  return `node ${shellQuote(SCRIPT_PATH)} ${subcommand}${cwd ? ` --cwd ${shellQuote(cwd)}` : ""}`;
-}
-
 function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, cwd = null, stateCwd = null }) {
   const target = jobId ?? threadId;
   const jobCwd = stateCwd ?? cwd;
@@ -379,98 +366,11 @@ function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, c
   };
 }
 
-const DEVELOPER_INSTRUCTIONS_FALLBACK = {
-  plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
-  default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
-};
-
-function loadDeveloperInstructions(mode) {
-  const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
-  try {
-    return fs.readFileSync(templatePath, "utf8");
-  } catch {
-    return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
-  }
-}
-
-function appendRenderedBriefToPrompt(prompt, brief) {
-  if (!brief) return prompt ?? "";
-  const rendered = renderBriefAsMarkdown(brief);
-  return [
-    prompt ?? "",
-    "[CODEX-BRIDGE STRUCTURED BRIEF]",
-    "The following brief is part of the worker instructions. Follow the worker_assignment and verify the acceptance_criteria before finishing.",
-    rendered,
-    "[/CODEX-BRIDGE STRUCTURED BRIEF]",
-  ].filter((part) => String(part).trim()).join("\n\n");
-}
-
 function prepareRuntimeSession(session, config, jobId) {
   if (!session) return session;
   session.redactSecrets = Boolean(config?.redact_secrets);
   writeSessionAliases(session, jobId);
   return session;
-}
-const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
-const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
-const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
-const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
-const STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
-
-// Bridge config: skill-dir defaults + optional workspace-root + cwd overrides.
-//
-// The skill-dir layer is read once and reused (it ships with the skill; it
-// doesn't change during a process's lifetime). The workspaceRoot and cwd
-// layers are re-read on every call because different subcommands may run
-// in different workspaces within one process (e.g. `-C ...`), and each
-// invocation's directory context is authoritative.
-//
-// Call sites with a meaningful cwd (task, send, review, steer, wait,
-// events) pass it through; those that ALSO derive a workspaceRoot (task,
-// review) pass that too so users running from a subdir of a git repo pick
-// up the repo-root config.yaml. Call sites without (help, version) fall
-// back to the skill-dir layer only, which is harmless — those commands
-// don't consume the knobs the override layers are meant to flip.
-let BRIDGE_CONFIG_SKILL_LAYER = null;
-function getBridgeConfig(cwd = null, workspaceRoot = null) {
-  if (!cwd && !workspaceRoot) {
-    if (!BRIDGE_CONFIG_SKILL_LAYER) {
-      BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
-    }
-    return BRIDGE_CONFIG_SKILL_LAYER;
-  }
-  return loadConfig(ROOT_DIR, cwd, workspaceRoot);
-}
-
-async function resolveCommandAdapter({
-  cwd = null,
-  workspaceRoot = null,
-  backend = null,
-  metaBackend = null,
-  taskMetadata = null,
-  subagentType = null,
-} = {}) {
-  const resolvedWorkspaceRoot = workspaceRoot ?? (cwd ? resolveWorkspaceRoot(cwd) : null);
-  return resolveAdapterForRuntime({
-    skillDir: ROOT_DIR,
-    cwd,
-    workspaceRoot: resolvedWorkspaceRoot,
-    backend,
-    metaBackend,
-    taskMetadata,
-    subagentType,
-    env: process.env,
-  });
-}
-
-function ensureCodexRuntimeAdapter(adapter) {
-  if (adapter?.name === "codex") return;
-  throw validationError(
-    `Backend '${adapter?.name ?? "unknown"}' is selected but this CLI path is not wired to that adapter yet.`,
-    "BACKEND_INCAPABLE",
-    "Use --backend codex, unset CODEX_BRIDGE_BACKEND, or choose a config default_backend supported by this build."
-  );
 }
 
 // Pending requests are persisted to disk by the worker process.
@@ -561,11 +461,6 @@ function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs
   };
 }
 
-// Produces a ready-to-paste Monitor hint so agents don't have to assemble one
-// from eventsPath + terminal tags. Prefers our `events --follow` subcommand
-// (stable, filtered) over raw `tail -f`. `eventsPath` may be null when the
-// thread id isn't known yet (background launches); in that case the shell
-// fallback is omitted but the CLI command still works via the job id.
 // Appends a single-line handle footer to a rendered task result. Non-JSON
 // foreground output previously surfaced only Codex's finalMessage, which gave
 // orchestrators no visible jobId / events path — agents often grabbed the
@@ -586,111 +481,6 @@ function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorComma
   if (eventsPath) parts.push(`Events file: ${eventsPath}`);
   if (monitorCommand) parts.push(`Monitor: ${monitorCommand}`);
   return `${base}\n${parts.join(" · ")}\n`;
-}
-
-function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
-  const identifier = jobId ?? threadId;
-  if (!identifier) return null;
-  // v1.4.0 filter contract: exclusion-based, not inclusion-based. Every
-  // tag the bridge emits passes through Monitor by default except those
-  // in the exclude list — so new tags added in future versions reach
-  // existing orchestrators without a filter update.
-  // - HEARTBEAT excluded by default: 60-s liveness pulse is pure signal
-  //   for the .events file (and the 90-s liveness heuristic), but
-  //   floods an LLM's context in a long run.
-  // - CHECKPOINT stays in the stream: it's the primary LLM-facing
-  //   summary (every ~5 min, content-rich).
-  // - All interrupt tags (DONE/ERROR/INCOMPLETE/PLAN/QUESTION) pass
-  //   through unconditionally.
-  // Callers who specifically want the old inclusion model can pass
-  // `--filter <tags>` explicitly; the two flags are mutually exclusive.
-  const cliCommand = formatTailCommand({
-    scriptPath: SCRIPT_PATH,
-    jobId: identifier,
-    timeoutMs: 1800000,
-    exclude: DEFAULT_MONITOR_EXCLUDE,
-    cwd,
-  });
-  const shellFallback = eventsPath
-    ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do ` +
-      `echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*) break ;; esac; done`
-    : null;
-  return {
-    command: cliCommand,
-    shell_fallback: shellFallback,
-    terminal_tags: [...TERMINAL_TAGS],
-    exclude_tags: [...DEFAULT_MONITOR_EXCLUDE],
-    timeout_ms: 1800000,
-    tool_hint: {
-      description: "codex-bridge task events (excludes heartbeat noise; passes interrupts + checkpoints through)",
-      command: cliCommand,
-      timeout_ms: 3600000,
-      persistent: false
-    }
-  };
-}
-
-// Extracts a small, retrospective-replay-friendly text preview from an
-// `item/completed` payload. Keep the slices tight — NDJSON is a transcript
-// replay store, not a verbatim mirror of the wire protocol.
-function extractItemText(item) {
-  if (!item || typeof item !== "object") return null;
-  switch (item.type) {
-    case "agentMessage":
-      return typeof item.text === "string" ? item.text.slice(0, 500) : null;
-    case "commandExecution":
-      return typeof item.command === "string" ? item.command.slice(0, 200) : null;
-    case "fileChange": {
-      // item.changes[] carries per-path details; summarize first change.
-      const changes = Array.isArray(item.changes) ? item.changes : [];
-      if (changes.length === 0) {
-        return typeof item.path === "string" ? item.path : null;
-      }
-      const first = changes[0] ?? {};
-      const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path}`.trim();
-      if (!summary) return null;
-      const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
-      return `${summary}${suffix}`.slice(0, 200);
-    }
-    case "plan":
-      if (typeof item.title === "string" && item.title.trim()) {
-        return item.title.slice(0, 200);
-      }
-      if (typeof item.text === "string") {
-        const firstLine = item.text.split("\n").find((line) => line.trim()) ?? "";
-        return firstLine ? firstLine.slice(0, 200) : null;
-      }
-      return null;
-    case "reasoning":
-      // Reasoning summaries are arrays of blocks; pick the first textual one.
-      if (typeof item.summary === "string") {
-        return item.summary.slice(0, 200);
-      }
-      if (Array.isArray(item.summary)) {
-        for (const section of item.summary) {
-          if (typeof section === "string" && section.trim()) {
-            return section.slice(0, 200);
-          }
-          if (section && typeof section === "object" && typeof section.text === "string" && section.text.trim()) {
-            return section.text.slice(0, 200);
-          }
-        }
-      }
-      return null;
-    case "mcpToolCall":
-      if (item.server || item.tool) {
-        return `${item.server ?? ""}/${item.tool ?? ""}`.slice(0, 200);
-      }
-      return null;
-    case "commandExecutionOutput":
-    case "webSearch":
-      if (typeof item.query === "string") return item.query.slice(0, 200);
-      return null;
-    default:
-      return null;
-  }
 }
 
 // Single source of truth for subcommand synopses. Every entry must match the
@@ -1349,22 +1139,6 @@ async function handleSetup(argv) {
     startedAt
   });
 }
-
-const BRIDGE_VERSION = packageJson.version;
-const BRIDGE_SCHEMA_VERSION = "1.0";
-const BRIDGE_CAPABILITIES = Object.freeze([
-  "plan-mode",
-  "background-jobs",
-  "auto-pipeline",
-  "adversarial-review",
-  "stop-gate-review",
-  "structured-errors",
-  "per-subcommand-help",
-  "machine-readable-help",
-  "workspace-config-override",
-  "update-check",
-  "backend-adapter"
-]);
 
 async function handleVersion(argv) {
   const startedAt = Date.now();
@@ -8247,7 +8021,7 @@ function writeCrashLog(kind, error) {
       argv: process.argv,
       cwd: process.cwd(),
       nodeVersion: process.version,
-      bridgeVersion: packageJson.version,
+      bridgeVersion: BRIDGE_VERSION,
       error: error instanceof Error
         ? { name: error.name, message: error.message, stack: error.stack, code: error.code }
         : { raw: String(error) }
