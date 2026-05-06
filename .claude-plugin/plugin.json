@@ -2,7 +2,7 @@
   "$schema": "https://code.claude.com/schemas/plugin.schema.json",
   "name": "codex-bridge",
   "description": "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge. Adapter abstraction in place for future backends.",
-  "version": "2.2.9",
+  "version": "2.3.0",
   "homepage": "https://github.com/yigitkonur/codex-bridge",
   "license": "MIT",
   "author": {
