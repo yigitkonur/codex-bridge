@@ -266,7 +266,19 @@ export function captureGitDiff(cwd, session, options = {}) {
   const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles, baseRef);
   const diffPath = writeDiff(session, diffContent);
 
-  const numstatOutput = numstatResult.stdout || "";
+  return summarizeGitDiffResult(numstatResult.stdout || "", untrackedFiles, diffPath);
+}
+
+export function summarizeGitDiff(cwd, options = {}) {
+  const baseRef = typeof options.baseRef === "string" && options.baseRef.trim()
+    ? options.baseRef.trim()
+    : "HEAD";
+  const numstatResult = spawnSync("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 10000 });
+  const untrackedFiles = getUntrackedFileStats(cwd);
+  return summarizeGitDiffResult(numstatResult.stdout || "", untrackedFiles, "");
+}
+
+function summarizeGitDiffResult(numstatOutput, untrackedFiles, diffPath) {
   const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
   const summary = summarizeNumstat(files);
 
@@ -435,16 +447,45 @@ function jobCommandCwd(cwd, stateCwd) {
   return stateCwd ?? cwd;
 }
 
-export function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+export function formatDoneEvent(session, {
+  duration,
+  diffStat,
+  files,
+  config,
+  diffPath,
+  scriptPath,
+  jobId = null,
+  cwd = null,
+  stateCwd = null,
+  taskDiff = null,
+  workspaceDiff = null,
+  workspaceWasClean = null,
+  touchedFiles = null,
+}) {
   const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const headlineDiff = taskDiff?.diffStat ?? diffStat;
+  const displayFiles = taskDiff?.files ?? files;
+  const displayDiffPath = taskDiff?.diffPath || diffPath || workspaceDiff?.diffPath || "";
   const lines = [
-    `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
+    `[DONE] ${session.threadId} completed in ${duration}s | ${headlineDiff}`,
     `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
-    `  diff: ${diffPath}`,
+    `  diff: ${displayDiffPath}`,
   ];
-  if (files && files.length > 0) {
+  if (taskDiff) {
+    lines.push(`  task_diff: ${taskDiff.diffStat}`);
+  }
+  if (workspaceDiff) {
+    lines.push(`  workspace_diff: ${workspaceDiff.diffStat}`);
+  }
+  if (workspaceWasClean != null) {
+    lines.push(`  workspace_was_clean: ${Boolean(workspaceWasClean)}`);
+  }
+  if (Array.isArray(touchedFiles)) {
+    lines.push(`  touchedFiles: ${JSON.stringify(touchedFiles)}`);
+  }
+  if (displayFiles && displayFiles.length > 0) {
     lines.push("  files:");
-    for (const f of files.slice(0, 20)) {
+    for (const f of displayFiles.slice(0, 20)) {
       lines.push(`    ${f}`);
     }
   }

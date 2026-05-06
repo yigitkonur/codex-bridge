@@ -303,9 +303,11 @@ test("task pipeline envelope preserves partial-completion proof fields", () => {
 
 test("auto-pipeline final diff is task-base aware and check events include missing items", () => {
   assert.match(autoPipeline, /import \{ readMeta \} from "\.\.\/\.\.\/lib\/registry\.mjs";/);
+  assert.match(autoPipeline, /import \{ hasWorkChangedSince \} from "\.\.\/\.\.\/lib\/work-delta\.mjs";/);
   assert.match(autoPipeline, /const taskMeta = jobId \? readMeta\(jobId\) : null;/);
-  assert.match(autoPipeline, /const captureTaskDiff = \(\) =>/);
-  assert.match(autoPipeline, /const finalDiff = captureTaskDiff\(\);/);
+  assert.match(autoPipeline, /const captureTaskDiff = \(extraTouchedFiles = \[\]\) =>/);
+  assert.match(autoPipeline, /const finalDiff = captureTaskDiff\(fixFilesTouched\);/);
+  assert.match(autoPipeline, /no_files_touched: Write-mode task completed without touching files or changing git state\./);
   assert.match(autoPipeline, /missing_items=\$\{JSON\.stringify\(completionResult\.missing_items\)\}/);
 });
 

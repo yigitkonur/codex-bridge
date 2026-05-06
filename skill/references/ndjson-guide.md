@@ -29,8 +29,8 @@ Readers should treat `data` as tag-specific and forward-compatible. The shared t
 | `ERROR` | Turn failed with a Codex-reported error (`will_retry: false`) | `errorCode`, `message`, `origin` (`turn` or `pipeline:<stage>`) | `src/codex-bridge.mjs` |
 | `PIPELINE_STAGE` | Auto-pipeline entered a stage | `stage` ∈ `{diff, review, fix, check}`, optionally `findingCount` | `src/adapters/codex/pipeline.mjs` |
 | `PIPELINE_COMPLETE` | Auto-pipeline finished cleanly (on-disk counterpart to `[PIPELINE:done]`) | `completedStages`, `duration`, `complete`, `touchedFiles` (files the fix stage wrote) | `src/adapters/codex/pipeline.mjs` |
-| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `lastCompletedStage`, `duration`, `error`, `origin` (`pipeline:<failing_stage>`), `failing_stage`, `reviewVerdict` / `reviewFindingCount` (`null` unless review completed), `touchedFiles` | `src/adapters/codex/pipeline.mjs` |
-| `PIPELINE_SKIPPED` | Run launched with `--no-pipeline` (pipeline stages never ran) | `reason` (`"--no-pipeline flag"`) | `runBridgeTask` |
+| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `duration`, `error`, `origin` (`pipeline:<stage>`), `touchedFiles` | `src/adapters/codex/pipeline.mjs` |
+| `PIPELINE_SKIPPED` | Run launched with `--no-pipeline`; diff capture still runs, review/fix/check do not | `reason`, `skippedStages`, `retainedStages` | `runBridgeTask` |
 | `CIRCUIT_BREAKER` | Command-family circuit breaker tripped (on-disk counterpart to `[WARNING]`) | `family`, `threshold`, `windowSize`, `failsInWindow`, `wrapperDetected`, `turnInterrupted` | `runBridgeTask::onItemCompleted` |
 
 `ITEM_COMPLETED` is emitted for `task` and `send` turns. The `runAppServerReview` path (standalone `review` / `adversarial-review`) does **not** emit it — review output goes to stdout and the rendered markdown instead.

@@ -11,6 +11,7 @@ import {
 } from "../src/adapters/codex/index.mjs";
 import { handleIterate } from "../src/handlers/registry.mjs";
 import { handleTaskWorker } from "../src/handlers/task.mjs";
+import { buildTaskRequest, runBridgeTask } from "../src/lib/task-runtime.mjs";
 import { readJobFile, resolveJobFile, writeJobFile } from "../src/lib/state.mjs";
 
 function makeFakeCodexBin(root) {
@@ -158,6 +159,132 @@ test("task-worker executes a stored job through tracked progress", async () => {
       const stored = readJobFile(resolveJobFile(workspace, jobId));
       assert.equal(stored.status, "completed");
       assert.equal(stored.threadId, "thread-worker-regression");
+    },
+  );
+});
+
+test("no-pipeline write task keeps diff capture while skipping validation stages", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-no-pipeline-"));
+  const repo = path.join(tempRoot, "repo");
+  initGitRepo(repo);
+  const binDir = makeFakeCodexBin(tempRoot);
+  let runTurnCalls = 0;
+
+  await withEnv(
+    {
+      CODEX_BRIDGE_PLUGIN_DATA: path.join(tempRoot, "plugin-data"),
+      CODEX_COMPANION_SESSION_ID: undefined,
+      HOME: path.join(tempRoot, "home"),
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+    async () => {
+      _setCodexAdapterRuntimeForTest({
+        async runTurn(cwd, options) {
+          runTurnCalls += 1;
+          assert.equal(cwd, repo);
+          assert.match(options.prompt, /write a file/);
+          fs.writeFileSync(path.join(repo, "changed.txt"), "changed\n", "utf8");
+          return {
+            status: 0,
+            threadId: "thread-no-pipeline-diff",
+            turnId: `turn-no-pipeline-diff-${runTurnCalls}`,
+            finalMessage: "worker complete",
+            reasoningSummary: [],
+            touchedFiles: ["changed.txt"],
+          };
+        },
+      });
+      try {
+        const execution = await runBridgeTask(buildTaskRequest({
+          cwd: repo,
+          stateCwd: repo,
+          prompt: "write a file",
+          write: true,
+          readOnly: false,
+          resumeLast: false,
+          jobId: "task-no-pipeline-diff",
+          mode: "default",
+          noPipeline: true,
+          backend: "codex",
+        }));
+
+        assert.equal(execution.exitStatus, 0);
+        assert.equal(runTurnCalls, 1);
+        assert.equal(fs.readFileSync(path.join(repo, "changed.txt"), "utf8"), "changed\n");
+        assert.deepEqual(execution.pipeline?.completedStages, ["diff"]);
+
+        const events = fs.readFileSync(execution.session.eventsPath, "utf8");
+        assert.match(events, /\[PIPELINE:diff\]/);
+        assert.match(events, /\[PIPELINE:diff:done\]/);
+        assert.match(events, /\[PIPELINE:done\]/);
+        assert.match(events, /\[DONE\].*1 files \| \+1 -0/);
+        assert.match(events, /workspace_diff: 1 files \| \+1 -0/);
+        assert.doesNotMatch(events, /\[PIPELINE:review\]/);
+        assert.doesNotMatch(events, /\[PIPELINE:check\]/);
+      } finally {
+        _resetCodexAdapterRuntimeForTest();
+      }
+    },
+  );
+});
+
+test("no-pipeline write task with no new work is incomplete despite preexisting diff", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-no-pipeline-empty-"));
+  const repo = path.join(tempRoot, "repo");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "dirty.txt"), "preexisting\n", "utf8");
+  const binDir = makeFakeCodexBin(tempRoot);
+
+  await withEnv(
+    {
+      CODEX_BRIDGE_PLUGIN_DATA: path.join(tempRoot, "plugin-data"),
+      CODEX_COMPANION_SESSION_ID: undefined,
+      HOME: path.join(tempRoot, "home"),
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+    async () => {
+      _setCodexAdapterRuntimeForTest({
+        async runTurn(cwd, options) {
+          assert.equal(cwd, repo);
+          assert.match(options.prompt, /make the requested edit/);
+          return {
+            status: 0,
+            threadId: "thread-no-pipeline-empty",
+            turnId: "turn-no-pipeline-empty",
+            finalMessage: "nothing changed",
+            reasoningSummary: [],
+            touchedFiles: [],
+          };
+        },
+      });
+      try {
+        const execution = await runBridgeTask(buildTaskRequest({
+          cwd: repo,
+          stateCwd: repo,
+          prompt: "make the requested edit",
+          write: true,
+          readOnly: false,
+          resumeLast: false,
+          jobId: "task-no-pipeline-empty",
+          mode: "default",
+          noPipeline: true,
+          backend: "codex",
+        }));
+
+        assert.equal(execution.exitStatus, 0);
+        assert.equal(execution.payload.phase, "incomplete");
+        assert.equal(execution.pipeline?.complete, false);
+        assert.equal(execution.pipeline?.noWorkReason, "no_files_touched");
+        assert.match(execution.pipeline?.missingItems?.[0] ?? "", /no_files_touched/);
+
+        const events = fs.readFileSync(execution.session.eventsPath, "utf8");
+        assert.match(events, /\[PIPELINE:diff\]/);
+        assert.match(events, /\[INCOMPLETE\]/);
+        assert.match(events, /no_files_touched/);
+        assert.doesNotMatch(events, /\[DONE\]/);
+      } finally {
+        _resetCodexAdapterRuntimeForTest();
+      }
     },
   );
 });

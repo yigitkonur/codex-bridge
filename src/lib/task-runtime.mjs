@@ -121,6 +121,7 @@ import {
 } from "./review-result.mjs";
 import { generateJobId, listJobs, upsertJob, writeJobFile } from "./state.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
+import { captureWorkFingerprint, hasWorkChangedSince } from "./work-delta.mjs";
 
 export function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
@@ -1565,9 +1566,13 @@ export async function runBridgeTask(request) {
       try {
         const sandboxType = info.turnParams.sandboxPolicy?.type ?? "unknown";
         const pipelineEnabled = [];
-        if (config.auto_review) pipelineEnabled.push("review");
-        if (config.post_task_prompt) pipelineEnabled.push("check");
-        if (request.noPipeline) pipelineEnabled.length = 0;
+        if (request.noPipeline) {
+          pipelineEnabled.push("diff");
+        } else if (config.auto_review || config.post_task_prompt) {
+          pipelineEnabled.push("diff");
+          if (config.auto_review) pipelineEnabled.push("review");
+          if (config.post_task_prompt) pipelineEnabled.push("check");
+        }
         logEvent(s, formatDirectivesEvent(s, {
           mode: isPlanMode ? "plan" : "default",
           effort: info.turnParams.effort ?? "?",
@@ -2039,6 +2044,7 @@ export async function runBridgeTask(request) {
   // report "commits landed before the error" via [PARTIAL]. Cheap (two git
   // spawns, 10s timeouts); silently returns an empty snapshot off a repo.
   const turnStartSnapshot = captureGitSnapshot(request.cwd);
+  const turnStartWorkFingerprint = captureWorkFingerprint(request.cwd);
   // v1.5.0 — retries recorded for the handoff envelope when the retry budget
   // is exhausted. Each entry: { attemptIso, origin, errorCode, backoffMs, outcome }.
   const retryHistory = [];
@@ -2370,20 +2376,28 @@ export async function runBridgeTask(request) {
   }
 
   // If execution completed (not plan), run auto-pipeline. `--no-pipeline`
-  // from the caller short-circuits the pipeline entirely — useful when the
-  // orchestrator owns completion checking or simply wants a single-turn
-  // execute with no silent review/fix passes behind it. Equivalent to
-  // setting auto_review:false AND post_task_prompt:"" for this one run,
-  // without requiring a config.yaml edit.
+  // keeps the diff/final-reporting stage but disables validation turns
+  // (review/fix/check) for this one run. That preserves the observable
+  // "what changed for this task?" contract without spending another LLM turn.
   if (request.noPipeline) {
-    logNdjson(session, "PIPELINE_SKIPPED", null, { reason: "--no-pipeline flag" });
+    logNdjson(session, "PIPELINE_SKIPPED", null, {
+      reason: "--no-pipeline flag",
+      skippedStages: ["review", "fix", "check"],
+      retainedStages: ["diff"],
+    });
   }
-  if (result.exitStatus === 0 && !request.noPipeline && (config.auto_review || config.post_task_prompt)) {
+  const shouldRunPipeline =
+    result.exitStatus === 0 &&
+    (request.noPipeline || config.auto_review || config.post_task_prompt);
+  if (shouldRunPipeline) {
+    const pipelineConfig = request.noPipeline
+      ? { ...config, auto_review: false, post_task_prompt: "" }
+      : config;
     const pipelineResult = await runAutoPipeline({
       session,
       threadId: result.threadId,
       cwd: request.cwd,
-      config,
+      config: pipelineConfig,
       scriptPath: SCRIPT_PATH,
       rootDir: ROOT_DIR,
       runAppServerTurn,
@@ -2398,6 +2412,9 @@ export async function runBridgeTask(request) {
         ?? (Number(config.pipeline_stage_ms) > 0 ? Number(config.pipeline_stage_ms) : null),
       totalTimeoutMs: request.pipelineTotalMs
         ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null),
+      expectedWriteWork: Boolean(request.write),
+      turnStartWorkFingerprint,
+      turnTouchedFiles: result.payload?.touchedFiles ?? [],
     });
     if (pipelineResult?.complete === false) {
       // Branch on whether the pipeline FINISHED incomplete (Codex's check
@@ -2416,7 +2433,7 @@ export async function runBridgeTask(request) {
       const nextAction = pipelineErrored
         ? {
             command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
-            description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`,
+            description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, rerun with a larger --pipeline-stage-timeout-ms / --pipeline-total-timeout-ms budget.`,
           }
         : {
             command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
@@ -2436,9 +2453,36 @@ export async function runBridgeTask(request) {
     return { ...result, session, pipeline: pipelineResult };
   }
 
-  // No pipeline — write [DONE] directly
+  // No configured pipeline — write a terminal event directly.
   const diff = captureGitDiff(request.cwd, session);
   mirrorDiffToRegistry(request.jobId ?? request.taskId ?? null, diff.diffPath);
+  const taskTouchedFiles = result.payload?.touchedFiles ?? [];
+  if (request.write && !hasWorkChangedSince(request.cwd, turnStartWorkFingerprint, taskTouchedFiles)) {
+    const missingItems = ["no_files_touched: Write-mode task completed without touching files or changing git state."];
+    logEvent(session, formatIncompleteEvent(session, {
+      diffStat: "0 touched files",
+      diffPath: diff.diffPath,
+      verdict: "no_files_touched",
+      findingCount: 0,
+      failingStage: "diff",
+      missingItems,
+      scriptPath: SCRIPT_PATH,
+      jobId: request.jobId ?? null,
+      cwd: request.cwd,
+      stateCwd,
+    }));
+    logNdjson(session, "NO_WORK", null, {
+      reason: "no_files_touched",
+      expectedWriteWork: true,
+      touchedFiles: taskTouchedFiles,
+    });
+    markTerminalEmitted();
+    setPhase("incomplete", {
+      command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
+      description: "Write-mode task finished without touching files or changing git state.",
+    }, { diffPath: diff.diffPath, monitor, missingItems, noWorkReason: "no_files_touched" });
+    return { ...result, session, diff, noWorkReason: "no_files_touched" };
+  }
   logEvent(session, formatDoneEvent(session, {
     duration: 0,
     diffStat: diff.diffStat,
@@ -2449,6 +2493,8 @@ export async function runBridgeTask(request) {
     jobId: request.jobId ?? null,
     cwd: request.cwd,
     stateCwd,
+    workspaceDiff: diff,
+    touchedFiles: taskTouchedFiles,
   }));
   markTerminalEmitted();
   setPhase("done", {

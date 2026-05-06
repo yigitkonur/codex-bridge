@@ -101,8 +101,8 @@ When adding or changing a handler:
   waiting for `respond`.
 - Writes `TURN_PARAMS`, `DIRECTIVES`, item-completion NDJSON, heartbeats,
   checkpoints, terminal events, partial/handoff data, and pipeline events.
-- Runs the auto-pipeline only when `--no-pipeline` is not set and at least one
-  configured stage is enabled (`auto_review` or `post_task_prompt`).
+- Keeps the diff-reporting stage for `--no-pipeline` runs while skipping
+  review/fix/check, and reports write-mode no-op runs as incomplete.
 
 Do not bypass `runBridgeTask` from task paths. `task-worker` intentionally calls
 it so foreground and background runs produce the same session artifacts.

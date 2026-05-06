@@ -4,6 +4,7 @@ import {
   logNdjson,
   logEvent,
   captureGitDiff,
+  summarizeGitDiff,
   writePlan,
   writeReview,
   classifyPlanContent,
@@ -18,6 +19,7 @@ import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } f
 import { extractUpstreamRequestId } from "../../lib/cli-errors.mjs";
 import { parseNativeReviewText } from "../../lib/review-result.mjs";
 import { readMeta } from "../../lib/registry.mjs";
+import { hasWorkChangedSince } from "../../lib/work-delta.mjs";
 
 // Default budgets. Runtime callers may override via `stageTimeoutMs` /
 // `totalTimeoutMs` on runAutoPipeline options, which in turn resolve from
@@ -67,6 +69,9 @@ export async function runAutoPipeline(options) {
     totalTimeoutMs = null,
     taskMode = null,
     assistantMessage = null,
+    expectedWriteWork = false,
+    turnStartWorkFingerprint = null,
+    turnTouchedFiles = [],
   } = options;
 
   // Resolve per-stage and total budgets: caller override → built-in default.
@@ -82,10 +87,15 @@ export async function runAutoPipeline(options) {
     typeof taskMeta?.base_sha === "string" && taskMeta.base_sha
       ? taskMeta.base_sha
       : (typeof taskMeta?.base_ref === "string" && taskMeta.base_ref ? taskMeta.base_ref : null);
-  const captureTaskDiff = () =>
-    taskDiffBaseRef
-      ? captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef })
-      : captureGitDiff(cwd, session);
+  const captureTaskDiff = (extraTouchedFiles = []) => {
+    if (taskDiffBaseRef) {
+      return captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef });
+    }
+    if (isCleanWorkFingerprint(turnStartWorkFingerprint)) {
+      return captureGitDiff(cwd, session);
+    }
+    return summarizeTouchedFiles(uniqueStrings([...turnTouchedFiles, ...extraTouchedFiles]));
+  };
 
   const remainingPipelineMs = () => totalMs - (Date.now() - startTime);
 
@@ -487,17 +497,32 @@ export async function runAutoPipeline(options) {
     }
 
     // Stage 4: Final git diff and notification
-    const finalDiff = captureTaskDiff();
+    const finalDiff = captureTaskDiff(fixFilesTouched);
+    const workspaceDiff = finalDiff.diffPath ? summarizeGitDiff(cwd) : captureGitDiff(cwd, session);
     const duration = Math.round((Date.now() - startTime) / 1000);
-    const missingItems = Array.isArray(completionResult.missing_items)
+    let missingItems = Array.isArray(completionResult.missing_items)
       ? completionResult.missing_items
       : [];
-    const completionSummary = typeof completionResult.summary === "string"
+    let completionSummary = typeof completionResult.summary === "string"
       ? completionResult.summary
       : null;
-    const complete = Boolean(completionResult.complete);
+    let complete = Boolean(completionResult.complete);
+    let failingStage = complete ? null : incompleteStage;
+    let finalVerdict = reviewVerdict;
+    let noWorkReason = null;
+    if (
+      expectedWriteWork &&
+      !hasWorkChangedSince(cwd, turnStartWorkFingerprint, uniqueStrings([...turnTouchedFiles, ...fixFilesTouched]))
+    ) {
+      const noWorkItem = "no_files_touched: Write-mode task completed without touching files or changing git state.";
+      missingItems = missingItems.includes(noWorkItem) ? missingItems : [noWorkItem, ...missingItems];
+      completionSummary = "no-files-touched";
+      complete = false;
+      failingStage = "diff";
+      finalVerdict = "no_files_touched";
+      noWorkReason = "no_files_touched";
+    }
     const partial = !complete;
-    const failingStage = partial ? incompleteStage : null;
     const completion = normalizeCompletionResult(completionResult, missingItems, completionSummary, complete);
 
     if (complete) {
@@ -507,6 +532,10 @@ export async function runAutoPipeline(options) {
         files: finalDiff.files,
         config: { model: config.model, effort: config.effort, modeFlow: "plan→default" },
         diffPath: finalDiff.diffPath,
+        taskDiff: finalDiff,
+        workspaceDiff,
+        workspaceWasClean: isCleanWorkFingerprint(turnStartWorkFingerprint),
+        touchedFiles: uniqueStrings([...turnTouchedFiles, ...fixFilesTouched]),
         scriptPath,
         jobId,
         cwd,
@@ -516,7 +545,7 @@ export async function runAutoPipeline(options) {
       logEvent(session, formatIncompleteEvent(session, {
         diffStat: finalDiff.diffStat,
         diffPath: finalDiff.diffPath,
-        verdict: reviewVerdict,
+        verdict: finalVerdict,
         findingCount: reviewFindingCount,
         failingStage,
         missingItems,
@@ -542,6 +571,7 @@ export async function runAutoPipeline(options) {
       completionSummary,
       completion,
       touchedFiles: fixFilesTouched,
+      noWorkReason,
     });
 
     // Symmetric terminal tag so `events --filter PIPELINE` sees both edges of
@@ -564,6 +594,7 @@ export async function runAutoPipeline(options) {
       completedStages,
       duration,
       diff: finalDiff,
+      workspaceDiff,
       failing_stage: failingStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
@@ -574,6 +605,7 @@ export async function runAutoPipeline(options) {
       missingItems,
       completionSummary,
       touchedFiles: fixFilesTouched,
+      noWorkReason,
     };
 
   } catch (error) {
@@ -699,6 +731,20 @@ function normalizeCompletionResult(completionResult, missingItems, completionSum
     complete,
     missing_items: missingItems,
     summary: completionSummary,
+  };
+}
+
+function isCleanWorkFingerprint(fingerprint) {
+  return fingerprint?.signature === JSON.stringify({ status: "", diff: "", untrackedStats: [] });
+}
+
+function summarizeTouchedFiles(files) {
+  const count = Array.isArray(files) ? files.length : 0;
+  const noun = count === 1 ? "touched file" : "touched files";
+  return {
+    diffStat: `${count} ${noun}`,
+    files: uniqueStrings(files).map((file) => `M ${file} (+? -?)`),
+    diffPath: "",
   };
 }
 
