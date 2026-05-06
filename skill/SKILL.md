@@ -83,15 +83,26 @@ Two kinds of IDs flow through every task. Use the right one or commands fail:
 
 Two patterns — pick by task shape.
 
-**Sync (short, self-contained tasks):** one call, the envelope tells you what's next.
+**Sync (short, self-contained tasks):** use `--wait` for one command that
+returns when Codex reaches a terminal state or needs attention. The envelope
+includes the full assistant message under `result.lastAssistantMessage`.
 ```bash
-node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --mode default "Rename getUserProfile to fetchUserProfile across the repo" \
-  | jq '.result.phase, .result.jobId'
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --wait --read-only "review src/utils.ts" \
+  | jq '.result.terminalTag, .result.lastAssistantMessage'
 ```
 
-Sync `task --json` **blocks through the entire auto-pipeline** (review + completion check). With the default `auto_review: true`, a prompt with no code work can still wait for the reviewer stage before returning. For interactive or low-latency work, prefer the async pattern below; pass `--no-pipeline` only when you will run review/completion checks yourself.
+`task --wait` dispatches in the background, follows the events stream, and
+returns immediately on `[QUESTION]` or `[PLAN]`/`PLAN_READY` with `next_action`
+for the orchestrator. It honors `--timeout-ms` (default: 30 min). The older
+foreground `task --json` path still blocks through the entire auto-pipeline
+(review + completion check); use `--wait` for synchronous orchestrator flows.
 
 **Async (long tasks, plan approval, questions via `requestUserInput`):** launch in the background and tail the events file with Monitor. Every `task --json` (background or foreground) returns `result.monitor.tool_hint` — pass it directly to Claude Code's Monitor tool. Full pattern in "Starting a Task" below.
+
+```bash
+JOB=$(node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --background --json "your prompt here" | jq -r '.result.jobId')
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs wait "$JOB" --json
+```
 
 Every `--json` call returns a uniform envelope:
 ```json

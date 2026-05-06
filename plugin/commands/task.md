@@ -13,7 +13,7 @@ $ARGUMENTS
 Execution mode:
 
 - If the request includes `--background`, preserve it and route to the subagent.
-- If the request includes `--wait`, route to the subagent in foreground mode and do not forward `--wait`.
+- If the request includes `--wait`, preserve it and route to the subagent; the bridge blocks until DONE/ERROR/INCOMPLETE/PLAN_READY/QUESTION and returns the rich envelope.
 - If neither flag is present, default to foreground for a short bounded task and background for a broad or multi-step task.
 - If the request includes `--resume`, `--resume-last`, or `--fresh`, preserve that routing choice.
 - If the request includes `--group <name>`, preserve it; use `/codex-bridge:status --group <name>` for that wave.

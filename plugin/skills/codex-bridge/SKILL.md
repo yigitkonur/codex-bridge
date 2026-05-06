@@ -131,6 +131,25 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" status <task_id> --json | 
 
 The active backend's `capabilities` object names the booleans you should branch on (`supports_questions`, `supports_resume`, `supports_worktree`, `supports_artifact_registry`, …). v2.x currently ships only the codex backend; future adapters must declare their own. Don't hard-code "codex behavior" in slash commands — branch on the capability you actually need.
 
+## Quick Start
+
+For one synchronous task, prefer `task --wait`. It dispatches the worker in the
+background, follows the events stream, returns when Codex reaches a terminal
+state, and includes the full assistant message as
+`result.lastAssistantMessage`.
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --wait --read-only "review src/utils.ts"
+```
+
+For multiple parallel jobs, launch in the background and fan in with `wait` or
+`status --watch`:
+
+```bash
+JOB=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "your prompt here" | jq -r '.result.jobId')
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" wait "$JOB" --json
+```
+
 ## Identifiers
 
 Two IDs flow through every task. Use the right one or commands fail:

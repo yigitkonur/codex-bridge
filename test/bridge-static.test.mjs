@@ -46,6 +46,28 @@ test("wait terminal matching is anchored to event headers", () => {
   assert.doesNotMatch(bridge, /\*"\[DONE\]"\*\|\*"\[ERROR\]"\*\|\*"\[INCOMPLETE\]"\*\|\*"\[PLAN\]"\*/);
 });
 
+test("task --wait dispatches background and follows events", () => {
+  const handleTask = bridge.match(/async function handleTask\(argv\)[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  assert.match(handleTask, /"timeout-ms"/);
+  assert.match(handleTask, /"wait"/);
+  assert.match(handleTask, /options\.background \|\| options\.wait/);
+  assert.match(handleTask, /waitForBackgroundTaskCompletion/);
+  assert.match(handleTask, /json: true/);
+
+  const waitFlow = bridge.match(/async function waitForBackgroundTaskCompletion[\s\S]*?async function handleReviewCommand/)?.[0] ?? "";
+  const waitResult = bridge.match(/function buildTaskWaitResult[\s\S]*?async function waitForBackgroundTaskCompletion/)?.[0] ?? "";
+  assert.match(waitFlow, /waitForTerminalEvent\(eventsPath, TASK_WAIT_EVENT_REGEX, remainingMs\)/);
+  assert.match(waitFlow, /TASK_WAIT_TIMEOUT/);
+  assert.match(waitFlow, /readStoredJob\(workspaceRoot, job\.id\)/);
+  assert.match(waitResult, /lastAssistantMessage/);
+  assert.match(waitResult, /rawOutput/);
+  assert.match(waitResult, /terminalTag/);
+  assert.match(waitResult, /events_summary/);
+  assert.match(waitResult, /artifacts/);
+  assert.match(waitResult, /PLAN_READY/);
+  assert.match(waitResult, /QUESTION/);
+});
+
 test("task retry binds same-thread retry to the failed thread id", () => {
   assert.doesNotMatch(bridge, /const retryResult = await executeTaskRun\(bridgeRequest\);/);
   assert.match(bridge, /resumeThreadId: result\.threadId/);

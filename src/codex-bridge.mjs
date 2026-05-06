@@ -132,6 +132,8 @@ import {
   resolveSessionDir,
   initSession,
   findSession,
+  readNdjson,
+  readEvents,
   writeSessionAliases,
   logNdjson,
   logEvent,
@@ -694,10 +696,11 @@ function extractItemText(item) {
 // table as the CLI contract and update it in the same commit as any flag move.
 const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--group <name>] [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
+    synopsis: "task [--group <name>] [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--wait] [--timeout-ms <ms>] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --wait dispatches in the background, blocks until DONE/ERROR/INCOMPLETE/CANCELLED, or returns immediately on PLAN_READY/QUESTION, and emits a rich JSON envelope with lastAssistantMessage; --timeout-ms bounds the wait (default 30 min). --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
+      'codex-bridge task --wait --read-only "review src/foo.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
       "codex-bridge task --prompt-file prompt.md --effort high --write",
       'codex-bridge task --resume-last "Continue the previous thread"',
@@ -3001,6 +3004,165 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
 }
 
+const DEFAULT_TASK_WAIT_TIMEOUT_MS = 1_800_000;
+const TASK_WAIT_EVENT_REGEX = /^\[(DONE|ERROR|INCOMPLETE|CANCELLED|PLAN|PLAN_READY|QUESTION)\]/m;
+
+async function waitForTaskJobThread(workspaceRoot, jobId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastJob = null;
+  while (Date.now() < deadline) {
+    lastJob = readStoredJob(workspaceRoot, jobId) ?? lastJob;
+    if (lastJob?.threadId) {
+      return { job: lastJob, timedOut: false };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return { job: lastJob, timedOut: true };
+}
+
+function firstNdjsonEntryByTag(ndjsonPath, tag) {
+  const entries = readNdjson(ndjsonPath);
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index]?.tag === tag) return entries[index];
+  }
+  return null;
+}
+
+function buildTaskWaitInterrupt({ tag, line, storedJob, artifacts, cwd }) {
+  if (tag === "QUESTION") {
+    const question = firstNdjsonEntryByTag(artifacts.ndjson, "QUESTION");
+    const requestId = question?.data?.requestId ?? line?.split(/\s+/)[2] ?? null;
+    return {
+      kind: "QUESTION",
+      request_id: requestId,
+      questions: question?.data?.questions ?? [],
+      next_action: requestId
+        ? {
+            respond: `${bridgeCommand("respond", cwd)} ${requestId} --answer "<answer>"`,
+          }
+        : null,
+    };
+  }
+  if (tag === "PLAN" || tag === "PLAN_READY") {
+    return {
+      kind: "PLAN_READY",
+      planPath: storedJob?.result?.planPath ?? storedJob?.result?.plan_path ?? artifacts.plan,
+      next_action: storedJob?.result?.next_action ?? {
+        send: storedJob?.threadId
+          ? `${bridgeCommand("send", cwd)} ${storedJob.threadId} --mode default "Implement the plan."`
+          : null,
+      },
+    };
+  }
+  return null;
+}
+
+function summarizeTaskWaitEvents(eventsPath) {
+  const blocks = readEvents(eventsPath);
+  const counts = {};
+  for (const block of blocks) {
+    const match = /^\[([^\]]+)\]/.exec(block);
+    if (!match) continue;
+    const tag = match[1].split(":")[0].toUpperCase();
+    counts[tag] = (counts[tag] ?? 0) + 1;
+  }
+  return {
+    total: blocks.length,
+    tags: counts,
+  };
+}
+
+function buildTaskWaitResult({ job, storedJob, terminal, startedAt, eventsPath, cwd }) {
+  const threadId = storedJob?.threadId ?? job.threadId ?? null;
+  const sessionDir = eventsPath ? path.dirname(eventsPath) : null;
+  const artifacts = {
+    events: eventsPath,
+    ndjson: sessionDir && threadId ? path.join(sessionDir, `${threadId}.ndjson`) : null,
+    diff: sessionDir && threadId ? path.join(sessionDir, `${threadId}.diff`) : null,
+    plan: sessionDir && threadId ? path.join(sessionDir, `${threadId}.plan.md`) : null,
+    log: storedJob?.logFile ?? job.logFile ?? null,
+  };
+  const rawTag = terminal.tag;
+  const terminalTag = rawTag === "PLAN" ? "PLAN_READY" : rawTag;
+  const interrupt = rawTag === "QUESTION" || rawTag === "PLAN" || rawTag === "PLAN_READY"
+    ? buildTaskWaitInterrupt({ tag: rawTag, line: terminal.line, storedJob, artifacts, cwd })
+    : null;
+  const lastAssistantMessage =
+    typeof storedJob?.result?.rawOutput === "string"
+      ? storedJob.result.rawOutput
+      : typeof storedJob?.result?.lastAssistantMessage === "string"
+        ? storedJob.result.lastAssistantMessage
+        : null;
+
+  return {
+    jobId: job.id,
+    threadId,
+    terminalTag,
+    duration_ms: Date.now() - startedAt,
+    lastAssistantMessage,
+    events_summary: summarizeTaskWaitEvents(eventsPath),
+    artifacts,
+    ...(interrupt ? { interrupt, next_action: interrupt.next_action ?? null } : {}),
+  };
+}
+
+async function waitForBackgroundTaskCompletion({ cwd, workspaceRoot, job, timeoutMs, startedAt }) {
+  const threadWait = await waitForTaskJobThread(workspaceRoot, job.id, timeoutMs);
+  if (threadWait.timedOut || !threadWait.job?.threadId) {
+    throw new CliError(
+      `Task ${job.id} did not report a thread id within ${Math.round(timeoutMs / 1000)}s.`,
+      {
+        class: "timeout",
+        code: "TASK_WAIT_TIMEOUT",
+        retryable: true,
+        details: {
+          jobId: job.id,
+          phase: threadWait.job?.phase ?? job.phase ?? "queued",
+          status: threadWait.job?.status ?? job.status ?? "queued",
+          logFile: threadWait.job?.logFile ?? job.logFile ?? null,
+        },
+        suggestion: `Run \`status ${job.id}\` or inspect the job log for partial state.`
+      }
+    );
+  }
+
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+  const eventsPath = path.join(sessionDir, `${threadWait.job.threadId}.events`);
+  const elapsedMs = Date.now() - startedAt;
+  const remainingMs = Math.max(1, timeoutMs - elapsedMs);
+  const terminal = await waitForTerminalEvent(eventsPath, TASK_WAIT_EVENT_REGEX, remainingMs);
+  const storedJob = readStoredJob(workspaceRoot, job.id) ?? threadWait.job;
+  if (terminal.timedOut) {
+    throw new CliError(
+      `No terminal or interrupt event for task ${job.id} within ${Math.round(timeoutMs / 1000)}s.`,
+      {
+        class: "timeout",
+        code: "TASK_WAIT_TIMEOUT",
+        retryable: true,
+        details: {
+          jobId: job.id,
+          threadId: threadWait.job.threadId,
+          status: storedJob?.status ?? null,
+          phase: storedJob?.phase ?? null,
+          eventsPath,
+          logFile: storedJob?.logFile ?? null,
+        },
+        suggestion: `Run \`events ${job.id} --follow\` or \`status ${job.id}\` to inspect partial state.`
+      }
+    );
+  }
+
+  return buildTaskWaitResult({
+    job,
+    storedJob,
+    terminal,
+    startedAt,
+    eventsPath,
+    cwd: storedJob?.request?.cwd ?? cwd,
+  });
+}
+
 async function handleReviewCommand(argv, config) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -4456,9 +4618,10 @@ async function handleTask(argv) {
       "turn-plan-ms", "turn-default-ms",
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
       "question-timeout-ms",
-      "brief", "intercepted-from", "group"
+      "timeout-ms",
+      "brief", "intercepted-from"
     ],
-    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "wait", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
       m: "model"
     }
@@ -4479,6 +4642,7 @@ async function handleTask(argv) {
   const pipelineStageOverride = parsePositiveMsOption("--pipeline-stage-timeout-ms", options["pipeline-stage-timeout-ms"]);
   const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
+  const taskWaitTimeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: DEFAULT_TASK_WAIT_TIMEOUT_MS });
   const noPipeline = Boolean(options["no-pipeline"]);
   const group = options.group != null ? String(options.group).trim() : null;
   if (options.group != null && !group) {
@@ -4655,7 +4819,7 @@ async function handleTask(argv) {
     }
   }
 
-  if (options.background) {
+  if (options.background || options.wait) {
     ensureCodexAvailable(cwd);
 
     const request = buildTaskRequest({
@@ -4681,6 +4845,20 @@ async function handleTask(argv) {
       group
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
+    if (options.wait) {
+      const waitPayload = await waitForBackgroundTaskCompletion({
+        cwd: stateCwd,
+        workspaceRoot,
+        job,
+        timeoutMs: taskWaitTimeoutMs,
+        startedAt,
+      });
+      emitSuccess("task", waitPayload, JSON.stringify(waitPayload, null, 2) + "\n", {
+        json: true,
+        startedAt
+      });
+      return;
+    }
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
       json: options.json,
       startedAt
