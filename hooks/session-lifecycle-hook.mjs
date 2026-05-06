@@ -1,10 +1,15 @@
 #!/usr/bin/env node
+// Kill switch: CODEX_BRIDGE_HOOK_DISABLE=session-lifecycle-hook (or =all).
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+import { isDisabled } from "./lib/feature-gate.mjs";
+
+if (isDisabled("session-lifecycle-hook")) process.exit(0);
 
 const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
