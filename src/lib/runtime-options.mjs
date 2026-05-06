@@ -28,6 +28,8 @@ const DEFAULT_CONFIG = {
   // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
   // sandbox`. See skill/references/config-reference.md for the full matrix.
   sandbox_policy: "danger-full-access",
+  sandbox_enforce: false,
+  forbid_codex_direct: true,
   // When true, prepend a strong orchestrator directive telling Codex to skip
   // any internal planning / ceremony / meta-skill chains it would normally
   // walk before execution (framework-agnostic — covers any skill that

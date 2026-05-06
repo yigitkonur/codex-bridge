@@ -129,8 +129,7 @@ function consumePendingRewakeSignals(input) {
 
 function main() {
   if (isDisabled()) {
-    process.stdout.write('{"continue":true}');
-    return;
+    process.exit(0);
   }
 
   let input = {};

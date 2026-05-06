@@ -1,8 +1,8 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
-import fs16 from "node:fs";
-import os7 from "node:os";
-import path14 from "node:path";
+import fs17 from "node:fs";
+import os8 from "node:os";
+import path15 from "node:path";
 import process10 from "node:process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -8226,6 +8226,8 @@ var DEFAULT_CONFIG = {
   // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
   // sandbox`. See skill/references/config-reference.md for the full matrix.
   sandbox_policy: "danger-full-access",
+  sandbox_enforce: false,
+  forbid_codex_direct: true,
   // When true, prepend a strong orchestrator directive telling Codex to skip
   // any internal planning / ceremony / meta-skill chains it would normally
   // walk before execution (framework-agnostic — covers any skill that
@@ -8365,6 +8367,8 @@ var CONFIG_SCHEMA = {
   allow_questions: { type: "boolean" },
   session_dir: { type: "string" },
   sandbox_policy: { type: "enum", values: ["danger-full-access", "workspace-write", "read-only"] },
+  sandbox_enforce: { type: "boolean" },
+  forbid_codex_direct: { type: "boolean" },
   skip_meta_skills: { type: "boolean" },
   command_failure_circuit_breaker: { type: "boolean" },
   idle_timeout_ms: { type: "positive-number" },
@@ -9560,10 +9564,18 @@ function renderSetupReport(report) {
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
+    `- monitor hook mirror: ${report.monitorHookInstalled ? "installed" : "not installed"} (${report.monitorHookSettingsPath ?? "n/a"})`,
+    `- sandbox enforcement: ${report.sandboxEnforcementInstalled ? "installed" : "not installed"} (${report.sandboxEnforcementSettingsPath ?? "n/a"})`,
     ""
   ];
   if (report.reviewGateSuppressionReason) {
     lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
+  }
+  if (report.monitorHookSettingsParseError) {
+    lines.push(`Monitor hook settings warning: ${report.monitorHookSettingsParseError}`, "");
+  }
+  if (report.sandboxEnforcementSettingsParseError) {
+    lines.push(`Sandbox enforcement settings warning: ${report.sandboxEnforcementSettingsParseError}`, "");
   }
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");
@@ -11242,6 +11254,125 @@ async function runIterateLoop(options = {}) {
   };
 }
 
+// src/lib/sandbox-enforcement.mjs
+import fs16 from "node:fs";
+import os7 from "node:os";
+import path14 from "node:path";
+var SANDBOX_ENFORCEMENT_MARKER_KEY = "_codex_bridge_sandbox_enforce";
+var SANDBOX_ENFORCEMENT_MARKER_VALUE = "codex-bridge";
+var SANDBOX_ENFORCEMENT_DENY_RULES = Object.freeze([
+  {
+    tool: "Bash",
+    matcher: { command: ".*codex-bridge(?:\\.mjs)?\\s+task\\b.*--read-only" },
+    reason: "sandbox.enforce: true (workspace policy) - --read-only forbidden",
+    [SANDBOX_ENFORCEMENT_MARKER_KEY]: SANDBOX_ENFORCEMENT_MARKER_VALUE
+  },
+  {
+    tool: "Bash",
+    matcher: {
+      command: ".*codex\\s+(?:exec\\s+)?.*(?:--sandbox(?:\\s+|=)|-s(?:\\s+|=))(?:read-only|workspace-write)"
+    },
+    reason: "Direct codex CLI sandbox downgrade forbidden",
+    [SANDBOX_ENFORCEMENT_MARKER_KEY]: SANDBOX_ENFORCEMENT_MARKER_VALUE
+  }
+]);
+function resolveClaudeSettingsPath() {
+  return path14.join(os7.homedir(), ".claude", "settings.json");
+}
+function readClaudeSettings(settingsPath = resolveClaudeSettingsPath()) {
+  if (!fs16.existsSync(settingsPath)) {
+    return { exists: false, settings: {}, parseError: null };
+  }
+  try {
+    const raw = fs16.readFileSync(settingsPath, "utf8");
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        exists: true,
+        settings: null,
+        parseError: "settings file must contain a JSON object"
+      };
+    }
+    return { exists: true, settings: parsed, parseError: null };
+  } catch (err) {
+    return {
+      exists: true,
+      settings: null,
+      parseError: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+function writeClaudeSettings(settingsPath, settings) {
+  fs16.mkdirSync(path14.dirname(settingsPath), { recursive: true });
+  const tmpPath = `${settingsPath}.tmp-${process.pid}-${Date.now()}`;
+  fs16.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
+`, "utf8");
+  fs16.renameSync(tmpPath, settingsPath);
+}
+function hasSandboxEnforcement(settings) {
+  const deny = settings?.permissions?.deny;
+  return Array.isArray(deny) && deny.filter(
+    (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] === SANDBOX_ENFORCEMENT_MARKER_VALUE
+  ).length === SANDBOX_ENFORCEMENT_DENY_RULES.length;
+}
+function getSandboxEnforcementStatus(settingsPath = resolveClaudeSettingsPath()) {
+  const read = readClaudeSettings(settingsPath);
+  return {
+    installed: read.settings ? hasSandboxEnforcement(read.settings) : false,
+    settingsPath,
+    settingsExists: read.exists,
+    settingsParseError: read.parseError,
+    markerKey: SANDBOX_ENFORCEMENT_MARKER_KEY
+  };
+}
+function assertSettingsShape(settingsPath, read, action) {
+  if (read.parseError) {
+    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: ${read.parseError}.`);
+  }
+  const settings = read.settings ?? {};
+  if (settings.permissions == null) settings.permissions = {};
+  if (!settings.permissions || typeof settings.permissions !== "object" || Array.isArray(settings.permissions)) {
+    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: permissions must be a JSON object.`);
+  }
+  if (settings.permissions.deny == null) settings.permissions.deny = [];
+  if (!Array.isArray(settings.permissions.deny)) {
+    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: permissions.deny must be an array.`);
+  }
+  return settings;
+}
+function installSandboxEnforcement(settingsPath = resolveClaudeSettingsPath()) {
+  const read = readClaudeSettings(settingsPath);
+  const settings = assertSettingsShape(settingsPath, read, "install");
+  const alreadyInstalled = hasSandboxEnforcement(settings);
+  if (!alreadyInstalled) {
+    settings.permissions.deny = settings.permissions.deny.filter(
+      (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] !== SANDBOX_ENFORCEMENT_MARKER_VALUE
+    );
+    settings.permissions.deny.push(...SANDBOX_ENFORCEMENT_DENY_RULES);
+    writeClaudeSettings(settingsPath, settings);
+  }
+  return {
+    alreadyInstalled,
+    status: getSandboxEnforcementStatus(settingsPath)
+  };
+}
+function uninstallSandboxEnforcement(settingsPath = resolveClaudeSettingsPath()) {
+  const read = readClaudeSettings(settingsPath);
+  const settings = assertSettingsShape(settingsPath, read, "uninstall");
+  const before = settings.permissions.deny.length;
+  settings.permissions.deny = settings.permissions.deny.filter(
+    (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] !== SANDBOX_ENFORCEMENT_MARKER_VALUE
+  );
+  const removed = before - settings.permissions.deny.length;
+  if (removed > 0 || !read.exists) {
+    writeClaudeSettings(settingsPath, settings);
+  }
+  return {
+    removed,
+    status: getSandboxEnforcementStatus(settingsPath)
+  };
+}
+
 // src/codex-bridge.mjs
 function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
   return {
@@ -11256,8 +11387,8 @@ function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, de
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
   try {
-    if (!fs16.existsSync(diffPath)) return null;
-    return writeDiffArtifact(taskId, fs16.readFileSync(diffPath, "utf8"));
+    if (!fs17.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs17.readFileSync(diffPath, "utf8"));
   } catch {
     return null;
   }
@@ -11281,20 +11412,20 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path14.join(os7.homedir(), ".codex-bridge");
-    fs16.mkdirSync(logDir, { recursive: true });
-    const logFile = path14.join(logDir, "auto-update.log");
+    const logDir = path15.join(os8.homedir(), ".codex-bridge");
+    fs17.mkdirSync(logDir, { recursive: true });
+    const logFile = path15.join(logDir, "auto-update.log");
     try {
-      const stat = fs16.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs16.truncateSync(logFile, 0);
+      const stat = fs17.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs17.truncateSync(logFile, 0);
     } catch {
     }
-    const fd = fs16.openSync(logFile, "a");
+    const fd = fs17.openSync(logFile, "a");
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-      fs16.writeSync(fd, banner);
+      fs17.writeSync(fd, banner);
       const child = spawn3(
         "npx",
         ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
@@ -11306,7 +11437,7 @@ function spawnDetachedAutoApply(targetVersion) {
       );
       child.on("error", () => {
         try {
-          fs16.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+          fs17.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
 `, "utf8");
         } catch {
         }
@@ -11314,19 +11445,19 @@ function spawnDetachedAutoApply(targetVersion) {
       child.unref();
     } finally {
       try {
-        fs16.closeSync(fd);
+        fs17.closeSync(fd);
       } catch {
       }
     }
   } catch {
   }
 }
-var SCRIPT_DIR = path14.dirname(fileURLToPath2(import.meta.url));
-var SCRIPT_PATH = path14.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs16.existsSync(path14.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path14.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path14.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path14.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path14.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var SCRIPT_DIR = path15.dirname(fileURLToPath2(import.meta.url));
+var SCRIPT_PATH = path15.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs17.existsSync(path15.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path15.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path15.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path15.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path15.join(ROOT_DIR, "templates", "plan-enforcement.md");
 function shellQuote2(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -11391,7 +11522,7 @@ var DEVELOPER_INSTRUCTIONS_FALLBACK = {
 function loadDeveloperInstructions(mode) {
   const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
   try {
-    return fs16.readFileSync(templatePath, "utf8");
+    return fs17.readFileSync(templatePath, "utf8");
   } catch {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
@@ -11580,8 +11711,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path15 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path15}`.trim();
+      const path16 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path16}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -11895,17 +12026,17 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path14.resolve(process10.cwd(), options.cwd) : process10.cwd();
+  return options.cwd ? path15.resolve(process10.cwd(), options.cwd) : process10.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path14.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path15.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs16.existsSync(lockPath);
+  let lockExists = fs17.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -11916,7 +12047,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs16.writeFileSync(
+        fs17.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -11952,7 +12083,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs16.writeFileSync(
+      fs17.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -11965,7 +12096,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs16.rmSync(lockPath, { force: true });
+      fs17.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -12015,6 +12146,28 @@ function firstMeaningfulLine2(text, fallback) {
   const line = String(text ?? "").split(/\r?\n/).map((value) => value.trim()).find(Boolean);
   return line ?? fallback;
 }
+function installSandboxEnforcementForSetup() {
+  try {
+    return installSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_INSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --enforce-sandbox."
+    );
+  }
+}
+function uninstallSandboxEnforcementForSetup() {
+  try {
+    return uninstallSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_UNINSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --disable-sandbox-enforcement."
+    );
+  }
+}
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -12024,6 +12177,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
+  const sandboxEnforcement = getSandboxEnforcementStatus();
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -12038,6 +12192,11 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
   } else if (!reviewGate.enabled) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
+  }
+  if (sandboxEnforcement.settingsParseError) {
+    nextSteps.push(`Sandbox enforcement status could not read ${sandboxEnforcement.settingsPath}: ${sandboxEnforcement.settingsParseError}.`);
+  } else if (!sandboxEnforcement.installed) {
+    nextSteps.push("Optional: run `codex-bridge setup --enforce-sandbox` to deny sandbox downgrades at the Claude permission layer.");
   }
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
@@ -12057,6 +12216,10 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
     reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
     reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
+    sandboxEnforcementInstalled: sandboxEnforcement.installed,
+    sandboxEnforcementSettingsPath: sandboxEnforcement.settingsPath,
+    sandboxEnforcementSettingsExists: sandboxEnforcement.settingsExists,
+    sandboxEnforcementSettingsParseError: sandboxEnforcement.settingsParseError,
     actionsTaken,
     nextSteps
   };
@@ -12065,12 +12228,18 @@ async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "enforce-sandbox", "disable-sandbox-enforcement"]
   });
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw conflictError(
       "Choose either --enable-review-gate or --disable-review-gate.",
       "REVIEW_GATE_CONFLICT"
+    );
+  }
+  if (options["enforce-sandbox"] && options["disable-sandbox-enforcement"]) {
+    throw conflictError(
+      "Choose either --enforce-sandbox or --disable-sandbox-enforcement.",
+      "SANDBOX_ENFORCEMENT_CONFLICT"
     );
   }
   const cwd = resolveCommandCwd(options);
@@ -12103,6 +12272,17 @@ async function handleSetup(argv) {
         `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
       );
     }
+  }
+  if (options["enforce-sandbox"]) {
+    const result = installSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.alreadyInstalled ? `Sandbox enforcement deny rules already present in ${result.status.settingsPath}.` : `Installed sandbox enforcement deny rules in ${result.status.settingsPath}.`
+    );
+  } else if (options["disable-sandbox-enforcement"]) {
+    const result = uninstallSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.removed > 0 ? `Removed ${result.removed} sandbox enforcement deny rule${result.removed === 1 ? "" : "s"} from ${result.status.settingsPath}.` : `Sandbox enforcement deny rules were not present in ${result.status.settingsPath}.`
+    );
   }
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
@@ -12892,9 +13072,9 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 function safeRealPath(filePath) {
   try {
-    return fs16.realpathSync.native ? fs16.realpathSync.native(filePath) : fs16.realpathSync(filePath);
+    return fs17.realpathSync.native ? fs17.realpathSync.native(filePath) : fs17.realpathSync(filePath);
   } catch {
-    return path14.resolve(filePath);
+    return path15.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -12932,10 +13112,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path14.resolve(worktreePath);
-  if (options.cwd && !samePath(path14.resolve(process10.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path15.resolve(worktreePath);
+  if (options.cwd && !samePath(path15.resolve(process10.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path14.resolve(process10.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path15.resolve(process10.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -13096,14 +13276,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path14.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs16.readFileSync(absPath, "utf8");
+    return fs17.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -13213,7 +13393,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs16.openSync(stderrPath, "a");
+      const stderrFd = fs17.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
@@ -13237,7 +13417,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs16.closeSync(stdioConfig[2]);
+      fs17.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -13962,7 +14142,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path14.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path15.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -14036,10 +14216,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path14.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path14.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path14.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path14.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path15.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path15.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path15.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path15.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -14523,7 +14703,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path14.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path15.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -14713,7 +14893,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path14.isAbsolute(artifactPath) ? artifactPath : path14.resolve(cwd, artifactPath);
+  const resolvedPath = path15.isAbsolute(artifactPath) ? artifactPath : path15.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -14730,7 +14910,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs16.statSync(resolvedPath);
+      statInfo = fs17.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -14939,7 +15119,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
       for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
         if (!filePath) continue;
         try {
-          fs16.rmSync(filePath, { force: true });
+          fs17.rmSync(filePath, { force: true });
         } catch {
         }
       }
@@ -15023,7 +15203,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs16.readFileSync(eventsPath, "utf8");
+        const data = fs17.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -15040,13 +15220,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs16.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs17.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs16.existsSync(eventsPath)) {
+              if (fs17.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15058,12 +15238,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs16.existsSync(eventsPath)) {
+    if (fs17.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs16.existsSync(eventsPath)) {
+        if (fs17.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15106,7 +15286,7 @@ async function handleWait(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = TERMINAL_TAG_REGEX;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -15163,7 +15343,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     return {
       reference,
       job,
-      eventsPath: path14.join(sessionDir, `${job.threadId}.events`)
+      eventsPath: path15.join(sessionDir, `${job.threadId}.events`)
     };
   });
   const deadline = Date.now() + timeoutMs;
@@ -15216,7 +15396,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
 }
 function scanTerminalEvent(eventsPath, pattern) {
   try {
-    const data = fs16.readFileSync(eventsPath, "utf8");
+    const data = fs17.readFileSync(eventsPath, "utf8");
     for (const line of data.split("\n")) {
       const m = pattern.exec(line);
       if (m) return { timedOut: false, tag: m[1], line };
@@ -15260,7 +15440,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -15291,8 +15471,8 @@ async function handleEvents(argv) {
   const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs16.existsSync(eventsPath)) {
-    initial = fs16.readFileSync(eventsPath, "utf8");
+  if (fs17.existsSync(eventsPath)) {
+    initial = fs17.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -15338,7 +15518,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs16.readFileSync(eventsPath, "utf8");
+        data = fs17.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -15360,13 +15540,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs16.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs17.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs16.existsSync(eventsPath)) {
+              if (fs17.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15377,11 +15557,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs16.existsSync(eventsPath)) {
+    if (fs17.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs16.existsSync(eventsPath)) {
+        if (fs17.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15562,13 +15742,13 @@ async function handleCancel(argv) {
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path14.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path14.resolve(cwd, positionals[0]);
+    const candidate = path15.resolve(cwd, positionals[0]);
     try {
-      if (fs16.existsSync(candidate) && fs16.statSync(candidate).isFile()) {
-        return fs16.readFileSync(candidate, "utf8");
+      if (fs17.existsSync(candidate) && fs17.statSync(candidate).isFile()) {
+        return fs17.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -15599,7 +15779,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs16.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs17.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -15680,9 +15860,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path14.join(dir, "meta.json"),
-    review_path: path14.join(dir, "review.json"),
-    verdict_path: path14.join(dir, "verdict.json"),
+    meta_path: path15.join(dir, "meta.json"),
+    review_path: path15.join(dir, "review.json"),
+    verdict_path: path15.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -16083,10 +16263,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path14.join(jobDir(taskId), "verdict.json");
+    const target = path15.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs16.existsSync(target)) {
-      fs16.rmSync(target, { force: true });
+    if (fs17.existsSync(target)) {
+      fs17.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -16664,7 +16844,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs16.readFileSync(session.ndjsonPath, "utf8");
+    content = fs17.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -16763,10 +16943,10 @@ process10.stderr.on("error", (err) => {
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path14.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs16.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path15.join(os8.homedir(), ".codex-bridge", "crashes");
+    fs17.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path14.join(crashDir, `${ts}-${process10.pid}.log`);
+    const file = path15.join(crashDir, `${ts}-${process10.pid}.log`);
     const payload = {
       kind,
       ts,
@@ -16777,7 +16957,7 @@ function writeCrashLog(kind, error) {
       bridgeVersion: package_default.version,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs16.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs17.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
       process10.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}

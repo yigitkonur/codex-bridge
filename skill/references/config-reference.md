@@ -28,6 +28,8 @@ All four layers are honored. Before 1.1.0, only the skill config layer was read 
 | `allow_questions` | boolean | `true` | **Documented contract, not currently enforced.** Intended to let callers disable `requestUserInput` in default mode; today no code path reads this key and the `prompt_footer` (which steers Codex toward `requestUserInput`) is emitted unconditionally. Either set `prompt_footer: ""` to drop the steering line, or treat this key as reserved until a future release wires it. |
 | `session_dir` | string | `"~/.codex-bridge/sessions"` | Where session logs are stored. `~` expands to home directory. Also the canonical path to `tail -f` directly when the bridge CLI is misbehaving. |
 | `sandbox_policy` | string | `"danger-full-access"` | Sandbox profile. One of `"danger-full-access"`, `"workspace-write"`, `"read-only"`. See below. |
+| `sandbox_enforce` | boolean | `false` | Opt-in guard that makes bridge hooks deny `task --read-only`; pair with `setup --enforce-sandbox` to install Claude permission-layer deny rules. |
+| `forbid_codex_direct` | boolean | `true` | Documentation knob for the `setup --enforce-sandbox` deny rule that blocks direct `codex --sandbox read-only|workspace-write` downgrades. |
 | `skip_meta_skills` | boolean | `true` | Prepend an `[ORCHESTRATOR DIRECTIVE]` telling Codex to skip any internal planning / ceremony / meta-skill chain before execution (framework-agnostic — any chain that produces scaffold docs under `docs/`, `plans/`, `specs/`, etc.). See below. |
 | `command_failure_circuit_breaker` | boolean | `true` | Emit `[WARNING]` when 3 of the last 5 same-family command executions fail (with wrapper-pattern detection). See below. |
 | `idle_timeout_ms` | integer | `300000` | No-event idle watchdog: max wall-clock gap between app-server notifications before a turn is failed with `ClientTimeout`. CLI override: `--idle-timeout-ms`. |
@@ -110,6 +112,22 @@ Opt into a stricter profile by editing `config.yaml`:
 The setting applies to `task` and `send` turns and to the auto-pipeline's **fix** stage. The **completion-check** stage stays `read-only` regardless, because the check must not mutate the workspace while evaluating it.
 
 Unknown values are rejected by config diagnostics and ignored by the runtime merge. A typo cannot widen permissions beyond the next lower valid layer/default.
+
+Set `sandbox_enforce: true` in the same `codex_bridge:` block and run:
+
+```bash
+codex-bridge setup --enforce-sandbox
+```
+
+That installs a three-layer enforcement recipe: Claude user-settings
+`permissions.deny` rules for `task --read-only` and direct `codex --sandbox`
+downgrades, a PreToolUse Bash hook that denies `task --read-only` when the
+workspace config opts in, and Explore agent rerouting through `--write
+--worktree-auto` instead of `--read-only`.
+
+Known limitations: the auto-pipeline completion check, standalone `review`,
+standalone `adversarial-review`, and stop-time review gate run read-only by
+design. Disable the stop-time review gate when enforcing sandbox pins.
 
 **macOS caveat for `workspace-write`:** Apple seatbelt's enforcement of `workspace-write` depends on the Codex binary version and the OS rev — in some combinations `.git/` writes under the cwd succeed, in others they're denied. Do not rely on the sandbox to block `.git/` writes on macOS; if a task needs the **`workspace-dirty`** phase to be triggerable (e.g. for automated handback testing), verify with a scripted Codex run on your exact OS+Codex combo. The phase only fires when upstream Codex raises `SandboxError`; a permissive seatbelt lets the commit go through and the run finishes as `phase: "done"`. Linux sandboxes (bubblewrap/user-namespaces) are more consistently restrictive.
 

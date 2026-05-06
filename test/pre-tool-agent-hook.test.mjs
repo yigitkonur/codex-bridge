@@ -103,12 +103,11 @@ test("pre-tool-agent only denies after auth preflight and dispatch succeed", () 
       "--json",
       "--intercepted-from",
       "Explore",
-      "--read-only",
-      "--mode",
-      "default",
+      "--write",
+      "--worktree-auto",
+      "--prompt-file",
     ]);
-    assert.equal(record.args[7], "--prompt-file");
-    assert.match(record.args[8] ?? "", /codex-bridge-pre-tool-agent-/);
+    assert.match(record.args[7] ?? "", /codex-bridge-pre-tool-agent-/);
     assert.equal(record.promptFileContent, "inspect the diff");
   } finally {
     fs.rmSync(fixture.pluginRoot, { recursive: true, force: true });

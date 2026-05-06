@@ -1639,6 +1639,20 @@ test("plugin PostToolUse does not auto-arm when --background appears only inside
   assert.deepEqual(result, { continue: true });
 });
 
+test("plugin PostToolUse scans task value flags before background json", () => {
+  const result = runPostToolHook({
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --brief @brief.json --base-ref main --on-branch feature --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(queuedTaskEnvelope()) }
+  });
+
+  assert.match(result.hookSpecificOutput?.additionalContext, /arm the Monitor/);
+  assert.match(result.hookSpecificOutput?.additionalContext, /task-mabc123-def456/);
+});
+
 test("plugin PostToolUse honors envelope status field (not phase) for queued gate", () => {
   // Envelope with status: "completed" must NOT trigger auto-arm even if
   // monitor is present.
