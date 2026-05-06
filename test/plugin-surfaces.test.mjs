@@ -948,6 +948,55 @@ test("UserPromptSubmit resume intent reads Claude's documented prompt field", ()
   assert.match(output.hookSpecificOutput.additionalContext, /resume-intent detected/);
 });
 
+test("UserPromptSubmit detects plan-mode keywords in user prompts", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+
+  const output = runHook(
+    "plugin/hooks/user-prompt-submit.mjs",
+    { hook_event_name: "UserPromptSubmit", prompt: "Plan first, then wait for approval." },
+    { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
+  );
+
+  assert.equal(output.continue, true);
+  assert.equal(output.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(output.hookSpecificOutput.additionalContext, /plan-mode keyword detected/);
+  assert.match(output.hookSpecificOutput.additionalContext, /--mode plan/);
+  assert.match(output.hookSpecificOutput.additionalContext, /--mode default/);
+});
+
+test("UserPromptSubmit detects Turkish plan-mode keywords", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+
+  for (const turkishPrompt of ["planla bunu", "plana al", "planlama yap"]) {
+    const output = runHook(
+      "plugin/hooks/user-prompt-submit.mjs",
+      { hook_event_name: "UserPromptSubmit", prompt: turkishPrompt },
+      { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
+    );
+    assert.equal(output.continue, true, `Expected continue for: ${turkishPrompt}`);
+    assert.match(
+      output.hookSpecificOutput?.additionalContext ?? "",
+      /plan-mode keyword detected/,
+      `Expected plan-mode detection for: ${turkishPrompt}`,
+    );
+  }
+});
+
+test("UserPromptSubmit leaves ordinary prompts untouched", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+
+  const output = runHook(
+    "plugin/hooks/user-prompt-submit.mjs",
+    { hook_event_name: "UserPromptSubmit", prompt: "Implement the requested fix." },
+    { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
+  );
+
+  assert.deepEqual(output, { continue: true });
+});
+
 test("UserPromptSubmit rewake delivery is scoped to current workspace and session", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
   const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));

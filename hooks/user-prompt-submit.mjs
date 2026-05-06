@@ -11,7 +11,12 @@
 //    additionalContext so the orchestrator sees the completion before
 //    its next reasoning step.
 //
-// 2. Resume-intent detection: match the user prompt against patterns
+// 2. Plan-mode keyword detection: match the user prompt against patterns
+//    like "plan mode", "plan first", "planla", "plana", "planlama" (Turkish),
+//    or "think hard" and remind the orchestrator that codex-bridge task
+//    dispatch defaults to plan mode.
+//
+// 3. Resume-intent detection: match the user prompt against patterns
 //    like /^(continue|keep going|resume|that codex one)/i. If matched,
 //    emit additionalContext suggesting `iterate <task_id>` for task
 //    worktree follow-up, or `task --resume-last` only for thread-only
@@ -45,6 +50,8 @@ import {
 const HOOK_NAME = "user-prompt-submit";
 const RESUME_INTENT_PATTERN =
   /^\s*(continue codex|that codex one|keep going|dig deeper|continue|resume)\b/i;
+const PLAN_MODE_KEYWORD_PATTERN =
+  /\b(plan mode|planning mode|plan first|plan me|make a plan|draft a plan|planlama|planla|plana|do not (?:code|implement|edit|change) yet|don't (?:code|implement|edit|change) yet|think hard|think deeply|think through|ultrathink)\b/i;
 
 function logHookError(err) {
   try {
@@ -149,7 +156,22 @@ function main() {
     logHookError(err);
   }
 
-  // 2. Resume-intent detection.
+  // 2. Plan-mode keyword detection.
+  try {
+    const prompt = (input.prompt ?? input.user_prompt ?? "").trim();
+    if (PLAN_MODE_KEYWORD_PATTERN.test(prompt)) {
+      blocks.push(
+        [
+          "## Codex-Bridge: plan-mode keyword detected",
+          "The user prompt asks for planning-first behavior. If delegating to codex-bridge, keep the task in plan mode (`/codex-bridge:task --mode plan ...`, or omit `--mode` because plan mode is the default) and do not switch to `--mode default` until the plan is approved.",
+        ].join("\n"),
+      );
+    }
+  } catch (err) {
+    logHookError(err);
+  }
+
+  // 3. Resume-intent detection.
   // The actual "recent thread for this workspace" check requires the
   // artifact registry (T15). For now we only emit the suggestion when
   // the prompt clearly matches resume intent; the orchestrator can
