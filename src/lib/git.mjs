@@ -630,7 +630,7 @@ export function createSubagentWorktree({
   }
 }
 
-// pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path })
+// pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path, keepBranch })
 // Removes the worktree (force) and deletes the branch. Used by `cancel`
 // and by the merge gate after a successful ff-merge. Idempotent — calling
 // against an already-pruned worktree is a no-op.
@@ -640,7 +640,7 @@ export function createSubagentWorktree({
 // omitted, the registered worktree path is recovered from
 // `git worktree list --porcelain` by branch (preferred) or by the default
 // `<repoRoot>/../.codex-bridge-worktrees/<taskId>` layout as a fallback.
-export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
+export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath, keepBranch = false }) {
   assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
@@ -680,7 +680,7 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
       throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
     }
   }
-  if (branch) {
+  if (branch && !keepBranch) {
     assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
     // -D not -d: branch may have unmerged commits while we're cancelling.
     if (branchExists(repoRoot, branch)) {

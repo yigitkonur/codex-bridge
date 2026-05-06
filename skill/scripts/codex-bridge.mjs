@@ -1722,7 +1722,7 @@ function createSubagentWorktree({
     };
   }
 }
-function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
+function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath, keepBranch = false }) {
   assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
@@ -1749,7 +1749,7 @@ function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot,
       throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
     }
   }
-  if (branch) {
+  if (branch && !keepBranch) {
     assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
     if (branchExists(repoRoot, branch)) {
       if (getCurrentBranch(repoRoot) === branch) {
@@ -10179,6 +10179,16 @@ function renderCancelReport(job) {
   if (job.summary) {
     lines.push(`- Summary: ${job.summary}`);
   }
+  if (job.cleanup?.worktreePath || job.cleanup?.branchName) {
+    const status = job.cleanup.succeeded ? "removed" : job.cleanup.reason;
+    lines.push(`- Worktree cleanup: ${status}`);
+    if (job.cleanup.worktreePath) {
+      lines.push(`  - Path: ${job.cleanup.worktreePath}`);
+    }
+    if (job.cleanup.branchName) {
+      lines.push(`  - Branch: ${job.cleanup.branchName}`);
+    }
+  }
   lines.push("- Check `codex-bridge status` for the updated queue.");
   return `${lines.join("\n").trimEnd()}
 `;
@@ -12613,9 +12623,12 @@ var COMMANDS = Object.freeze({
     ]
   },
   cancel: {
-    synopsis: "cancel [job-id] [--json]",
-    summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
-    examples: ["codex-bridge cancel task-abc"]
+    synopsis: "cancel [job-id] [--keep-worktree] [--keep-branch] [--keep-all] [--json]",
+    summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree, then removes bridge-created worktree artifacts unless preserved.",
+    examples: [
+      "codex-bridge cancel task-abc",
+      "codex-bridge cancel task-abc --keep-all"
+    ]
   },
   merge: {
     synopsis: "merge <task_id> [--no-tests] [--pr] [--json]",
@@ -16706,16 +16719,113 @@ function handleTaskResumeCandidate(argv) {
     startedAt
   });
 }
+function readCancelMeta(taskId) {
+  if (!taskId) return { meta: null, warning: null };
+  try {
+    return { meta: readMeta(taskId), warning: null };
+  } catch (error) {
+    return {
+      meta: null,
+      warning: `could not read task registry metadata: ${error?.message ?? error}`
+    };
+  }
+}
+function resolveCancelWorktree(job, existing, meta) {
+  const rawWorktree = [meta?.worktree, existing?.worktree, job?.worktree].find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate)) ?? {};
+  const value = (...candidates) => {
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim()) return candidate;
+    }
+    return null;
+  };
+  return {
+    isolation_mode: value(rawWorktree.isolation_mode, meta?.isolation_mode, existing?.isolation_mode, job?.isolation_mode),
+    path: value(rawWorktree.path, meta?.worktree_path, existing?.worktree?.path, job?.worktree?.path),
+    branch: value(rawWorktree.branch, meta?.branch, meta?.worktree_branch, existing?.worktree?.branch, job?.worktree?.branch),
+    previous_ref: value(rawWorktree.previous_ref, meta?.previous_ref, existing?.worktree?.previous_ref, job?.worktree?.previous_ref)
+  };
+}
+function cleanupCancelledWorktree({ workspaceRoot, job, existing, meta, keepWorktree, keepBranch }) {
+  const registryTaskId = existing?.registryTaskId ?? job?.registryTaskId ?? meta?.task_id ?? job?.id;
+  const worktree = resolveCancelWorktree(job, existing, meta);
+  const cleanup = {
+    attempted: false,
+    succeeded: false,
+    reason: "no-worktree",
+    worktreePath: worktree.path ?? null,
+    branchName: worktree.branch ?? null,
+    worktreeRemoved: false,
+    branchDeleted: false,
+    preservedWorktree: false,
+    preservedBranch: false,
+    failures: []
+  };
+  const branchLooksOwned = typeof worktree.branch === "string" && worktree.branch.startsWith("subagent/");
+  const pathLooksOwned = typeof worktree.path === "string" && worktree.path.includes(".codex-bridge-worktrees/");
+  const modeLooksOwned = worktree.isolation_mode === "worktree";
+  if (!modeLooksOwned && !branchLooksOwned && !pathLooksOwned) {
+    return cleanup;
+  }
+  if (keepWorktree) {
+    cleanup.reason = "preserved-by-user";
+    cleanup.preservedWorktree = Boolean(worktree.path);
+    cleanup.preservedBranch = Boolean(worktree.branch);
+    return cleanup;
+  }
+  cleanup.attempted = true;
+  const branchForCleanup = branchLooksOwned ? worktree.branch : null;
+  const effectiveKeepBranch = Boolean(keepBranch);
+  cleanup.preservedBranch = Boolean(worktree.branch && (effectiveKeepBranch || !branchForCleanup));
+  try {
+    const pruned = pruneWorktreeOnCancel({
+      cwd: workspaceRoot,
+      taskId: registryTaskId,
+      branch: branchForCleanup,
+      previousRef: worktree.previous_ref,
+      path: worktree.path,
+      keepBranch: effectiveKeepBranch
+    });
+    cleanup.worktreeRemoved = Boolean(pruned.pruned);
+    cleanup.branchDeleted = Boolean(pruned.branchDeleted);
+    cleanup.succeeded = Boolean(pruned.pruned) && (effectiveKeepBranch || !branchForCleanup || Boolean(pruned.branchDeleted));
+    cleanup.reason = cleanup.succeeded ? "cleaned" : "cleanup-incomplete";
+  } catch (error) {
+    cleanup.reason = "cleanup-failed";
+    cleanup.failures.push(error instanceof Error ? error.message : String(error));
+  }
+  return cleanup;
+}
+function writeCancelledMeta(taskId, meta, completedAt, cleanup) {
+  if (!taskId || !meta) return null;
+  const {
+    schema_version: _schemaVersion,
+    task_id: _taskId,
+    written_at: _writtenAt,
+    ...metaBody
+  } = meta;
+  writeMeta(taskId, {
+    ...metaBody,
+    phase: "cancelled",
+    cancelled_at: completedAt,
+    cleanup
+  });
+  return taskId;
+}
 async function handleCancel(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "keep-worktree", "keep-branch", "keep-all"]
   });
   const cwd = resolveCommandCwd(options);
+  const keepAll = Boolean(options["keep-all"]);
+  const keepWorktree = keepAll || Boolean(options["keep-worktree"]);
+  const keepBranch = keepAll || keepWorktree || Boolean(options["keep-branch"]);
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process11.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
+  const registryTaskId = existing.registryTaskId ?? job.registryTaskId ?? job.id;
+  const { meta: registryMeta, warning: registryWarning } = readCancelMeta(registryTaskId);
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
   const adapter2 = await resolveCommandAdapter({
@@ -16742,6 +16852,33 @@ async function handleCancel(argv) {
   if (terminate.attempted && !terminate.delivered) {
     warnings.push(`process ${job.pid} was already gone (method=${terminate.method ?? "unknown"})`);
   }
+  if (registryWarning) {
+    warnings.push(registryWarning);
+  }
+  if (keepWorktree && !options["keep-branch"] && !options["keep-all"]) {
+    warnings.push("preserving worktree also preserves its checked-out branch");
+  }
+  const cleanup = cleanupCancelledWorktree({
+    workspaceRoot,
+    job,
+    existing,
+    meta: registryMeta,
+    keepWorktree,
+    keepBranch
+  });
+  if (cleanup.attempted && cleanup.succeeded) {
+    appendLogLine(job.logFile, `Removed cancelled worktree artifacts for ${job.id}.`);
+  } else if (cleanup.reason === "preserved-by-user") {
+    appendLogLine(job.logFile, `Preserved cancelled worktree artifacts for ${job.id}.`);
+  } else if (cleanup.failures.length > 0) {
+    appendLogLine(job.logFile, `Worktree cleanup failed for ${job.id}: ${cleanup.failures.join("; ")}`);
+  }
+  for (const failure of cleanup.failures) {
+    warnings.push(`worktree cleanup failed: ${failure}`);
+  }
+  if (cleanup.preservedBranch && cleanup.branchName && !keepBranch) {
+    warnings.push(`skipped branch deletion for non-bridge branch: ${cleanup.branchName}`);
+  }
   const completedAt = nowIso2();
   const nextJob = {
     ...job,
@@ -16749,12 +16886,14 @@ async function handleCancel(argv) {
     phase: "cancelled",
     pid: null,
     completedAt,
-    errorMessage: "Cancelled by user."
+    errorMessage: "Cancelled by user.",
+    cleanup
   };
   writeJobFile(workspaceRoot, job.id, {
     ...existing,
     ...nextJob,
-    cancelledAt: completedAt
+    cancelledAt: completedAt,
+    cleanup
   });
   upsertJob(workspaceRoot, {
     id: job.id,
@@ -16762,8 +16901,16 @@ async function handleCancel(argv) {
     phase: "cancelled",
     pid: null,
     errorMessage: "Cancelled by user.",
-    completedAt
+    completedAt,
+    cleanup
   });
+  if (registryMeta) {
+    try {
+      writeCancelledMeta(registryTaskId, registryMeta, completedAt, cleanup);
+    } catch (error) {
+      warnings.push(`could not update task registry metadata: ${error?.message ?? error}`);
+    }
+  }
   const kindLabel = existing.kindLabel ?? job.kindLabel ?? job.jobClass ?? "task";
   const KIND_TITLE = {
     "task": "Codex Task",
@@ -16779,6 +16926,7 @@ async function handleCancel(argv) {
     processTerminated: Boolean(terminate.delivered),
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted,
+    cleanup,
     reason: "cancelled-by-user",
     warnings,
     title: normalizedTitle,
@@ -16802,7 +16950,8 @@ async function handleCancel(argv) {
         interruptReason: interrupt.reason ?? null,
         terminateAttempted: terminate.attempted,
         terminateDelivered: Boolean(terminate.delivered),
-        terminateMethod: terminate.method ?? null
+        terminateMethod: terminate.method ?? null,
+        cleanup
       }
     })
   };

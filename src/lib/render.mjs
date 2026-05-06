@@ -537,6 +537,16 @@ export function renderCancelReport(job) {
   if (job.summary) {
     lines.push(`- Summary: ${job.summary}`);
   }
+  if (job.cleanup?.worktreePath || job.cleanup?.branchName) {
+    const status = job.cleanup.succeeded ? "removed" : job.cleanup.reason;
+    lines.push(`- Worktree cleanup: ${status}`);
+    if (job.cleanup.worktreePath) {
+      lines.push(`  - Path: ${job.cleanup.worktreePath}`);
+    }
+    if (job.cleanup.branchName) {
+      lines.push(`  - Branch: ${job.cleanup.branchName}`);
+    }
+  }
   lines.push("- Check `codex-bridge status` for the updated queue.");
 
   return `${lines.join("\n").trimEnd()}\n`;
