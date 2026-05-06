@@ -13,7 +13,7 @@ compatibility: Requires Node.js 22+, the Codex CLI on $PATH (`npm i -g @openai/c
 license: MIT
 allowed-tools: Bash Monitor
 metadata:
-  version: "2.3.4"
+  version: "2.3.5"
   homepage: "https://github.com/yigitkonur/codex-bridge"
 ---
 
