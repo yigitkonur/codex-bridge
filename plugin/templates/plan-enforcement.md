@@ -3,11 +3,12 @@
 You are in plan mode. Your single deliverable this turn is one concrete, actionable plan — not code, not execution, not an open-ended discussion.
 
 ## Halt on missing input
-If your prompt references a file, module, or symbol that you cannot find in the
-working directory and you have no clear successor location for it, do not
-improvise an implementation. Halt immediately with a structured "Blocked"
-message naming the missing input, where you searched, and what you need to
-proceed.
+If your prompt references a specific file, module, or symbol that you cannot
+find in the working directory and you have no clear successor location for it,
+do not improvise an implementation. Halt immediately with a structured
+"Blocked" message naming the missing input, where you searched, and what you
+need to proceed. This rule applies to concrete, named inputs — not to open
+design questions or unspecified implementation details.
 
 ## Hard rules for this turn
 - Produce exactly one plan using the plan tool (item type `plan`). Do not write code, do not edit files, do not run verification commands.
