@@ -1,0 +1,90 @@
+name: version-bump
+
+# Auto-bump the package version on every merge to main.
+#
+# Rule (codified in scripts/bump-version.mjs):
+#   - Default: patch+1   (2.2.0 → 2.2.1)
+#   - Patch caps at 9: roll over to minor+1, patch=0   (2.4.9 → 2.5.0)
+#
+# After bumping the 5 version-bearing files, the workflow commits + creates a
+# `vX.Y.Z` tag + pushes both. The tag push is what fans into release.yml to
+# package and attach the release artifacts.
+#
+# Cascade caveat: GitHub does NOT trigger downstream workflows for tags pushed
+# with the default GITHUB_TOKEN. To get the release pipeline to fire
+# automatically on each bump, set repo secret RELEASE_PAT to a personal access
+# token with `repo` + `workflow` scopes; we fall back to GITHUB_TOKEN when
+# RELEASE_PAT is missing (tag still lands, but release.yml must be triggered
+# manually with `gh workflow run release.yml -f tag=vX.Y.Z`).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  # Serialize bumps so two near-simultaneous merges produce two distinct
+  # patch versions instead of racing on the same one.
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    # Skip the bot's own bump commits and explicit "[skip ci]" / chore(release)
+    # commits so we don't loop.
+    if: >-
+      !contains(github.event.head_commit.message, '[skip ci]')
+      && !startsWith(github.event.head_commit.message, 'chore(release):')
+      && github.event.head_commit.author.username != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use the release PAT if available so the tag push triggers
+          # release.yml; fall back to GITHUB_TOKEN (commit lands, release
+          # pipeline must be triggered manually for that bump).
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: bump version
+        id: bump
+        run: node scripts/bump-version.mjs
+
+      - name: configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: commit version bump
+        run: |
+          git add package.json .claude-plugin/plugin.json plugin/.claude-plugin/plugin.json skill/SKILL.md plugin/skills/codex-bridge/SKILL.md
+          git commit -m "chore(release): bump v${{ steps.bump.outputs.previous }} → v${{ steps.bump.outputs.next }} [skip ci]"
+
+      - name: tag release
+        run: git tag "v${{ steps.bump.outputs.next }}"
+
+      - name: push commit and tag
+        run: |
+          git push origin HEAD:main
+          git push origin "v${{ steps.bump.outputs.next }}"
+
+      - name: summary
+        run: |
+          {
+            echo "### Version bumped"
+            echo ""
+            echo "\`v${{ steps.bump.outputs.previous }}\` → \`v${{ steps.bump.outputs.next }}\`"
+            echo ""
+            if [ -z "${{ secrets.RELEASE_PAT }}" ]; then
+              echo "ℹ️ \`RELEASE_PAT\` secret not set — tag pushed but \`release.yml\` will not auto-fire. Run \`gh workflow run release.yml --ref v${{ steps.bump.outputs.next }}\` to package the release."
+            else
+              echo "Release pipeline triggered via tag push."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
