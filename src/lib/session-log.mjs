@@ -1004,7 +1004,8 @@ export const TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN|CANCELLED)\]/m
 // dropped any tag not on the list — the "nothing is happening" class of
 // failure. HEARTBEAT is excluded by default (every 60 s, pure liveness), and
 // verbose CHECKPOINT is excluded because CHECKPOINT_SUMMARY carries the live
-// progress signal. Interrupt and terminal tags (DONE, ERROR, INCOMPLETE, PLAN, CANCELLED, QUESTION) pass through.
+// progress signal. Interrupt and terminal tags (DONE, ERROR, INCOMPLETE, PLAN,
+// CANCELLED, QUESTION) pass through.
 export const DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "CHECKPOINT"]);
 
 // Canonical tail invocation — reused by every `.events` block's `tail:`
