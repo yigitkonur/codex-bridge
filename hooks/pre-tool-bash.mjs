@@ -1,30 +1,16 @@
 #!/usr/bin/env node
-// PreToolUse hook on `Bash` for codex-bridge task dispatches.
+// PreToolUse hook on the `Bash` tool for codex-bridge task dispatches.
 //
-// Pre-approves the bundled bridge task invocation after safety gates pass.
-// This covers thin runner subagents whose only Bash call is the bridge script,
-// without granting arbitrary Bash or arbitrary codex-bridge-looking paths.
-//
-// Guards worktree-isolation footguns before a bridge job is created:
-//   1. `task --write` defaults to worktree isolation, so bare write tasks are
-//      checked as isolated runs.
-//   2. Isolated write prompts must not name absolute paths inside the launch
-//      workspace, which would resolve back to the main checkout.
-//
-// Opt-out: --worktree-auto=false or CODEX_BRIDGE_DISABLE_WORKTREE_AUTO=1 falls
-// back to Claude's normal Bash permission flow instead of plugin auto-approval.
-//
-// Kill switch: CODEX_BRIDGE_HOOK_DISABLE=pre-tool-bash (or =all).
+// The runtime guard is authoritative; this hook gives Claude Code an earlier
+// denial before it creates a bridge job for common Bash invocations.
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { spawnSync } from "node:child_process";
 
 const HOOK_NAME = "pre-tool-bash";
-const PLUGIN_ROOT_TOKEN = "${CLAUDE_PLUGIN_ROOT}";
-const BUNDLED_SCRIPT_PATH = "scripts/codex-bridge.mjs";
 const BRIDGE_TASK_PATTERN =
   /(?:^|[\s;&|])(?:node\s+)?["']?(?:[^\s"'`]*\bcodex-bridge(?:\.mjs)?)["']?\s+task\b/;
 const ABSOLUTE_PATH_PATTERN = /\/[^\s'"`<>]+/g;
@@ -42,11 +28,11 @@ const TASK_VALUE_FLAGS = new Set([
   "--question-timeout-ms",
   "--intercepted-from",
   "--cwd",
+  "-C",
   "--brief",
   "--backend",
-  "--base-ref",
-  "--on-branch",
 ]);
+const COMMAND_SEPARATORS = new Set(["&&", "||", ";", "|", "&"]);
 
 function logHookError(err) {
   try {
@@ -71,40 +57,6 @@ function isWorktreeOptOut() {
   return v === "1" || v === "true" || v === "yes";
 }
 
-function configTextEnforcesSandbox(text) {
-  if (!text) return null;
-  const flat = text.match(/^\s*(?:sandbox_enforce|enforce_sandbox)\s*:\s*(true|false)\s*(?:#.*)?$/m);
-  if (flat) return flat[1] === "true";
-  const sandboxBlock = text.match(/^\s*sandbox\s*:\s*(?:#.*)?\n((?:\s{2,}[^\n]*\n?)*)/m);
-  const nested = sandboxBlock?.[1]?.match(/^\s+enforce\s*:\s*(true|false)\s*(?:#.*)?$/m);
-  return nested ? nested[1] === "true" : null;
-}
-
-function fileEnforcesSandbox(file) {
-  try {
-    return configTextEnforcesSandbox(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function sandboxEnforced(cwd) {
-  const base = cwd ? path.resolve(cwd) : process.cwd();
-  const workspaceRoot = findGitRepoRoot(base);
-  const candidates = [
-    path.join(workspaceRoot, "config.yaml"),
-    path.join(workspaceRoot, ".claude", "codex-bridge.local.md"),
-    path.join(base, "config.yaml"),
-    path.join(base, ".claude", "codex-bridge.local.md"),
-  ];
-  let enforced = false;
-  for (const file of [...new Set(candidates)]) {
-    const value = fileEnforcesSandbox(file);
-    if (value !== null) enforced = value;
-  }
-  return enforced;
-}
-
 function readStdinJson() {
   const raw = fs.readFileSync(0, "utf8");
   if (!raw.trim()) return {};
@@ -115,6 +67,13 @@ function splitCommandWords(raw) {
   const tokens = [];
   let current = "";
   let quote = null;
+
+  const pushCurrent = () => {
+    if (current) {
+      tokens.push(current);
+      current = "";
+    }
+  };
 
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw[i];
@@ -146,343 +105,213 @@ function splitCommandWords(raw) {
       continue;
     }
     if (/\s/.test(ch)) {
-      if (current) {
-        tokens.push(current);
-        current = "";
+      pushCurrent();
+      continue;
+    }
+    if (ch === ";" || ch === "&" || ch === "|") {
+      pushCurrent();
+      if ((ch === "&" || ch === "|") && raw[i + 1] === ch) {
+        tokens.push(`${ch}${ch}`);
+        i += 1;
+      } else {
+        tokens.push(ch);
       }
       continue;
     }
     current += ch;
   }
 
-  if (current) tokens.push(current);
+  pushCurrent();
   return tokens;
 }
 
-function stripQuotedSegments(command) {
-  if (typeof command !== "string" || command.length === 0) return command;
-  let out = "";
-  let quote = null;
-
-  for (let i = 0; i < command.length; i += 1) {
-    const ch = command[i];
-    if (quote === "'") {
-      if (ch === "'") quote = null;
-      continue;
-    }
-    if (quote === '"') {
-      if (ch === '"') {
-        quote = null;
-        continue;
-      }
-      if (ch === "\\" && i + 1 < command.length) i += 1;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      continue;
-    }
-    out += ch;
-  }
-  return out;
-}
-
-function hasUnsafeShellSyntax(command) {
-  return /[$][(]|[`]/.test(command) || /[;&|<>\r\n]/.test(stripQuotedSegments(command));
-}
-
-function isEnvAssignment(token) {
-  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
-}
-
-function isNodeToken(token) {
-  if (!token) return false;
-  const base = path.basename(token).toLowerCase();
-  return base === "node" || base === "node.exe";
-}
-
-function isBridgeScriptToken(token) {
-  if (!token) return false;
+function basenameLooksLikeBridge(token) {
   const base = path.basename(token);
-  return base === "codex-bridge.mjs" || base === "codex-bridge";
+  return base === "codex-bridge" || base === "codex-bridge.mjs";
 }
 
-function isShellSeparator(token) {
-  return token === "&&" || token === "||" || token === ";";
-}
-
-function segmentStarts(tokens) {
-  const starts = [0];
+function findBridgeTaskIndex(tokens) {
   for (let index = 0; index < tokens.length; index += 1) {
-    if (isShellSeparator(tokens[index]) && index + 1 < tokens.length) {
-      starts.push(index + 1);
-    }
+    if (tokens[index] !== "task") continue;
+    if (index > 0 && basenameLooksLikeBridge(tokens[index - 1])) return index;
+    if (index > 1 && tokens[index - 2] === "node" && basenameLooksLikeBridge(tokens[index - 1])) return index;
   }
-  return starts;
+  return -1;
 }
 
-function bridgeInvocationFrom(tokens, startIndex) {
-  let index = startIndex;
-  while (index < tokens.length && isEnvAssignment(tokens[index])) index += 1;
-  if (tokens[index] === "command") index += 1;
-
-  if (isNodeToken(tokens[index]) && isBridgeScriptToken(tokens[index + 1]) && tokens[index + 2] === "task") {
-    return { taskIndex: index + 2, scriptToken: tokens[index + 1], viaNode: true };
-  }
-  if (isBridgeScriptToken(tokens[index]) && tokens[index + 1] === "task") {
-    return { taskIndex: index + 1, scriptToken: tokens[index], viaNode: false };
-  }
-  return null;
-}
-
-function bridgeInvocation(tokens) {
-  for (const start of segmentStarts(tokens)) {
-    const invocation = bridgeInvocationFrom(tokens, start);
-    if (invocation) return invocation;
-  }
-  return null;
-}
-
-function bridgeTaskIndex(tokens) {
-  return bridgeInvocation(tokens)?.taskIndex ?? -1;
-}
-
-function tokenMatchesBundledBridgeScript(token) {
-  if (!token) return false;
-  const normalized = token.replaceAll("\\", "/");
-  if (normalized === `${PLUGIN_ROOT_TOKEN}/${BUNDLED_SCRIPT_PATH}`) return true;
-
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
-  return Boolean(
-    pluginRoot &&
-      path.isAbsolute(token) &&
-      path.resolve(token) === path.resolve(pluginRoot, BUNDLED_SCRIPT_PATH),
-  );
-}
-
-function isAutoApprovableBridgeTask(input) {
-  const command = input.tool_input?.command;
-  if (!command || typeof command !== "string") return false;
-  if (hasUnsafeShellSyntax(command)) return false;
-
-  const tokens = splitCommandWords(command);
-  const invocation = bridgeInvocationFrom(tokens, 0);
-  return Boolean(
-    invocation?.viaNode &&
-      invocation.taskIndex === 2 &&
-      tokenMatchesBundledBridgeScript(invocation.scriptToken),
-  );
-}
-
-function continueOrAllowBundledBridgeTask(input) {
-  if (!isAutoApprovableBridgeTask(input)) return { continue: true };
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "allow",
-      permissionDecisionReason:
-        "codex-bridge bundled task invocation auto-approved after bridge safety gates passed.",
-    },
-  };
-}
-
-function isValueFlagToken(token) {
-  const key = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
-  return TASK_VALUE_FLAGS.has(key);
-}
-
-function inlineValue(token, flag) {
-  return token.startsWith(`${flag}=`) ? token.slice(flag.length + 1) : null;
+function normalizeBooleanValue(value) {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 function booleanFlagEnabled(tokens, taskIndex, flag) {
-  return booleanFlagValue(tokens, taskIndex, flag) === true;
-}
-
-function booleanFlagValue(tokens, taskIndex, flag) {
-  const noFlag = `--no-${flag.slice(2)}`;
   for (let i = taskIndex + 1; i < tokens.length; i += 1) {
     const token = tokens[i];
-    if (token === "--") break;
+    if (COMMAND_SEPARATORS.has(token)) break;
     if (token === flag) return true;
-    if (token === noFlag) return false;
-    const value = inlineValue(token, flag);
-    if (value !== null) {
-      const normalized = value.toLowerCase();
-      return normalized !== "false";
-    }
-    if (inlineValue(token, noFlag) !== null) {
-      return false;
-    }
-    if (isValueFlagToken(token) && !token.includes("=")) {
-      i += 1;
+    if (token.startsWith(`${flag}=`)) {
+      return normalizeBooleanValue(token.slice(flag.length + 1)) !== "false";
     }
   }
-  return null;
+  return false;
 }
 
-function flagValue(tokens, taskIndex, flag) {
-  for (let i = taskIndex + 1; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token === "--") return null;
-    const value = inlineValue(token, flag);
-    if (value !== null) return value;
-    if (token === flag) return tokens[i + 1] ?? null;
-    if (isValueFlagToken(token) && !token.includes("=")) {
-      i += 1;
-    }
-  }
-  return null;
-}
-
-function readPromptFile(cwd, rawFile) {
-  if (!rawFile) return "";
+function readPromptFile(invocationCwd, value) {
   try {
-    return fs.readFileSync(path.resolve(cwd, rawFile), "utf8");
+    return fs.readFileSync(path.resolve(invocationCwd, value), "utf8");
   } catch {
     return "";
   }
 }
 
-function collectPromptText(tokens, taskIndex, cwd) {
-  const parts = [];
+function collectPromptText(tokens, taskIndex, invocationCwd) {
+  const chunks = [];
   for (let i = taskIndex + 1; i < tokens.length; i += 1) {
     const token = tokens[i];
+    if (COMMAND_SEPARATORS.has(token)) break;
     if (token === "--") {
-      parts.push(...tokens.slice(i + 1));
+      chunks.push(tokens.slice(i + 1).join(" "));
       break;
     }
-    const promptFileInline = inlineValue(token, "--prompt-file");
-    if (promptFileInline !== null) {
-      parts.push(readPromptFile(cwd, promptFileInline));
+    if (token.startsWith("--prompt-file=")) {
+      chunks.push(readPromptFile(invocationCwd, token.slice("--prompt-file=".length)));
       continue;
     }
     if (token === "--prompt-file") {
-      parts.push(readPromptFile(cwd, tokens[i + 1]));
+      if (tokens[i + 1]) chunks.push(readPromptFile(invocationCwd, tokens[i + 1]));
       i += 1;
       continue;
     }
-    if (isValueFlagToken(token)) {
-      if (!token.includes("=")) i += 1;
+    const inlineEquals = token.indexOf("=");
+    const flagName = inlineEquals === -1 ? token : token.slice(0, inlineEquals);
+    if (TASK_VALUE_FLAGS.has(flagName)) {
+      if (inlineEquals === -1) i += 1;
       continue;
     }
     if (token.startsWith("-")) continue;
-    parts.push(token);
+    chunks.push(token);
   }
-  return parts.filter(Boolean).join("\n");
+  return chunks.join("\n");
 }
 
-function resolveInvocationCwd(input, tokens, taskIndex) {
-  const base = input.cwd ? path.resolve(input.cwd) : process.cwd();
-  const cwdFlag = flagValue(tokens, taskIndex, "--cwd");
-  if (cwdFlag) return path.resolve(base, cwdFlag);
-
-  const separatorIndex = tokens.findIndex((token, index) => index < taskIndex && isShellSeparator(token));
-  if (separatorIndex >= 0) {
-    let start = 0;
-    while (start < separatorIndex && isEnvAssignment(tokens[start])) start += 1;
-    if (tokens[start] === "command") start += 1;
-    if (tokens[start] === "cd" && tokens[start + 1] && start + 2 === separatorIndex) {
-      return path.resolve(base, tokens[start + 1]);
+function resolveInvocationCwd(tokens, taskIndex, fallbackCwd) {
+  let cwd = fallbackCwd || process.cwd();
+  for (let i = 0; i < taskIndex - 2; i += 1) {
+    if (tokens[i] === "cd" && COMMAND_SEPARATORS.has(tokens[i + 2])) {
+      cwd = path.resolve(cwd, tokens[i + 1]);
+      i += 2;
     }
   }
-  return base;
+  for (let i = taskIndex + 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (COMMAND_SEPARATORS.has(token)) break;
+    if (token.startsWith("--cwd=")) {
+      return path.resolve(cwd, token.slice("--cwd=".length));
+    }
+    if (token === "--cwd" || token === "-C") {
+      if (tokens[i + 1]) return path.resolve(cwd, tokens[i + 1]);
+      break;
+    }
+  }
+  return cwd;
 }
 
-function findGitRepoRoot(cwd) {
-  const result = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  if (result.status === 0 && result.stdout.trim()) {
-    return path.resolve(result.stdout.trim());
-  }
-  return path.resolve(cwd);
+function normalizeAbsolutePathCandidate(raw) {
+  let value = String(raw ?? "");
+  while (/[),.;:\]]$/.test(value)) value = value.slice(0, -1);
+  value = value.replace(/:\d+(?::\d+)?$/, "");
+  return path.normalize(value);
 }
 
-function normalizeAbsolutePathCandidate(candidate) {
-  let text = String(candidate ?? "").trim();
-  while (/[),.;!?]$/.test(text)) {
-    text = text.slice(0, -1);
-  }
-  const lineRef = text.match(/^(.+):\d+(?::\d+)?$/);
-  if (lineRef) {
-    text = lineRef[1];
-  }
-  return text;
-}
-
-function uniquePathRoots(roots) {
-  const out = [];
-  for (const root of roots) {
-    if (typeof root !== "string" || !root.trim()) continue;
-    const resolved = path.resolve(root);
-    if (!out.includes(resolved)) out.push(resolved);
+function uniquePathRoots(paths) {
+  const roots = [];
+  for (const input of paths) {
+    if (!input || !path.isAbsolute(input)) continue;
+    const normalized = path.resolve(input);
+    roots.push(normalized);
     try {
-      const real = fs.realpathSync.native(resolved);
-      if (!out.includes(real)) out.push(real);
+      const real = fs.realpathSync.native(normalized);
+      if (real !== normalized) roots.push(real);
     } catch {
-      // Best-effort alias.
+      // Best effort.
     }
   }
-  return out;
+  return [...new Set(roots)];
 }
 
 function pathIsInsideRoot(candidate, root) {
   const relative = path.relative(root, candidate);
-  return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function findWorkspaceAbsolutePathConflicts(promptText, workspaceRoot, aliases = []) {
-  const roots = uniquePathRoots([workspaceRoot, ...aliases]);
-  const conflicts = [];
-  for (const match of String(promptText ?? "").matchAll(ABSOLUTE_PATH_PATTERN)) {
-    const candidate = normalizeAbsolutePathCandidate(match[0]);
-    if (!path.isAbsolute(candidate)) continue;
-    const resolved = path.resolve(candidate);
-    if (!roots.some((root) => pathIsInsideRoot(resolved, root))) continue;
-    if (!conflicts.includes(candidate)) conflicts.push(candidate);
+function collectSpaceRootCandidates(text, roots) {
+  const candidates = [];
+  for (const root of roots) {
+    if (!/\s/.test(root)) continue;
+    let start = text.indexOf(root);
+    while (start !== -1) {
+      const next = text[start + root.length];
+      if (!next || next === path.sep || /[\s),.;:\]]/.test(next)) {
+        let end = start + root.length;
+        while (end < text.length && !/[\s'"`<>]/.test(text[end])) end += 1;
+        candidates.push(text.slice(start, end));
+      }
+      start = text.indexOf(root, start + 1);
+    }
   }
-  return conflicts;
+  return candidates;
 }
 
-function classifyCommand(input) {
-  const command = input.tool_input?.command;
+function resolveWorkspaceRoot(cwd) {
+  try {
+    const result = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1000,
+    });
+    if (result.status === 0 && result.stdout.trim()) {
+      return result.stdout.trim();
+    }
+  } catch {
+    // Fall back below.
+  }
+  return cwd;
+}
+
+function findWorkspaceAbsolutePaths(text, workspaceRoot) {
+  const roots = uniquePathRoots([workspaceRoot]);
+  if (!text || roots.length === 0) return [];
+  const conflicts = new Set();
+  const stringText = String(text);
+  const candidates = [
+    ...stringText.matchAll(ABSOLUTE_PATH_PATTERN),
+    ...collectSpaceRootCandidates(stringText, roots),
+  ];
+  for (const raw of candidates) {
+    const candidate = normalizeAbsolutePathCandidate(Array.isArray(raw) ? raw[0] : raw);
+    if (roots.some((root) => pathIsInsideRoot(candidate, root))) conflicts.add(candidate);
+  }
+  return [...conflicts].sort();
+}
+
+function classifyCommand(command, fallbackCwd) {
   if (!command || typeof command !== "string") return null;
   if (!BRIDGE_TASK_PATTERN.test(command)) return null;
 
   const tokens = splitCommandWords(command);
-  const taskIndex = bridgeTaskIndex(tokens);
+  const taskIndex = findBridgeTaskIndex(tokens);
   if (taskIndex === -1) return null;
 
   const isWrite = booleanFlagEnabled(tokens, taskIndex, "--write");
   const isReadOnly = booleanFlagEnabled(tokens, taskIndex, "--read-only");
-  const worktreeAutoValue = booleanFlagValue(tokens, taskIndex, "--worktree-auto");
-  const cwd = resolveInvocationCwd(input, tokens, taskIndex);
+  const hasWorktreeAuto = booleanFlagEnabled(tokens, taskIndex, "--worktree-auto");
+  if (isWrite && isReadOnly) return { decision: "conflict" };
+  if (!isWrite) return { decision: "pass-through" };
+  if (!hasWorktreeAuto) return { decision: "rewrite-needed" };
 
-  if (isWrite && isReadOnly) {
-    return { decision: "conflict" };
-  }
-  if (isReadOnly && sandboxEnforced(cwd)) {
-    return { decision: "sandbox-read-only-denied" };
-  }
-  if (!isWrite) {
-    return { decision: "pass-through" };
-  }
-  // Worktree isolation is required for write tasks. Accept only when the
-  // flag is explicitly enabled (--worktree-auto or --worktree-auto=true).
-  // When the env opt-out is active, fall back to Claude's normal Bash
-  // permission flow (manual-permission). Otherwise deny with a suggestion.
-  if (worktreeAutoValue !== true) {
-    if (isWorktreeOptOut()) {
-      return { decision: "manual-permission" };
-    }
-    return { decision: "worktree-required", command };
-  }
-
-  const workspaceRoot = findGitRepoRoot(cwd);
-  const promptText = collectPromptText(tokens, taskIndex, cwd);
-  const conflicts = findWorkspaceAbsolutePathConflicts(promptText, workspaceRoot, [cwd]);
+  const invocationCwd = resolveInvocationCwd(tokens, taskIndex, fallbackCwd);
+  const promptText = collectPromptText(tokens, taskIndex, invocationCwd);
+  const workspaceRoot = resolveWorkspaceRoot(invocationCwd);
+  const conflicts = findWorkspaceAbsolutePaths(promptText, workspaceRoot);
   if (conflicts.length > 0) {
     return { decision: "absolute-path-conflict", conflicts, workspaceRoot };
   }
@@ -496,69 +325,18 @@ function buildRewriteSuggestion(command) {
   return `${command.slice(0, insertAt)} --worktree-auto${command.slice(insertAt)}`;
 }
 
-function denyWorktreeRequired(command) {
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason:
-        "codex-bridge task --write requires worktree isolation. Add --worktree-auto to run in an isolated worktree.",
-      additionalContext: buildRewriteSuggestion(command),
-    },
+function outputDeny(permissionDecisionReason, additionalContext = null) {
+  const hookSpecificOutput = {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason,
   };
-}
-
-function denyConflict() {
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason:
-        "codex-bridge task: --write and --read-only are mutually exclusive. Choose one and re-run.",
-    },
-  };
-}
-
-function denySandboxReadOnly() {
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason:
-        "sandbox.enforce: true (workspace policy). --read-only is forbidden. Re-run with --write or omit the flag.",
-      additionalContext:
-        "To opt out, set codex_bridge.sandbox_enforce: false in config.yaml or remove sandbox.enforce: true from .claude/codex-bridge.local.md.",
-    },
-  };
-}
-
-function denyAbsolutePathConflict(classification) {
-  const listed = classification.conflicts.slice(0, 8).map((p) => `  - ${p}`).join("\n");
-  const more = classification.conflicts.length > 8
-    ? `\n  ...and ${classification.conflicts.length - 8} more`
-    : "";
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason:
-        "codex-bridge task --worktree-auto prompt contains absolute workspace paths that would write to the main checkout instead of the isolated worktree.",
-      additionalContext: [
-        "## Codex-Bridge: worktree path rewrite required",
-        "",
-        "This dispatch uses `--worktree-auto`, but the prompt contains absolute paths inside the launch workspace:",
-        `${listed}${more}`,
-        "",
-        `Workspace: ${classification.workspaceRoot}`,
-        "",
-        "Use repo-relative paths in the prompt before dispatching. If you intentionally want to target the main checkout, pass `--no-worktree-auto`.",
-      ].join("\n"),
-    },
-  };
+  if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
+  process.stdout.write(JSON.stringify({ hookSpecificOutput }));
 }
 
 function main() {
-  if (isDisabled()) {
+  if (isDisabled() || isWorktreeOptOut()) {
     process.stdout.write('{"continue":true}');
     return;
   }
@@ -577,38 +355,50 @@ function main() {
     return;
   }
 
-  const classification = classifyCommand(input);
+  const command = input.tool_input?.command;
+  const classification = classifyCommand(command, input.tool_input?.cwd);
   if (!classification || classification.decision === "pass-through") {
-    process.stdout.write(JSON.stringify(continueOrAllowBundledBridgeTask(input)));
-    return;
-  }
-
-  if (classification.decision === "manual-permission") {
     process.stdout.write('{"continue":true}');
     return;
   }
 
-  if (classification.decision === "worktree-required") {
-    process.stdout.write(JSON.stringify(denyWorktreeRequired(classification.command)));
-    return;
-  }
-
   if (classification.decision === "conflict") {
-    process.stdout.write(JSON.stringify(denyConflict()));
-    return;
-  }
-
-  if (classification.decision === "sandbox-read-only-denied") {
-    process.stdout.write(JSON.stringify(denySandboxReadOnly()));
+    outputDeny("codex-bridge task: --write and --read-only are mutually exclusive. Choose one and re-run.");
     return;
   }
 
   if (classification.decision === "absolute-path-conflict") {
-    process.stdout.write(JSON.stringify(denyAbsolutePathConflict(classification)));
+    outputDeny(
+      "codex-bridge task --worktree-auto prompt contains absolute workspace paths that would bypass the isolated task worktree.",
+      [
+        "## Codex-Bridge: absolute path rejected",
+        "",
+        `Launch workspace: ${classification.workspaceRoot}`,
+        "Conflicting paths:",
+        ...classification.conflicts.map((entry) => `- ${entry}`),
+        "",
+        "Use repo-relative paths in the prompt before dispatching with --worktree-auto.",
+      ].join("\n"),
+    );
     return;
   }
 
-  process.stdout.write('{"continue":true}');
+  const suggested = buildRewriteSuggestion(command);
+  outputDeny(
+    "codex-bridge task --write requires worktree isolation. Re-run with --worktree-auto so changes land in <repo>/../.codex-bridge-worktrees/<task_id> instead of the main checkout.",
+    [
+      "## Codex-Bridge: rewrite required",
+      "Suggested invocation:",
+      "",
+      "```bash",
+      suggested,
+      "```",
+      "",
+      "The bridge will allocate a worktree at <repo>/../.codex-bridge-worktrees/<task_id> on a fresh `subagent/codex/<task_id>` branch and capture the base SHA in meta.json.",
+      "",
+      "Set `CODEX_BRIDGE_DISABLE_WORKTREE_AUTO=1` to opt out for this session if you're managing isolation yourself.",
+    ].join("\n"),
+  );
 }
 
 try {
@@ -621,4 +411,3 @@ try {
     // Nothing left to do.
   }
 }
-process.exit(0);

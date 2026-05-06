@@ -32,6 +32,11 @@ Delegate coding tasks to Codex and manage the workflow via Monitor notifications
 into writes or the project config sets a wider sandbox. For file-changing work,
 use `--write`; for bridge-managed isolation, pair it with `--worktree-auto`.
 
+When using `--worktree-auto`, prompts and brief text must name repo-relative
+paths (`src/file.ts`), not absolute paths inside the launch checkout. Absolute
+checkout paths still point at the main workspace, so the bridge rejects them
+before creating the task worktree.
+
 **Sandbox enforcement:** users who pin a sandbox policy can opt into enforcement
 that orchestrators cannot silently downgrade with `--read-only`:
 
