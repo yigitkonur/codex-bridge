@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const root = new URL("../", import.meta.url);
 const hookPath = fileURLToPath(new URL("plugin/hooks/pre-tool-bash.mjs", root));
 
-function runHook(command, extraEnv = {}) {
-  const input = JSON.stringify({
-    tool_name: "Bash",
-    tool_input: { command },
-  });
+function runHook(command, extraEnv = {}, cwd) {
+  const payload = { tool_name: "Bash", tool_input: { command } };
+  if (cwd) payload.cwd = cwd;
+  const input = JSON.stringify(payload);
   const result = spawnSync(process.execPath, [hookPath], {
     input,
     encoding: "utf8",
@@ -96,4 +98,36 @@ test("PreToolUse(Bash) rewrite suggestion does not corrupt task-bearing paths", 
     output.hookSpecificOutput.additionalContext,
     /task --worktree-auto-runner/,
   );
+});
+
+test("PreToolUse(Bash) denies read-only bridge tasks when sandbox enforcement is enabled", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-sandbox-enforce-"));
+  try {
+    fs.writeFileSync(path.join(temp, "config.yaml"), "codex_bridge:\n  sandbox_enforce: true\n");
+    const output = runHook('codex-bridge task --read-only "audit"', {}, temp);
+
+    assert.equal(isDenied(output), true);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /sandbox\.enforce: true/);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /--read-only is forbidden/);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("PreToolUse(Bash) honors cwd sandbox enforcement opt-out over workspace config", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-sandbox-precedence-"));
+  try {
+    const workspace = path.join(temp, "workspace");
+    const child = path.join(workspace, "child");
+    fs.mkdirSync(child, { recursive: true });
+    spawnSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    fs.writeFileSync(path.join(workspace, "config.yaml"), "codex_bridge:\n  sandbox_enforce: true\n");
+    fs.writeFileSync(path.join(child, "config.yaml"), "codex_bridge:\n  sandbox_enforce: false\n");
+
+    assert.deepEqual(runHook('codex-bridge task --read-only "audit"', {}, child), {
+      continue: true,
+    });
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });

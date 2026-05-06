@@ -25,6 +25,23 @@ Tasks are read-only unless the command explicitly opts into writes or config
 sets a wider sandbox. For file-changing work, use `--write`; for bridge-managed
 isolation, pair it with `--worktree-auto`.
 
+Sandbox enforcement is opt-in for users who pin a sandbox policy and do not
+want orchestrators to silently downgrade it with `--read-only`:
+
+```yaml
+codex_bridge:
+  sandbox_policy: "danger-full-access"
+  sandbox_enforce: true
+```
+
+Run `/codex-bridge:setup --enforce-sandbox` once to install the Claude
+permission-layer deny rules. The PreToolUse Bash hook also denies `task
+--read-only` when `sandbox_enforce: true`, and Explore agent reroutes use
+`--write --worktree-auto` instead of `--read-only`. Known limitations:
+auto-pipeline check, standalone `review`, standalone `adversarial-review`, and
+the stop-time review gate run read-only by design; disable the stop-time review
+gate when enforcing sandbox pins.
+
 ## When to use codex-bridge
 
 **Trigger** when the work is one of:

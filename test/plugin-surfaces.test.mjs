@@ -460,6 +460,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
     assert.deepEqual(hookScriptRefs, [
       "hooks/post-tool-bash.mjs",
       "hooks/pre-tool-agent.mjs",
+      "hooks/pre-tool-bash.mjs",
       "hooks/session-lifecycle-hook.mjs",
       "hooks/session-lifecycle-hook.mjs",
       "hooks/stop-gate.mjs",
@@ -842,6 +843,7 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   ].sort());
   assert.match(JSON.stringify(hooksConfig), /session-lifecycle-hook\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /pre-tool-agent\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /pre-tool-bash\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /post-tool-bash\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /user-prompt-submit\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /subagent-stop\.mjs/);

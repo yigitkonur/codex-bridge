@@ -72,9 +72,17 @@ codex_bridge:
   # Opt into a stricter profile by uncommenting one of the two lines below.
   # The setting applies to task/send turns and the auto-pipeline fix stage.
   # The completion-check stage stays read-only regardless.
+  # Set sandbox_enforce: true and run `codex-bridge setup --enforce-sandbox`
+  # to install Claude permission-layer deny rules plus the PreToolUse hook
+  # guard that forbid task --read-only from downgrading this policy. Known
+  # limitations: auto-pipeline check, review, adversarial-review, and the
+  # stop-time review gate intentionally run read-only. Disable the stop-time
+  # review gate when enforcing sandbox pins.
   sandbox_policy: "danger-full-access"
   # sandbox_policy: "workspace-write"
   # sandbox_policy: "read-only"
+  sandbox_enforce: false
+  forbid_codex_direct: true
 
   # Session log directory
   session_dir: "~/.codex-bridge/sessions"
