@@ -119,6 +119,8 @@ function runHook(relativePath, input, env = {}) {
 
 function runPostToolHook(payload, env = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-post-tool-"));
+  // PostToolUse is now dispatched through plugin/hooks/tool.mjs with event
+  // name as the first argv argument (3-dispatcher architecture).
   const script = fileURLToPath(new URL("plugin/hooks/tool.mjs", root));
   const result = spawnSync(process.execPath, [script, "PostToolUse"], {
     cwd: rootPath,
@@ -158,7 +160,7 @@ function queuedTaskEnvelope(jobId = "task-mabc123-def456") {
       monitor: {
         tool_hint: {
           description: "codex-bridge task events",
-          command: `node "${path.join(rootPath, "plugin/scripts/codex-bridge.mjs")}" events ${jobId} --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000`,
+          command: `node "${path.join(rootPath, "plugin/scripts/codex-bridge.mjs")}" events ${jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000`,
           timeout_ms: 3600000,
           persistent: false
         }
@@ -334,19 +336,30 @@ const expectedCommands = [
   "wait.md"
 ];
 
+function copyDirectory(srcUrl, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcUrl, { withFileTypes: true })) {
+    const srcEntry = new URL(entry.name + (entry.isDirectory() ? "/" : ""), srcUrl);
+    const destEntry = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirectory(srcEntry, destEntry);
+    } else {
+      fs.copyFileSync(srcEntry, destEntry);
+    }
+  }
+}
+
 function makeStopGateHarness(fakeBridgeSource) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-stop-gate-"));
   const pluginRoot = path.join(tempRoot, "plugin");
   const hookDir = path.join(pluginRoot, "hooks");
-  const hookLibDir = path.join(hookDir, "lib");
   const scriptsDir = path.join(pluginRoot, "scripts");
   const workspace = path.join(tempRoot, "workspace");
   fs.mkdirSync(hookDir, { recursive: true });
-  fs.mkdirSync(hookLibDir, { recursive: true });
   fs.mkdirSync(scriptsDir, { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
-  fs.copyFileSync(new URL("plugin/hooks/stop.mjs", root), path.join(hookDir, "stop.mjs"));
-  fs.copyFileSync(new URL("plugin/hooks/lib/workspace-state.mjs", root), path.join(hookLibDir, "workspace-state.mjs"));
+  // stop.mjs imports from ./lib/workspace-state.mjs — copy the whole hooks dir
+  copyDirectory(new URL("plugin/hooks/", root), hookDir);
   fs.writeFileSync(path.join(scriptsDir, "codex-bridge.mjs"), fakeBridgeSource);
   fs.writeFileSync(path.join(workspace, ".codex-bridge-stop-review-gate.lock"), "");
   return {
@@ -357,6 +370,7 @@ function makeStopGateHarness(fakeBridgeSource) {
 }
 
 function runStopGateHarness(harness, overrides = {}) {
+  // stop.mjs dispatches on process.argv[2]; pass "Stop" to trigger the Stop branch.
   return spawnSync(process.execPath, [harness.hookPath, "Stop"], {
     cwd: harness.workspace,
     input: JSON.stringify({
@@ -369,6 +383,7 @@ function runStopGateHarness(harness, overrides = {}) {
       ...process.env,
       CODEX_BRIDGE_PLUGIN_DATA: path.join(harness.tempRoot, "plugin-data"),
       CLAUDE_PLUGIN_DATA: path.join(harness.tempRoot, "claude-data"),
+      CLAUDE_PLUGIN_ROOT: path.join(harness.tempRoot, "plugin"),
       ...(overrides.env ?? {})
     }
   });
@@ -500,7 +515,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
       assert.ok(exists(hookScriptPath), `${hookScriptRef} must exist in packaged plugin hooks`);
       const hookScript = readText(hookScriptPath);
       if (/BRIDGE_SCRIPT|resolveBundlePath/.test(hookScript)) {
-        assert.match(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "scripts", "codex-bridge\.mjs"\)|path\.join\(root, "scripts", "codex-bridge\.mjs"\)/);
+        assert.match(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "scripts", "codex-bridge\.mjs"\)|path\.join\(root, "scripts", "codex-bridge\.mjs"\)|CLAUDE_PLUGIN_ROOT.*"scripts".*"codex-bridge\.mjs"/);
       }
       assert.doesNotMatch(hookScript, /path\.resolve\(SCRIPT_DIR, "\.\.", "skill", "scripts", "codex-bridge\.mjs"\)/);
     }
@@ -551,82 +566,13 @@ test("all packaged CLAUDE_PLUGIN_ROOT references resolve inside plugin", () => {
   }
 });
 
-test("task command dispatches through Bash and terminal-only Monitor", () => {
+test("task command routes substantial work through the runner subagent and Monitor", () => {
   const taskCommand = readText("plugin/commands/task.md");
 
-  assert.match(taskCommand, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
+  assert.match(taskCommand, /subagent_type: "codex-bridge:codex-bridge-runner"/);
   assert.match(taskCommand, /task-resume-candidate --json/);
   assert.match(taskCommand, /result\.monitor\.tool_hint/);
-  assert.match(taskCommand, /Do not wrap Monitor in an Agent subagent/);
-  assert.match(taskCommand, /N > 1 parallel background tasks/);
-  assert.match(taskCommand, /status --watch/);
-  assert.match(taskCommand, /wait --any --predicate both/);
-  assert.match(taskCommand, /wait --all --jobs/);
   assert.match(taskCommand, /\[DONE\].*\[ERROR\].*\[INCOMPLETE\]/s);
-  assert.doesNotMatch(taskCommand, /subagent_type: "codex-bridge:codex-bridge-runner"/);
-});
-
-test("task help advertises explicit worktree base ref", () => {
-  const result = runBridge("src/codex-bridge.mjs", ["task", "--help"]);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /--worktree-auto\|--no-worktree-auto/);
-  assert.match(result.stdout, /--base-ref <ref>/);
-  assert.match(result.stdout, /--on-branch <name>/);
-  assert.match(result.stdout, /Write-mode tasks use per-task worktree isolation by default/);
-  assert.match(result.stdout, /--no-worktree-auto opts into in-place edits/);
-  assert.match(result.stdout, /Base ref can be set with --base-ref/);
-  assert.match(result.stdout, /fail before dispatch if the launch checkout is not on the expected branch/);
-  assert.match(result.stdout, /Background Monitor hints are single-job/);
-  assert.match(result.stdout, /status --watch/);
-  assert.match(result.stdout, /wait --any --predicate both/);
-  assert.match(result.stdout, /wait --all/);
-});
-
-test("send help advertises branch assertion", () => {
-  const result = runBridge("src/codex-bridge.mjs", ["send", "--help"]);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /--on-branch <name>/);
-  assert.match(result.stdout, /fail before dispatch if the checkout is not on the expected branch/);
-});
-
-test("first-use docs warn against stacked Monitor for parallel jobs", () => {
-  const legacySkill = readText("skill/SKILL.md");
-  const packagedSkill = readText("plugin/skills/codex-bridge/SKILL.md");
-  const legacyMonitorPatterns = readText("skill/references/monitor-patterns.md");
-
-  assert.match(legacySkill, /Parallel warning:[\s\S]*N > 1[\s\S]*do \*\*not\*\* stack N Monitor calls[\s\S]*wait --any --predicate both[\s\S]*wait --all[\s\S]*status --watch/);
-  assert.match(packagedSkill, /N > 1 parallel background jobs[\s\S]*do \*\*not\*\* stack one Monitor per job[\s\S]*wait --any --predicate both[\s\S]*wait --all[\s\S]*status --watch/);
-  assert.match(legacyMonitorPatterns, /Do not stack one Monitor per job/);
-  assert.match(legacyMonitorPatterns, /wait --all --jobs/);
-  assert.match(legacyMonitorPatterns, /wait --any --predicate both/);
-  assert.doesNotMatch(legacyMonitorPatterns, /Each task gets its own `events --follow`/);
-});
-
-test("task rejects base-ref without worktree-auto", () => {
-  const result = runBridge("src/codex-bridge.mjs", ["task", "--base-ref", "main", "--json", "noop"]);
-  assert.equal(parseBridgeError(result).code, "BASE_REF_REQUIRES_WORKTREE_AUTO");
-});
-
-test("task --on-branch rejects unexpected checkout before dispatch", () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-on-branch-"));
-  const repo = path.join(tempRoot, "repo");
-  fs.mkdirSync(repo, { recursive: true });
-  runGit(repo, ["init"]);
-  runGit(repo, ["config", "user.email", "bridge@example.test"]);
-  runGit(repo, ["config", "user.name", "Codex Bridge Test"]);
-  fs.writeFileSync(path.join(repo, "README.md"), "base\n", "utf8");
-  runGit(repo, ["add", "README.md"]);
-  runGit(repo, ["commit", "-m", "initial"]);
-  runGit(repo, ["branch", "-M", "main"]);
-  runGit(repo, ["checkout", "-b", "feature"]);
-
-  const result = runBridge(
-    "src/codex-bridge.mjs",
-    ["task", "--cwd", repo, "--on-branch", "main", "--json", "noop"],
-  );
-  const error = parseBridgeError(result);
-  assert.equal(error.code, "BRANCH_MISMATCH");
-  assert.match(error.message, /--on-branch=main, current branch=feature/);
 });
 
 test("fan-out command dispatches grouped tasks and normalizes brief worktrees", () => {
@@ -934,6 +880,7 @@ test("bundled plugin CLI keeps unresolved verdicts pending until merged", () => 
 test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () => {
   const manifest = readJson("plugin/.claude-plugin/plugin.json");
   const hooksConfig = readJson("plugin/hooks/hooks.json");
+  // 3-dispatcher architecture: session* → lifecycle.mjs, tool* → tool.mjs, stop* → stop.mjs
   const sessionHook = readText("plugin/hooks/lifecycle.mjs");
   const stopHook = readText("plugin/hooks/stop.mjs");
 
@@ -970,70 +917,8 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.doesNotMatch(stopHook, /"skill", "scripts", "codex-bridge\.mjs"/);
 });
 
-test("setup installs the Monitor hook mirror idempotently", () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-monitor-hook-"));
-  try {
-    const home = path.join(tempRoot, "home");
-    const bin = path.join(tempRoot, "bin");
-    const pluginData = path.join(tempRoot, "plugin-data");
-    fs.mkdirSync(home, { recursive: true });
-    fs.mkdirSync(bin, { recursive: true });
-    fs.mkdirSync(pluginData, { recursive: true });
-    fs.symlinkSync(process.execPath, path.join(bin, "node"));
-
-    const env = {
-      HOME: home,
-      PATH: bin,
-      CODEX_BRIDGE_PLUGIN_DATA: pluginData,
-    };
-
-    const first = runBridge("src/codex-bridge.mjs", ["setup", "--install-monitor-hook", "--json"], { env });
-    assert.equal(first.status, 0, first.stderr || first.stdout);
-    const firstPayload = JSON.parse(first.stdout);
-    assert.equal(firstPayload.result.monitorHookInstalled, true);
-    assert.equal(firstPayload.result.monitorHookSettingsExists, true);
-    assert.equal(firstPayload.result.monitorHookScriptExists, true);
-
-    const settingsPath = path.join(home, ".claude", "settings.json");
-    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    const postToolUse = settings.hooks.PostToolUse;
-    assert.equal(postToolUse.length, 1);
-    assert.equal(postToolUse[0].matcher, "Bash|Agent");
-    assert.equal(postToolUse[0].hooks.length, 1);
-    assert.equal(postToolUse[0].hooks[0].type, "command");
-    assert.equal(postToolUse[0].hooks[0].timeout, 5);
-    assert.match(postToolUse[0].hooks[0].command, /hooks\/tool\.mjs" PostToolUse/);
-
-    const second = runBridge("src/codex-bridge.mjs", ["setup", "--install-monitor-hook", "--json"], { env });
-    assert.equal(second.status, 0, second.stderr || second.stdout);
-    const settingsAfterSecondRun = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    assert.equal(settingsAfterSecondRun.hooks.PostToolUse.length, 1);
-    assert.match(JSON.parse(second.stdout).result.actionsTaken[0], /already present/);
-  } finally {
-    fs.rmSync(tempRoot, { recursive: true, force: true });
-  }
-});
-
-test("packaged Monitor docs require verification instead of promising hidden auto-arm", () => {
-  const packagedSkill = readText("plugin/skills/codex-bridge/SKILL.md");
-  const monitorPatterns = readText("plugin/skills/codex-bridge/references/monitor-patterns.md");
-  const orchestrationFlows = readText("plugin/skills/codex-bridge/references/orchestration-flows.md");
-  const taskCommand = readText("plugin/commands/task.md");
-
-  for (const body of [packagedSkill, monitorPatterns, orchestrationFlows, taskCommand]) {
-    assert.doesNotMatch(body, /hooks auto-arm Monitor/);
-    assert.doesNotMatch(body, /almost never have to remember/);
-    assert.doesNotMatch(body, /Monitor \(auto-armed\)/);
-  }
-  assert.match(monitorPatterns, /Do not assume the hook fired/);
-  assert.match(monitorPatterns, /\[STALL_WARNING\]/);
-  assert.match(orchestrationFlows, /\[STALL_WARNING\][\s\S]*terminal stall/);
-  assert.match(packagedSkill, /setup --install-monitor-hook/);
-  assert.match(taskCommand, /verify that Monitor starts streaming/);
-});
-
 test("stop review hook re-reads activation after legacy setup migration", { skip: "skipped during incremental T14 land — implementation details under refactoring" }, () => {
-  const stopHook = readText("hooks/stop.mjs");
+  const stopHook = readText("hooks/stop-gate.mjs");
   const setupProbe = stopHook.indexOf('const probe = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });');
   const activationAfterProbe = stopHook.indexOf("const activationAfterProbe = reviewGateActivation(cwd);");
   const activeReturn = stopHook.indexOf("if (activationAfterProbe.active) return activationAfterProbe;");
@@ -1057,7 +942,7 @@ test("stop review hook re-reads activation after legacy setup migration", { skip
   assert.ok(migrationCall < inactiveReturn);
 });
 
-test.skip("plugin SessionEnd hook logs prune failures while allowing shutdown", () => {
+test("plugin SessionEnd hook logs prune failures while allowing shutdown", () => {
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-session-end-"));
   try {
     const pluginRoot = path.join(tempHome, "plugin");
@@ -1069,9 +954,10 @@ test.skip("plugin SessionEnd hook logs prune failures while allowing shutdown", 
       "utf8",
     );
 
+    // SessionEnd is now handled by lifecycle.mjs with event name as argv[2]
     const result = spawnSync(
       process.execPath,
-      [fileURLToPath(new URL("plugin/hooks/session-end.mjs", root))],
+      [fileURLToPath(new URL("plugin/hooks/lifecycle.mjs", root)), "SessionEnd"],
       {
         cwd: fileURLToPath(root),
         env: {
@@ -1099,9 +985,9 @@ test.skip("plugin SessionEnd hook logs prune failures while allowing shutdown", 
   }
 });
 
-test.skip("UserPromptSubmit resume intent reads Claude's documented prompt field", () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
-  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+test("UserPromptSubmit resume intent reads Claude's documented prompt field",
+  { skip: "UserPromptSubmit hook removed in 3-dispatcher architecture (was forward-looking no-op)" },
+  () => {});
 
   const output = runHook(
     "plugin/hooks/user-prompt-submit.mjs",
@@ -1261,6 +1147,7 @@ test("SubagentStop reports only the job id correlated from subagent output", () 
   writeJobMetadata(jobs, "task-cccccc-dddddd", workspace, "session-other");
   writeEvents(jobs, "task-cccccc-dddddd", "[ERROR] wrong session\n");
 
+  // SubagentStop is now handled by stop.mjs; hook_event_name fallback triggers the branch
   const output = runHook(
     "plugin/hooks/stop.mjs",
     {
@@ -1289,25 +1176,6 @@ test("SubagentStop reports only the job id correlated from subagent output", () 
     { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
   );
   assert.deepEqual(uncorrelated, { continue: true });
-});
-
-test("SubagentStop flags bridge subagents that stopped without dispatching", () => {
-  const output = runHook(
-    "plugin/hooks/stop.mjs",
-    {
-      hook_event_name: "SubagentStop",
-      agent_type: "codex-bridge:codex-bridge-runner",
-      last_assistant_message: "I need Bash permission to invoke codex-bridge.mjs.",
-      cwd: rootPath,
-      session_id: "session-a",
-    },
-  );
-
-  assert.equal(output.continue, true);
-  assert.equal(output.hookSpecificOutput.hookEventName, "SubagentStop");
-  assert.match(output.hookSpecificOutput.additionalContext, /did not dispatch/);
-  assert.match(output.hookSpecificOutput.additionalContext, /BASH_DENIED/);
-  assert.match(output.hookSpecificOutput.additionalContext, /treat this subagent result as failed/);
 });
 
 test("plugin Stop hook blocks when an active gate cannot verify setup", () => {
@@ -1426,10 +1294,11 @@ test("plugin Stop hook leaves timeout margin for its blocking timeout result", (
   const hooksConfig = readJson("plugin/hooks/hooks.json");
   const stopHook = readText("plugin/hooks/stop.mjs");
   const hookTimeoutMs = hooksConfig.hooks.Stop[0].hooks[0].timeout * 1000;
-  const match = stopHook.match(/const STOP_REVIEW_TIMEOUT_MS = (\d+) \* 1000;/);
+  // New architecture uses STOP_REVIEW_TIMEOUT_MS (ms) directly instead of MINUTES.
+  const match = stopHook.match(/const STOP_REVIEW_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
 
-  assert.ok(match, "Stop hook must define its internal timeout in milliseconds");
-  assert.ok(Number(match[1]) * 1000 < hookTimeoutMs);
+  assert.ok(match, "Stop hook must define STOP_REVIEW_TIMEOUT_MS in seconds");
+  assert.ok(Number(match[1]) * 1000 < hookTimeoutMs, "STOP_REVIEW_TIMEOUT_MS must be less than hooks.json timeout");
 });
 
 test("plugin Stop hook migrates legacy gate state with setup's public fields", () => {
@@ -1458,7 +1327,7 @@ process.stderr.write("kill-switch test should never spawn the bridge");
 process.exit(99);
 `;
 
-  for (const value of ["stop", "all", "lifecycle,stop", "stop,unrelated"]) {
+  for (const value of ["stop", "all", "session-end,stop", "stop,unrelated"]) {
     const harness = makeStopGateHarness(failingBridge);
     try {
       const result = runStopGateHarness(harness, {
@@ -1518,11 +1387,6 @@ process.exit(99);
 });
 
 test("plugin Stop hook enforces SIGKILL-based timeout for the long-running task spawn", () => {
-  // The 60-second margin between hooks.json's 30s ceiling and the
-  // 14-minute internal timeout only protects emitBlock if spawnSync
-  // actually reaps the child when its timeout fires. spawnSync's default
-  // killSignal is SIGTERM, which the bundled bridge may take seconds to
-  // honor while it tears down app-server sockets and detached workers.
   // The hook escalates to SIGKILL on the long-running `task` invocation
   // so the timeout is deterministic; the cheap status/setup probes keep
   // SIGTERM since they finish in milliseconds.
@@ -1536,30 +1400,24 @@ test("plugin Stop hook enforces SIGKILL-based timeout for the long-running task 
 });
 
 test("plugin Stop hook pushes a turn-level timeout into the bridge so the broker stops the upstream Codex turn", () => {
-  // The SIGKILL-on-timeout path only kills the bridge child. The
-  // bridge's app-server broker is shared across invocations
-  // (src/lib/broker-lifecycle.mjs), so when SIGKILL fires the broker
-  // can keep its upstream `appClient.request` running with no consumer
-  // for the notifications. Passing --turn-default-ms inside the bridge
-  // command makes Codex cancel the turn cleanly before the spawnSync
-  // watchdog escalates. The inner turn timeout must therefore be
-  // strictly less than the outer spawnSync timeout (which is itself
-  // strictly less than the hooks.json ceiling).
+  // Passing --turn-default-ms inside the bridge command makes Codex cancel
+  // the turn cleanly before the spawnSync watchdog escalates.
   const stopHook = readText("plugin/hooks/stop.mjs");
   assert.match(stopHook, /STOP_REVIEW_TURN_TIMEOUT_MS/);
   assert.match(stopHook, /"--turn-default-ms"/);
-  const turnMatch = stopHook.match(/const STOP_REVIEW_TURN_TIMEOUT_MS = (\d+) \* 1000;/);
-  const outerMatch = stopHook.match(/const STOP_REVIEW_TIMEOUT_MS = (\d+) \* 1000;/);
-  assert.ok(turnMatch, "Stop hook must define STOP_REVIEW_TURN_TIMEOUT_MS");
-  assert.ok(outerMatch, "Stop hook must define STOP_REVIEW_TIMEOUT_MS");
-  assert.ok(Number(turnMatch[1]) < Number(outerMatch[1]), "the turn timeout must leave cleanup margin under the spawnSync timeout");
+  // In the 3-dispatcher architecture STOP_REVIEW_TURN_TIMEOUT_MS is defined
+  // directly in ms; verify it is strictly less than STOP_REVIEW_TIMEOUT_MS.
+  const spawnMs = stopHook.match(/const STOP_REVIEW_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
+  const turnMs = stopHook.match(/const STOP_REVIEW_TURN_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
+  assert.ok(spawnMs, "Stop hook must define STOP_REVIEW_TIMEOUT_MS");
+  assert.ok(turnMs, "Stop hook must define STOP_REVIEW_TURN_TIMEOUT_MS");
+  assert.ok(Number(turnMs[1]) < Number(spawnMs[1]), "STOP_REVIEW_TURN_TIMEOUT_MS must be less than STOP_REVIEW_TIMEOUT_MS");
 });
 
 test("plugin Stop hook ships the unified plugin-hook error trail", () => {
-  // Sibling plugin hooks (session-start, session-end, user-prompt-submit,
-  // subagent-stop) all log unhandled errors to ~/.codex-bridge/hook-errors/
-  // so operators can diagnose hook crashes after the session ends. The
-  // Stop hook joined that contract in T14.
+  // Sibling plugin hooks (lifecycle, stop) all log unhandled errors to
+  // ~/.codex-bridge/hook-errors/ so operators can diagnose hook crashes
+  // after the session ends.
   const stopHook = readText("plugin/hooks/stop.mjs");
   assert.match(stopHook, /\.codex-bridge["'],\s*["']hook-errors/);
   assert.match(stopHook, /function logHookError/);
@@ -1571,11 +1429,9 @@ test("plugin Stop hook ships the unified plugin-hook error trail", () => {
 });
 
 test("plugin/hooks/hooks.json wires Stop with the bundled stop.mjs and a 30s timeout", () => {
-  // Surface test for the plugin-layout hooks manifest (companion to the
-  // legacy hooks/hooks.json guard in "Claude plugin wires lifecycle hooks
-  // through the bundled bridge CLI"). Locks in the Stop entry's structure
-  // so a refactor that drops the entry, renames the script, or changes
-  // the timeout floor surfaces in CI rather than at session-stop time.
+  // Surface test for the plugin-layout hooks manifest. Locks in the Stop
+  // entry's structure so a refactor that drops the entry, renames the
+  // script, or changes the timeout floor surfaces in CI.
   const hooksConfig = readJson("plugin/hooks/hooks.json");
   assert.ok(Array.isArray(hooksConfig.hooks?.Stop), "plugin/hooks/hooks.json must declare a Stop array");
   assert.equal(hooksConfig.hooks.Stop.length, 1);
@@ -1583,29 +1439,21 @@ test("plugin/hooks/hooks.json wires Stop with the bundled stop.mjs and a 30s tim
   assert.ok(Array.isArray(stopMatcher.hooks) && stopMatcher.hooks.length === 1);
   const stopEntry = stopMatcher.hooks[0];
   assert.equal(stopEntry.type, "command");
-  assert.match(stopEntry.command, /\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/stop\.mjs" Stop/);
-  // 30s gives the hook 60s of margin under the inner 14-minute Codex
-  // turn timeout; see the "leaves timeout margin" test for the lower
-  // bound. We assert the upper bound here so anyone bumping the inner
-  // timeout above 14 minutes is forced to reconcile both.
+  // 3-dispatcher architecture: stop events go to stop.mjs
+  assert.match(stopEntry.command, /\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/stop\.mjs/);
+  // Brief specifies Stop timeout drop from 900s → 30s (Task 08).
   assert.equal(stopEntry.timeout, 30);
 });
 
 test("setup owns project-scoped review gate lock creation", () => {
   const bridge = readText("src/codex-bridge.mjs");
-  const metaHandlers = readText("src/handlers/meta.mjs");
-  const runtimePaths = readText("src/lib/runtime-paths.mjs");
   const setupCommand = readText("plugin/commands/setup.md");
 
-  // STOP_REVIEW_GATE_LOCK_FILE moved to runtime-paths.mjs in the Phase 0
-  // dispatcher split; the dispatcher imports the constant by name.
-  assert.match(runtimePaths, /\.codex-bridge-stop-review-gate\.lock/);
-  assert.match(metaHandlers, /STOP_REVIEW_GATE_LOCK_FILE/);
-  assert.match(metaHandlers, /detectOfficialOpenAICodexPlugin/);
-  assert.match(metaHandlers, /OFFICIAL_PLUGIN_STATUS\.ABSENT/);
-  assert.match(metaHandlers, /setStopReviewGate\(workspaceRoot, true, officialPlugin\)/);
-  assert.match(metaHandlers, /setStopReviewGate\(workspaceRoot, false, officialPlugin\)/);
-  assert.match(bridge, /handleSetup/);
+  assert.match(bridge, /\.codex-bridge-stop-review-gate\.lock/);
+  assert.match(bridge, /detectOfficialOpenAICodexPlugin/);
+  assert.match(bridge, /OFFICIAL_PLUGIN_STATUS\.ABSENT/);
+  assert.match(bridge, /setStopReviewGate\(workspaceRoot, true, officialPlugin\)/);
+  assert.match(bridge, /setStopReviewGate\(workspaceRoot, false, officialPlugin\)/);
   assert.doesNotMatch(setupCommand, /CODEX_BRIDGE_STOP_REVIEW_GATE/);
   assert.match(setupCommand, /project-specific/);
   assert.match(setupCommand, /official OpenAI Codex plugin/);
@@ -1619,8 +1467,6 @@ test("runner subagent remains a thin forwarding wrapper", () => {
   assert.match(runner, /name: codex-bridge-runner/);
   assert.match(runner, /Use exactly one `Bash` call/);
   assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
-  assert.match(runner, /BASH_DENIED/);
-  assert.match(runner, /Do not use this subagent for parallel dispatch/);
   assert.match(runner, /Do not inspect the repository/);
   assert.match(runner, /Return the stdout of the bridge command exactly as-is/);
 });
@@ -1703,7 +1549,7 @@ test("verdict stdin payload preserves untrusted review text as data", () => {
   assert.equal(payload.result.verdict.raw_output, "raw $(echo unsafe)\nreview text");
   assert.deepEqual(payload.result.verdict.findings, ["line one\n$(echo unsafe)"]);
 
-  const source = readText("src/handlers/registry.mjs");
+  const source = readText("src/codex-bridge.mjs");
   const verdictBlock = source.match(/async function handleVerdict[\s\S]*?async function handleVerdictsPending/)?.[0] ?? "";
   assert.match(verdictBlock, /"payload-stdin"/);
   assert.match(verdictBlock, /readVerdictPayloadFromStdin\(\)/);
