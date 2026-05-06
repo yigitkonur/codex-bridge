@@ -7,7 +7,8 @@ import process from "node:process";
 
 const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
 const LEGACY_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
-const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+const BRIDGE_SESSION_ID_ENV = "CODEX_BRIDGE_SESSION_ID";
+const LEGACY_SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 
 export function resolveHookCwd(input = {}) {
@@ -38,6 +39,10 @@ export function canonicalPath(filePath) {
   }
 }
 
+export function computeWorkspaceHash(cwd) {
+  return createHash("sha256").update(canonicalPath(resolveWorkspaceRoot(cwd))).digest("hex").slice(0, 16);
+}
+
 export function resolveStateDir(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const canonicalWorkspaceRoot = canonicalPath(workspaceRoot);
@@ -62,7 +67,7 @@ export function resolveJobsDir(cwd) {
 }
 
 export function currentSessionId(input = {}) {
-  return input.session_id || process.env[SESSION_ID_ENV] || null;
+  return input.session_id || process.env[BRIDGE_SESSION_ID_ENV] || process.env[LEGACY_SESSION_ID_ENV] || null;
 }
 
 export function readJobMetadata(jobsRoot, jobId) {
@@ -90,4 +95,50 @@ export function jobMatchesHookContext(job, { workspaceRoot, sessionId }) {
   }
 
   return !job.sessionId;
+}
+
+function markerRoot(cwd = process.cwd()) {
+  return path.join(resolveStateDir(cwd), "markers");
+}
+
+function markerPath(cwd, jobId, key) {
+  return path.join(markerRoot(cwd), `${jobId}.${key}`);
+}
+
+export function setMarker(jobId, key, cwd = process.cwd()) {
+  fs.mkdirSync(markerRoot(cwd), { recursive: true });
+  const file = markerPath(cwd, jobId, key);
+  try {
+    const fd = fs.openSync(file, "wx");
+    fs.closeSync(fd);
+    return true;
+  } catch (err) {
+    if (err?.code === "EEXIST") return false;
+    throw err;
+  }
+}
+
+export function hasMarker(jobId, key, cwd = process.cwd()) {
+  return fs.existsSync(markerPath(cwd, jobId, key));
+}
+
+export function consumeMarker(jobId, key, cwd = process.cwd()) {
+  try {
+    fs.unlinkSync(markerPath(cwd, jobId, key));
+    return true;
+  } catch (err) {
+    if (err?.code === "ENOENT") return false;
+    throw err;
+  }
+}
+
+export function listActiveJobs(cwd = process.cwd()) {
+  const root = markerRoot(cwd);
+  if (!fs.existsSync(root)) return [];
+  const jobs = new Set();
+  for (const entry of fs.readdirSync(root)) {
+    const index = entry.indexOf(".");
+    if (index > 0) jobs.add(entry.slice(0, index));
+  }
+  return [...jobs].sort();
 }
