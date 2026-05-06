@@ -9,7 +9,7 @@ import { fileURLToPath as fileURLToPath4 } from "node:url";
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "2.2.1",
+  version: "2.2.2",
   description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
   type: "module",
   scripts: {
@@ -4342,9 +4342,10 @@ function readNdjson(sessionOrPath, { maxEntries = null } = {}) {
   const selected = Number.isInteger(maxEntries) && maxEntries > 0 ? lines.slice(-maxEntries) : lines;
   return selected.map((line, index) => {
     try {
-      return JSON.parse(line);
+      return canonicalizeNdjsonEvent(JSON.parse(line));
     } catch (error) {
       return {
+        schema_version: NDJSON_EVENT_SCHEMA_VERSION,
         ts: null,
         tag: "CORRUPT_NDJSON_LINE",
         method: null,
@@ -4387,6 +4388,15 @@ function buildNdjsonEvent({ ts, tag, method = null, threadId = null, data = {} }
     threadId,
     data: data ?? {}
   };
+}
+function canonicalizeNdjsonEvent(entry) {
+  return buildNdjsonEvent({
+    ts: entry?.ts ?? null,
+    tag: entry?.tag ?? null,
+    method: entry?.method ?? null,
+    threadId: entry?.threadId ?? null,
+    data: entry?.data ?? {}
+  });
 }
 function logEvent(session, formattedBlock) {
   try {
@@ -16741,21 +16751,21 @@ function sanitizeBundleName(value) {
   return String(value).replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "job";
 }
 function copyIfExists(src, dest, copied) {
-  if (!src || !fs16.existsSync(src)) return false;
-  fs16.mkdirSync(path14.dirname(dest), { recursive: true });
-  fs16.copyFileSync(src, dest);
+  if (!src || !fs19.existsSync(src)) return false;
+  fs19.mkdirSync(path17.dirname(dest), { recursive: true });
+  fs19.copyFileSync(src, dest);
   copied.push({ source: src, path: dest });
   return true;
 }
 function listRelativeFiles(rootDir) {
   const results = [];
   const walk = (dir) => {
-    for (const entry of fs16.readdirSync(dir, { withFileTypes: true })) {
-      const fullPath = path14.join(dir, entry.name);
+    for (const entry of fs19.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path17.join(dir, entry.name);
       if (entry.isDirectory()) {
         walk(fullPath);
       } else if (entry.isFile()) {
-        results.push(path14.relative(rootDir, fullPath).split(path14.sep).join("/"));
+        results.push(path17.relative(rootDir, fullPath).split(path17.sep).join("/"));
       }
     }
   };
@@ -16769,20 +16779,20 @@ function formatBundleSize(bytes) {
 }
 function findCodexRollout(threadId) {
   if (!threadId) return null;
-  const root = path14.join(os7.homedir(), ".codex", "sessions");
-  if (!fs16.existsSync(root)) return null;
+  const root = path17.join(os9.homedir(), ".codex", "sessions");
+  if (!fs19.existsSync(root)) return null;
   const matches = [];
   const stack = [root];
   while (stack.length > 0) {
     const dir = stack.pop();
     let entries;
     try {
-      entries = fs16.readdirSync(dir, { withFileTypes: true });
+      entries = fs19.readdirSync(dir, { withFileTypes: true });
     } catch {
       continue;
     }
     for (const entry of entries) {
-      const fullPath = path14.join(dir, entry.name);
+      const fullPath = path17.join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(fullPath);
       } else if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(`${threadId}.jsonl`)) {
@@ -16794,8 +16804,8 @@ function findCodexRollout(threadId) {
 }
 function resolveTarCommand() {
   for (const candidate of ["tar", "/usr/bin/tar", "/bin/tar"]) {
-    if (candidate.includes(path14.sep) && !fs16.existsSync(candidate)) continue;
-    const result = spawnSync4(candidate, ["--version"], { encoding: "utf8" });
+    if (candidate.includes(path17.sep) && !fs19.existsSync(candidate)) continue;
+    const result = spawnSync5(candidate, ["--version"], { encoding: "utf8" });
     if (result.error?.code === "ENOENT") continue;
     if (!result.error) return candidate;
   }
@@ -16862,36 +16872,36 @@ async function handleBundle(argv) {
   }
   const safeTaskId = sanitizeBundleName(job.id);
   const bundleName = `codex-bridge-bundle-${safeTaskId}`;
-  const tmpDir = fs16.mkdtempSync(path14.join(os7.tmpdir(), `${bundleName}-`));
-  const bundleDir = path14.join(tmpDir, bundleName);
+  const tmpDir = fs19.mkdtempSync(path17.join(os9.tmpdir(), `${bundleName}-`));
+  const bundleDir = path17.join(tmpDir, bundleName);
   const copied = [];
-  const outPath = options.output ? path14.resolve(cwd, options.output) : path14.join(cwd, `${bundleName}.tar.gz`);
+  const outPath = options.output ? path17.resolve(cwd, options.output) : path17.join(cwd, `${bundleName}.tar.gz`);
   try {
     for (const dir of ["events", "registry", "logs", "codex-rollout"]) {
-      fs16.mkdirSync(path14.join(bundleDir, dir), { recursive: true });
+      fs19.mkdirSync(path17.join(bundleDir, dir), { recursive: true });
     }
-    const config = getBridgeConfig(cwd, workspaceRoot);
+    const config = getBridgeConfig2(cwd, workspaceRoot);
     const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
-    const eventsPath = path14.join(sessionDir, `${effectiveJob.threadId}.events`);
-    const ndjsonPath = path14.join(sessionDir, `${effectiveJob.threadId}.ndjson`);
-    const diffPath = path14.join(sessionDir, `${effectiveJob.threadId}.diff`);
-    copyIfExists(eventsPath, path14.join(bundleDir, "events", `${effectiveJob.threadId}.events`), copied);
-    copyIfExists(ndjsonPath, path14.join(bundleDir, "events", `${effectiveJob.threadId}.ndjson`), copied);
-    copyIfExists(diffPath, path14.join(bundleDir, "events", `${effectiveJob.threadId}.diff`), copied);
+    const eventsPath = path17.join(sessionDir, `${effectiveJob.threadId}.events`);
+    const ndjsonPath = path17.join(sessionDir, `${effectiveJob.threadId}.ndjson`);
+    const diffPath = path17.join(sessionDir, `${effectiveJob.threadId}.diff`);
+    copyIfExists(eventsPath, path17.join(bundleDir, "events", `${effectiveJob.threadId}.events`), copied);
+    copyIfExists(ndjsonPath, path17.join(bundleDir, "events", `${effectiveJob.threadId}.ndjson`), copied);
+    copyIfExists(diffPath, path17.join(bundleDir, "events", `${effectiveJob.threadId}.diff`), copied);
     const registryPath = resolveJobFile(workspaceRoot, job.id);
-    copyIfExists(registryPath, path14.join(bundleDir, "registry", `${job.id}.json`), copied);
+    copyIfExists(registryPath, path17.join(bundleDir, "registry", `${job.id}.json`), copied);
     const logPath = effectiveJob.logFile ?? resolveJobLogFile(workspaceRoot, job.id);
-    copyIfExists(logPath, path14.join(bundleDir, "logs", `${job.id}.log`), copied);
-    copyIfExists(`${logPath}.worker.err`, path14.join(bundleDir, "logs", `${job.id}.log.worker.err`), copied);
+    copyIfExists(logPath, path17.join(bundleDir, "logs", `${job.id}.log`), copied);
+    copyIfExists(`${logPath}.worker.err`, path17.join(bundleDir, "logs", `${job.id}.log.worker.err`), copied);
     let rolloutPath = null;
     if (!options["no-include-rollout"]) {
       rolloutPath = findCodexRollout(effectiveJob.threadId);
       if (rolloutPath) {
-        copyIfExists(rolloutPath, path14.join(bundleDir, "codex-rollout", path14.basename(rolloutPath)), copied);
+        copyIfExists(rolloutPath, path17.join(bundleDir, "codex-rollout", path17.basename(rolloutPath)), copied);
       }
     }
-    fs16.writeFileSync(
-      path14.join(bundleDir, "timeline.txt"),
+    fs19.writeFileSync(
+      path17.join(bundleDir, "timeline.txt"),
       synthesizeBundleTimeline({ taskId: job.id, job: effectiveJob, eventsPath, ndjsonPath }),
       "utf8"
     );
@@ -16918,13 +16928,13 @@ async function handleBundle(argv) {
       },
       contents: []
     };
-    fs16.writeFileSync(path14.join(bundleDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}
+    fs19.writeFileSync(path17.join(bundleDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}
 `, "utf8");
     manifest.contents = listRelativeFiles(bundleDir);
-    fs16.writeFileSync(path14.join(bundleDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}
+    fs19.writeFileSync(path17.join(bundleDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}
 `, "utf8");
-    fs16.mkdirSync(path14.dirname(outPath), { recursive: true });
-    const tar = spawnSync4(resolveTarCommand(), ["-czf", outPath, "-C", tmpDir, bundleName], {
+    fs19.mkdirSync(path17.dirname(outPath), { recursive: true });
+    const tar = spawnSync5(resolveTarCommand(), ["-czf", outPath, "-C", tmpDir, bundleName], {
       encoding: "utf8"
     });
     if (tar.status !== 0) {
@@ -16935,7 +16945,7 @@ async function handleBundle(argv) {
         details: { exitStatus: tar.status, stderr: tar.stderr ?? "", stdout: tar.stdout ?? "" }
       });
     }
-    const sizeBytes = fs16.statSync(outPath).size;
+    const sizeBytes = fs19.statSync(outPath).size;
     const payload = {
       taskId: job.id,
       threadId: effectiveJob.threadId,
@@ -16953,7 +16963,7 @@ async function handleBundle(argv) {
       { json: options.json, startedAt }
     );
   } finally {
-    fs16.rmSync(tmpDir, { recursive: true, force: true });
+    fs19.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 function handleTaskResumeCandidate(argv) {
