@@ -67,6 +67,15 @@ function seedSessionJobs(workspace) {
       phase: "done",
       updatedAt: "2026-04-29T12:02:00.000Z",
       completedAt: "2026-04-29T12:02:00.000Z"
+    },
+    {
+      id: "grouped-finished",
+      sessionId: "other-session",
+      group: "audit-wave",
+      status: "completed",
+      phase: "done",
+      updatedAt: "2026-04-29T12:00:30.000Z",
+      completedAt: "2026-04-29T12:00:30.000Z"
     }
   ]) {
     upsertJob(workspace, {
@@ -103,6 +112,21 @@ test("buildStatusSnapshot scopes status to the current Claude session by default
     );
     assert.equal(snapshot.latestFinished?.id, "current-finished");
     assert.deepEqual(snapshot.recent.map((job) => job.id), []);
+  });
+});
+
+test("buildStatusSnapshot filters group jobs across Claude sessions", () => {
+  withIsolatedState(({ workspace }) => {
+    seedSessionJobs(workspace);
+
+    const snapshot = buildStatusSnapshot(workspace, {
+      env: { [SESSION_ID_ENV]: "current-session" },
+      group: "audit-wave",
+    });
+
+    assert.equal(snapshot.group, "audit-wave");
+    assert.deepEqual(snapshot.running.map((job) => job.id), []);
+    assert.equal(snapshot.latestFinished?.id, "grouped-finished");
   });
 });
 
@@ -173,7 +197,7 @@ test("buildStatusSnapshot includes all Claude sessions when options.all is true"
     assert.equal(snapshot.latestFinished?.id, "other-finished");
     assert.deepEqual(
       snapshot.recent.map((job) => job.id),
-      ["current-finished"]
+      ["current-finished", "grouped-finished"]
     );
   });
 });

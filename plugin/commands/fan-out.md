@@ -22,6 +22,9 @@ GROUP=""
 PROMPTS=()
 BRIEFS=()
 COMMON_FLAGS=()
+HAS_WRITE=0
+HAS_READ_ONLY=0
+HAS_WORKTREE_AUTO=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -58,6 +61,13 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     *)
+      if [ "$1" = "--write" ]; then
+        HAS_WRITE=1
+      elif [ "$1" = "--read-only" ]; then
+        HAS_READ_ONLY=1
+      elif [ "$1" = "--worktree-auto" ]; then
+        HAS_WORKTREE_AUTO=1
+      fi
       COMMON_FLAGS+=("$1")
       shift
       ;;
@@ -71,6 +81,11 @@ fi
 
 if [ "${#PROMPTS[@]}" -eq 0 ] && [ "${#BRIEFS[@]}" -eq 0 ]; then
   echo "ERROR: at least one --prompt or --brief is required" >&2
+  exit 2
+fi
+
+if [ "${#BRIEFS[@]}" -gt 0 ] && [ "$HAS_READ_ONLY" -eq 1 ]; then
+  echo "ERROR: --brief dispatch requires write-mode worktree isolation; remove --read-only or use --write --worktree-auto" >&2
   exit 2
 fi
 
@@ -99,7 +114,16 @@ for prompt in "${PROMPTS[@]}"; do
 done
 
 for brief in "${BRIEFS[@]}"; do
-  if RESULT=$(node "$BRIDGE" task --background --json --group "$GROUP" --brief "$brief" "${COMMON_FLAGS[@]}" "Implement the task described in the brief."); then
+  BRIEF_FLAGS=("${COMMON_FLAGS[@]}")
+  if [ "$HAS_READ_ONLY" -eq 0 ]; then
+    if [ "$HAS_WRITE" -eq 0 ]; then
+      BRIEF_FLAGS+=("--write")
+    fi
+    if [ "$HAS_WORKTREE_AUTO" -eq 0 ]; then
+      BRIEF_FLAGS+=("--worktree-auto")
+    fi
+  fi
+  if RESULT=$(node "$BRIDGE" task --background --json --group "$GROUP" --brief "$brief" "${BRIEF_FLAGS[@]}" "Implement the task described in the brief."); then
     JOB_ID=$(printf '%s' "$RESULT" | extract_job_id)
     if [ -n "$JOB_ID" ]; then
       JOB_IDS+=("$JOB_ID")

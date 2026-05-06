@@ -25,6 +25,13 @@ function filterJobsForCurrentSession(jobs, options = {}) {
   return jobs.filter((job) => job.sessionId === sessionId);
 }
 
+function filterJobsForGroup(jobs, group) {
+  if (!group) {
+    return jobs;
+  }
+  return jobs.filter((job) => job.group === group);
+}
+
 function getJobTypeLabel(job) {
   if (typeof job.kindLabel === "string" && job.kindLabel) {
     return job.kindLabel;
@@ -269,7 +276,12 @@ export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
   const allJobs = listJobs(workspaceRoot);
-  const jobs = sortJobsNewestFirst(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
+  const visibleJobs = options.group
+    ? filterJobsForGroup(allJobs, options.group)
+    : options.all
+      ? allJobs
+      : filterJobsForCurrentSession(allJobs, options);
+  const jobs = sortJobsNewestFirst(visibleJobs);
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
 
@@ -288,6 +300,7 @@ export function buildStatusSnapshot(cwd, options = {}) {
     workspaceRoot,
     config,
     sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
+    group: options.group ?? null,
     running,
     latestFinished,
     recent,

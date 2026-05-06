@@ -533,6 +533,16 @@ test("task command routes substantial work through the runner subagent and Monit
   assert.match(taskCommand, /\[DONE\].*\[ERROR\].*\[INCOMPLETE\]/s);
 });
 
+test("fan-out command dispatches grouped tasks and normalizes brief worktrees", () => {
+  const fanOut = readText("plugin/commands/fan-out.md");
+
+  assert.match(fanOut, /task --background --json --group "\$GROUP"/);
+  assert.match(fanOut, /BRIEF_FLAGS\+=\("--write"\)/);
+  assert.match(fanOut, /BRIEF_FLAGS\+=\("--worktree-auto"\)/);
+  assert.match(fanOut, /at least one --prompt or --brief is required/);
+  assert.match(fanOut, /--brief dispatch requires write-mode worktree isolation/);
+});
+
 test("bundled plugin CLI exposes the verdict command", () => {
   const registry = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-verdict-"));
   const payload = runBundledPluginCli(

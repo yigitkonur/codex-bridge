@@ -53,6 +53,7 @@ function withCliFixture(run) {
       status: "completed",
       phase: "done",
       threadId,
+      group: "baseline-group",
       createdAt: "2026-04-30T00:00:00.000Z",
       updatedAt: "2026-04-30T00:00:01.000Z",
       completedAt: "2026-04-30T00:00:01.000Z",
@@ -284,6 +285,17 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.equal(status.command, "status");
     assert.equal(status.result.workspaceRoot, fixture.workspace);
     assert.equal(status.result.latestFinished.id, fixture.job.id);
+
+    const groupStatus = parseEnvelope(runBridge(["status", "--group", "baseline-group", "--json", "--cwd", fixture.workspace], fixture));
+    assert.equal(groupStatus.command, "status");
+    assert.equal(groupStatus.result.group, "baseline-group");
+    assert.equal(groupStatus.result.latestFinished.id, fixture.job.id);
+
+    const groupWait = parseEnvelope(runBridge(["wait", "--group", "baseline-group", "--all", "--json", "--cwd", fixture.workspace], fixture));
+    assert.equal(groupWait.command, "wait");
+    assert.equal(groupWait.result.mode, "group-all");
+    assert.equal(groupWait.result.group, "baseline-group");
+    assert.equal(groupWait.result.total, 1);
 
     const result = parseEnvelope(runBridge(["result", fixture.job.id, "--json", "--cwd", fixture.workspace], fixture));
     assertExpectedProbe(report, "result <job-id> --json", result);

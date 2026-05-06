@@ -5266,6 +5266,12 @@ function filterJobsForCurrentSession(jobs, options = {}) {
   }
   return jobs.filter((job) => job.sessionId === sessionId);
 }
+function filterJobsForGroup(jobs, group) {
+  if (!group) {
+    return jobs;
+  }
+  return jobs.filter((job) => job.group === group);
+}
 function getJobTypeLabel(job) {
   if (typeof job.kindLabel === "string" && job.kindLabel) {
     return job.kindLabel;
@@ -5453,7 +5459,8 @@ function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
   const allJobs = listJobs(workspaceRoot);
-  const jobs = sortJobsNewestFirst2(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
+  const visibleJobs = options.group ? filterJobsForGroup(allJobs, options.group) : options.all ? allJobs : filterJobsForCurrentSession(allJobs, options);
+  const jobs = sortJobsNewestFirst2(visibleJobs);
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
   const running = jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => enrichJob(job, { maxProgressLines }));
@@ -5464,6 +5471,7 @@ function buildStatusSnapshot(cwd, options = {}) {
     workspaceRoot,
     config,
     sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
+    group: options.group ?? null,
     running,
     latestFinished,
     recent,
@@ -11904,7 +11912,7 @@ function extractItemText(item) {
 }
 var COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
+    synopsis: "task [--group <name>] [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -11970,10 +11978,11 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
-    summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
+    synopsis: "status [job-id] [--group <name>] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "List jobs, or inspect one by id. With --group, list all jobs tagged with that group. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
+      "codex-bridge status --group audit-2026-05",
       "codex-bridge status task-abc --wait --timeout-ms 600000",
       "codex-bridge status --all --json",
       "codex-bridge status --watch --interval 5s",
@@ -11986,11 +11995,12 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge result task-abc --json"]
   },
   wait: {
-    synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
-    summary: "Block until target job events emit [DONE], [ERROR], [INCOMPLETE], or [PLAN]. With --any, return the first terminal job from N targets.",
+    synopsis: "wait [--any] <job-id-or-thread-id...> | --group <name> --all [--timeout-ms <ms>] [--json]",
+    summary: "Block until target job events emit [DONE], [ERROR], [INCOMPLETE], or [PLAN]. With --any, return the first terminal job from N targets. With --group <name> --all, wait for every grouped job to become terminal.",
     examples: [
       "codex-bridge wait task-abc --timeout-ms 600000 --json",
       "codex-bridge wait --any task-a task-b task-c --json",
+      "codex-bridge wait --group audit-2026-05 --all --json",
       "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
     ]
   },
@@ -13579,6 +13589,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
     summary: taskMetadata.summary,
     write,
     backend: options.backend ?? null,
+    group: options.group ?? null,
     adapter_capabilities: options.adapterCapabilities ?? null,
     ...options.worktree ? {
       registryTaskId: options.id ?? null,
@@ -14837,6 +14848,7 @@ async function handleTask(argv) {
       "prompt-file",
       "mode",
       "backend",
+      "group",
       "idle-timeout-ms",
       "turn-plan-ms",
       "turn-default-ms",
@@ -14862,6 +14874,10 @@ async function handleTask(argv) {
   const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
   const noPipeline = Boolean(options["no-pipeline"]);
+  const group = options.group != null ? String(options.group).trim() : null;
+  if (options.group != null && !group) {
+    throw usageError("--group requires a non-empty name.");
+  }
   const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
   let cwd = resolveCommandCwd(options);
   const stateCwd = cwd;
@@ -14931,7 +14947,8 @@ async function handleTask(argv) {
   ensureCodexRuntimeAdapter(adapter2);
   const job = buildTaskJob(workspaceRoot, taskMetadata, write, {
     backend: adapter2.name,
-    adapterCapabilities: adapter2.capabilities()
+    adapterCapabilities: adapter2.capabilities(),
+    group
   });
   let worktreeInfo = null;
   if (options["worktree-auto"]) {
@@ -15114,10 +15131,14 @@ async function handleTaskWorker(argv) {
 async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    valueOptions: ["cwd", "group", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
     booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
   });
   const cwd = resolveCommandCwd(options);
+  const group = options.group != null ? String(options.group).trim() : null;
+  if (options.group != null && !group) {
+    throw usageError("--group requires a non-empty name.");
+  }
   if (options.watch) {
     if (positionals[0]) {
       throw usageError("`status --watch` does not take a job-id argument; it watches ALL tracked jobs.");
@@ -15131,6 +15152,7 @@ async function handleStatus(argv) {
       intervalMs,
       overallTimeoutMs,
       all: options.all,
+      group,
       json: options.json,
       startedAt
     });
@@ -15149,6 +15171,9 @@ async function handleStatus(argv) {
     return;
   }
   const reference = positionals[0] ?? "";
+  if (group && reference) {
+    throw usageError("`status --group` does not take a job id.");
+  }
   if (reference) {
     const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd, reference, {
       timeoutMs: options["timeout-ms"],
@@ -15163,13 +15188,13 @@ async function handleStatus(argv) {
   if (options.wait) {
     throw usageError("`status --wait` requires a job id.");
   }
-  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
+  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all, group }));
   emitSuccess("status", report, renderStatusReport(report), {
     json: options.json,
     startedAt
   });
 }
-async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: json2, startedAt }) {
+async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, json: json2, startedAt }) {
   const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
   let ticks = 0;
   let interrupted = false;
@@ -15180,7 +15205,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
   try {
     while (true) {
       ticks += 1;
-      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all }));
+      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all, group }));
       const activeCount = snapshot.running?.length ?? 0;
       const tickEntry = {
         schema_version: "1.0",
@@ -15613,10 +15638,24 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
 async function handleWait(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms"],
-    booleanOptions: ["json", "any"]
+    valueOptions: ["cwd", "group", "timeout-ms"],
+    booleanOptions: ["json", "any", "all"]
   });
   const cwd = resolveCommandCwd(options);
+  const group = options.group != null ? String(options.group).trim() : null;
+  if (options.group != null && !group) {
+    throw usageError("--group requires a non-empty name.");
+  }
+  if (group) {
+    if (options.any || positionals.length > 0) {
+      throw usageError("`wait --group` cannot be combined with --any or job ids.");
+    }
+    if (!options.all) {
+      throw usageError("`wait --group <name>` requires --all.");
+    }
+    await handleWaitGroupAll(cwd, group, options, startedAt);
+    return;
+  }
   if (options.any) {
     await handleWaitAny(cwd, positionals, options, startedAt);
     return;
@@ -15673,6 +15712,54 @@ async function handleWait(argv) {
 `,
     { json: options.json, startedAt }
   );
+}
+async function handleWaitGroupAll(cwd, group, options, startedAt) {
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  const deadline = Date.now() + timeoutMs;
+  let jobs = [];
+  while (Date.now() <= deadline) {
+    const workspaceRoot = resolveWorkspaceRoot(cwd);
+    jobs = sortJobsNewestFirst2(listJobs(workspaceRoot).filter((job) => job.group === group));
+    if (jobs.length === 0) {
+      throw notFoundError(`No jobs found in group "${group}".`, "GROUP_NOT_FOUND");
+    }
+    const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
+    if (active.length === 0) {
+      const elapsedMs = Date.now() - startedAt;
+      const payload = {
+        mode: "group-all",
+        group,
+        total: jobs.length,
+        terminal: jobs.length,
+        jobs: jobs.map((job) => ({
+          jobId: job.id,
+          threadId: job.threadId ?? null,
+          status: job.status,
+          phase: job.phase ?? null
+        })),
+        elapsedMs
+      };
+      emitSuccess(
+        "wait",
+        payload,
+        `Group ${group} reached terminal state for ${jobs.length} job(s) after ${Math.round(elapsedMs / 1e3)}s
+`,
+        { json: options.json, startedAt }
+      );
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new CliError(`Group ${group} still has active jobs after ${Math.round(timeoutMs / 1e3)}s.`, {
+    class: "timeout",
+    code: "WAIT_TIMEOUT",
+    retryable: true,
+    suggestion: `Run \`status --group ${group}\` to inspect live group state.`,
+    details: {
+      group,
+      active: jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => ({ jobId: job.id, status: job.status, phase: job.phase ?? null }))
+    }
+  });
 }
 async function handleWaitAny(cwd, references, options, startedAt) {
   const refs = references.filter(Boolean);
