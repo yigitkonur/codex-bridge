@@ -235,12 +235,12 @@ actions:
 
 ### [DIRECTIVES]
 ```
-[DIRECTIVES] {threadId} | mode={plan|default} | effort={none|minimal|low|medium|high|xhigh} | sandbox={readOnly|workspaceWrite|dangerFullAccess} [| approval={never|on-request|on-failure|untrusted}] | quiet={true|false} | skip_meta_skills={true|false} | pipeline={review,check|none} [| model={model}]
+[DIRECTIVES] {threadId} | mode={plan|default} | effort={none|minimal|low|medium|high|xhigh} | sandbox={readOnly|workspaceWrite|dangerFullAccess} [| approval={never|on-request|on-failure|untrusted}] | quiet={true|false} | skip_meta_skills={true|false} | pipeline={diff,review,check|diff|none} [| model={model}]
 ```
 
 Emitted once per turn at `turn/started`, before any `[HEARTBEAT]` / `[CHECKPOINT]` cadence. Surfaces the **effective** runtime config — what the bridge actually resolved after merging CLI flags, `config.yaml`, and built-in defaults. Resolves the invisible-directive problem for keys like `skip_meta_skills` that shape the prompt but otherwise emit nothing observable. Non-terminal.
 
-`pipeline=` reflects the enabled auto-pipeline stages for this run (`review`, `check`, or a comma-joined subset). `pipeline=none` means `--no-pipeline` was passed or the config disabled both stages. The bracketed segments (`approval=`, `model=`) appear in their fixed slots only when set — parse as `key=value` pairs split on ` | ` rather than positional indexing so future optional keys don't break consumers.
+`pipeline=` reflects the enabled auto-pipeline stages for this run (`diff`, `review`, `check`, or a comma-joined subset). `pipeline=diff` means `--no-pipeline` retained diff capture while skipping validation stages. `pipeline=none` means config disabled the pipeline entirely. The bracketed segments (`approval=`, `model=`) appear in their fixed slots only when set — parse as `key=value` pairs split on ` | ` rather than positional indexing so future optional keys don't break consumers.
 
 ### [PIPELINE:*] — Auto-pipeline stage progress
 
@@ -272,7 +272,7 @@ After `[PIPELINE:done]` / `[PIPELINE:failed]`, no further bridge-side writes are
 
 `[PIPELINE:fix]` only fires when a structured review populated `reviewFindings` (e.g. an adversarial-review result fed back in). The default native auto-review returns plain text, so `reviewFindings` is empty and `[PIPELINE:fix]` does not appear on the normal `auto_review: true` path. Even then, `[PIPELINE:review:done]` still appears with `findings=0`. See `orchestration-flows.md` for lifecycle.
 
-`--no-pipeline` on `task` / `send` skips the pipeline entirely; the events file sees no `[PIPELINE:*]` lines, and the ndjson log carries a `PIPELINE_SKIPPED` entry.
+`--no-pipeline` on `task` keeps `[PIPELINE:diff]`, `[PIPELINE:diff:done]`, and `[PIPELINE:done]`, skips review/fix/check, and writes a `PIPELINE_SKIPPED` ndjson entry naming `skippedStages` and `retainedStages`.
 
 ### [REVIEW] (reserved — not emitted by the current build)
 ```

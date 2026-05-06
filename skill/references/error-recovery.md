@@ -64,6 +64,14 @@ Codes the bridge attaches when a failure's `codexErrorInfo` is missing or too ge
 
 ## Error Types and What to Do
 
+### No files touched
+
+`[INCOMPLETE] no_files_touched` means a write-mode task finished without Codex
+reporting touched files or changing git state relative to task start. Do not
+treat pre-existing dirty `workspace_diff` stats as proof that this task produced
+work. Send a follow-up on the same thread or relaunch with `--mode default
+--write` if edits were expected.
+
 ### ContextWindowExceeded
 The conversation exceeded the model's context limit.
 - **Do:** Start a new task with a shorter prompt, or fork the thread.

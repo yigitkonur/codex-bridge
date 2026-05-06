@@ -7,6 +7,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isPlanModeHalt, runAutoPipeline } from "../src/adapters/codex/pipeline.mjs";
+import { captureWorkFingerprint } from "../src/lib/work-delta.mjs";
+import { writeMeta } from "../src/lib/registry.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -273,6 +275,113 @@ test("auto-pipeline treats qualified clean review wording as approved", async ()
     assert.deepEqual(result.completedStages, ["diff", "review"]);
     assert.equal(turnCalls.length, 0, "clean review wording must not trigger a fix or check turn");
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-pipeline DONE reports task diff before dirty workspace diff", async () => {
+  const { root, session } = makeTempSession();
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "bridge@example.test"]);
+  runGit(repo, ["config", "user.name", "Codex Bridge Test"]);
+  fs.writeFileSync(path.join(repo, "existing.txt"), "base\n");
+  runGit(repo, ["add", "existing.txt"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  fs.writeFileSync(path.join(repo, "existing.txt"), "base\npreexisting dirty\n");
+  const startFingerprint = captureWorkFingerprint(repo);
+
+  try {
+    const reviewCalls = [];
+    const turnCalls = [];
+
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-watchdog",
+      cwd: repo,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub(turnCalls),
+      runAppServerReview: makeReviewStub(reviewCalls),
+      jobId: "job-watchdog",
+      turnStartWorkFingerprint: startFingerprint,
+      turnTouchedFiles: [],
+      stageTimeoutMs: 10_000,
+      totalTimeoutMs: 20_000,
+    });
+
+    assert.equal(result.complete, true);
+    assert.equal(result.diff.diffStat, "0 touched files");
+    assert.equal(result.workspaceDiff.diffStat, "1 files | +1 -0");
+
+    const events = fs.readFileSync(session.eventsPath, "utf8");
+    const doneLine = events.split("\n").find((line) => line.startsWith("[DONE]"));
+    assert.match(doneLine, /0 touched files/);
+    assert.doesNotMatch(doneLine, /1 files \| \+1 -0/);
+    assert.match(events, /workspace_diff: 1 files \| \+1 -0/);
+    assert.match(events, /workspace_was_clean: false/);
+    assert.match(events, /touchedFiles: \[\]/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-pipeline workspace summary does not overwrite task diff artifact", async () => {
+  const { root, session } = makeTempSession();
+  const repo = path.join(root, "repo");
+  const registry = path.join(root, "registry");
+  fs.mkdirSync(repo);
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "bridge@example.test"]);
+  runGit(repo, ["config", "user.name", "Codex Bridge Test"]);
+  fs.writeFileSync(path.join(repo, "tracked.txt"), "base\n");
+  runGit(repo, ["add", "tracked.txt"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  const baseSha = runGit(repo, ["rev-parse", "HEAD"]).trim();
+  fs.writeFileSync(path.join(repo, "unrelated-commit.txt"), "already committed after base\n");
+  runGit(repo, ["add", "unrelated-commit.txt"]);
+  runGit(repo, ["commit", "-m", "unrelated after base"]);
+  const previousRegistry = process.env.CODEX_BRIDGE_REGISTRY;
+  process.env.CODEX_BRIDGE_REGISTRY = registry;
+  writeMeta("task-watchdog", { base_sha: baseSha });
+
+  fs.writeFileSync(path.join(repo, "tracked.txt"), "base\ntask change\n");
+
+  try {
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-watchdog",
+      cwd: repo,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub([]),
+      runAppServerReview: makeReviewStub([]),
+      jobId: "task-watchdog",
+      stageTimeoutMs: 10_000,
+      totalTimeoutMs: 20_000,
+    });
+
+    assert.equal(result.diff.diffStat, "2 files | +2 -0");
+    assert.equal(result.workspaceDiff.diffStat, "1 files | +1 -0");
+    const diffArtifact = fs.readFileSync(result.diff.diffPath, "utf8");
+    assert.match(diffArtifact, /tracked\.txt/);
+    assert.match(diffArtifact, /unrelated-commit\.txt/);
+  } finally {
+    if (previousRegistry === undefined) delete process.env.CODEX_BRIDGE_REGISTRY;
+    else process.env.CODEX_BRIDGE_REGISTRY = previousRegistry;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

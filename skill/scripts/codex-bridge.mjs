@@ -1,36 +1,8 @@
 // src/codex-bridge.mjs
-import { spawn as spawn3, spawnSync as spawnSync5 } from "node:child_process";
-import fs19 from "node:fs";
-import os9 from "node:os";
-import path17 from "node:path";
-import process11 from "node:process";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
-
-// package.json
-var package_default = {
-  name: "codex-bridge",
-  version: "2.2.2",
-  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
-  type: "module",
-  scripts: {
-    "baseline:contracts": "node scripts/baseline-contracts.mjs",
-    build: "node esbuild.config.mjs",
-    dev: "node src/codex-bridge.mjs",
-    "release:package": "node scripts/package-release.mjs",
-    "smoke:runtime": "node scripts/runtime-smoke.mjs",
-    test: "node --test test/*.test.mjs",
-    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
-  },
-  author: "Yigit Konur",
-  license: "MIT",
-  engines: {
-    node: ">=22.0.0"
-  },
-  devDependencies: {
-    esbuild: "^0.24.0",
-    "js-yaml": "^4.1.0"
-  }
-};
+import fs27 from "node:fs";
+import os10 from "node:os";
+import path26 from "node:path";
+import process17 from "node:process";
 
 // src/lib/cli-errors.mjs
 import process2 from "node:process";
@@ -880,7 +852,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // src/lib/process.mjs
-import { spawnSync } from "node:child_process";
+import { spawnSync as spawnSync2 } from "node:child_process";
 import process4 from "node:process";
 var DEFAULT_RUN_COMMAND_TIMEOUT_MS = 1e4;
 function resolveRunCommandTimeout(timeout) {
@@ -894,7 +866,7 @@ function resolveRunCommandTimeout(timeout) {
   return Math.max(1, Math.floor(parsed));
 }
 function runCommand(command, args = [], options = {}) {
-  const spawnSyncImpl = options.spawnSync ?? spawnSync;
+  const spawnSyncImpl = options.spawnSync ?? spawnSync2;
   const result = spawnSyncImpl(command, args, {
     cwd: options.cwd,
     env: options.env,
@@ -1023,7 +995,7 @@ import os from "node:os";
 import path4 from "node:path";
 
 // src/lib/official-plugin.mjs
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync as spawnSync3 } from "node:child_process";
 var OFFICIAL_PLUGIN_STATUS = Object.freeze({
   ACTIVE: "active",
   ABSENT: "absent",
@@ -1099,8 +1071,8 @@ function extractPluginEntries(parsed) {
   return null;
 }
 function detectOfficialOpenAICodexPluginUncached(options = {}) {
-  const spawn4 = options.spawnSync ?? spawnSync2;
-  const result = spawn4("claude", ["plugin", "list", "--json"], {
+  const spawn5 = options.spawnSync ?? spawnSync3;
+  const result = spawn5("claude", ["plugin", "list", "--json"], {
     cwd: options.cwd ?? process.cwd(),
     env: options.env ?? process.env,
     encoding: "utf8",
@@ -4273,7 +4245,7 @@ function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIME
 import fs7 from "node:fs";
 import path7 from "node:path";
 import os3 from "node:os";
-import { spawnSync as spawnSync3 } from "node:child_process";
+import { spawnSync as spawnSync4 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
 var NDJSON_EVENT_SCHEMA_VERSION = "1.0";
 var NDJSON_EVENT_FIELDS = Object.freeze([
@@ -4402,11 +4374,11 @@ function writeReview(session, reviewData) {
 function captureGitSnapshot(cwd) {
   const isoTimestamp = (/* @__PURE__ */ new Date()).toISOString();
   try {
-    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync4("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (headResult.status !== 0 || !headResult.stdout) {
       return { headSha: null, porcelain: null, isoTimestamp };
     }
-    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync4("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
     return {
       headSha: headResult.stdout.trim(),
       porcelain: statusResult.status === 0 ? statusResult.stdout ?? "" : "",
@@ -4424,7 +4396,7 @@ function diffGitSnapshot(cwd, snapshot) {
   let currentHeadSha = null;
   let dirtyFiles = [];
   try {
-    const logResult = spawnSync3(
+    const logResult = spawnSync4(
       "git",
       ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
       { cwd, encoding: "utf8", timeout: 1e4 }
@@ -4432,11 +4404,11 @@ function diffGitSnapshot(cwd, snapshot) {
     if (logResult.status === 0 && logResult.stdout) {
       commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
-    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync4("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (headResult.status === 0 && headResult.stdout) {
       currentHeadSha = headResult.stdout.trim();
     }
-    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync4("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (statusResult.status === 0 && statusResult.stdout) {
       dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
@@ -4452,19 +4424,27 @@ function diffGitSnapshot(cwd, snapshot) {
 }
 function captureGitDiff(cwd, session, options = {}) {
   const baseRef = typeof options.baseRef === "string" && options.baseRef.trim() ? options.baseRef.trim() : "HEAD";
-  const numstatResult = spawnSync3("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
-  const fullResult = spawnSync3("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
+  const numstatResult = spawnSync4("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
+  const fullResult = spawnSync4("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
   const untrackedFiles = getUntrackedFileStats(cwd);
   const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles, baseRef);
   const diffPath = writeDiff(session, diffContent);
-  const numstatOutput = numstatResult.stdout || "";
+  return summarizeGitDiffResult(numstatResult.stdout || "", untrackedFiles, diffPath);
+}
+function summarizeGitDiff(cwd, options = {}) {
+  const baseRef = typeof options.baseRef === "string" && options.baseRef.trim() ? options.baseRef.trim() : "HEAD";
+  const numstatResult = spawnSync4("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
+  const untrackedFiles = getUntrackedFileStats(cwd);
+  return summarizeGitDiffResult(numstatResult.stdout || "", untrackedFiles, "");
+}
+function summarizeGitDiffResult(numstatOutput, untrackedFiles, diffPath) {
   const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
   const summary = summarizeNumstat(files);
   return { diffStat: summary, files: files.map(formatFileStat), diffPath };
 }
 function getUntrackedFileStats(cwd) {
   try {
-    const result = spawnSync3(
+    const result = spawnSync4(
       "git",
       ["ls-files", "--others", "--exclude-standard", "-z"],
       { cwd, encoding: "utf8", timeout: 1e4 }
@@ -4593,16 +4573,45 @@ function cancelActionLine(scriptPath, jobId, indent = "    cancel: ", cwd = null
 function jobCommandCwd(cwd, stateCwd) {
   return stateCwd ?? cwd;
 }
-function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+function formatDoneEvent(session, {
+  duration,
+  diffStat,
+  files,
+  config,
+  diffPath,
+  scriptPath,
+  jobId = null,
+  cwd = null,
+  stateCwd = null,
+  taskDiff = null,
+  workspaceDiff = null,
+  workspaceWasClean = null,
+  touchedFiles = null
+}) {
   const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const headlineDiff = taskDiff?.diffStat ?? diffStat;
+  const displayFiles = taskDiff?.files ?? files;
+  const displayDiffPath = taskDiff?.diffPath || diffPath || workspaceDiff?.diffPath || "";
   const lines = [
-    `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
+    `[DONE] ${session.threadId} completed in ${duration}s | ${headlineDiff}`,
     `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
-    `  diff: ${diffPath}`
+    `  diff: ${displayDiffPath}`
   ];
-  if (files && files.length > 0) {
+  if (taskDiff) {
+    lines.push(`  task_diff: ${taskDiff.diffStat}`);
+  }
+  if (workspaceDiff) {
+    lines.push(`  workspace_diff: ${workspaceDiff.diffStat}`);
+  }
+  if (workspaceWasClean != null) {
+    lines.push(`  workspace_was_clean: ${Boolean(workspaceWasClean)}`);
+  }
+  if (Array.isArray(touchedFiles)) {
+    lines.push(`  touchedFiles: ${JSON.stringify(touchedFiles)}`);
+  }
+  if (displayFiles && displayFiles.length > 0) {
     lines.push("  files:");
-    for (const f of files.slice(0, 20)) {
+    for (const f of displayFiles.slice(0, 20)) {
       lines.push(`    ${f}`);
     }
   }
@@ -5044,47 +5053,6 @@ function formatWarningEvent(session, { reason, family, threshold, sampleCommand,
   lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
   return lines.join("\n");
 }
-function formatStallWarningEvent(session, { durationMs, thresholdMs, remainingMs, lastMeaningfulAction = null }) {
-  const lines = [
-    `[STALL_WARNING] ${session.threadId} no progress for ${fmtSeconds(durationMs)} | terminal in ${fmtSeconds(remainingMs)}`,
-    `  threshold: ${fmtSeconds(thresholdMs)}`
-  ];
-  if (lastMeaningfulAction) lines.push(`  last_action: ${lastMeaningfulAction}`);
-  lines.push("  note: Codex is alive (heartbeats present) but no commands/file-changes/plans in this window.");
-  return lines.join("\n");
-}
-function formatNeedsAttentionEvent(session, { underlyingTag, threadId, summary = null, nextAction = null }) {
-  const lines = [
-    `[NEEDS_ATTENTION] ${threadId ?? session.threadId} | underlying=${underlyingTag}`
-  ];
-  if (summary) lines.push(`  summary: ${String(summary).slice(0, 200)}`);
-  if (nextAction) lines.push(`  next_action: ${String(nextAction).slice(0, 200)}`);
-  return lines.join("\n");
-}
-function formatArtifactEvent(session, { filePath, sizeBytes = null, threadId }) {
-  const lines = [
-    `[ARTIFACT] ${threadId ?? session.threadId} created ${filePath}`
-  ];
-  if (sizeBytes != null && Number.isFinite(sizeBytes)) lines.push(`  size_bytes: ${sizeBytes}`);
-  return lines.join("\n");
-}
-function formatDriftWarnEvent(session, { driftedFiles, driftRatio, promptScope, threadId }) {
-  const lines = [
-    `[DRIFT_WARN] ${threadId ?? session.threadId} | ${driftedFiles.length} out-of-scope files | ratio=${Math.round(driftRatio * 100)}%`
-  ];
-  if (promptScope && promptScope.length > 0) {
-    lines.push(`  prompt_scope: ${promptScope.slice(0, 5).join(", ")}${promptScope.length > 5 ? ` (+${promptScope.length - 5} more)` : ""}`);
-  }
-  if (driftedFiles.length > 0) {
-    lines.push("  drifted:");
-    for (const f of driftedFiles.slice(0, 10)) {
-      lines.push(`    - ${f}`);
-    }
-    if (driftedFiles.length > 10) lines.push(`    ... and ${driftedFiles.length - 10} more`);
-  }
-  lines.push("  note: Codex is touching files outside the inferred prompt scope. Review or cancel to contain scope.");
-  return lines.join("\n");
-}
 var WORKER_STDERR_TAIL_BYTES = 500;
 function classifyStderr(content) {
   const text = String(content ?? "");
@@ -5131,31 +5099,6 @@ function readWorkerErrTail(filePath, bytes = WORKER_STDERR_TAIL_BYTES) {
   }
   const tail = buffer.toString("utf8");
   return { tail, truncated, totalBytes };
-}
-function formatWorkerStderrEvent(session, {
-  path: workerErrPath,
-  sizeBytes,
-  deltaBytes = null,
-  tail = "",
-  truncated = false,
-  errorClassHint = "unknown"
-}) {
-  const lines = [
-    `[WORKER_STDERR] ${session.threadId} | size=${sizeBytes} bytes${Number.isFinite(deltaBytes) && deltaBytes > 0 ? ` | delta=${deltaBytes} bytes` : ""} | class=${errorClassHint}`
-  ];
-  if (workerErrPath) {
-    lines.push(`  path: ${workerErrPath}`);
-  }
-  if (truncated) {
-    lines.push(`  [truncated: showing last ${tail.length} of ${sizeBytes} bytes]`);
-  }
-  if (tail) {
-    lines.push("  tail:");
-    for (const line of tail.split(/\r?\n/)) {
-      lines.push(`    ${line}`);
-    }
-  }
-  return lines.join("\n");
 }
 
 // src/lib/job-control.mjs
@@ -5701,7 +5644,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -8518,58 +8461,6 @@ var CONFIG_SCHEMA = {
 function isConfigValueValid(schema2, value) {
   return schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
 }
-function parseConfigValue(key, rawValue) {
-  const schema2 = CONFIG_SCHEMA[key];
-  if (!schema2) {
-    return { ok: false, error: `Unknown config key '${key}'.` };
-  }
-  if (schema2.type === "boolean") {
-    if (rawValue === "true" || rawValue === "1") return { ok: true, value: true };
-    if (rawValue === "false" || rawValue === "0") return { ok: true, value: false };
-    return { ok: false, error: `Invalid value for '${key}'; expected boolean (true/false).` };
-  }
-  if (schema2.type === "positive-number") {
-    const n = Number(rawValue);
-    if (!Number.isFinite(n) || n <= 0) {
-      return { ok: false, error: `Invalid value for '${key}'; expected a positive number.` };
-    }
-    return { ok: true, value: n };
-  }
-  if (schema2.type === "enum") {
-    if (!schema2.values.includes(rawValue)) {
-      return { ok: false, error: `Invalid value for '${key}'; expected one of: ${schema2.values.join(", ")}.` };
-    }
-    return { ok: true, value: rawValue };
-  }
-  if (schema2.type === "string") {
-    return { ok: true, value: rawValue };
-  }
-  return { ok: false, error: `Config key '${key}' has type 'object' and cannot be set via command line.` };
-}
-var CONFIG_KEY_DOCS = {
-  mode: "Execution mode: 'plan' (default) sends a planning turn first, then an execute turn. 'default' skips the plan turn and executes directly. Valid values: plan | default.",
-  model: "Codex model to use. Example: 'gpt-5.4'. Can be overridden per-invocation with --model.",
-  effort: "Reasoning effort for execute turns. Plan turns are always forced to 'xhigh'. Valid values: none | minimal | low | medium | high | xhigh.",
-  auto_review: "When true, runs a native code review after every successful execute turn (the auto-pipeline). Set to false to skip review and finish immediately. Boolean.",
-  post_task_prompt: "Prompt appended after the task prompt asking Codex to self-review its own work. Set to empty string to disable.",
-  allow_questions: "When true, Codex may ask clarifying questions mid-task (via item/tool/requestUserInput). Use 'respond <task-id>' to answer. Boolean.",
-  session_dir: "Directory where session artifacts (.events, .ndjson, .diff, .plan.md, .review.json) are stored. Defaults to ~/.codex-bridge/sessions.",
-  sandbox_policy: "Filesystem sandbox applied to Codex. 'danger-full-access' = no sandbox (default). 'workspace-write' = writes restricted to cwd. 'read-only' = no writes. Valid values: danger-full-access | workspace-write | read-only.",
-  skip_meta_skills: "When true, prepends a directive telling Codex to skip internal meta-skill planning scaffolding (docs/, plans/ etc). Reduces overhead for orchestrator-driven flows. Boolean.",
-  command_failure_circuit_breaker: "When true, monitors repeated same-family command failures (osascript, open -a, AppleScript, computer-use/*) and emits a [WARNING] event after 3 consecutive failures. Boolean.",
-  idle_timeout_ms: "Max milliseconds between app-server notifications before the turn is declared stuck (ClientTimeout). Default: 300000 (5 min). Positive number.",
-  turn_plan_ms: "Wall-clock ceiling per plan turn in milliseconds. Default: 1800000 (30 min). Positive number.",
-  turn_default_ms: "Wall-clock ceiling per execute turn in milliseconds. Default: 1800000 (30 min). Positive number.",
-  pipeline_stage_ms: "Per-stage timeout for the auto-pipeline (review, fix, check) in milliseconds. Default: 300000 (5 min). Positive number.",
-  pipeline_total_ms: "Total wall-clock budget for the entire auto-pipeline in milliseconds. Default: 900000 (15 min). Positive number.",
-  question_answer_ms: "How long to wait for a 'respond' answer to a Codex question before timing out. Default: 300000 (5 min). Positive number.",
-  artifact_retention_jobs: "Max number of terminal jobs to keep when running 'status --cleanup'. Positive number.",
-  artifact_retention_days: "Max age in days of terminal job artifacts to keep when running 'status --cleanup'. Positive number.",
-  redact_secrets: "When true, scrub likely-secret strings from persisted event and NDJSON text. Boolean.",
-  prompt_footer: "Text appended to every task prompt. Useful for project-wide instructions. String.",
-  default_backend: "Override the backend adapter. Normally auto-detected. String.",
-  adapter_routing: "Advanced: per-adapter routing rules. Object (cannot be set via config set; edit the file directly)."
-};
 function parseConfigFile(filePath, source) {
   if (!filePath || !fs10.existsSync(filePath)) {
     return { config: {}, diagnostics: [] };
@@ -8595,9 +8486,6 @@ function parseConfigFile(filePath, source) {
       }]
     };
   }
-}
-function readConfigFile(filePath) {
-  return parseConfigFile(filePath, "config").config;
 }
 function validateConfigLayer(layer, source, pathValue) {
   const diagnostics = [];
@@ -8689,14 +8577,6 @@ function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
 }
 function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
-}
-function resolveConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
-  const sources = resolveConfigSources(skillDir, overrideDir, workspaceRoot);
-  return {
-    skillConfig: sources.skillConfigExists ? readConfigFile(sources.skillConfigPath) : {},
-    workspaceConfig: sources.workspaceConfigExists ? readConfigFile(sources.workspaceConfigPath) : {},
-    cwdConfig: sources.overrideConfigExists ? readConfigFile(sources.overrideConfigPath) : {}
-  };
 }
 function validateConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).diagnostics;
@@ -9702,10 +9582,8 @@ function buildAdversarialReviewPrompt(rootDir, context, focusText, opusConcerns 
 }
 
 // src/lib/local-config.mjs
-import fs14 from "node:fs";
 import path12 from "node:path";
 var LOCAL_CONFIG_RELATIVE_PATH = path12.join(".claude", "codex-bridge.local.md");
-var FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 var DEFAULT_BODY = [
   "",
   "# Codex Bridge \u2014 project-local configuration",
@@ -9717,74 +9595,6 @@ var DEFAULT_BODY = [
   "for notes.",
   ""
 ].join("\n");
-function resolveLocalConfigPath(workspaceRoot) {
-  if (!workspaceRoot || typeof workspaceRoot !== "string") {
-    throw new TypeError("resolveLocalConfigPath requires a workspaceRoot string");
-  }
-  return path12.join(workspaceRoot, LOCAL_CONFIG_RELATIVE_PATH);
-}
-function readLocalConfig(workspaceRoot) {
-  const filePath = resolveLocalConfigPath(workspaceRoot);
-  if (!fs14.existsSync(filePath)) {
-    return {
-      filePath,
-      exists: false,
-      frontmatter: {},
-      body: "",
-      parseError: null
-    };
-  }
-  const raw = fs14.readFileSync(filePath, "utf8");
-  const match = FRONTMATTER_REGEX.exec(raw);
-  if (!match) {
-    return {
-      filePath,
-      exists: true,
-      frontmatter: {},
-      body: raw,
-      parseError: null
-    };
-  }
-  const [, frontmatterRaw, body] = match;
-  let frontmatter = {};
-  let parseError = null;
-  try {
-    const parsed = jsYaml.load(frontmatterRaw) ?? {};
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      frontmatter = parsed;
-    } else {
-      parseError = "frontmatter must be a YAML mapping (key: value pairs)";
-    }
-  } catch (error) {
-    parseError = error?.message ?? String(error);
-  }
-  return {
-    filePath,
-    exists: true,
-    frontmatter,
-    body: body ?? "",
-    parseError
-  };
-}
-function writeLocalConfig(workspaceRoot, frontmatter, body) {
-  const filePath = resolveLocalConfigPath(workspaceRoot);
-  fs14.mkdirSync(path12.dirname(filePath), { recursive: true });
-  const serialized = serializeLocalConfig(frontmatter, body);
-  fs14.writeFileSync(filePath, serialized, "utf8");
-  return filePath;
-}
-function serializeLocalConfig(frontmatter, body) {
-  const safeFrontmatter = frontmatter && typeof frontmatter === "object" && !Array.isArray(frontmatter) ? frontmatter : {};
-  const yamlText = Object.keys(safeFrontmatter).length === 0 ? "" : jsYaml.dump(safeFrontmatter, { lineWidth: 100, noRefs: true, sortKeys: false });
-  const normalizedBody = typeof body === "string" && body.length > 0 ? body : DEFAULT_BODY;
-  const bodyWithLeadingNewline = normalizedBody.startsWith("\n") ? normalizedBody : `
-${normalizedBody}`;
-  return `---
-${yamlText}---${bodyWithLeadingNewline}`;
-}
-function getDefaultLocalConfigBody() {
-  return DEFAULT_BODY;
-}
 
 // src/lib/render.mjs
 function severityRank(severity) {
@@ -10286,7 +10096,7 @@ function renderCancelReport(job) {
 
 // src/adapters/codex/pipeline.mjs
 import fs15 from "node:fs";
-import path13 from "node:path";
+import path14 from "node:path";
 
 // src/lib/review-result.mjs
 var REVIEW_RESULT_SCHEMA_VERSION = "1.0";
@@ -10565,6 +10375,73 @@ function reviewResultTypeError(message, field) {
   return error;
 }
 
+// src/lib/work-delta.mjs
+import fs14 from "node:fs";
+import path13 from "node:path";
+import { spawnSync as spawnSync5 } from "node:child_process";
+function runGit2(cwd, args) {
+  try {
+    const result = spawnSync5("git", args, { cwd, encoding: "utf8", timeout: 1e4 });
+    if (result.status !== 0) {
+      return null;
+    }
+    return result.stdout ?? "";
+  } catch {
+    return null;
+  }
+}
+function resolveInsideCwd2(cwd, relativePath) {
+  const root = path13.resolve(cwd);
+  const absolutePath = path13.resolve(root, relativePath);
+  if (absolutePath !== root && !absolutePath.startsWith(root + path13.sep)) {
+    return null;
+  }
+  return absolutePath;
+}
+function collectUntrackedStats(cwd, output) {
+  const stats = [];
+  for (const relativePath of String(output ?? "").split("\0").filter(Boolean)) {
+    const absolutePath = resolveInsideCwd2(cwd, relativePath);
+    if (!absolutePath) {
+      continue;
+    }
+    try {
+      const stat = fs14.lstatSync(absolutePath);
+      stats.push([
+        relativePath,
+        stat.isDirectory() ? "dir" : "file",
+        stat.size,
+        Math.trunc(stat.mtimeMs)
+      ]);
+    } catch {
+      stats.push([relativePath, "missing", 0, 0]);
+    }
+  }
+  return stats;
+}
+function captureWorkFingerprint(cwd) {
+  const status = runGit2(cwd, ["status", "--porcelain=v1", "-z"]);
+  if (status == null) {
+    return null;
+  }
+  const diff = runGit2(cwd, ["diff", "--binary", "HEAD"]) ?? "";
+  const untracked = runGit2(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]) ?? "";
+  const untrackedStats = collectUntrackedStats(cwd, untracked);
+  return {
+    signature: JSON.stringify({ status, diff, untrackedStats })
+  };
+}
+function hasWorkChangedSince(cwd, startFingerprint, touchedFiles = []) {
+  if (Array.isArray(touchedFiles) && touchedFiles.some((file) => typeof file === "string" && file.length > 0)) {
+    return true;
+  }
+  if (!startFingerprint?.signature) {
+    return false;
+  }
+  const current = captureWorkFingerprint(cwd);
+  return Boolean(current?.signature && current.signature !== startFingerprint.signature);
+}
+
 // src/adapters/codex/pipeline.mjs
 var PIPELINE_TIMEOUT_MS_DEFAULT = 18e5;
 var STAGE_TIMEOUT_MS_DEFAULT = 72e4;
@@ -10576,7 +10453,7 @@ function isPlanModeHalt({ taskMode, assistantMessage, diff }) {
   return text.startsWith("[PLAN]") || /^\*\*Assumption/m.test(text) || /^### Plan\b/m.test(text) || /^## Plan\b/m.test(text) || /^# Plan\b/m.test(text);
 }
 function loadExecuteInstructions(rootDir) {
-  const p = path13.join(rootDir, "templates", "execute-instructions.md");
+  const p = path14.join(rootDir, "templates", "execute-instructions.md");
   try {
     return fs15.readFileSync(p, "utf8");
   } catch {
@@ -10598,7 +10475,10 @@ async function runAutoPipeline(options) {
     stageTimeoutMs = null,
     totalTimeoutMs = null,
     taskMode = null,
-    assistantMessage = null
+    assistantMessage = null,
+    expectedWriteWork = false,
+    turnStartWorkFingerprint = null,
+    turnTouchedFiles = []
   } = options;
   const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
   const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
@@ -10607,7 +10487,15 @@ async function runAutoPipeline(options) {
   const executeInstructions = loadExecuteInstructions(rootDir);
   const taskMeta = jobId ? readMeta(jobId) : null;
   const taskDiffBaseRef = typeof taskMeta?.base_sha === "string" && taskMeta.base_sha ? taskMeta.base_sha : typeof taskMeta?.base_ref === "string" && taskMeta.base_ref ? taskMeta.base_ref : null;
-  const captureTaskDiff = () => taskDiffBaseRef ? captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef }) : captureGitDiff(cwd, session);
+  const captureTaskDiff = (extraTouchedFiles = []) => {
+    if (taskDiffBaseRef) {
+      return captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef });
+    }
+    if (isCleanWorkFingerprint(turnStartWorkFingerprint)) {
+      return captureGitDiff(cwd, session);
+    }
+    return summarizeTouchedFiles(uniqueStrings([...turnTouchedFiles, ...extraTouchedFiles]));
+  };
   const remainingPipelineMs = () => totalMs - (Date.now() - startTime);
   const checkPipelineTimeout = () => {
     if (remainingPipelineMs() <= 0) {
@@ -10918,13 +10806,25 @@ async function runAutoPipeline(options) {
         summary: completionResult.complete ? "native review needs attention" : typeof completionResult.summary === "string" ? completionResult.summary : "native review needs attention"
       };
     }
-    const finalDiff = captureTaskDiff();
+    const finalDiff = captureTaskDiff(fixFilesTouched);
+    const workspaceDiff = finalDiff.diffPath ? summarizeGitDiff(cwd) : captureGitDiff(cwd, session);
     const duration = Math.round((Date.now() - startTime) / 1e3);
-    const missingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
-    const completionSummary = typeof completionResult.summary === "string" ? completionResult.summary : null;
-    const complete = Boolean(completionResult.complete);
+    let missingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
+    let completionSummary = typeof completionResult.summary === "string" ? completionResult.summary : null;
+    let complete = Boolean(completionResult.complete);
+    let failingStage = complete ? null : incompleteStage;
+    let finalVerdict = reviewVerdict;
+    let noWorkReason = null;
+    if (expectedWriteWork && !hasWorkChangedSince(cwd, turnStartWorkFingerprint, uniqueStrings([...turnTouchedFiles, ...fixFilesTouched]))) {
+      const noWorkItem = "no_files_touched: Write-mode task completed without touching files or changing git state.";
+      missingItems = missingItems.includes(noWorkItem) ? missingItems : [noWorkItem, ...missingItems];
+      completionSummary = "no-files-touched";
+      complete = false;
+      failingStage = "diff";
+      finalVerdict = "no_files_touched";
+      noWorkReason = "no_files_touched";
+    }
     const partial = !complete;
-    const failingStage = partial ? incompleteStage : null;
     const completion = normalizeCompletionResult(completionResult, missingItems, completionSummary, complete);
     if (complete) {
       logEvent(session, formatDoneEvent(session, {
@@ -10933,6 +10833,10 @@ async function runAutoPipeline(options) {
         files: finalDiff.files,
         config: { model: config.model, effort: config.effort, modeFlow: "plan\u2192default" },
         diffPath: finalDiff.diffPath,
+        taskDiff: finalDiff,
+        workspaceDiff,
+        workspaceWasClean: isCleanWorkFingerprint(turnStartWorkFingerprint),
+        touchedFiles: uniqueStrings([...turnTouchedFiles, ...fixFilesTouched]),
         scriptPath,
         jobId,
         cwd,
@@ -10942,7 +10846,7 @@ async function runAutoPipeline(options) {
       logEvent(session, formatIncompleteEvent(session, {
         diffStat: finalDiff.diffStat,
         diffPath: finalDiff.diffPath,
-        verdict: reviewVerdict,
+        verdict: finalVerdict,
         findingCount: reviewFindingCount,
         failingStage,
         missingItems,
@@ -10966,7 +10870,8 @@ async function runAutoPipeline(options) {
       missingItems,
       completionSummary,
       completion,
-      touchedFiles: fixFilesTouched
+      touchedFiles: fixFilesTouched,
+      noWorkReason
     });
     logEvent(session, formatPipelineEvent(session, {
       stage: "done",
@@ -10978,6 +10883,7 @@ async function runAutoPipeline(options) {
       completedStages,
       duration,
       diff: finalDiff,
+      workspaceDiff,
       failing_stage: failingStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
@@ -10987,7 +10893,8 @@ async function runAutoPipeline(options) {
       completion,
       missingItems,
       completionSummary,
-      touchedFiles: fixFilesTouched
+      touchedFiles: fixFilesTouched,
+      noWorkReason
     };
   } catch (error) {
     const duration = Math.round((Date.now() - startTime) / 1e3);
@@ -11083,6 +10990,18 @@ function normalizeCompletionResult(completionResult, missingItems, completionSum
     complete,
     missing_items: missingItems,
     summary: completionSummary
+  };
+}
+function isCleanWorkFingerprint(fingerprint) {
+  return fingerprint?.signature === JSON.stringify({ status: "", diff: "", untrackedStats: [] });
+}
+function summarizeTouchedFiles(files) {
+  const count = Array.isArray(files) ? files.length : 0;
+  const noun = count === 1 ? "touched file" : "touched files";
+  return {
+    diffStat: `${count} ${noun}`,
+    files: uniqueStrings(files).map((file) => `M ${file} (+? -?)`),
+    diffPath: ""
   };
 }
 function buildFixPrompt(findings) {
@@ -11235,9 +11154,138 @@ function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
 }
 
 // src/lib/update-check.mjs
-import fs16 from "node:fs";
-import path14 from "node:path";
+import { spawn as spawn3 } from "node:child_process";
+import fs17 from "node:fs";
+import path16 from "node:path";
 import os6 from "node:os";
+
+// src/lib/runtime-paths.mjs
+import fs16 from "node:fs";
+import path15 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+
+// package.json
+var package_default = {
+  name: "codex-bridge",
+  version: "2.2.6",
+  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
+  type: "module",
+  scripts: {
+    "baseline:contracts": "node scripts/baseline-contracts.mjs",
+    build: "node esbuild.config.mjs",
+    dev: "node src/codex-bridge.mjs",
+    "release:package": "node scripts/package-release.mjs",
+    "smoke:runtime": "node scripts/runtime-smoke.mjs",
+    test: "node --test test/*.test.mjs",
+    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
+  },
+  author: "Yigit Konur",
+  license: "MIT",
+  engines: {
+    node: ">=22.0.0"
+  },
+  devDependencies: {
+    esbuild: "^0.24.0",
+    "js-yaml": "^4.1.0"
+  }
+};
+
+// src/lib/runtime-paths.mjs
+function resolveDispatcherDir() {
+  const here = path15.dirname(fileURLToPath3(import.meta.url));
+  if (fs16.existsSync(path15.join(here, "codex-bridge.mjs"))) return here;
+  const parent = path15.resolve(here, "..");
+  if (fs16.existsSync(path15.join(parent, "codex-bridge.mjs"))) return parent;
+  return here;
+}
+var SCRIPT_DIR = resolveDispatcherDir();
+var SCRIPT_PATH = path15.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs16.existsSync(path15.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path15.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path15.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path15.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path15.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var BRIDGE_VERSION = package_default.version;
+var BRIDGE_SCHEMA_VERSION = "1.0";
+var BRIDGE_CAPABILITIES = Object.freeze([
+  "plan-mode",
+  "background-jobs",
+  "auto-pipeline",
+  "adversarial-review",
+  "stop-gate-review",
+  "structured-errors",
+  "per-subcommand-help",
+  "machine-readable-help",
+  "workspace-config-override",
+  "update-check",
+  "backend-adapter"
+]);
+var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
+var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
+var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
+var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
+
+// src/lib/update-check.mjs
+function maybeTriggerAutoApply(rawArgv, subcommand) {
+  try {
+    if (process.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
+    if (detectJsonFlag(rawArgv)) return;
+    if (detectHelpFlag(rawArgv)) return;
+    if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
+    if (subcommand === "version" || subcommand === "update") return;
+    void checkForUpdate({ currentVersion: BRIDGE_VERSION }).then((result) => {
+      if (!result || !result.hasUpdate || !result.latestVersion) return;
+      if (!shouldAttemptApply()) return;
+      markApplyAttempted(result.latestVersion);
+      spawnDetachedAutoApply(result.latestVersion);
+    }).catch(() => {
+    });
+  } catch {
+  }
+}
+function spawnDetachedAutoApply(targetVersion) {
+  try {
+    const logDir = path16.join(os6.homedir(), ".codex-bridge");
+    fs17.mkdirSync(logDir, { recursive: true });
+    const logFile = path16.join(logDir, "auto-update.log");
+    try {
+      const stat = fs17.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs17.truncateSync(logFile, 0);
+    } catch {
+    }
+    const fd = fs17.openSync(logFile, "a");
+    try {
+      const banner = `
+[${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
+`;
+      fs17.writeSync(fd, banner);
+      const child = spawn3(
+        "npx",
+        ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+        {
+          detached: true,
+          stdio: ["ignore", fd, fd],
+          env: process.env
+        }
+      );
+      child.on("error", () => {
+        try {
+          fs17.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+`, "utf8");
+        } catch {
+        }
+      });
+      child.unref();
+    } finally {
+      try {
+        fs17.closeSync(fd);
+      } catch {
+      }
+    }
+  } catch {
+  }
+}
 var DEFAULT_CACHE_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_FETCH_TIMEOUT_MS = 2500;
 var APPLY_ATTEMPT_WINDOW_MS = 60 * 60 * 1e3;
@@ -11245,12 +11293,12 @@ var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/relea
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
-  const root = pluginDataDir ? path14.join(pluginDataDir, "codex-bridge-update.json") : path14.join(os6.homedir(), ".codex-bridge", "update-cache.json");
+  const root = pluginDataDir ? path16.join(pluginDataDir, "codex-bridge-update.json") : path16.join(os6.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
   try {
-    const raw = fs16.readFileSync(cachePath(), "utf8");
+    const raw = fs17.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
     return parsed;
@@ -11261,8 +11309,8 @@ function readCache() {
 function writeCache(entry) {
   try {
     const p = cachePath();
-    fs16.mkdirSync(path14.dirname(p), { recursive: true });
-    fs16.writeFileSync(p, JSON.stringify(entry, null, 2));
+    fs17.mkdirSync(path16.dirname(p), { recursive: true });
+    fs17.writeFileSync(p, JSON.stringify(entry, null, 2));
     return true;
   } catch {
     return false;
@@ -11276,9 +11324,9 @@ function cacheLockPath() {
 }
 function removeStaleLock(lockPath, staleMs) {
   try {
-    const stat = fs16.statSync(lockPath);
+    const stat = fs17.statSync(lockPath);
     if (Date.now() - stat.mtimeMs <= staleMs) return false;
-    fs16.unlinkSync(lockPath);
+    fs17.unlinkSync(lockPath);
     return true;
   } catch (err) {
     return err?.code === "ENOENT";
@@ -11287,15 +11335,15 @@ function removeStaleLock(lockPath, staleMs) {
 function acquireCacheLock(staleMs) {
   const lockPath = cacheLockPath();
   try {
-    fs16.mkdirSync(path14.dirname(lockPath), { recursive: true });
+    fs17.mkdirSync(path16.dirname(lockPath), { recursive: true });
   } catch {
     return null;
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = fs16.openSync(lockPath, "wx");
+      const fd = fs17.openSync(lockPath, "wx");
       try {
-        fs16.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+        fs17.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
       } catch {
       }
       return { fd, lockPath };
@@ -11308,11 +11356,11 @@ function acquireCacheLock(staleMs) {
 }
 function releaseCacheLock(lock) {
   try {
-    fs16.closeSync(lock.fd);
+    fs17.closeSync(lock.fd);
   } catch {
   }
   try {
-    fs16.unlinkSync(lock.lockPath);
+    fs17.unlinkSync(lock.lockPath);
   } catch {
   }
 }
@@ -11774,9 +11822,9 @@ async function runIterateLoop(options = {}) {
 }
 
 // src/lib/sandbox-enforcement.mjs
-import fs17 from "node:fs";
+import fs18 from "node:fs";
 import os7 from "node:os";
-import path15 from "node:path";
+import path17 from "node:path";
 var SANDBOX_ENFORCEMENT_MARKER_KEY = "_codex_bridge_sandbox_enforce";
 var SANDBOX_ENFORCEMENT_MARKER_VALUE = "codex-bridge";
 var SANDBOX_ENFORCEMENT_DENY_RULES = Object.freeze([
@@ -11796,14 +11844,14 @@ var SANDBOX_ENFORCEMENT_DENY_RULES = Object.freeze([
   }
 ]);
 function resolveClaudeSettingsPath() {
-  return path15.join(os7.homedir(), ".claude", "settings.json");
+  return path17.join(os7.homedir(), ".claude", "settings.json");
 }
 function readClaudeSettings(settingsPath = resolveClaudeSettingsPath()) {
-  if (!fs17.existsSync(settingsPath)) {
+  if (!fs18.existsSync(settingsPath)) {
     return { exists: false, settings: {}, parseError: null };
   }
   try {
-    const raw = fs17.readFileSync(settingsPath, "utf8");
+    const raw = fs18.readFileSync(settingsPath, "utf8");
     const parsed = raw.trim() ? JSON.parse(raw) : {};
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {
@@ -11822,11 +11870,11 @@ function readClaudeSettings(settingsPath = resolveClaudeSettingsPath()) {
   }
 }
 function writeClaudeSettings(settingsPath, settings) {
-  fs17.mkdirSync(path15.dirname(settingsPath), { recursive: true });
+  fs18.mkdirSync(path17.dirname(settingsPath), { recursive: true });
   const tmpPath = `${settingsPath}.tmp-${process.pid}-${Date.now()}`;
-  fs17.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
+  fs18.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
 `, "utf8");
-  fs17.renameSync(tmpPath, settingsPath);
+  fs18.renameSync(tmpPath, settingsPath);
 }
 function hasSandboxEnforcement(settings) {
   const deny = settings?.permissions?.deny;
@@ -11893,14 +11941,14 @@ function uninstallSandboxEnforcement(settingsPath = resolveClaudeSettingsPath())
 }
 
 // src/lib/doctor-checks.mjs
-import { spawnSync as spawnSync4 } from "node:child_process";
-import fs18 from "node:fs";
+import { spawnSync as spawnSync6 } from "node:child_process";
+import fs19 from "node:fs";
 import os8 from "node:os";
-import path16 from "node:path";
+import path18 from "node:path";
 import process10 from "node:process";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
-var _DOCTOR_SCRIPT_DIR = path16.dirname(fileURLToPath3(import.meta.url));
-var _DOCTOR_SKILL_DIR = fs18.existsSync(path16.join(_DOCTOR_SCRIPT_DIR, "..", "schemas")) ? path16.join(_DOCTOR_SCRIPT_DIR, "..") : path16.join(_DOCTOR_SCRIPT_DIR, "..", "..");
+import { fileURLToPath as fileURLToPath4 } from "node:url";
+var _DOCTOR_SCRIPT_DIR = path18.dirname(fileURLToPath4(import.meta.url));
+var _DOCTOR_SKILL_DIR = fs19.existsSync(path18.join(_DOCTOR_SCRIPT_DIR, "..", "schemas")) ? path18.join(_DOCTOR_SCRIPT_DIR, "..") : path18.join(_DOCTOR_SCRIPT_DIR, "..", "..");
 function getBridgeConfig(cwd = null, workspaceRoot = null) {
   return loadConfig(_DOCTOR_SKILL_DIR, cwd, workspaceRoot);
 }
@@ -11931,18 +11979,18 @@ function buildJobMap(jobs) {
   return new Map(jobs.filter((job) => job?.id).map((job) => [job.id, job]));
 }
 function defaultWorktreeRoot2(repoRoot) {
-  return path16.resolve(repoRoot, "..", WORKTREE_ROOT_NAME);
+  return path18.resolve(repoRoot, "..", WORKTREE_ROOT_NAME);
 }
 function safeReadDir(dir) {
   try {
-    return fs18.readdirSync(dir, { withFileTypes: true });
+    return fs19.readdirSync(dir, { withFileTypes: true });
   } catch (error) {
     if (error?.code === "ENOENT") return [];
     throw error;
   }
 }
 function directorySizeBytes(dir) {
-  if (!dir || !fs18.existsSync(dir)) {
+  if (!dir || !fs19.existsSync(dir)) {
     return { path: dir, exists: false, bytes: 0, error: null };
   }
   const result = runCommand("du", ["-sk", dir], { timeout: 2e4 });
@@ -11963,7 +12011,7 @@ function directorySizeBytes(dir) {
   };
 }
 function listLocalBranches(repoRoot) {
-  const result = spawnSync4("git", ["branch", "--list", `${BRANCH_PREFIX}*`], {
+  const result = spawnSync6("git", ["branch", "--list", `${BRANCH_PREFIX}*`], {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: 1e4
@@ -11972,7 +12020,7 @@ function listLocalBranches(repoRoot) {
   return result.stdout.split(/\r?\n/).map((line) => line.trim().replace(/^\*\s+/, "")).filter((line) => line.startsWith(BRANCH_PREFIX));
 }
 function listGitWorktrees(repoRoot) {
-  const result = spawnSync4("git", ["worktree", "list", "--porcelain"], {
+  const result = spawnSync6("git", ["worktree", "list", "--porcelain"], {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: 1e4
@@ -12022,10 +12070,10 @@ function checkOrphanWorktrees(repoRoot, workspaceRoot, options = {}) {
     const taskId = entry.name;
     const job = jobs.get(taskId);
     if (job && liveJobStatuses().has(job.status)) continue;
-    const worktreePath = path16.join(worktreeRoot, entry.name);
+    const worktreePath = path18.join(worktreeRoot, entry.name);
     let stat = null;
     try {
-      stat = fs18.statSync(worktreePath);
+      stat = fs19.statSync(worktreePath);
     } catch {
     }
     findings.push({
@@ -12085,10 +12133,10 @@ function checkOldSessionFiles(cwd, workspaceRoot, options = {}) {
   let oldestMs = null;
   for (const entry of safeReadDir(sessionDir)) {
     if (!entry.isFile() || !/\.(events|ndjson)$/.test(entry.name)) continue;
-    const filePath = path16.join(sessionDir, entry.name);
+    const filePath = path18.join(sessionDir, entry.name);
     let stat;
     try {
-      stat = fs18.statSync(filePath);
+      stat = fs19.statSync(filePath);
     } catch {
       continue;
     }
@@ -12115,7 +12163,7 @@ function checkDiskUsage(cwd, workspaceRoot) {
   const checks = [
     { type: "disk_usage", severity: "info", label: "sessions_dir", ...directorySizeBytes(sessionDir) },
     { type: "disk_usage", severity: "info", label: "jobs_dir", ...directorySizeBytes(resolveJobsDir(workspaceRoot)) },
-    { type: "disk_usage", severity: "info", label: "codex_rollouts", ...directorySizeBytes(path16.join(os8.homedir(), ".codex", "sessions")) }
+    { type: "disk_usage", severity: "info", label: "codex_rollouts", ...directorySizeBytes(path18.join(os8.homedir(), ".codex", "sessions")) }
   ];
   return checks.map((check) => ({
     ...check,
@@ -12146,7 +12194,7 @@ async function checkCodexCli(cwd) {
 async function runDoctorChecks(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let repoRoot = workspaceRoot;
-  const gitRoot = spawnSync4("git", ["rev-parse", "--show-toplevel"], {
+  const gitRoot = spawnSync6("git", ["rev-parse", "--show-toplevel"], {
     cwd: workspaceRoot,
     encoding: "utf8",
     timeout: 5e3
@@ -12176,7 +12224,7 @@ function assertSafeBranch(branch) {
   }
 }
 function worktreeStatus(worktreePath) {
-  const result = spawnSync4("git", ["-C", worktreePath, "status", "--porcelain", "--untracked-files=all"], {
+  const result = spawnSync6("git", ["-C", worktreePath, "status", "--porcelain", "--untracked-files=all"], {
     encoding: "utf8",
     timeout: 1e4
   });
@@ -12211,25 +12259,25 @@ function applyDoctorAction(finding, context, options = {}) {
     if (dirty && !options.force) {
       return { finding, action: finding.action, cleaned: false, skipped: true, reason: "dirty-worktree", detail: dirty };
     }
-    const remove = spawnSync4("git", ["worktree", "remove", "--force", finding.path], {
+    const remove = spawnSync6("git", ["worktree", "remove", "--force", finding.path], {
       cwd: context.repoRoot,
       encoding: "utf8",
       timeout: 3e4
     });
-    if (remove.status !== 0 && finding.path.includes(`${path16.sep}${WORKTREE_ROOT_NAME}${path16.sep}`)) {
-      fs18.rmSync(finding.path, { recursive: true, force: true });
+    if (remove.status !== 0 && finding.path.includes(`${path18.sep}${WORKTREE_ROOT_NAME}${path18.sep}`)) {
+      fs19.rmSync(finding.path, { recursive: true, force: true });
     }
     return {
       finding,
       action: finding.action,
-      cleaned: !fs18.existsSync(finding.path),
+      cleaned: !fs19.existsSync(finding.path),
       skipped: false,
       detail: remove.status === 0 ? null : remove.stderr.trim() || remove.stdout.trim() || null
     };
   }
   if (finding.action === "delete_branch") {
     assertSafeBranch(finding.branch);
-    const result = spawnSync4("git", ["branch", "-D", finding.branch], {
+    const result = spawnSync6("git", ["branch", "-D", finding.branch], {
       cwd: context.repoRoot,
       encoding: "utf8",
       timeout: 3e4
@@ -12245,183 +12293,9 @@ function applyDoctorAction(finding, context, options = {}) {
   return { finding, action: finding.action, cleaned: false, skipped: true, reason: "unknown-action" };
 }
 
-// src/codex-bridge.mjs
-function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
-  return {
-    schema_version: "1.0",
-    reason,
-    retryable: Boolean(retryable),
-    next_actions: nextActions,
-    artifacts,
-    details
-  };
-}
-function mirrorDiffToRegistry(taskId, diffPath) {
-  if (!taskId || !diffPath) return null;
-  try {
-    if (!fs19.existsSync(diffPath)) return null;
-    return writeDiffArtifact(taskId, fs19.readFileSync(diffPath, "utf8"));
-  } catch {
-    return null;
-  }
-}
-function maybeTriggerAutoApply(rawArgv, subcommand) {
-  try {
-    if (process11.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
-    if (detectJsonFlag(rawArgv)) return;
-    if (detectHelpFlag(rawArgv)) return;
-    if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
-    if (subcommand === "version" || subcommand === "update") return;
-    void checkForUpdate({ currentVersion: BRIDGE_VERSION }).then((result) => {
-      if (!result || !result.hasUpdate || !result.latestVersion) return;
-      if (!shouldAttemptApply()) return;
-      markApplyAttempted(result.latestVersion);
-      spawnDetachedAutoApply(result.latestVersion);
-    }).catch(() => {
-    });
-  } catch {
-  }
-}
-function spawnDetachedAutoApply(targetVersion) {
-  try {
-    const logDir = path17.join(os9.homedir(), ".codex-bridge");
-    fs19.mkdirSync(logDir, { recursive: true });
-    const logFile = path17.join(logDir, "auto-update.log");
-    try {
-      const stat = fs19.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs19.truncateSync(logFile, 0);
-    } catch {
-    }
-    const fd = fs19.openSync(logFile, "a");
-    try {
-      const banner = `
-[${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
-`;
-      fs19.writeSync(fd, banner);
-      const child = spawn3(
-        "npx",
-        ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
-        {
-          detached: true,
-          stdio: ["ignore", fd, fd],
-          env: process11.env
-        }
-      );
-      child.on("error", () => {
-        try {
-          fs19.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
-`, "utf8");
-        } catch {
-        }
-      });
-      child.unref();
-    } finally {
-      try {
-        fs19.closeSync(fd);
-      } catch {
-      }
-    }
-  } catch {
-  }
-}
-var SCRIPT_DIR = path17.dirname(fileURLToPath4(import.meta.url));
-var SCRIPT_PATH = path17.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs19.existsSync(path17.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path17.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path17.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path17.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path17.join(ROOT_DIR, "templates", "plan-enforcement.md");
-function shellQuote2(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
-}
-function bridgeCommand(subcommand, cwd = null) {
-  return `node ${shellQuote2(SCRIPT_PATH)} ${subcommand}${cwd ? ` --cwd ${shellQuote2(cwd)}` : ""}`;
-}
-function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, cwd = null, stateCwd = null }) {
-  const target = jobId ?? threadId;
-  const jobCwd = stateCwd ?? cwd;
-  if (origin === "upstream:response-chain-lost") {
-    return {
-      kind: "new-task",
-      command: `${bridgeCommand("task", cwd)} --json --mode default "<prompt rebased on last good sha>"`,
-      description: "The upstream response chain is dead; start a fresh task from committed state instead of sending on the same thread."
-    };
-  }
-  if (origin === "upstream:auth" || errorCode === "Unauthorized") {
-    return {
-      kind: "reauth",
-      command: "codex login",
-      description: "Refresh Codex authentication, then relaunch the task; retrying the same thread will repeat the auth failure."
-    };
-  }
-  if (origin === "upstream:transport") {
-    return {
-      kind: "retry-same-thread",
-      command: threadId ? `${bridgeCommand("send", cwd)} ${threadId} "<same prompt>"` : `${bridgeCommand("task", cwd)} --json --mode default "<same prompt>"`,
-      description: "The upstream stream dropped before completion; workspace state is unchanged, so retry the same thread once."
-    };
-  }
-  if (origin === "idle" || errorCode === "ClientTimeout" || errorCode === "TurnTimeout") {
-    return {
-      kind: "relaunch-with-longer-timeouts",
-      command: `${bridgeCommand("task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
-      description: "A timeout budget expired; relaunch with a larger budget after confirming the original job is not still progressing."
-    };
-  }
-  if (origin === "upstream:invalid-request") {
-    return {
-      kind: "new-task",
-      command: `${bridgeCommand("task", cwd)} --json --mode default "<fixed prompt>"`,
-      description: "Inspect the upstream validation error, fix the prompt/input shape, and launch a fresh task."
-    };
-  }
-  if (target) {
-    return {
-      kind: "inspect-result",
-      command: `${bridgeCommand("result", jobCwd)} ${target}`,
-      description: "Inspect the persisted result and session log before deciding whether to retry or start fresh."
-    };
-  }
-  return {
-    kind: threadId ? "retry-with-revised-prompt" : "new-task",
-    command: threadId ? `${bridgeCommand("send", cwd)} ${threadId} "<revised prompt>"` : `${bridgeCommand("task", cwd)} --json --mode default "<revised prompt>"`,
-    description: threadId ? "Retry with an adjusted prompt, or cancel and start fresh." : "Start a fresh task with a revised prompt."
-  };
-}
-var DEVELOPER_INSTRUCTIONS_FALLBACK = {
-  plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
-  default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
-};
-function loadDeveloperInstructions(mode) {
-  const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
-  try {
-    return fs19.readFileSync(templatePath, "utf8");
-  } catch {
-    return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
-  }
-}
-function appendRenderedBriefToPrompt(prompt, brief) {
-  if (!brief) return prompt ?? "";
-  const rendered = renderBriefAsMarkdown(brief);
-  return [
-    prompt ?? "",
-    "[CODEX-BRIDGE STRUCTURED BRIEF]",
-    "The following brief is part of the worker instructions. Follow the worker_assignment and verify the acceptance_criteria before finishing.",
-    rendered,
-    "[/CODEX-BRIDGE STRUCTURED BRIEF]"
-  ].filter((part) => String(part).trim()).join("\n\n");
-}
-function prepareRuntimeSession(session, config, jobId) {
-  if (!session) return session;
-  session.redactSecrets = Boolean(config?.redact_secrets);
-  writeSessionAliases(session, jobId);
-  return session;
-}
-var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
-var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
-var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
-var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
-var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
+// src/lib/bridge-config.mjs
+import fs20 from "node:fs";
+import process11 from "node:process";
 var BRIDGE_CONFIG_SKILL_LAYER = null;
 function getBridgeConfig2(cwd = null, workspaceRoot = null) {
   if (!cwd && !workspaceRoot) {
@@ -12460,89 +12334,46 @@ function ensureCodexRuntimeAdapter(adapter2) {
     "Use --backend codex, unset CODEX_BRIDGE_BACKEND, or choose a config default_backend supported by this build."
   );
 }
-function buildJsonRpcError2(code, message, data) {
-  return data === void 0 ? { code, message } : { code, message, data };
+var DEVELOPER_INSTRUCTIONS_FALLBACK = {
+  plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
+  default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
+};
+function loadDeveloperInstructions(mode) {
+  const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
+  try {
+    return fs20.readFileSync(templatePath, "utf8");
+  } catch {
+    return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
+  }
 }
-function rejectServerRequest(message, code, detail) {
-  message._client?.rejectServerRequest?.(
-    message.id,
-    buildJsonRpcError2(code, detail)
-  );
-}
-function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs = null, cwd = null }) {
-  return (message) => {
-    const params = message.params ?? {};
-    const threadId = params.threadId ?? "unknown";
-    const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
-    if (message.method !== "item/tool/requestUserInput") {
-      logNdjson(session, "SERVER_REQUEST_UNSUPPORTED", message.method, {
-        rpcRequestId: message.id,
-        params
-      });
-      rejectServerRequest(message, -32601, `Unsupported server request: ${message.method}`);
-      return;
-    }
-    const internalId = `req-${threadId.slice(-6)}-${Date.now().toString(36)}`;
-    const entry = {
-      internalId,
-      rpcRequestId: message.id,
-      method: message.method,
-      threadId,
-      firstQuestionId: params.questions?.[0]?.id ?? "q1",
-      params,
-      createdAt: Date.now()
-    };
-    writePendingRequest(sessionDir, threadId, entry);
-    logEvent(session, formatQuestionEvent(session, {
-      requestId: internalId,
-      questions: params.questions ?? [],
-      scriptPath: SCRIPT_PATH,
-      cwd
-    }));
-    logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
-    try {
-      const firstQ = (params.questions ?? [])[0];
-      logEvent(session, formatNeedsAttentionEvent(session, {
-        underlyingTag: "QUESTION",
-        threadId,
-        summary: firstQ?.question ?? "Codex asked a question",
-        nextAction: `respond ${internalId} --question-id ${firstQ?.id ?? "q1"} --answer "<answer>"`
-      }));
-      logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "QUESTION", requestId: internalId });
-    } catch {
-    }
-    const timeoutMs = questionAnswerMs ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : DEFAULT_CONFIG.question_answer_ms);
-    return waitForResponse(sessionDir, threadId, timeoutMs, internalId).then((response) => {
-      clearPendingRequest(sessionDir, threadId);
-      if (response?.payload) {
-        message._client?.resolveServerRequest?.(message.id, response.payload);
-        logEvent(session, formatConfirmedEvent(session, { requestId: internalId }));
-        logNdjson(session, "CONFIRMED", "serverRequest/resolved", { requestId: internalId });
-        return;
-      }
-      rejectServerRequest(
-        message,
-        -32e3,
-        `requestUserInput timed out after ${timeoutMs}ms without an answer.`
-      );
-      logNdjson(session, "QUESTION_TIMEOUT", null, { requestId: internalId, timeoutMs });
-    }).catch((error) => {
-      clearPendingRequest(sessionDir, threadId);
-      rejectServerRequest(message, -32e3, error?.message ?? "requestUserInput response handling failed.");
-    });
+
+// src/lib/envelope-helpers.mjs
+function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
+  return {
+    schema_version: "1.0",
+    reason,
+    retryable: Boolean(retryable),
+    next_actions: nextActions,
+    artifacts,
+    details
   };
 }
-function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorCommand }) {
-  if (!jobId) return rendered;
-  const base = rendered.endsWith("\n") ? rendered : `${rendered}
-`;
-  const parts = [`Job: ${jobId}`];
-  if (eventsDir) parts.push(`Events dir: ${eventsDir}`);
-  if (eventsPath) parts.push(`Events file: ${eventsPath}`);
-  if (monitorCommand) parts.push(`Monitor: ${monitorCommand}`);
-  return `${base}
-${parts.join(" \xB7 ")}
-`;
+function shellQuote2(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+function bridgeCommand(subcommand, cwd = null) {
+  return `node ${shellQuote2(SCRIPT_PATH)} ${subcommand}${cwd ? ` --cwd ${shellQuote2(cwd)}` : ""}`;
+}
+function appendRenderedBriefToPrompt(prompt, brief) {
+  if (!brief) return prompt ?? "";
+  const rendered = renderBriefAsMarkdown(brief);
+  return [
+    prompt ?? "",
+    "[CODEX-BRIDGE STRUCTURED BRIEF]",
+    "The following brief is part of the worker instructions. Follow the worker_assignment and verify the acceptance_criteria before finishing.",
+    rendered,
+    "[/CODEX-BRIDGE STRUCTURED BRIEF]"
+  ].filter((part) => String(part).trim()).join("\n\n");
 }
 function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
   const identifier = jobId ?? threadId;
@@ -12583,8 +12414,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path18 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path18}`.trim();
+      const path27 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path27}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -12626,6 +12457,8 @@ function extractItemText(item) {
       return null;
   }
 }
+
+// src/commands-meta.mjs
 var COMMANDS = Object.freeze({
   task: {
     synopsis: "task [--group <name>] [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
@@ -12720,16 +12553,6 @@ var COMMANDS = Object.freeze({
       "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
     ]
   },
-  timeline: {
-    synopsis: "timeline <task-id> [--format text|json|html] [--since <ts>] [--source events,ndjson,log,worker_err] [--json]",
-    summary: "Merge a task's .events, .ndjson, process log, and worker stderr into one wall-clock-sorted forensic timeline.",
-    examples: [
-      "codex-bridge timeline task-abc",
-      "codex-bridge timeline task-abc --source events",
-      "codex-bridge timeline task-abc --since 2026-05-01T18:09:33Z --format json",
-      "codex-bridge timeline task-abc --format html"
-    ]
-  },
   events: {
     synopsis: "events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclude <tags>] [--timeout-ms <ms>] [--json]",
     summary: "Stream the target's events file. `--filter` keeps only listed tags (inclusion); `--exclude` drops listed tags and shows everything else (exclusion \u2014 forward-compatible default for Monitor). Flags are mutually exclusive.",
@@ -12740,12 +12563,9 @@ var COMMANDS = Object.freeze({
     ]
   },
   cancel: {
-    synopsis: "cancel [job-id] [--keep-worktree] [--keep-branch] [--keep-all] [--json]",
-    summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree, then removes bridge-created worktree artifacts unless preserved.",
-    examples: [
-      "codex-bridge cancel task-abc",
-      "codex-bridge cancel task-abc --keep-all"
-    ]
+    synopsis: "cancel [job-id] [--json]",
+    summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
+    examples: ["codex-bridge cancel task-abc"]
   },
   merge: {
     synopsis: "merge <task_id> [--no-tests] [--pr] [--json]",
@@ -12849,102 +12669,23 @@ var GLOBAL_FLAGS_DOC = [
   "  -C, --cwd <dir>   Override the working directory.",
   "  -h, --help        Show help for the subcommand and exit."
 ].join("\n");
-function printUsage() {
-  const lines = ["Usage:"];
-  for (const name of Object.keys(COMMANDS)) {
-    lines.push(`  codex-bridge ${COMMANDS[name].synopsis}`);
-  }
-  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC, "", "Run `codex-bridge <subcommand> --help` for per-command details.");
-  console.log(lines.join("\n"));
-}
-function printSubcommandUsage(name) {
-  const entry = COMMANDS[name];
-  if (!entry) {
-    printUsage();
-    return;
-  }
-  const lines = [
-    `codex-bridge ${entry.synopsis}`,
-    "",
-    entry.summary
-  ];
-  if (entry.examples?.length) {
-    lines.push("", "Examples:");
-    for (const example of entry.examples) {
-      lines.push(`  ${example}`);
-    }
-  }
-  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC);
-  console.log(lines.join("\n"));
-}
-function normalizeRequestedModel(model) {
-  if (model == null) {
-    return null;
-  }
-  const normalized = String(model).trim();
-  if (!normalized) {
-    return null;
-  }
-  return MODEL_ALIASES.get(normalized.toLowerCase()) ?? normalized;
-}
-function normalizeReasoningEffort(effort) {
-  if (effort == null) {
-    return null;
-  }
-  const normalized = String(effort).trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  if (!VALID_REASONING_EFFORTS.has(normalized)) {
-    throw validationError(
-      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh.`,
-      "INVALID_EFFORT"
-    );
-  }
-  return normalized;
-}
-function normalizeArgv(argv) {
-  if (argv.length === 1) {
-    const [raw] = argv;
-    if (!raw || !raw.trim()) {
-      return [];
-    }
-    return splitRawArgumentString(raw);
-  }
-  const out = [];
-  for (const element of argv) {
-    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
-      const tokens = splitRawArgumentString(element);
-      if (tokens.length > 1) {
-        out.push(...tokens);
-        continue;
-      }
-    }
-    out.push(element);
-  }
-  return out;
-}
-function parseCommandInput(argv, config = {}) {
-  return parseArgs(normalizeArgv(argv), {
-    ...config,
-    aliasMap: {
-      C: "cwd",
-      ...config.aliasMap ?? {}
-    }
-  });
-}
-function resolveCommandCwd(options = {}) {
-  return options.cwd ? path17.resolve(process11.cwd(), options.cwd) : process11.cwd();
-}
-function resolveCommandWorkspace(options = {}) {
-  return resolveWorkspaceRoot(resolveCommandCwd(options));
-}
+
+// src/handlers/meta.mjs
+import { spawnSync as spawnSync7 } from "node:child_process";
+import fs24 from "node:fs";
+import os9 from "node:os";
+import path22 from "node:path";
+import process14 from "node:process";
+
+// src/lib/stop-review-gate.mjs
+import fs21 from "node:fs";
+import path19 from "node:path";
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path17.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path19.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs19.existsSync(lockPath);
+  let lockExists = fs21.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -12955,7 +12696,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs19.writeFileSync(
+        fs21.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -12991,7 +12732,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs19.writeFileSync(
+      fs21.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -13004,7 +12745,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs19.rmSync(lockPath, { force: true });
+      fs21.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -13037,6 +12778,151 @@ function applyStopReviewGateSnapshot(snapshot) {
     needsReview: gate.enabled
   };
 }
+
+// src/lib/task-runtime.mjs
+import { spawn as spawn4 } from "node:child_process";
+import fs22 from "node:fs";
+import path20 from "node:path";
+import process12 from "node:process";
+function mirrorDiffToRegistry(taskId, diffPath) {
+  if (!taskId || !diffPath) return null;
+  try {
+    if (!fs22.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs22.readFileSync(diffPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, cwd = null, stateCwd = null }) {
+  const target = jobId ?? threadId;
+  const jobCwd = stateCwd ?? cwd;
+  if (origin === "upstream:response-chain-lost") {
+    return {
+      kind: "new-task",
+      command: `${bridgeCommand("task", cwd)} --json --mode default "<prompt rebased on last good sha>"`,
+      description: "The upstream response chain is dead; start a fresh task from committed state instead of sending on the same thread."
+    };
+  }
+  if (origin === "upstream:auth" || errorCode === "Unauthorized") {
+    return {
+      kind: "reauth",
+      command: "codex login",
+      description: "Refresh Codex authentication, then relaunch the task; retrying the same thread will repeat the auth failure."
+    };
+  }
+  if (origin === "upstream:transport") {
+    return {
+      kind: "retry-same-thread",
+      command: threadId ? `${bridgeCommand("send", cwd)} ${threadId} "<same prompt>"` : `${bridgeCommand("task", cwd)} --json --mode default "<same prompt>"`,
+      description: "The upstream stream dropped before completion; workspace state is unchanged, so retry the same thread once."
+    };
+  }
+  if (origin === "idle" || errorCode === "ClientTimeout" || errorCode === "TurnTimeout") {
+    return {
+      kind: "relaunch-with-longer-timeouts",
+      command: `${bridgeCommand("task", cwd)} --idle-timeout-ms 900000 --turn-default-ms 3600000 "<same prompt>"`,
+      description: "A timeout budget expired; relaunch with a larger budget after confirming the original job is not still progressing."
+    };
+  }
+  if (origin === "upstream:invalid-request") {
+    return {
+      kind: "new-task",
+      command: `${bridgeCommand("task", cwd)} --json --mode default "<fixed prompt>"`,
+      description: "Inspect the upstream validation error, fix the prompt/input shape, and launch a fresh task."
+    };
+  }
+  if (target) {
+    return {
+      kind: "inspect-result",
+      command: `${bridgeCommand("result", jobCwd)} ${target}`,
+      description: "Inspect the persisted result and session log before deciding whether to retry or start fresh."
+    };
+  }
+  return {
+    kind: threadId ? "retry-with-revised-prompt" : "new-task",
+    command: threadId ? `${bridgeCommand("send", cwd)} ${threadId} "<revised prompt>"` : `${bridgeCommand("task", cwd)} --json --mode default "<revised prompt>"`,
+    description: threadId ? "Retry with an adjusted prompt, or cancel and start fresh." : "Start a fresh task with a revised prompt."
+  };
+}
+function prepareRuntimeSession(session, config, jobId) {
+  if (!session) return session;
+  session.redactSecrets = Boolean(config?.redact_secrets);
+  writeSessionAliases(session, jobId);
+  return session;
+}
+function buildJsonRpcError2(code, message, data) {
+  return data === void 0 ? { code, message } : { code, message, data };
+}
+function rejectServerRequest(message, code, detail) {
+  message._client?.rejectServerRequest?.(
+    message.id,
+    buildJsonRpcError2(code, detail)
+  );
+}
+function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs = null, cwd = null }) {
+  return (message) => {
+    const params = message.params ?? {};
+    const threadId = params.threadId ?? "unknown";
+    const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    if (message.method !== "item/tool/requestUserInput") {
+      logNdjson(session, "SERVER_REQUEST_UNSUPPORTED", message.method, {
+        rpcRequestId: message.id,
+        params
+      });
+      rejectServerRequest(message, -32601, `Unsupported server request: ${message.method}`);
+      return;
+    }
+    const internalId = `req-${threadId.slice(-6)}-${Date.now().toString(36)}`;
+    const entry = {
+      internalId,
+      rpcRequestId: message.id,
+      method: message.method,
+      threadId,
+      firstQuestionId: params.questions?.[0]?.id ?? "q1",
+      params,
+      createdAt: Date.now()
+    };
+    writePendingRequest(sessionDir, threadId, entry);
+    logEvent(session, formatQuestionEvent(session, {
+      requestId: internalId,
+      questions: params.questions ?? [],
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
+    const timeoutMs = questionAnswerMs ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : DEFAULT_CONFIG.question_answer_ms);
+    return waitForResponse(sessionDir, threadId, timeoutMs, internalId).then((response) => {
+      clearPendingRequest(sessionDir, threadId);
+      if (response?.payload) {
+        message._client?.resolveServerRequest?.(message.id, response.payload);
+        logEvent(session, formatConfirmedEvent(session, { requestId: internalId }));
+        logNdjson(session, "CONFIRMED", "serverRequest/resolved", { requestId: internalId });
+        return;
+      }
+      rejectServerRequest(
+        message,
+        -32e3,
+        `requestUserInput timed out after ${timeoutMs}ms without an answer.`
+      );
+      logNdjson(session, "QUESTION_TIMEOUT", null, { requestId: internalId, timeoutMs });
+    }).catch((error) => {
+      clearPendingRequest(sessionDir, threadId);
+      rejectServerRequest(message, -32e3, error?.message ?? "requestUserInput response handling failed.");
+    });
+  };
+}
+function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorCommand }) {
+  if (!jobId) return rendered;
+  const base = rendered.endsWith("\n") ? rendered : `${rendered}
+`;
+  const parts = [`Job: ${jobId}`];
+  if (eventsDir) parts.push(`Events dir: ${eventsDir}`);
+  if (eventsPath) parts.push(`Events file: ${eventsPath}`);
+  if (monitorCommand) parts.push(`Monitor: ${monitorCommand}`);
+  return `${base}
+${parts.join(" \xB7 ")}
+`;
+}
 function sleep2(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -13053,686 +12939,6 @@ function shorten2(text, limit = 96) {
 function firstMeaningfulLine2(text, fallback) {
   const line = String(text ?? "").split(/\r?\n/).map((value) => value.trim()).find(Boolean);
   return line ?? fallback;
-}
-function installSandboxEnforcementForSetup() {
-  try {
-    return installSandboxEnforcement();
-  } catch (err) {
-    throw validationError(
-      err instanceof Error ? err.message : String(err),
-      "SANDBOX_ENFORCEMENT_INSTALL_FAILED",
-      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --enforce-sandbox."
-    );
-  }
-}
-function uninstallSandboxEnforcementForSetup() {
-  try {
-    return uninstallSandboxEnforcement();
-  } catch (err) {
-    throw validationError(
-      err instanceof Error ? err.message : String(err),
-      "SANDBOX_ENFORCEMENT_UNINSTALL_FAILED",
-      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --disable-sandbox-enforcement."
-    );
-  }
-}
-async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
-  const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
-  const codexStatus = getCodexAvailability(cwd);
-  const authStatus = await getCodexAuthStatus(cwd);
-  const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
-  const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
-  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
-  const sandboxEnforcement = getSandboxEnforcementStatus();
-  const nextSteps = [];
-  if (!codexStatus.available) {
-    nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
-  }
-  if (codexStatus.available && !authStatus.loggedIn && authStatus.requiresOpenaiAuth) {
-    nextSteps.push("Run `!codex login`.");
-    nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
-  }
-  if (reviewGate.reviewGateSuppressedByOfficialPlugin) {
-    nextSteps.push("Use the official OpenAI Codex plugin for stop-time review; Codex Bridge review gate is disabled while it is enabled.");
-  } else if (reviewGate.reviewGateSuppressionReason === "official-openai-codex-plugin-status-unknown") {
-    nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
-  } else if (!reviewGate.enabled) {
-    nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
-  }
-  if (sandboxEnforcement.settingsParseError) {
-    nextSteps.push(`Sandbox enforcement status could not read ${sandboxEnforcement.settingsPath}: ${sandboxEnforcement.settingsParseError}.`);
-  } else if (!sandboxEnforcement.installed) {
-    nextSteps.push("Optional: run `codex-bridge setup --enforce-sandbox` to deny sandbox downgrades at the Claude permission layer.");
-  }
-  return {
-    ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
-    node: nodeStatus,
-    npm: npmStatus,
-    codex: codexStatus,
-    auth: authStatus,
-    active_backend: adapter2.name,
-    adapter_capabilities: adapter2.capabilities(),
-    sessionRuntime: getSessionRuntimeStatus(process11.env, workspaceRoot),
-    reviewGateEnabled: reviewGate.enabled,
-    reviewGateLockPath: reviewGate.lockPath,
-    reviewGateLockExists: reviewGate.lockExists,
-    officialOpenAICodexPluginStatus: reviewGate.officialOpenAICodexPluginStatus,
-    officialOpenAICodexPlugin: reviewGate.officialOpenAICodexPlugin,
-    officialOpenAICodexPluginDetail: reviewGate.officialOpenAICodexPluginDetail,
-    reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
-    reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
-    reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
-    sandboxEnforcementInstalled: sandboxEnforcement.installed,
-    sandboxEnforcementSettingsPath: sandboxEnforcement.settingsPath,
-    sandboxEnforcementSettingsExists: sandboxEnforcement.settingsExists,
-    sandboxEnforcementSettingsParseError: sandboxEnforcement.settingsParseError,
-    actionsTaken,
-    nextSteps
-  };
-}
-async function handleSetup(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "enforce-sandbox", "disable-sandbox-enforcement"]
-  });
-  if (options["enable-review-gate"] && options["disable-review-gate"]) {
-    throw conflictError(
-      "Choose either --enable-review-gate or --disable-review-gate.",
-      "REVIEW_GATE_CONFLICT"
-    );
-  }
-  if (options["enforce-sandbox"] && options["disable-sandbox-enforcement"]) {
-    throw conflictError(
-      "Choose either --enforce-sandbox or --disable-sandbox-enforcement.",
-      "SANDBOX_ENFORCEMENT_CONFLICT"
-    );
-  }
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const actionsTaken = [];
-  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd, maxAgeMs: 0 });
-  if (options["enable-review-gate"]) {
-    if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {
-      const reviewGate = setStopReviewGate(workspaceRoot, true, officialPlugin);
-      if (reviewGate.enabled && reviewGate.lockExists) {
-        actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
-      } else {
-        actionsTaken.push(
-          `Failed to create the stop-time review gate lock at ${reviewGate.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
-        );
-      }
-    } else if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE) {
-      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin is enabled.");
-    } else {
-      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin status could not be verified.");
-    }
-  } else if (options["disable-review-gate"]) {
-    const reviewGate = setStopReviewGate(workspaceRoot, false, officialPlugin);
-    if (reviewGate.lockExists) {
-      actionsTaken.push(
-        `Failed to remove the stop-time review gate lock at ${reviewGate.lockPath}; the gate is still active. Please remove the lock file manually.`
-      );
-    } else {
-      actionsTaken.push(
-        `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
-      );
-    }
-  }
-  if (options["enforce-sandbox"]) {
-    const result = installSandboxEnforcementForSetup();
-    actionsTaken.push(
-      result.alreadyInstalled ? `Sandbox enforcement deny rules already present in ${result.status.settingsPath}.` : `Installed sandbox enforcement deny rules in ${result.status.settingsPath}.`
-    );
-  } else if (options["disable-sandbox-enforcement"]) {
-    const result = uninstallSandboxEnforcementForSetup();
-    actionsTaken.push(
-      result.removed > 0 ? `Removed ${result.removed} sandbox enforcement deny rule${result.removed === 1 ? "" : "s"} from ${result.status.settingsPath}.` : `Sandbox enforcement deny rules were not present in ${result.status.settingsPath}.`
-    );
-  }
-  const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
-  emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
-    json: options.json,
-    startedAt
-  });
-}
-var BRIDGE_VERSION = package_default.version;
-var BRIDGE_SCHEMA_VERSION = "1.0";
-var BRIDGE_CAPABILITIES = Object.freeze([
-  "plan-mode",
-  "background-jobs",
-  "auto-pipeline",
-  "adversarial-review",
-  "stop-gate-review",
-  "structured-errors",
-  "per-subcommand-help",
-  "machine-readable-help",
-  "workspace-config-override",
-  "update-check",
-  "backend-adapter"
-]);
-async function handleVersion(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "backend"],
-    booleanOptions: ["json", "check-update"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot, backend: options.backend });
-  const codex = getCodexAvailability(cwd);
-  const update = await checkForUpdate({
-    currentVersion: BRIDGE_VERSION,
-    force: Boolean(options["check-update"])
-  });
-  const payload = {
-    version: BRIDGE_VERSION,
-    schema_version: BRIDGE_SCHEMA_VERSION,
-    node_version: process11.version,
-    codex: {
-      available: codex.available,
-      detail: codex.detail ?? null
-    },
-    capabilities: [...BRIDGE_CAPABILITIES],
-    active_backend: adapter2.name,
-    adapter_capabilities: adapter2.capabilities(),
-    update: {
-      latest_version: update.latestVersion ?? null,
-      has_update: Boolean(update.hasUpdate),
-      checked_at_age_ms: update.cacheAgeMs ?? null,
-      check_skipped: Boolean(update.skipped),
-      check_skip_reason: update.reason ?? null
-    }
-  };
-  const updateLine = formatUpdateNotice(update);
-  const rendered = [
-    `codex-bridge ${payload.version} (schema ${payload.schema_version})`,
-    `  node:  ${payload.node_version}`,
-    `  codex: ${codex.available ? codex.detail ?? "available" : "not installed"}`,
-    `  backend: ${payload.active_backend}`,
-    `  caps:  ${payload.capabilities.join(", ")}`,
-    updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
-  ].join("\n") + "\n";
-  emitSuccess("version", payload, rendered, { json: options.json, startedAt });
-}
-async function handleConfig(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "lenient"]
-  });
-  const action = positionals[0] ?? "show";
-  const SUPPORTED_ACTIONS = ["show", "set", "reset", "explain", "path", "validate", "template"];
-  if (!SUPPORTED_ACTIONS.includes(action)) {
-    throw usageError(
-      `config: unknown action '${action}'. Supported: ${SUPPORTED_ACTIONS.join(", ")}.`
-    );
-  }
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  if (action === "show") {
-    const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
-    const effective = getBridgeConfig2(cwd, workspaceRoot);
-    const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
-    const layers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
-    const provenance = {};
-    for (const k of Object.keys(effective)) {
-      if (Object.prototype.hasOwnProperty.call(layers.cwdConfig, k)) {
-        provenance[k] = "cwd config.yaml";
-      } else if (Object.prototype.hasOwnProperty.call(layers.workspaceConfig, k)) {
-        provenance[k] = "workspace-root config.yaml";
-      } else if (Object.prototype.hasOwnProperty.call(layers.skillConfig, k)) {
-        provenance[k] = "skill-dir config.yaml";
-      } else {
-        provenance[k] = "plugin defaults";
-      }
-    }
-    const overrides = {};
-    for (const [k, v] of Object.entries(effective)) {
-      if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
-        overrides[k] = v;
-      }
-    }
-    const payload = {
-      sources: {
-        defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
-        skill_config_path: sources.skillConfigPath,
-        skill_config_exists: sources.skillConfigExists,
-        workspace_config_path: sources.workspaceConfigPath,
-        workspace_config_exists: sources.workspaceConfigExists,
-        override_config_path: sources.overrideConfigPath,
-        override_config_exists: sources.overrideConfigExists
-      },
-      effective_config: effective,
-      overrides_vs_defaults: overrides,
-      provenance,
-      diagnostics,
-      warnings: diagnostics.filter((d) => d.severity === "warning"),
-      errors: diagnostics.filter((d) => d.severity === "error"),
-      precedence_order_low_to_high: [
-        "DEFAULT_CONFIG",
-        "skill-dir config.yaml",
-        "workspace-root config.yaml",
-        "cwd config.yaml"
-      ]
-    };
-    const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
-    const lines = [
-      "Config resolution (lowest \u2192 highest precedence):",
-      `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
-      `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
-      `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
-      `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
-      "",
-      "Effective config:"
-    ];
-    const globPattern = positionals[1];
-    for (const [k, v] of Object.entries(effective)) {
-      if (globPattern && !k.includes(globPattern.replace(/\*/g, ""))) continue;
-      const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
-      const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
-      const src = provenance[k] ? `  # \u2190 ${provenance[k]}` : "";
-      lines.push(`  ${marker} ${k}: ${preview}${src}`);
-    }
-    if (Object.keys(overrides).length > 0) {
-      lines.push("", "* = differs from DEFAULT_CONFIG");
-    }
-    if (diagnostics.length > 0) {
-      lines.push("", "Diagnostics:");
-      for (const diagnostic of diagnostics) {
-        lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
-      }
-    }
-    const rendered = `${lines.join("\n")}
-`;
-    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
-    return;
-  }
-  if (action === "path") {
-    const filePath = resolveLocalConfigPath(workspaceRoot);
-    const exists = fs19.existsSync(filePath);
-    const payload = { path: filePath, exists };
-    const rendered = `${filePath}${exists ? "" : " (does not exist yet)"}
-`;
-    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
-    return;
-  }
-  if (action === "template") {
-    const template = serializeLocalConfig({}, getDefaultLocalConfigBody());
-    const payload = { template };
-    emitSuccess("config", payload, template, { json: options.json, startedAt });
-    return;
-  }
-  if (action === "explain") {
-    const key = positionals[1];
-    if (!key) {
-      throw usageError("config explain: missing key. Usage: config explain <key>");
-    }
-    const doc = CONFIG_KEY_DOCS[key];
-    if (!doc) {
-      throw usageError(
-        `config explain: unknown key '${key}'. Known keys: ${Object.keys(CONFIG_SCHEMA).join(", ")}.`
-      );
-    }
-    const payload = { key, doc, valid_values: CONFIG_SCHEMA[key] };
-    const rendered = `${key}:
-  ${doc}
-`;
-    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
-    return;
-  }
-  if (action === "validate") {
-    const local = readLocalConfig(workspaceRoot);
-    if (!local.exists) {
-      const payload2 = { valid: true, path: local.filePath, exists: false, diagnostics: [] };
-      const rendered2 = `No local config found at ${local.filePath} \u2014 nothing to validate.
-`;
-      emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
-      return;
-    }
-    if (local.parseError) {
-      const payload2 = {
-        valid: false,
-        path: local.filePath,
-        exists: true,
-        diagnostics: [{ severity: "error", code: "CONFIG_PARSE_ERROR", message: local.parseError }]
-      };
-      const rendered2 = `ERROR: Could not parse ${local.filePath}: ${local.parseError}
-`;
-      emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
-      return;
-    }
-    const diagnostics = [];
-    for (const [k, v] of Object.entries(local.frontmatter)) {
-      const schema2 = CONFIG_SCHEMA[k];
-      if (!schema2) {
-        diagnostics.push({
-          severity: "warning",
-          code: "CONFIG_UNKNOWN_KEY",
-          key: k,
-          message: `Unknown config key '${k}' \u2014 will be ignored by the bridge runtime.`
-        });
-        continue;
-      }
-      const valid2 = schema2.type === "boolean" ? typeof v === "boolean" : schema2.type === "positive-number" ? typeof v === "number" && v > 0 : schema2.type === "enum" ? typeof v === "string" && schema2.values.includes(v) : schema2.type === "string" ? typeof v === "string" : schema2.type === "object" ? v && typeof v === "object" && !Array.isArray(v) : true;
-      if (!valid2) {
-        const hint = schema2.type === "enum" ? `expected one of: ${schema2.values.join(", ")}` : `expected ${schema2.type}`;
-        diagnostics.push({
-          severity: "error",
-          code: "CONFIG_INVALID_VALUE",
-          key: k,
-          message: `Invalid value for '${k}' (${JSON.stringify(v)}); ${hint}.`
-        });
-      }
-    }
-    const valid = !diagnostics.some((d) => d.severity === "error");
-    const payload = { valid, path: local.filePath, exists: true, diagnostics };
-    let rendered;
-    if (diagnostics.length === 0) {
-      rendered = `OK \u2014 ${local.filePath} is valid.
-`;
-    } else {
-      const lines = [`${valid ? "WARNINGS" : "ERRORS"} in ${local.filePath}:`];
-      for (const d of diagnostics) {
-        lines.push(`  ${d.severity.toUpperCase()} ${d.code} ${d.key ?? ""} \u2014 ${d.message}`);
-      }
-      rendered = `${lines.join("\n")}
-`;
-    }
-    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
-    return;
-  }
-  if (action === "set") {
-    const assignment = positionals[1];
-    if (!assignment || !assignment.includes("=")) {
-      throw usageError(
-        "config set: expected <key>=<value>. Example: config set mode=default"
-      );
-    }
-    const eqIdx = assignment.indexOf("=");
-    const key = assignment.slice(0, eqIdx);
-    const rawValue = assignment.slice(eqIdx + 1);
-    if (!CONFIG_SCHEMA[key]) {
-      throw usageError(
-        `config set: unknown key '${key}'. Known keys: ${Object.keys(CONFIG_SCHEMA).join(", ")}.`
-      );
-    }
-    const parsed = parseConfigValue(key, rawValue);
-    if (!parsed.ok && !options.lenient) {
-      throw usageError(`config set: ${parsed.error}`);
-    }
-    const value = parsed.ok ? parsed.value : rawValue;
-    const local = readLocalConfig(workspaceRoot);
-    if (local.parseError) {
-      throw usageError(
-        `config set: cannot write \u2014 ${local.filePath} has a YAML parse error: ${local.parseError}`
-      );
-    }
-    const previousValue = local.frontmatter[key];
-    local.frontmatter[key] = value;
-    const writtenPath = writeLocalConfig(workspaceRoot, local.frontmatter, local.body);
-    const payload = {
-      key,
-      value,
-      previous_value: previousValue ?? null,
-      path: writtenPath,
-      requires_restart: true
-    };
-    const prevStr = previousValue !== void 0 ? JSON.stringify(previousValue) : "(unset)";
-    const rendered = [
-      `Set ${key} = ${JSON.stringify(value)} (was ${prevStr}).`,
-      `Wrote to: ${writtenPath}`,
-      `NOTE: Hooks load at session start \u2014 restart Claude Code to apply this change.`
-    ].join("\n") + "\n";
-    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
-    return;
-  }
-  if (action === "reset") {
-    const key = positionals[1];
-    const local = readLocalConfig(workspaceRoot);
-    if (local.parseError) {
-      throw usageError(
-        `config reset: cannot write \u2014 ${local.filePath} has a YAML parse error: ${local.parseError}`
-      );
-    }
-    let removed;
-    if (key) {
-      if (!Object.prototype.hasOwnProperty.call(local.frontmatter, key)) {
-        const payload2 = { key, removed: false, path: local.filePath };
-        const rendered2 = `Key '${key}' was not set in ${local.filePath} \u2014 nothing to reset.
-`;
-        emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
-        return;
-      }
-      removed = { [key]: local.frontmatter[key] };
-      delete local.frontmatter[key];
-    } else {
-      removed = { ...local.frontmatter };
-      local.frontmatter = {};
-    }
-    const writtenPath = writeLocalConfig(workspaceRoot, local.frontmatter, local.body);
-    const payload = {
-      key: key ?? null,
-      removed,
-      path: writtenPath,
-      requires_restart: true
-    };
-    const what = key ? `key '${key}'` : "all keys";
-    const rendered = [
-      `Reset ${what} in ${writtenPath}.`,
-      `NOTE: Hooks load at session start \u2014 restart Claude Code to apply this change.`
-    ].join("\n") + "\n";
-    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
-    return;
-  }
-}
-async function handleUpdate(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "force", "apply", "yes"]
-  });
-  const update = await checkForUpdate({
-    currentVersion: BRIDGE_VERSION,
-    force: Boolean(options.force)
-  });
-  const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
-  const wantApply = Boolean(options.apply || options.yes);
-  if (wantApply && update.hasUpdate && update.latestVersion) {
-    const applyResult = runSkillsAddForApply(options.json);
-    const payload2 = {
-      current_version: BRIDGE_VERSION,
-      latest_version: update.latestVersion ?? null,
-      has_update: true,
-      update_check: {
-        cached: Boolean(update.cached),
-        skipped: Boolean(update.skipped),
-        reason: update.reason ?? null,
-        fetch_reason: update.fetchReason ?? null,
-        fetch_status: update.fetchStatus ?? null,
-        cache_age_ms: update.cacheAgeMs ?? null
-      },
-      apply: {
-        requested: true,
-        command: applyResult.command,
-        ok: applyResult.ok,
-        exit_code: applyResult.exitCode,
-        error: applyResult.error,
-        timed_out: Boolean(applyResult.timedOut)
-      },
-      applied: applyResult.ok,
-      apply_exit_code: applyResult.exitCode,
-      apply_error: applyResult.error,
-      install_command: installCommand
-    };
-    const rendered2 = applyResult.ok ? `Installed codex-bridge ${update.latestVersion} (was ${BRIDGE_VERSION}). Re-invoke the skill to pick up the new files.
-` : `Attempted to install ${update.latestVersion} (from ${BRIDGE_VERSION}) but the installer exited ${applyResult.exitCode}.
-` + (applyResult.error ? `  ${applyResult.error}
-` : "") + `Re-run manually: ${installCommand}
-`;
-    if (applyResult.ok) {
-      emitSuccess("update", payload2, rendered2, { json: options.json, startedAt });
-    } else {
-      const err = new CliError(
-        applyResult.timedOut ? "skills installer timed out" : `skills installer exited ${applyResult.exitCode}`,
-        {
-          class: "dependency_failed",
-          code: "UPDATE_APPLY_FAILED",
-          retryable: true,
-          suggestion: `Re-run manually: ${installCommand}`,
-          details: {
-            command: applyResult.command,
-            exitCode: applyResult.exitCode,
-            error: applyResult.error,
-            timedOut: Boolean(applyResult.timedOut)
-          },
-          nextAction: {
-            kind: "manual-update",
-            command: installCommand,
-            description: "Run the installer manually after checking npm/network availability."
-          }
-        }
-      );
-      emitError(err, { json: options.json, command: "update" });
-    }
-    return;
-  }
-  const payload = {
-    current_version: BRIDGE_VERSION,
-    latest_version: update.latestVersion ?? null,
-    has_update: Boolean(update.hasUpdate),
-    update_check: {
-      cached: Boolean(update.cached),
-      skipped: Boolean(update.skipped),
-      reason: update.reason ?? null,
-      fetch_reason: update.fetchReason ?? null,
-      fetch_status: update.fetchStatus ?? null,
-      cache_age_ms: update.cacheAgeMs ?? null
-    },
-    apply: {
-      requested: wantApply,
-      skipped: wantApply ? update.hasUpdate ? null : "no-update" : "not-requested",
-      command: installCommand
-    },
-    check_skipped: Boolean(update.skipped),
-    check_skip_reason: update.reason ?? null,
-    fetch_reason: update.fetchReason ?? null,
-    fetch_status: update.fetchStatus ?? null,
-    install_command: installCommand,
-    // --apply was requested but nothing to install: echo back the intent
-    // so scripted callers can tell "no action taken" from "skipped".
-    applied: wantApply && !update.hasUpdate ? false : null
-  };
-  let rendered;
-  if (update.skipped && !update.latestVersion) {
-    rendered = renderUpdateFailureHint(update, BRIDGE_VERSION);
-  } else if (update.hasUpdate) {
-    rendered = `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).
-To update, run:
-  ${installCommand}
-Or rerun with --apply to install automatically.
-`;
-  } else {
-    rendered = `codex-bridge is up to date (${BRIDGE_VERSION}${update.latestVersion ? `, latest ${update.latestVersion}` : ""}).
-`;
-  }
-  emitSuccess("update", payload, rendered, { json: options.json, startedAt });
-}
-function runSkillsAddForApply(jsonMode) {
-  const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
-  const timeoutMs = 6e5;
-  try {
-    const result = spawnSync5(
-      "npx",
-      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
-      {
-        stdio: jsonMode ? ["ignore", "pipe", "pipe"] : "inherit",
-        encoding: "utf8",
-        timeout: timeoutMs
-      }
-    );
-    if (result.error) {
-      return {
-        ok: false,
-        exitCode: null,
-        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.code === "ETIMEDOUT" ? `skills installer timed out after ${Math.round(timeoutMs / 1e3)}s` : result.error.message,
-        command,
-        timedOut: result.error.code === "ETIMEDOUT"
-      };
-    }
-    if (result.status !== 0) {
-      const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
-      return { ok: false, exitCode: result.status, error: stderrTail || null, command, timedOut: false };
-    }
-    return { ok: true, exitCode: 0, error: null, command, timedOut: false };
-  } catch (err) {
-    return { ok: false, exitCode: null, error: err?.message ?? String(err), command, timedOut: false };
-  }
-}
-function renderUpdateFailureHint(update, currentVersion) {
-  const reason = update.fetchReason ?? update.reason ?? "unknown";
-  const lines = [`Update check failed (current: ${currentVersion}, reason: ${reason}).`];
-  if (reason === "timeout" || reason === "network") {
-    lines.push("Network error reaching api.github.com. Retry in a moment.");
-  } else if (update.fetchStatus === 403) {
-    lines.push("GitHub returned 403 \u2014 likely the anonymous 60/hr rate limit. Wait an hour or re-run from a different IP.");
-  } else if (update.fetchStatus === 404) {
-    lines.push("GitHub returned 404. Re-run with --force; if it persists, the release endpoint may be temporarily unreachable.");
-  } else {
-    lines.push("Retry with --force; if it persists, check network connectivity to api.github.com.");
-  }
-  return lines.join("\n") + "\n";
-}
-async function handleAuthStatus(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const auth = await getCodexAuthStatus(cwd);
-  const status = auth.loggedIn ? "logged in" : "not logged in";
-  const provider = auth.provider ? ` via ${auth.provider}` : "";
-  const lines = [`Auth: ${status}${provider}.`];
-  if (auth.detail) lines.push(`  ${auth.detail}`);
-  if (!auth.loggedIn && auth.requiresOpenaiAuth) {
-    lines.push("  \u2192 Run `codex login` (or `codex login --device-auth`).");
-  }
-  emitSuccess("auth-status", auth, `${lines.join("\n")}
-`, {
-    json: options.json,
-    startedAt
-  });
-}
-function buildMachineReadableHelp() {
-  return {
-    version: BRIDGE_VERSION,
-    schema_version: BRIDGE_SCHEMA_VERSION,
-    commands: Object.entries(COMMANDS).map(([name, entry]) => ({
-      name,
-      synopsis: `codex-bridge ${entry.synopsis}`,
-      summary: entry.summary,
-      examples: entry.examples ?? []
-    })),
-    global_flags: [
-      { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
-      { flag: "--cwd <dir>", alias: "-C", description: "Override the working directory." },
-      { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
-    ],
-    exit_codes: {
-      0: "success",
-      1: "crash / unhandled internal error",
-      2: "usage (unknown subcommand, unknown flag, missing argument)",
-      3: "not_found (job, thread, resource)",
-      4: "auth (run `codex login`)",
-      5: "conflict (already running, state mismatch)",
-      6: "validation (bad input)",
-      7: "transient (timeout, network, rate-limit) \u2014 retry with backoff",
-      8: "partial_success (check result details)"
-    }
-  };
 }
 function ensureCodexAvailable(cwd) {
   const availability = getCodexAvailability(cwd);
@@ -13793,7 +12999,7 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 function getCurrentClaudeSessionId() {
-  return process11.env[SESSION_ID_ENV] ?? null;
+  return process12.env[SESSION_ID_ENV] ?? null;
 }
 function filterJobsForCurrentClaudeSession(jobs) {
   const sessionId = getCurrentClaudeSessionId();
@@ -14178,9 +13384,9 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 function safeRealPath(filePath) {
   try {
-    return fs19.realpathSync.native ? fs19.realpathSync.native(filePath) : fs19.realpathSync(filePath);
+    return fs22.realpathSync.native ? fs22.realpathSync.native(filePath) : fs22.realpathSync(filePath);
   } catch {
-    return path17.resolve(filePath);
+    return path20.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -14218,10 +13424,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path17.resolve(worktreePath);
-  if (options.cwd && !samePath(path17.resolve(process11.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path20.resolve(worktreePath);
+  if (options.cwd && !samePath(path20.resolve(process12.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path17.resolve(process11.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path20.resolve(process12.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -14327,9 +13533,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
     kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
     write,
-    group: options.group ?? null,
     backend: options.backend ?? null,
-    group: options.group ?? null,
     adapter_capabilities: options.adapterCapabilities ?? null,
     ...options.worktree ? {
       registryTaskId: options.id ?? null,
@@ -14357,8 +13561,7 @@ function buildTaskRequest({
   pipelineStageMs,
   pipelineTotalMs,
   questionAnswerMs,
-  backend = null,
-  group = null
+  backend = null
 }) {
   const opt = (n) => Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null;
   return {
@@ -14373,7 +13576,6 @@ function buildTaskRequest({
     resumeLast,
     jobId,
     mode: mode ?? null,
-    group: group ?? null,
     idleTimeoutMs: opt(idleTimeoutMs),
     turnPlanMs: opt(turnPlanMs),
     turnDefaultMs: opt(turnDefaultMs),
@@ -14386,14 +13588,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path17.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path20.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs19.readFileSync(absPath, "utf8");
+    return fs22.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -14485,7 +13687,7 @@ async function runForegroundCommand(job, runner, options = {}) {
       emitError(errLike, { json: true, command });
     } else {
       if (execution.rendered) {
-        process11.stdout.write(execution.rendered);
+        process12.stdout.write(execution.rendered);
       }
       emitError(errLike, { json: false, command });
     }
@@ -14503,12 +13705,12 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs19.openSync(stderrPath, "a");
+      const stderrFd = fs22.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
   }
-  const child = spawn3(process11.execPath, [
+  const child = spawn4(process12.execPath, [
     scriptPath,
     "task-worker",
     "--cwd",
@@ -14519,7 +13721,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
     jobId
   ], {
     cwd,
-    env: process11.env,
+    env: process12.env,
     detached: true,
     stdio: stdioConfig,
     windowsHide: true
@@ -14527,7 +13729,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs19.closeSync(stdioConfig[2]);
+      fs22.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -14603,7 +13805,6 @@ function enqueueBackgroundTask(cwd, job, request) {
       status: "queued",
       title: job.title,
       summary: job.summary,
-      group: job.group ?? null,
       registryTaskId: job.registryTaskId ?? null,
       worktree: job.worktree ?? null,
       logFile,
@@ -14611,83 +13812,6 @@ function enqueueBackgroundTask(cwd, job, request) {
     },
     logFile
   };
-}
-async function handleReviewCommand(argv, config) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "backend", "brief", "task"],
-    repeatableValueOptions: ["concern"],
-    booleanOptions: ["json", "background", "wait"],
-    aliasMap: {
-      m: "model"
-    }
-  });
-  const taskReview = options.task ? requireTaskReviewContext(options.task, options) : null;
-  const cwd = taskReview?.cwd ?? resolveCommandCwd(options);
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot,
-    backend: options.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  const focusText = positionals.join(" ").trim();
-  const target = resolveReviewTarget(cwd, {
-    base: taskReview?.base ?? options.base,
-    scope: taskReview?.scope ?? options.scope
-  });
-  let brief = null;
-  if (options.brief) {
-    const result = loadBrief(options.brief, { baseDir: cwd });
-    if (!result.ok) {
-      throw new CliError(result.message, {
-        code: result.code,
-        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
-        details: result.details,
-        suggestion: result.code === "BRIEF_SCHEMA_VIOLATION" ? "Fix the brief JSON to match the schema. Common valid top-level keys are goal, worker_assignment, specific_concerns, acceptance_criteria, behavior_digest_seed, parent_task_id, backend_hint, iteration_max, and trust_budget_override." : void 0
-      });
-    }
-    brief = result.brief;
-  }
-  const opusConcerns = Array.isArray(options.concern) ? options.concern : options.concern ? [options.concern] : [];
-  config.validateRequest?.(target, focusText, { brief, opusConcerns });
-  const metadata = buildReviewJobMetadata(config.reviewName, target);
-  const job = createCompanionJob({
-    prefix: "review",
-    kind: metadata.kind,
-    title: metadata.title,
-    workspaceRoot,
-    jobClass: "review",
-    summary: metadata.summary
-  });
-  await runForegroundCommand(
-    job,
-    (progress) => executeReviewRun({
-      cwd,
-      base: taskReview?.base ?? options.base,
-      scope: taskReview?.scope ?? options.scope,
-      model: options.model,
-      backend: options.backend ?? null,
-      focusText,
-      brief,
-      opusConcerns,
-      reviewName: config.reviewName,
-      taskId: taskReview?.taskId ?? null,
-      reviewedBranchHeadSha: taskReview?.reviewedBranchHeadSha ?? null,
-      onProgress: progress
-    }),
-    {
-      json: options.json,
-      startedAt,
-      command: config.reviewName === "Adversarial Review" ? "adversarial-review" : "review"
-    }
-  );
-}
-async function handleReview(argv) {
-  return handleReviewCommand(argv, {
-    reviewName: "Review",
-    validateRequest: validateNativeReviewRequest
-  });
 }
 async function runBridgeTask(request) {
   const stateCwd = request.stateCwd ?? request.cwd;
@@ -14783,7 +13907,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       heartbeatState.turnTimeoutMs = info.turnParams?.turnTimeoutMs ?? heartbeatState.turnTimeoutMs;
       startHeartbeat();
       startCheckpoint();
-      startWorkerErrWatcher();
       const s = heartbeatState.session;
       breakerState.recent.length = 0;
       breakerState.tripped = false;
@@ -14799,9 +13922,13 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       try {
         const sandboxType = info.turnParams.sandboxPolicy?.type ?? "unknown";
         const pipelineEnabled = [];
-        if (config.auto_review) pipelineEnabled.push("review");
-        if (config.post_task_prompt) pipelineEnabled.push("check");
-        if (request.noPipeline) pipelineEnabled.length = 0;
+        if (request.noPipeline) {
+          pipelineEnabled.push("diff");
+        } else if (config.auto_review || config.post_task_prompt) {
+          pipelineEnabled.push("diff");
+          if (config.auto_review) pipelineEnabled.push("review");
+          if (config.post_task_prompt) pipelineEnabled.push("check");
+        }
         logEvent(s, formatDirectivesEvent(s, {
           mode: isPlanMode ? "plan" : "default",
           effort: info.turnParams.effort ?? "?",
@@ -14848,32 +13975,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
-          try {
-            const changes = Array.isArray(item.changes) ? item.changes : [];
-            for (const change of changes) {
-              const kind = change?.kind ?? change?.change ?? change?.op ?? "";
-              if (kind === "create" || kind === "add" || kind === "added" || kind === "created") {
-                const filePath = change?.path ?? "";
-                if (filePath) {
-                  logEvent(s, formatArtifactEvent(s, {
-                    filePath,
-                    sizeBytes: null,
-                    threadId: effectiveThreadId
-                  }));
-                  logNdjson(s, "ARTIFACT", null, { filePath, kind, threadId: effectiveThreadId });
-                }
-              }
-            }
-          } catch {
-          }
-          try {
-            const changes = Array.isArray(item.changes) ? item.changes : [];
-            for (const change of changes) {
-              const touchedPath = change?.path ?? "";
-              if (touchedPath) driftState.touchedFiles.add(touchedPath);
-            }
-          } catch {
-          }
         } else if (itemType === "plan") {
           checkpointState.tools.push({
             type: "plan",
@@ -14931,11 +14032,9 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     turnTimeoutMs: null
   };
   let heartbeatTimer = null;
-  const HEARTBEAT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
-  const CHECKPOINT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
-  const STALL_CHECKPOINT_THRESHOLD = Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
-  const STALL_WARNING_THRESHOLD_MS = Number(process11.env.CODEX_BRIDGE_STALL_WARNING_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_STALL_WARNING_MS) : Number(config.stall_warning_threshold_ms) > 0 ? Number(config.stall_warning_threshold_ms) : DEFAULT_CONFIG.stall_warning_threshold_ms;
-  let stallWarnEmitted = false;
+  const HEARTBEAT_INTERVAL_MS = Number(process12.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process12.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
+  const CHECKPOINT_INTERVAL_MS = Number(process12.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process12.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
+  const STALL_CHECKPOINT_THRESHOLD = Number(process12.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process12.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
@@ -14960,20 +14059,11 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     seenFirstActionable: false
     // gate for barren-counter start (prevents false stall on slow-to-start turns)
   };
-  const DRIFT_WARN_RATIO_THRESHOLD = 0.3;
-  const DRIFT_WARN_MIN_DRIFTED = 3;
-  const promptScopePaths = extractPathsFromPrompt(request.prompt ?? "");
-  const driftState = {
-    touchedFiles: /* @__PURE__ */ new Set(),
-    // all unique file paths Codex has touched
-    warnEmitted: false
-    // only emit once per turn
-  };
   const gitCwd = request.cwd && typeof request.cwd === "string" ? request.cwd : null;
   const readGitHead = () => {
     if (!gitCwd) return null;
     try {
-      const r = spawnSync5("git", ["rev-parse", "HEAD"], {
+      const r = spawnSync("git", ["rev-parse", "HEAD"], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -14986,7 +14076,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitLogRange = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return [];
     try {
-      const r = spawnSync5(
+      const r = spawnSync(
         "git",
         ["log", "--no-color", "--no-decorate", "-n", "50", "--pretty=%h %s", `${from}..${to}`],
         { cwd: gitCwd, encoding: "utf8", timeout: 5e3 }
@@ -15003,7 +14093,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitDiffStat = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return null;
     try {
-      const r = spawnSync5("git", ["diff", "--shortstat", `${from}..${to}`], {
+      const r = spawnSync("git", ["diff", "--shortstat", `${from}..${to}`], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -15027,7 +14117,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
             phase: heartbeatState.phase,
             lastItem: heartbeatState.lastItem,
             lastItemAgeMs: heartbeatState.lastItemAt ? now - heartbeatState.lastItemAt : null,
-            pid: process11.pid,
+            pid: process12.pid,
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
@@ -15070,7 +14160,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
               elapsedMs,
               phase: heartbeatState.phase,
               intervalMs,
-              pid: process11.pid,
+              pid: process12.pid,
               jobId: request.jobId ?? null,
               lastAssistantMessage: checkpointState.lastAssistantMessage,
               tools: toolsSnapshot,
@@ -15097,29 +14187,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           checkpointState.barrenCheckpoints += 1;
         } else {
           checkpointState.barrenCheckpoints = 0;
-          stallWarnEmitted = false;
-        }
-      }
-      if (checkpointState.seenFirstActionable && checkpointState.barrenCheckpoints === 1 && !stallWarnEmitted && !terminalEmitted && STALL_WARNING_THRESHOLD_MS > 0) {
-        try {
-          const barrenDurationMs = CHECKPOINT_INTERVAL_MS;
-          const terminalWindowMs = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
-          logEvent(
-            heartbeatState.session,
-            formatStallWarningEvent(heartbeatState.session, {
-              durationMs: barrenDurationMs,
-              thresholdMs: STALL_WARNING_THRESHOLD_MS,
-              remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs),
-              lastMeaningfulAction: heartbeatState.lastItem
-            })
-          );
-          logNdjson(heartbeatState.session, "STALL_WARNING", null, {
-            durationMs: barrenDurationMs,
-            thresholdMs: STALL_WARNING_THRESHOLD_MS,
-            remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs)
-          });
-          stallWarnEmitted = true;
-        } catch {
         }
       }
       if (checkpointState.barrenCheckpoints >= STALL_CHECKPOINT_THRESHOLD && !terminalEmitted) {
@@ -15147,34 +14214,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           terminalEmitted = true;
           stopCheckpoint();
           stopHeartbeat();
-        } catch {
-        }
-      }
-      if (!driftState.warnEmitted && !terminalEmitted && promptScopePaths.length > 0 && driftState.touchedFiles.size > 0 && heartbeatState.session) {
-        try {
-          const allTouched = Array.from(driftState.touchedFiles);
-          const driftedFiles = allTouched.filter(
-            (f) => !promptScopePaths.some((scope) => f.includes(scope) || scope.includes(f))
-          );
-          const driftRatio = driftedFiles.length / allTouched.length;
-          if (driftedFiles.length > DRIFT_WARN_MIN_DRIFTED && driftRatio > DRIFT_WARN_RATIO_THRESHOLD) {
-            logEvent(
-              heartbeatState.session,
-              formatDriftWarnEvent(heartbeatState.session, {
-                driftedFiles,
-                driftRatio,
-                promptScope: promptScopePaths,
-                threadId: heartbeatState.session.threadId
-              })
-            );
-            logNdjson(heartbeatState.session, "DRIFT_WARN", null, {
-              driftedFiles: driftedFiles.slice(0, 20),
-              driftRatio,
-              totalTouched: allTouched.length,
-              promptScopeCount: promptScopePaths.length
-            });
-            driftState.warnEmitted = true;
-          }
         } catch {
         }
       }
@@ -15207,96 +14246,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       checkpointTimer = null;
     }
   };
-  const WORKER_STDERR_POLL_MS = 5e3;
-  const WORKER_STDERR_EMIT_MIN_INTERVAL_MS = 3e4;
-  const workerErrPath = request.logFile ? `${request.logFile}.worker.err` : null;
-  let workerErrTimer = null;
-  const workerErrState = {
-    lastSize: 0,
-    lastEmitAt: 0,
-    pendingDelta: 0
-  };
-  if (workerErrPath) {
-    try {
-      const stat = fs19.statSync(workerErrPath);
-      workerErrState.lastSize = stat.size;
-    } catch {
-      workerErrState.lastSize = 0;
-    }
-  }
-  const tickWorkerErr = (force = false) => {
-    if (!workerErrPath || !heartbeatState.session) return;
-    let stat;
-    try {
-      stat = fs19.statSync(workerErrPath);
-    } catch {
-      return;
-    }
-    const currentSize = stat.size;
-    if (currentSize > workerErrState.lastSize) {
-      workerErrState.pendingDelta += currentSize - workerErrState.lastSize;
-      workerErrState.lastSize = currentSize;
-    }
-    if (workerErrState.pendingDelta <= 0) return;
-    const now = Date.now();
-    const sinceLastEmit = now - workerErrState.lastEmitAt;
-    if (!force && sinceLastEmit < WORKER_STDERR_EMIT_MIN_INTERVAL_MS) {
-      return;
-    }
-    let tailInfo;
-    try {
-      tailInfo = readWorkerErrTail(workerErrPath, WORKER_STDERR_TAIL_BYTES);
-    } catch {
-      return;
-    }
-    const errorClassHint = classifyStderr(tailInfo.tail);
-    try {
-      logEvent(
-        heartbeatState.session,
-        formatWorkerStderrEvent(heartbeatState.session, {
-          path: workerErrPath,
-          sizeBytes: tailInfo.totalBytes,
-          deltaBytes: workerErrState.pendingDelta,
-          tail: tailInfo.tail,
-          truncated: tailInfo.truncated,
-          errorClassHint
-        })
-      );
-      logNdjson(heartbeatState.session, "WORKER_STDERR", null, {
-        path: workerErrPath,
-        sizeBytes: tailInfo.totalBytes,
-        deltaBytes: workerErrState.pendingDelta,
-        truncated: tailInfo.truncated,
-        errorClassHint
-      });
-    } catch {
-    }
-    workerErrState.lastEmitAt = now;
-    workerErrState.pendingDelta = 0;
-  };
-  const startWorkerErrWatcher = () => {
-    if (workerErrTimer || !workerErrPath) return;
-    workerErrTimer = setInterval(() => {
-      try {
-        tickWorkerErr(false);
-      } catch {
-      }
-    }, WORKER_STDERR_POLL_MS);
-    workerErrTimer.unref?.();
-  };
-  const stopWorkerErrWatcher = () => {
-    if (workerErrTimer) {
-      clearInterval(workerErrTimer);
-      workerErrTimer = null;
-    }
-    try {
-      tickWorkerErr(true);
-    } catch {
-    }
-  };
   let result;
   let session;
   const turnStartSnapshot = captureGitSnapshot(request.cwd);
+  const turnStartWorkFingerprint = captureWorkFingerprint(request.cwd);
   const retryHistory = [];
   try {
     result = await executeTaskRun(bridgeRequest);
@@ -15341,7 +14294,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path17.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path20.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -15415,10 +14368,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path17.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path17.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path17.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path17.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path20.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path20.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path20.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path20.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -15508,16 +14461,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         cwd: request.cwd
       }));
       logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
-      try {
-        logEvent(session, formatNeedsAttentionEvent(session, {
-          underlyingTag: "ERROR",
-          threadId: result.threadId,
-          summary: `${errorCode}: ${errorMessage.slice(0, 120)}`,
-          nextAction: request.jobId ? `result ${request.jobId}` : null
-        }));
-        logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "ERROR", errorCode });
-      } catch {
-      }
       markTerminalEmitted();
       const nextAction = buildTurnErrorNextAction({
         origin,
@@ -15545,16 +14488,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         scriptPath: SCRIPT_PATH,
         cwd: request.cwd
       }));
-      try {
-        logEvent(session, formatNeedsAttentionEvent(session, {
-          underlyingTag: "PLAN",
-          threadId: result.threadId,
-          summary: result.planText.split("\n")[0]?.slice(0, 120) ?? "Plan ready",
-          nextAction: `send ${result.threadId} --mode default "Implement the plan."`
-        }));
-        logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "PLAN", threadId: result.threadId });
-      } catch {
-      }
       markTerminalEmitted();
       setPhase("plan-pending", {
         command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
@@ -15563,14 +14496,20 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       return { ...result, session, planPath };
     }
     if (request.noPipeline) {
-      logNdjson(session, "PIPELINE_SKIPPED", null, { reason: "--no-pipeline flag" });
+      logNdjson(session, "PIPELINE_SKIPPED", null, {
+        reason: "--no-pipeline flag",
+        skippedStages: ["review", "fix", "check"],
+        retainedStages: ["diff"]
+      });
     }
-    if (result.exitStatus === 0 && !request.noPipeline && (config.auto_review || config.post_task_prompt)) {
+    const shouldRunPipeline = result.exitStatus === 0 && (request.noPipeline || config.auto_review || config.post_task_prompt);
+    if (shouldRunPipeline) {
+      const pipelineConfig = request.noPipeline ? { ...config, auto_review: false, post_task_prompt: "" } : config;
       const pipelineResult = await runAutoPipeline({
         session,
         threadId: result.threadId,
         cwd: request.cwd,
-        config,
+        config: pipelineConfig,
         scriptPath: SCRIPT_PATH,
         rootDir: ROOT_DIR,
         runAppServerTurn,
@@ -15583,17 +14522,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         // them.
         stageTimeoutMs: request.pipelineStageMs ?? (Number(config.pipeline_stage_ms) > 0 ? Number(config.pipeline_stage_ms) : null),
         totalTimeoutMs: request.pipelineTotalMs ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null),
-        taskMode: isPlanMode ? "plan" : "default",
-        assistantMessage: typeof result.payload?.rawOutput === "string" ? result.payload.rawOutput : ""
+        expectedWriteWork: Boolean(request.write),
+        turnStartWorkFingerprint,
+        turnTouchedFiles: result.payload?.touchedFiles ?? []
       });
-      if (pipelineResult?.planReady) {
-        setPhase("plan-pending", {
-          command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
-          description: "Codex emitted a plan in plan mode but produced no diff. Approve with --mode default to execute, or send revision feedback on the same thread."
-        }, { pipeline: pipelineResult, planReady: true, planClassification: pipelineResult.planClassification, monitor });
-        markTerminalEmitted();
-        return { ...result, pipeline: pipelineResult, session, planReady: true };
-      }
       if (pipelineResult?.complete === false) {
         const pipelineErrored = Boolean(pipelineResult.error);
         const failedStage = pipelineResult.failing_stage ?? (pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff");
@@ -15616,6 +14548,33 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     }
     const diff = captureGitDiff(request.cwd, session);
     mirrorDiffToRegistry(request.jobId ?? request.taskId ?? null, diff.diffPath);
+    const taskTouchedFiles = result.payload?.touchedFiles ?? [];
+    if (request.write && !hasWorkChangedSince(request.cwd, turnStartWorkFingerprint, taskTouchedFiles)) {
+      const missingItems = ["no_files_touched: Write-mode task completed without touching files or changing git state."];
+      logEvent(session, formatIncompleteEvent(session, {
+        diffStat: "0 touched files",
+        diffPath: diff.diffPath,
+        verdict: "no_files_touched",
+        findingCount: 0,
+        failingStage: "diff",
+        missingItems,
+        scriptPath: SCRIPT_PATH,
+        jobId: request.jobId ?? null,
+        cwd: request.cwd,
+        stateCwd
+      }));
+      logNdjson(session, "NO_WORK", null, {
+        reason: "no_files_touched",
+        expectedWriteWork: true,
+        touchedFiles: taskTouchedFiles
+      });
+      markTerminalEmitted();
+      setPhase("incomplete", {
+        command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
+        description: "Write-mode task finished without touching files or changing git state."
+      }, { diffPath: diff.diffPath, monitor, missingItems, noWorkReason: "no_files_touched" });
+      return { ...result, session, diff, noWorkReason: "no_files_touched" };
+    }
     logEvent(session, formatDoneEvent(session, {
       duration: 0,
       diffStat: diff.diffStat,
@@ -15625,7 +14584,9 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       scriptPath: SCRIPT_PATH,
       jobId: request.jobId ?? null,
       cwd: request.cwd,
-      stateCwd
+      stateCwd,
+      workspaceDiff: diff,
+      touchedFiles: taskTouchedFiles
     }));
     markTerminalEmitted();
     setPhase("done", {
@@ -15636,7 +14597,6 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   } finally {
     stopHeartbeat();
     stopCheckpoint();
-    stopWorkerErrWatcher();
     const backstopSession = heartbeatState.session ?? session ?? null;
     if (!terminalEmitted && backstopSession && backstopSession.eventsPath) {
       try {
@@ -15673,13 +14633,797 @@ function extractPlanSteps(planText) {
   }
   return steps.length > 0 ? steps : [{ number: 1, text: planText?.split("\n")[0] ?? "Plan", status: "pending" }];
 }
-function extractPathsFromPrompt(promptText) {
-  if (typeof promptText !== "string" || !promptText) return [];
-  const matches = promptText.match(/(?:^|[\s"'`(])(\.[./][^\s"'`()\n]+|[a-zA-Z][\w./\\-]+\.[a-zA-Z]{1,10})/g) ?? [];
-  return [...new Set(
-    matches.map((m) => m.trim().replace(/^["'`(]/, "")).filter((p) => p.length > 3 && p.includes("/") || p.match(/\.\w{1,10}$/))
-  )];
+
+// src/lib/handler-utils.mjs
+import fs23 from "node:fs";
+import path21 from "node:path";
+import process13 from "node:process";
+function normalizeRequestedModel(model) {
+  if (model == null) {
+    return null;
+  }
+  const normalized = String(model).trim();
+  if (!normalized) {
+    return null;
+  }
+  return MODEL_ALIASES.get(normalized.toLowerCase()) ?? normalized;
 }
+function normalizeReasoningEffort(effort) {
+  if (effort == null) {
+    return null;
+  }
+  const normalized = String(effort).trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (!VALID_REASONING_EFFORTS.has(normalized)) {
+    throw validationError(
+      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh.`,
+      "INVALID_EFFORT"
+    );
+  }
+  return normalized;
+}
+function normalizeArgv(argv) {
+  if (argv.length === 1) {
+    const [raw] = argv;
+    if (!raw || !raw.trim()) {
+      return [];
+    }
+    return splitRawArgumentString(raw);
+  }
+  const out = [];
+  for (const element of argv) {
+    if (typeof element === "string" && /\s/.test(element) && element.trimStart().startsWith("-")) {
+      const tokens = splitRawArgumentString(element);
+      if (tokens.length > 1) {
+        out.push(...tokens);
+        continue;
+      }
+    }
+    out.push(element);
+  }
+  return out;
+}
+function parseCommandInput(argv, config = {}) {
+  return parseArgs(normalizeArgv(argv), {
+    ...config,
+    aliasMap: {
+      C: "cwd",
+      ...config.aliasMap ?? {}
+    }
+  });
+}
+function resolveCommandCwd(options = {}) {
+  return options.cwd ? path21.resolve(process13.cwd(), options.cwd) : process13.cwd();
+}
+function resolveCommandWorkspace(options = {}) {
+  return resolveWorkspaceRoot(resolveCommandCwd(options));
+}
+function resolvePromptInput(options, positionals, cwd) {
+  if (options["prompt-file"]) {
+    return readPromptFileOrThrow(path21.resolve(cwd, options["prompt-file"]));
+  }
+  if (positionals.length === 1) {
+    const candidate = path21.resolve(cwd, positionals[0]);
+    try {
+      if (fs23.existsSync(candidate) && fs23.statSync(candidate).isFile()) {
+        return fs23.readFileSync(candidate, "utf8");
+      }
+    } catch {
+    }
+  }
+  const text = positionals.join(" ");
+  if (text) return text;
+  return readStdinIfPiped();
+}
+
+// src/handlers/meta.mjs
+var MONITOR_HOOK_EVENT = "PostToolUse";
+var MONITOR_HOOK_MATCHER = "Bash|Agent";
+var MONITOR_HOOK_SCRIPT = "tool.mjs";
+function resolveClaudeSettingsPath2() {
+  return path22.join(os9.homedir(), ".claude", "settings.json");
+}
+function resolveMonitorHookScriptPath() {
+  const candidates = [
+    path22.join(ROOT_DIR, "hooks", MONITOR_HOOK_SCRIPT),
+    path22.resolve(ROOT_DIR, "..", "hooks", MONITOR_HOOK_SCRIPT)
+  ];
+  return candidates.find((candidate) => fs24.existsSync(candidate)) ?? candidates[0];
+}
+function monitorHookCommand(hookScriptPath) {
+  return `node ${JSON.stringify(hookScriptPath)} PostToolUse`;
+}
+function buildMonitorHookEntry(hookScriptPath) {
+  return {
+    matcher: MONITOR_HOOK_MATCHER,
+    hooks: [
+      {
+        type: "command",
+        command: monitorHookCommand(hookScriptPath),
+        timeout: 5
+      }
+    ]
+  };
+}
+function readClaudeSettings2(settingsPath) {
+  if (!fs24.existsSync(settingsPath)) {
+    return { exists: false, settings: {}, parseError: null };
+  }
+  try {
+    const raw = fs24.readFileSync(settingsPath, "utf8");
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        exists: true,
+        settings: null,
+        parseError: "settings file must contain a JSON object"
+      };
+    }
+    return { exists: true, settings: parsed, parseError: null };
+  } catch (err) {
+    return {
+      exists: true,
+      settings: null,
+      parseError: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+function hasMonitorHookMirror(settings, hookScriptPath) {
+  const postToolUse = settings?.hooks?.[MONITOR_HOOK_EVENT];
+  if (!Array.isArray(postToolUse)) return false;
+  const command = monitorHookCommand(hookScriptPath);
+  return postToolUse.some(
+    (entry) => entry?.matcher === MONITOR_HOOK_MATCHER && Array.isArray(entry.hooks) && entry.hooks.some(
+      (hook) => hook?.type === "command" && hook?.command === command
+    )
+  );
+}
+function getMonitorHookMirrorStatus() {
+  const settingsPath = resolveClaudeSettingsPath2();
+  const hookScriptPath = resolveMonitorHookScriptPath();
+  const read = readClaudeSettings2(settingsPath);
+  return {
+    installed: read.settings ? hasMonitorHookMirror(read.settings, hookScriptPath) : false,
+    settingsPath,
+    settingsExists: read.exists,
+    settingsParseError: read.parseError,
+    hookScriptPath,
+    hookScriptExists: fs24.existsSync(hookScriptPath),
+    installCommand: "codex-bridge setup --install-monitor-hook"
+  };
+}
+function writeClaudeSettings2(settingsPath, settings) {
+  fs24.mkdirSync(path22.dirname(settingsPath), { recursive: true });
+  const tmpPath = `${settingsPath}.tmp-${process14.pid}-${Date.now()}`;
+  fs24.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
+`, "utf8");
+  fs24.renameSync(tmpPath, settingsPath);
+}
+function installMonitorHookMirror() {
+  const settingsPath = resolveClaudeSettingsPath2();
+  const hookScriptPath = resolveMonitorHookScriptPath();
+  if (!fs24.existsSync(hookScriptPath)) {
+    throw validationError(
+      `Cannot install Monitor hook mirror because ${MONITOR_HOOK_SCRIPT} was not found at ${hookScriptPath}.`,
+      "MONITOR_HOOK_SCRIPT_MISSING",
+      "Run this from a packaged codex-bridge plugin install, or arm Monitor manually from result.monitor.tool_hint."
+    );
+  }
+  const read = readClaudeSettings2(settingsPath);
+  if (read.parseError) {
+    throw validationError(
+      `Cannot update ${settingsPath}: ${read.parseError}.`,
+      "CLAUDE_SETTINGS_PARSE_ERROR",
+      "Fix ~/.claude/settings.json so it is valid JSON, then rerun setup --install-monitor-hook."
+    );
+  }
+  const settings = read.settings ?? {};
+  if (settings.hooks == null) {
+    settings.hooks = {};
+  }
+  if (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks must be a JSON object.`,
+      "CLAUDE_SETTINGS_HOOKS_INVALID",
+      "Fix ~/.claude/settings.json hooks shape, then rerun setup --install-monitor-hook."
+    );
+  }
+  const existing = settings.hooks[MONITOR_HOOK_EVENT];
+  if (existing == null) {
+    settings.hooks[MONITOR_HOOK_EVENT] = [];
+  } else if (!Array.isArray(existing)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks.${MONITOR_HOOK_EVENT} must be an array.`,
+      "CLAUDE_SETTINGS_POST_TOOL_USE_INVALID",
+      "Fix ~/.claude/settings.json hooks.PostToolUse shape, then rerun setup --install-monitor-hook."
+    );
+  }
+  const alreadyInstalled = hasMonitorHookMirror(settings, hookScriptPath);
+  if (!alreadyInstalled) {
+    settings.hooks[MONITOR_HOOK_EVENT].push(buildMonitorHookEntry(hookScriptPath));
+    writeClaudeSettings2(settingsPath, settings);
+  }
+  return {
+    alreadyInstalled,
+    status: getMonitorHookMirrorStatus()
+  };
+}
+async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
+  const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
+  const codexStatus = getCodexAvailability(cwd);
+  const authStatus = await getCodexAuthStatus(cwd);
+  const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
+  const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
+  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
+  const sandboxEnforcement = getSandboxEnforcementStatus();
+  const monitorHook = getMonitorHookMirrorStatus();
+  const nextSteps = [];
+  if (!codexStatus.available) {
+    nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
+  }
+  if (codexStatus.available && !authStatus.loggedIn && authStatus.requiresOpenaiAuth) {
+    nextSteps.push("Run `!codex login`.");
+    nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
+  }
+  if (reviewGate.reviewGateSuppressedByOfficialPlugin) {
+    nextSteps.push("Use the official OpenAI Codex plugin for stop-time review; Codex Bridge review gate is disabled while it is enabled.");
+  } else if (reviewGate.reviewGateSuppressionReason === "official-openai-codex-plugin-status-unknown") {
+    nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
+  } else if (!reviewGate.enabled) {
+    nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
+  }
+  if (sandboxEnforcement.settingsParseError) {
+    nextSteps.push(`Sandbox enforcement status could not read ${sandboxEnforcement.settingsPath}: ${sandboxEnforcement.settingsParseError}.`);
+  } else if (!sandboxEnforcement.installed) {
+    nextSteps.push("Optional: run `codex-bridge setup --enforce-sandbox` to deny sandbox downgrades at the Claude permission layer.");
+  }
+  if (monitorHook.settingsParseError) {
+    nextSteps.push(`Monitor hook mirror status could not read ${monitorHook.settingsPath}: ${monitorHook.settingsParseError}.`);
+  } else if (!monitorHook.installed && monitorHook.hookScriptExists) {
+    nextSteps.push("Optional: run `codex-bridge setup --install-monitor-hook` to mirror the Monitor PostToolUse hook into Claude user settings.");
+  } else if (!monitorHook.installed && !monitorHook.hookScriptExists) {
+    nextSteps.push("Monitor hook mirror unavailable in this install; arm Monitor manually from `result.monitor.tool_hint` after background dispatch.");
+  }
+  return {
+    ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
+    node: nodeStatus,
+    npm: npmStatus,
+    codex: codexStatus,
+    auth: authStatus,
+    active_backend: adapter2.name,
+    adapter_capabilities: adapter2.capabilities(),
+    sessionRuntime: getSessionRuntimeStatus(process14.env, workspaceRoot),
+    reviewGateEnabled: reviewGate.enabled,
+    reviewGateLockPath: reviewGate.lockPath,
+    reviewGateLockExists: reviewGate.lockExists,
+    officialOpenAICodexPluginStatus: reviewGate.officialOpenAICodexPluginStatus,
+    officialOpenAICodexPlugin: reviewGate.officialOpenAICodexPlugin,
+    officialOpenAICodexPluginDetail: reviewGate.officialOpenAICodexPluginDetail,
+    reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
+    reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
+    reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
+    sandboxEnforcementInstalled: sandboxEnforcement.installed,
+    sandboxEnforcementSettingsPath: sandboxEnforcement.settingsPath,
+    sandboxEnforcementSettingsExists: sandboxEnforcement.settingsExists,
+    sandboxEnforcementSettingsParseError: sandboxEnforcement.settingsParseError,
+    monitorHookInstalled: monitorHook.installed,
+    monitorHookSettingsPath: monitorHook.settingsPath,
+    monitorHookSettingsExists: monitorHook.settingsExists,
+    monitorHookSettingsParseError: monitorHook.settingsParseError,
+    monitorHookScriptPath: monitorHook.hookScriptPath,
+    monitorHookScriptExists: monitorHook.hookScriptExists,
+    monitorHookInstallCommand: monitorHook.installCommand,
+    actionsTaken,
+    nextSteps
+  };
+}
+function installSandboxEnforcementForSetup() {
+  try {
+    return installSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_INSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --enforce-sandbox."
+    );
+  }
+}
+function uninstallSandboxEnforcementForSetup() {
+  try {
+    return uninstallSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_UNINSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --disable-sandbox-enforcement."
+    );
+  }
+}
+async function handleSetup(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook", "enforce-sandbox", "disable-sandbox-enforcement"]
+  });
+  if (options["enable-review-gate"] && options["disable-review-gate"]) {
+    throw conflictError(
+      "Choose either --enable-review-gate or --disable-review-gate.",
+      "REVIEW_GATE_CONFLICT"
+    );
+  }
+  if (options["enforce-sandbox"] && options["disable-sandbox-enforcement"]) {
+    throw conflictError(
+      "Choose either --enforce-sandbox or --disable-sandbox-enforcement.",
+      "SANDBOX_ENFORCEMENT_CONFLICT"
+    );
+  }
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const actionsTaken = [];
+  const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd, maxAgeMs: 0 });
+  if (options["enable-review-gate"]) {
+    if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {
+      const reviewGate = setStopReviewGate(workspaceRoot, true, officialPlugin);
+      if (reviewGate.enabled && reviewGate.lockExists) {
+        actionsTaken.push(`Enabled the project stop-time review gate via ${reviewGate.lockPath}.`);
+      } else {
+        actionsTaken.push(
+          `Failed to create the stop-time review gate lock at ${reviewGate.lockPath}; the gate is NOT enabled. Check write permissions on the git project root, then rerun \`codex-bridge setup --enable-review-gate\`.`
+        );
+      }
+    } else if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE) {
+      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin is enabled.");
+    } else {
+      actionsTaken.push("Skipped enabling the Codex Bridge stop-time review gate because the official OpenAI Codex plugin status could not be verified.");
+    }
+  } else if (options["disable-review-gate"]) {
+    const reviewGate = setStopReviewGate(workspaceRoot, false, officialPlugin);
+    if (reviewGate.lockExists) {
+      actionsTaken.push(
+        `Failed to remove the stop-time review gate lock at ${reviewGate.lockPath}; the gate is still active. Please remove the lock file manually.`
+      );
+    } else {
+      actionsTaken.push(
+        `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
+      );
+    }
+  }
+  if (options["enforce-sandbox"]) {
+    const result = installSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.alreadyInstalled ? `Sandbox enforcement deny rules already present in ${result.status.settingsPath}.` : `Installed sandbox enforcement deny rules in ${result.status.settingsPath}.`
+    );
+  } else if (options["disable-sandbox-enforcement"]) {
+    const result = uninstallSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.removed > 0 ? `Removed ${result.removed} sandbox enforcement deny rule${result.removed === 1 ? "" : "s"} from ${result.status.settingsPath}.` : `Sandbox enforcement deny rules were not present in ${result.status.settingsPath}.`
+    );
+  }
+  if (options["install-monitor-hook"]) {
+    const result = installMonitorHookMirror();
+    actionsTaken.push(
+      result.alreadyInstalled ? `Monitor PostToolUse hook mirror already present in ${result.status.settingsPath}.` : `Installed Monitor PostToolUse hook mirror in ${result.status.settingsPath}.`
+    );
+  }
+  const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
+  emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
+    json: options.json,
+    startedAt
+  });
+}
+async function handleVersion(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "backend"],
+    booleanOptions: ["json", "check-update"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot, backend: options.backend });
+  const codex = getCodexAvailability(cwd);
+  const update = await checkForUpdate({
+    currentVersion: BRIDGE_VERSION,
+    force: Boolean(options["check-update"])
+  });
+  const payload = {
+    version: BRIDGE_VERSION,
+    schema_version: BRIDGE_SCHEMA_VERSION,
+    node_version: process14.version,
+    codex: {
+      available: codex.available,
+      detail: codex.detail ?? null
+    },
+    capabilities: [...BRIDGE_CAPABILITIES],
+    active_backend: adapter2.name,
+    adapter_capabilities: adapter2.capabilities(),
+    update: {
+      latest_version: update.latestVersion ?? null,
+      has_update: Boolean(update.hasUpdate),
+      checked_at_age_ms: update.cacheAgeMs ?? null,
+      check_skipped: Boolean(update.skipped),
+      check_skip_reason: update.reason ?? null
+    }
+  };
+  const updateLine = formatUpdateNotice(update);
+  const rendered = [
+    `codex-bridge ${payload.version} (schema ${payload.schema_version})`,
+    `  node:  ${payload.node_version}`,
+    `  codex: ${codex.available ? codex.detail ?? "available" : "not installed"}`,
+    `  backend: ${payload.active_backend}`,
+    `  caps:  ${payload.capabilities.join(", ")}`,
+    updateLine ? `  update: ${updateLine}` : `  update: up to date${update.latestVersion ? ` (latest ${update.latestVersion})` : ""}`
+  ].join("\n") + "\n";
+  emitSuccess("version", payload, rendered, { json: options.json, startedAt });
+}
+async function handleConfigShow(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const action = positionals[0] ?? "show";
+  if (action !== "show") {
+    throw usageError(
+      `config: unknown action '${action}'. Supported: show.`
+    );
+  }
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
+  const effective = getBridgeConfig2(cwd, workspaceRoot);
+  const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+  const overrides = {};
+  for (const [k, v] of Object.entries(effective)) {
+    if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
+      overrides[k] = v;
+    }
+  }
+  const payload = {
+    sources: {
+      defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
+      skill_config_path: sources.skillConfigPath,
+      skill_config_exists: sources.skillConfigExists,
+      workspace_config_path: sources.workspaceConfigPath,
+      workspace_config_exists: sources.workspaceConfigExists,
+      override_config_path: sources.overrideConfigPath,
+      override_config_exists: sources.overrideConfigExists
+    },
+    effective_config: effective,
+    overrides_vs_defaults: overrides,
+    diagnostics,
+    warnings: diagnostics.filter((d) => d.severity === "warning"),
+    errors: diagnostics.filter((d) => d.severity === "error"),
+    precedence_order_low_to_high: [
+      "DEFAULT_CONFIG",
+      "skill-dir config.yaml",
+      "workspace-root config.yaml",
+      "cwd config.yaml"
+    ]
+  };
+  const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
+  const lines = [
+    "Config resolution (lowest \u2192 highest precedence):",
+    `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
+    `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
+    `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
+    `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
+    "",
+    "Effective config:"
+  ];
+  for (const [k, v] of Object.entries(effective)) {
+    const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
+    const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
+    lines.push(`  ${marker} ${k}: ${preview}`);
+  }
+  if (Object.keys(overrides).length > 0) {
+    lines.push("", "* = differs from DEFAULT_CONFIG");
+  }
+  if (diagnostics.length > 0) {
+    lines.push("", "Diagnostics:");
+    for (const diagnostic of diagnostics) {
+      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
+    }
+  }
+  const rendered = `${lines.join("\n")}
+`;
+  emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+}
+async function handleUpdate(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "force", "apply", "yes"]
+  });
+  const update = await checkForUpdate({
+    currentVersion: BRIDGE_VERSION,
+    force: Boolean(options.force)
+  });
+  const installCommand = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const wantApply = Boolean(options.apply || options.yes);
+  if (wantApply && update.hasUpdate && update.latestVersion) {
+    const applyResult = runSkillsAddForApply(options.json);
+    const payload2 = {
+      current_version: BRIDGE_VERSION,
+      latest_version: update.latestVersion ?? null,
+      has_update: true,
+      update_check: {
+        cached: Boolean(update.cached),
+        skipped: Boolean(update.skipped),
+        reason: update.reason ?? null,
+        fetch_reason: update.fetchReason ?? null,
+        fetch_status: update.fetchStatus ?? null,
+        cache_age_ms: update.cacheAgeMs ?? null
+      },
+      apply: {
+        requested: true,
+        command: applyResult.command,
+        ok: applyResult.ok,
+        exit_code: applyResult.exitCode,
+        error: applyResult.error,
+        timed_out: Boolean(applyResult.timedOut)
+      },
+      applied: applyResult.ok,
+      apply_exit_code: applyResult.exitCode,
+      apply_error: applyResult.error,
+      install_command: installCommand
+    };
+    const rendered2 = applyResult.ok ? `Installed codex-bridge ${update.latestVersion} (was ${BRIDGE_VERSION}). Re-invoke the skill to pick up the new files.
+` : `Attempted to install ${update.latestVersion} (from ${BRIDGE_VERSION}) but the installer exited ${applyResult.exitCode}.
+` + (applyResult.error ? `  ${applyResult.error}
+` : "") + `Re-run manually: ${installCommand}
+`;
+    if (applyResult.ok) {
+      emitSuccess("update", payload2, rendered2, { json: options.json, startedAt });
+    } else {
+      const err = new CliError(
+        applyResult.timedOut ? "skills installer timed out" : `skills installer exited ${applyResult.exitCode}`,
+        {
+          class: "dependency_failed",
+          code: "UPDATE_APPLY_FAILED",
+          retryable: true,
+          suggestion: `Re-run manually: ${installCommand}`,
+          details: {
+            command: applyResult.command,
+            exitCode: applyResult.exitCode,
+            error: applyResult.error,
+            timedOut: Boolean(applyResult.timedOut)
+          },
+          nextAction: {
+            kind: "manual-update",
+            command: installCommand,
+            description: "Run the installer manually after checking npm/network availability."
+          }
+        }
+      );
+      emitError(err, { json: options.json, command: "update" });
+    }
+    return;
+  }
+  const payload = {
+    current_version: BRIDGE_VERSION,
+    latest_version: update.latestVersion ?? null,
+    has_update: Boolean(update.hasUpdate),
+    update_check: {
+      cached: Boolean(update.cached),
+      skipped: Boolean(update.skipped),
+      reason: update.reason ?? null,
+      fetch_reason: update.fetchReason ?? null,
+      fetch_status: update.fetchStatus ?? null,
+      cache_age_ms: update.cacheAgeMs ?? null
+    },
+    apply: {
+      requested: wantApply,
+      skipped: wantApply ? update.hasUpdate ? null : "no-update" : "not-requested",
+      command: installCommand
+    },
+    check_skipped: Boolean(update.skipped),
+    check_skip_reason: update.reason ?? null,
+    fetch_reason: update.fetchReason ?? null,
+    fetch_status: update.fetchStatus ?? null,
+    install_command: installCommand,
+    // --apply was requested but nothing to install: echo back the intent
+    // so scripted callers can tell "no action taken" from "skipped".
+    applied: wantApply && !update.hasUpdate ? false : null
+  };
+  let rendered;
+  if (update.skipped && !update.latestVersion) {
+    rendered = renderUpdateFailureHint(update, BRIDGE_VERSION);
+  } else if (update.hasUpdate) {
+    rendered = `codex-bridge ${update.latestVersion} available (you have ${BRIDGE_VERSION}).
+To update, run:
+  ${installCommand}
+Or rerun with --apply to install automatically.
+`;
+  } else {
+    rendered = `codex-bridge is up to date (${BRIDGE_VERSION}${update.latestVersion ? `, latest ${update.latestVersion}` : ""}).
+`;
+  }
+  emitSuccess("update", payload, rendered, { json: options.json, startedAt });
+}
+function runSkillsAddForApply(jsonMode) {
+  const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
+  const timeoutMs = 6e5;
+  try {
+    const result = spawnSync7(
+      "npx",
+      ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+      {
+        stdio: jsonMode ? ["ignore", "pipe", "pipe"] : "inherit",
+        encoding: "utf8",
+        timeout: timeoutMs
+      }
+    );
+    if (result.error) {
+      return {
+        ok: false,
+        exitCode: null,
+        error: result.error.code === "ENOENT" ? "npx not found on PATH; install Node.js to get npx" : result.error.code === "ETIMEDOUT" ? `skills installer timed out after ${Math.round(timeoutMs / 1e3)}s` : result.error.message,
+        command,
+        timedOut: result.error.code === "ETIMEDOUT"
+      };
+    }
+    if (result.status !== 0) {
+      const stderrTail = typeof result.stderr === "string" ? result.stderr.trim().split("\n").slice(-3).join("\n") : null;
+      return { ok: false, exitCode: result.status, error: stderrTail || null, command, timedOut: false };
+    }
+    return { ok: true, exitCode: 0, error: null, command, timedOut: false };
+  } catch (err) {
+    return { ok: false, exitCode: null, error: err?.message ?? String(err), command, timedOut: false };
+  }
+}
+function renderUpdateFailureHint(update, currentVersion) {
+  const reason = update.fetchReason ?? update.reason ?? "unknown";
+  const lines = [`Update check failed (current: ${currentVersion}, reason: ${reason}).`];
+  if (reason === "timeout" || reason === "network") {
+    lines.push("Network error reaching api.github.com. Retry in a moment.");
+  } else if (update.fetchStatus === 403) {
+    lines.push("GitHub returned 403 \u2014 likely the anonymous 60/hr rate limit. Wait an hour or re-run from a different IP.");
+  } else if (update.fetchStatus === 404) {
+    lines.push("GitHub returned 404. Re-run with --force; if it persists, the release endpoint may be temporarily unreachable.");
+  } else {
+    lines.push("Retry with --force; if it persists, check network connectivity to api.github.com.");
+  }
+  return lines.join("\n") + "\n";
+}
+async function handleAuthStatus(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const auth = await getCodexAuthStatus(cwd);
+  const status = auth.loggedIn ? "logged in" : "not logged in";
+  const provider = auth.provider ? ` via ${auth.provider}` : "";
+  const lines = [`Auth: ${status}${provider}.`];
+  if (auth.detail) lines.push(`  ${auth.detail}`);
+  if (!auth.loggedIn && auth.requiresOpenaiAuth) {
+    lines.push("  \u2192 Run `codex login` (or `codex login --device-auth`).");
+  }
+  emitSuccess("auth-status", auth, `${lines.join("\n")}
+`, {
+    json: options.json,
+    startedAt
+  });
+}
+function buildMachineReadableHelp() {
+  return {
+    version: BRIDGE_VERSION,
+    schema_version: BRIDGE_SCHEMA_VERSION,
+    commands: Object.entries(COMMANDS).map(([name, entry]) => ({
+      name,
+      synopsis: `codex-bridge ${entry.synopsis}`,
+      summary: entry.summary,
+      examples: entry.examples ?? []
+    })),
+    global_flags: [
+      { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
+      { flag: "--cwd <dir>", alias: "-C", description: "Parsed before or after the subcommand; overrides the working directory for all bridge operations." },
+      { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
+    ],
+    exit_codes: {
+      0: "success",
+      1: "crash / unhandled internal error",
+      2: "usage (unknown subcommand, unknown flag, missing argument)",
+      3: "not_found (job, thread, resource)",
+      4: "auth (run `codex login`)",
+      5: "conflict (already running, state mismatch)",
+      6: "validation (bad input)",
+      7: "transient (timeout, network, rate-limit) \u2014 retry with backoff",
+      8: "partial_success (check result details)"
+    }
+  };
+}
+
+// src/handlers/review.mjs
+function handleAdversarialReview(argv) {
+  return handleReviewCommand(argv, { reviewName: "Adversarial Review" });
+}
+async function handleReviewCommand(argv, config) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["base", "scope", "model", "cwd", "backend", "brief", "task"],
+    repeatableValueOptions: ["concern"],
+    booleanOptions: ["json", "background", "wait"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+  const taskReview = options.task ? requireTaskReviewContext(options.task, options) : null;
+  const cwd = taskReview?.cwd ?? resolveCommandCwd(options);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  const focusText = positionals.join(" ").trim();
+  const target = resolveReviewTarget(cwd, {
+    base: taskReview?.base ?? options.base,
+    scope: taskReview?.scope ?? options.scope
+  });
+  let brief = null;
+  if (options.brief) {
+    const result = loadBrief(options.brief, { baseDir: cwd });
+    if (!result.ok) {
+      throw new CliError(result.message, {
+        code: result.code,
+        class: result.code === "BRIEF_FILE_NOT_FOUND" ? "not_found" : "validation",
+        details: result.details,
+        suggestion: result.code === "BRIEF_SCHEMA_VIOLATION" ? "Fix the brief JSON to match the schema. Common valid top-level keys are goal, worker_assignment, specific_concerns, acceptance_criteria, behavior_digest_seed, parent_task_id, backend_hint, iteration_max, and trust_budget_override." : void 0
+      });
+    }
+    brief = result.brief;
+  }
+  const opusConcerns = Array.isArray(options.concern) ? options.concern : options.concern ? [options.concern] : [];
+  config.validateRequest?.(target, focusText, { brief, opusConcerns });
+  const metadata = buildReviewJobMetadata(config.reviewName, target);
+  const job = createCompanionJob({
+    prefix: "review",
+    kind: metadata.kind,
+    title: metadata.title,
+    workspaceRoot,
+    jobClass: "review",
+    summary: metadata.summary
+  });
+  await runForegroundCommand(
+    job,
+    (progress) => executeReviewRun({
+      cwd,
+      base: taskReview?.base ?? options.base,
+      scope: taskReview?.scope ?? options.scope,
+      model: options.model,
+      backend: options.backend ?? null,
+      focusText,
+      brief,
+      opusConcerns,
+      reviewName: config.reviewName,
+      taskId: taskReview?.taskId ?? null,
+      reviewedBranchHeadSha: taskReview?.reviewedBranchHeadSha ?? null,
+      onProgress: progress
+    }),
+    {
+      json: options.json,
+      startedAt,
+      command: config.reviewName === "Adversarial Review" ? "adversarial-review" : "review"
+    }
+  );
+}
+async function handleReview(argv) {
+  return handleReviewCommand(argv, {
+    reviewName: "Review",
+    validateRequest: validateNativeReviewRequest
+  });
+}
+
+// src/handlers/task.mjs
+import path23 from "node:path";
+import process15 from "node:process";
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -15690,7 +15434,6 @@ async function handleTask(argv) {
       "prompt-file",
       "mode",
       "backend",
-      "group",
       "idle-timeout-ms",
       "turn-plan-ms",
       "turn-default-ms",
@@ -15698,8 +15441,7 @@ async function handleTask(argv) {
       "pipeline-total-timeout-ms",
       "question-timeout-ms",
       "brief",
-      "intercepted-from",
-      "group"
+      "intercepted-from"
     ],
     booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
@@ -15717,10 +15459,6 @@ async function handleTask(argv) {
   const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
   const noPipeline = Boolean(options["no-pipeline"]);
-  const group = options.group != null ? String(options.group).trim() : null;
-  if (options.group != null && !group) {
-    throw usageError("--group requires a non-empty name.");
-  }
   const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
   let cwd = resolveCommandCwd(options);
   const stateCwd = cwd;
@@ -15790,8 +15528,7 @@ async function handleTask(argv) {
   ensureCodexRuntimeAdapter(adapter2);
   const job = buildTaskJob(workspaceRoot, taskMetadata, write, {
     backend: adapter2.name,
-    adapterCapabilities: adapter2.capabilities(),
-    group
+    adapterCapabilities: adapter2.capabilities()
   });
   let worktreeInfo = null;
   if (options["worktree-auto"]) {
@@ -15873,8 +15610,7 @@ async function handleTask(argv) {
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
-      backend: adapter2.name,
-      group
+      backend: adapter2.name
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -15905,7 +15641,6 @@ async function handleTask(argv) {
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
       backend: adapter2.name,
-      group,
       // `--quiet` suppresses the stderr `[codex] …` progress stream so
       // agents don't pattern-match a thread UUID out of it. Monitor /
       // `events --follow` remain the canonical in-run observation surface.
@@ -15922,7 +15657,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path17.resolve(process11.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path23.resolve(process15.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -15972,1292 +15707,6 @@ async function handleTaskWorker(argv) {
     ),
     { logFile }
   );
-}
-async function handleStatus(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "group", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
-    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const group = options.group != null ? String(options.group).trim() : null;
-  if (options.group != null && !group) {
-    throw usageError("--group requires a non-empty name.");
-  }
-  if (options.watch) {
-    if (positionals[0]) {
-      throw usageError("`status --watch` does not take a job-id argument; it watches ALL tracked jobs.");
-    }
-    if (options["prune-orphans"] || options.cleanup || options.wait) {
-      throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
-    }
-    const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 1e4 });
-    const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
-    await runStatusWatch(cwd, {
-      intervalMs,
-      overallTimeoutMs,
-      all: options.all,
-      group,
-      json: options.json,
-      startedAt
-    });
-    return;
-  }
-  if (options["prune-orphans"] || options.cleanup) {
-    const report2 = options.cleanup ? cleanupTerminalJobs(cwd, {
-      dryRun: Boolean(options["dry-run"]),
-      retentionDays: Number(options["retention-days"]) > 0 ? Number(options["retention-days"]) : null,
-      retentionJobs: Number(options["retention-jobs"]) > 0 ? Number(options["retention-jobs"]) : null
-    }) : pruneOrphanedJobs(cwd);
-    emitSuccess("status", report2, options.cleanup ? renderCleanupReport(report2) : renderPruneOrphansReport(report2), {
-      json: options.json,
-      startedAt
-    });
-    return;
-  }
-  const reference = positionals[0] ?? "";
-  if (group && reference) {
-    throw usageError("`status --group` does not take a job id.");
-  }
-  if (reference) {
-    const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd, reference, {
-      timeoutMs: options["timeout-ms"],
-      pollIntervalMs: options["poll-interval-ms"]
-    }) : buildSingleJobSnapshot(cwd, reference);
-    emitSuccess("status", snapshot, renderJobStatusReport(snapshot.job), {
-      json: options.json,
-      startedAt
-    });
-    return;
-  }
-  if (options.wait) {
-    throw usageError("`status --wait` requires a job id.");
-  }
-  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all, group }));
-  emitSuccess("status", report, renderStatusReport(report), {
-    json: options.json,
-    startedAt
-  });
-}
-async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, json: json2, startedAt }) {
-  const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
-  let ticks = 0;
-  let interrupted = false;
-  const onSigint = () => {
-    interrupted = true;
-  };
-  process11.on("SIGINT", onSigint);
-  try {
-    while (true) {
-      ticks += 1;
-      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all, group }));
-      const activeCount = snapshot.running?.length ?? 0;
-      const tickEntry = {
-        schema_version: "1.0",
-        tick: ticks,
-        ts: (/* @__PURE__ */ new Date()).toISOString(),
-        activeCount,
-        running: (snapshot.running ?? []).map((j) => ({
-          id: j.id,
-          status: j.status,
-          phase: j.phase ?? null,
-          threadId: j.threadId ?? null,
-          kind: j.kindLabel ?? j.kind ?? null,
-          group: j.group ?? null
-        }))
-      };
-      if (json2) {
-        process11.stdout.write(`${JSON.stringify(tickEntry)}
-`);
-      } else {
-        process11.stdout.write(`\x1B[2J\x1B[H`);
-        process11.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
-
-`);
-        process11.stdout.write(renderStatusReport(snapshot));
-      }
-      if (activeCount === 0) {
-        const summary = {
-          terminated: true,
-          reason: "all-terminal",
-          ticks,
-          final: snapshot
-        };
-        if (json2) {
-          emitSuccess("status", summary, null, { json: true, startedAt });
-        }
-        return;
-      }
-      if (interrupted) {
-        const summary = { terminated: false, reason: "sigint", ticks, final: snapshot };
-        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        return;
-      }
-      if (deadline && Date.now() >= deadline) {
-        const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
-        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        else process11.stdout.write(`
-watch timed out after ${ticks} ticks with ${activeCount} active job(s).
-`);
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-  } finally {
-    process11.off("SIGINT", onSigint);
-  }
-}
-async function handleAwaitArtifact(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json"]
-  });
-  const jobRef = positionals[0];
-  const artifactPath = positionals[1];
-  if (!jobRef || !artifactPath) {
-    throw usageError("`await-artifact <job-id> <path>` requires both a job reference and a file path.");
-  }
-  const cwd = resolveCommandCwd(options);
-  const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
-  const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path17.isAbsolute(artifactPath) ? artifactPath : path17.resolve(cwd, artifactPath);
-  const deadline = Date.now() + timeoutMs;
-  let prevSize = null;
-  while (true) {
-    let jobSnapshot;
-    try {
-      jobSnapshot = buildSingleJobSnapshot(cwd, jobRef);
-    } catch (e) {
-      if (e && e.code === "JOB_NOT_FOUND") {
-        throw e;
-      }
-      throw e;
-    }
-    const jobStatus = jobSnapshot.job?.status ?? "unknown";
-    const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
-    let statInfo = null;
-    try {
-      statInfo = fs19.statSync(resolvedPath);
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-    if (statInfo) {
-      if (prevSize != null && prevSize === statInfo.size) {
-        const payload = {
-          exists: true,
-          path: resolvedPath,
-          size: statInfo.size,
-          terminated: jobTerminal,
-          jobStatus,
-          elapsedMs: Date.now() - startedAt,
-          recovery: buildRecovery({
-            reason: "artifact-ready",
-            retryable: false,
-            artifacts: { artifactPath: resolvedPath }
-          })
-        };
-        emitSuccess("await-artifact", payload, `artifact ready: ${resolvedPath} (${statInfo.size} bytes)
-`, {
-          json: options.json,
-          startedAt
-        });
-        return;
-      }
-      prevSize = statInfo.size;
-    }
-    if (jobTerminal) {
-      const payload = {
-        exists: Boolean(statInfo),
-        path: resolvedPath,
-        size: statInfo?.size ?? null,
-        terminated: true,
-        reason: `job-${jobStatus}`,
-        jobStatus,
-        elapsedMs: Date.now() - startedAt,
-        recovery: buildRecovery({
-          reason: `job-${jobStatus}`,
-          retryable: true,
-          nextActions: [
-            `Run result ${jobSnapshot.job?.id ?? jobRef} to inspect the terminal job output.`,
-            "Verify the producer writes the expected artifact path, then rerun or resume the task."
-          ],
-          artifacts: {
-            expectedArtifactPath: resolvedPath,
-            logFile: jobSnapshot.job?.logFile ?? null
-          },
-          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
-        })
-      };
-      if (!statInfo) {
-        process11.exitCode = 7;
-        emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
-`, {
-          json: options.json,
-          startedAt
-        });
-        return;
-      }
-      emitSuccess("await-artifact", payload, `artifact present: ${resolvedPath} (${statInfo.size} bytes, job ${jobStatus})
-`, {
-        json: options.json,
-        startedAt
-      });
-      return;
-    }
-    if (Date.now() >= deadline) {
-      const payload = {
-        exists: false,
-        path: resolvedPath,
-        terminated: false,
-        reason: "timeout",
-        jobStatus,
-        elapsedMs: Date.now() - startedAt,
-        recovery: buildRecovery({
-          reason: "timeout",
-          retryable: true,
-          nextActions: [
-            `Run status ${jobSnapshot.job?.id ?? jobRef} to confirm whether the producer is still active.`,
-            "Retry await-artifact with a larger --timeout-ms or inspect events for stalled output."
-          ],
-          artifacts: {
-            expectedArtifactPath: resolvedPath,
-            logFile: jobSnapshot.job?.logFile ?? null
-          },
-          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
-        })
-      };
-      process11.exitCode = 7;
-      emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
-`, {
-        json: options.json,
-        startedAt
-      });
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-}
-function pruneOrphanedJobs(cwd) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = listJobs(workspaceRoot, { raw: true });
-  const reaped = [];
-  const skipped = [];
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
-  for (const job of jobs) {
-    const isActive = job.status === "running" || job.status === "queued";
-    if (!isActive) continue;
-    const pid = Number(job.pid);
-    if (!Number.isFinite(pid) || pid <= 0) {
-      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "no-pid"));
-      continue;
-    }
-    let alive = false;
-    try {
-      process11.kill(pid, 0);
-      alive = true;
-    } catch (err) {
-      if (err && err.code === "EPERM") {
-        alive = true;
-      }
-    }
-    if (alive) {
-      skipped.push({ id: job.id, pid, reason: "pid-alive" });
-    } else {
-      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "dead-pid"));
-    }
-  }
-  return {
-    workspaceRoot,
-    reaped,
-    skipped,
-    reapedCount: reaped.length,
-    skippedCount: skipped.length,
-    ts,
-    recovery: buildRecovery({
-      reason: reaped.length > 0 ? "orphans-reaped" : "state-clean",
-      retryable: reaped.length > 0,
-      nextActions: reaped.length > 0 ? [
-        "Inspect result/events for reaped jobs before retrying any interrupted work.",
-        "Rerun the original task only after confirming no generated artifacts were left half-written."
-      ] : [],
-      details: { reapedCount: reaped.length, skippedCount: skipped.length }
-    })
-  };
-}
-function finalizeOrphan(workspaceRoot, job, ts, reason) {
-  const record = {
-    ...job,
-    status: "orphaned",
-    phase: "orphaned",
-    pid: null,
-    completedAt: ts,
-    errorMessage: `Reaped by status --prune-orphans at ${ts} (${reason}).`
-  };
-  writeJobFile(workspaceRoot, job.id, record);
-  upsertJob(workspaceRoot, {
-    id: job.id,
-    status: "orphaned",
-    phase: "orphaned",
-    pid: null,
-    completedAt: ts,
-    errorMessage: record.errorMessage
-  });
-  return { id: job.id, previousStatus: job.status, reason, pid: job.pid ?? null };
-}
-function renderPruneOrphansReport(report) {
-  if (report.reapedCount === 0 && report.skippedCount === 0) {
-    return "No active jobs to inspect \u2014 state is clean.\n";
-  }
-  const lines = [];
-  if (report.reapedCount === 0) {
-    lines.push(`No orphans: ${report.skippedCount} active job(s), all backed by live PIDs.`);
-  } else {
-    lines.push(`Reaped ${report.reapedCount} orphan(s) (status:"running"/"queued" with dead PIDs):`);
-    for (const entry of report.reaped) {
-      lines.push(`  - ${entry.id} (was ${entry.previousStatus}, ${entry.reason}, pid=${entry.pid ?? "null"})`);
-    }
-    if (report.skippedCount > 0) {
-      lines.push(`Kept ${report.skippedCount} active job(s) backed by live PIDs.`);
-    }
-  }
-  return `${lines.join("\n")}
-`;
-}
-function cleanupTerminalJobs(cwd, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getBridgeConfig2(cwd, workspaceRoot);
-  const retentionDays = options.retentionDays ?? (Number(config.artifact_retention_days) || 30);
-  const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
-  const dryRun = Boolean(options.dryRun);
-  const jobs = listJobs(workspaceRoot, { raw: true });
-  const terminal = sortJobsNewestFirst2(jobs.filter((job) => !isActiveStatus(job.status)));
-  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1e3;
-  const removable = terminal.filter((job, index) => {
-    const ts = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
-    return index >= retentionJobs || Number.isFinite(ts) && ts < cutoffMs;
-  });
-  const removed = [];
-  if (!dryRun && removable.length > 0) {
-    const removeIds = new Set(removable.map((job) => job.id));
-    updateState(workspaceRoot, (state) => {
-      state.jobs = (state.jobs ?? []).filter((job) => !removeIds.has(job.id));
-    });
-    for (const job of removable) {
-      for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
-        if (!filePath) continue;
-        try {
-          fs19.rmSync(filePath, { force: true });
-        } catch {
-        }
-      }
-      removed.push({ id: job.id, status: job.status, completedAt: job.completedAt ?? null });
-    }
-  }
-  return {
-    workspaceRoot,
-    dryRun,
-    retentionDays,
-    retentionJobs,
-    candidates: removable.map((job) => ({ id: job.id, status: job.status, completedAt: job.completedAt ?? null })),
-    removed,
-    removedCount: removed.length,
-    candidateCount: removable.length
-  };
-}
-function isActiveStatus(status) {
-  return status === "queued" || status === "running";
-}
-function renderCleanupReport(report) {
-  if (report.candidateCount === 0) {
-    return `No terminal jobs exceed retention (${report.retentionJobs} jobs / ${report.retentionDays} days).
-`;
-  }
-  const verb = report.dryRun ? "Would remove" : "Removed";
-  const lines = [`${verb} ${report.dryRun ? report.candidateCount : report.removedCount} terminal job(s):`];
-  const entries = report.dryRun ? report.candidates : report.removed;
-  for (const entry of entries) {
-    lines.push(`  - ${entry.id} (${entry.status}, completed=${entry.completedAt ?? "unknown"})`);
-  }
-  return `${lines.join("\n")}
-`;
-}
-async function handleResult(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveResultJob(cwd, reference);
-  const storedJob = readStoredJob(workspaceRoot, job.id);
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot,
-    metaBackend: storedJob?.backend ?? job.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  const adapterResult = await adapter2.getResult(job.id, { cwd });
-  const payload = {
-    job,
-    storedJob,
-    adapterResult
-  };
-  emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
-    json: options.json,
-    startedAt
-  });
-}
-function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
-  return new Promise((resolve) => {
-    let resolved = false;
-    let offset = 0;
-    let watcher = null;
-    let pollTimer = null;
-    let timer = null;
-    const finish = (payload) => {
-      if (resolved) return;
-      resolved = true;
-      if (watcher) {
-        try {
-          watcher.close();
-        } catch {
-        }
-      }
-      if (pollTimer) clearInterval(pollTimer);
-      if (timer) clearTimeout(timer);
-      resolve(payload);
-    };
-    const scan = () => {
-      try {
-        const data = fs19.readFileSync(eventsPath, "utf8");
-        if (data.length < offset) offset = 0;
-        const tail = data.slice(offset);
-        offset = data.length;
-        for (const line of tail.split("\n")) {
-          const m = pattern.exec(line);
-          if (m) {
-            finish({ timedOut: false, tag: m[1], line });
-            return;
-          }
-        }
-      } catch (e) {
-        if (e.code !== "ENOENT") throw e;
-      }
-    };
-    const attachWatcher = () => {
-      try {
-        watcher = fs19.watch(eventsPath, { persistent: false }, scan);
-        scan();
-      } catch (e) {
-        if (e.code === "ENOENT") {
-          if (!pollTimer) {
-            pollTimer = setInterval(() => {
-              if (fs19.existsSync(eventsPath)) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-                attachWatcher();
-              }
-            }, 500);
-          }
-        } else {
-          throw e;
-        }
-      }
-    };
-    if (fs19.existsSync(eventsPath)) {
-      scan();
-      if (!resolved) attachWatcher();
-    } else {
-      pollTimer = setInterval(() => {
-        if (fs19.existsSync(eventsPath)) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          attachWatcher();
-        }
-      }, 500);
-    }
-    timer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
-  });
-}
-async function handleWait(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "group", "timeout-ms"],
-    booleanOptions: ["json", "any", "all"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const group = options.group != null ? String(options.group).trim() : null;
-  if (options.group != null && !group) {
-    throw usageError("--group requires a non-empty name.");
-  }
-  if (group) {
-    if (options.any || positionals.length > 0) {
-      throw usageError("`wait --group` cannot be combined with --any or job ids.");
-    }
-    if (!options.all) {
-      throw usageError("`wait --group <name>` requires --all.");
-    }
-    await handleWaitGroupAll(cwd, group, options, startedAt);
-    return;
-  }
-  if (options.any) {
-    await handleWaitAny(cwd, positionals, options, startedAt);
-    return;
-  }
-  const reference = positionals[0] ?? "";
-  if (!reference) {
-    throw usageError("wait requires <job-id-or-thread-id>");
-  }
-  let job;
-  try {
-    job = resolveResultJob(cwd, reference).job;
-  } catch (err) {
-    if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, reference).job;
-    } else {
-      throw err;
-    }
-  }
-  if (!job?.threadId) {
-    throw notFoundError(
-      `Job ${job?.id ?? reference} has no thread id yet.`,
-      "JOB_HAS_NO_THREAD"
-    );
-  }
-  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path17.join(sessionDir, `${job.threadId}.events`);
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const TERMINAL = TERMINAL_TAG_REGEX;
-  const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
-  if (result.timedOut) {
-    throw new CliError(
-      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
-      {
-        class: "timeout",
-        code: "WAIT_TIMEOUT",
-        retryable: true,
-        suggestion: "Run `status <job-id>` to inspect live state."
-      }
-    );
-  }
-  const elapsedMs = Date.now() - startedAt;
-  emitSuccess(
-    "wait",
-    {
-      jobId: job.id,
-      threadId: job.threadId,
-      terminalTag: result.tag,
-      lastEventLine: result.line,
-      eventsPath,
-      elapsedMs
-    },
-    `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1e3)}s
-`,
-    { json: options.json, startedAt }
-  );
-}
-async function handleWaitGroupAll(cwd, group, options, startedAt) {
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const deadline = Date.now() + timeoutMs;
-  let jobs = [];
-  while (Date.now() <= deadline) {
-    const workspaceRoot = resolveWorkspaceRoot(cwd);
-    jobs = sortJobsNewestFirst2(listJobs(workspaceRoot).filter((job) => job.group === group));
-    if (jobs.length === 0) {
-      throw notFoundError(`No jobs found in group "${group}".`, "GROUP_NOT_FOUND");
-    }
-    const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
-    if (active.length === 0) {
-      const elapsedMs = Date.now() - startedAt;
-      const payload = {
-        mode: "group-all",
-        group,
-        total: jobs.length,
-        terminal: jobs.length,
-        jobs: jobs.map((job) => ({
-          jobId: job.id,
-          threadId: job.threadId ?? null,
-          status: job.status,
-          phase: job.phase ?? null
-        })),
-        elapsedMs
-      };
-      emitSuccess(
-        "wait",
-        payload,
-        `Group ${group} reached terminal state for ${jobs.length} job(s) after ${Math.round(elapsedMs / 1e3)}s
-`,
-        { json: options.json, startedAt }
-      );
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  throw new CliError(`Group ${group} still has active jobs after ${Math.round(timeoutMs / 1e3)}s.`, {
-    class: "timeout",
-    code: "WAIT_TIMEOUT",
-    retryable: true,
-    suggestion: `Run \`status --group ${group}\` to inspect live group state.`,
-    details: {
-      group,
-      active: jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => ({ jobId: job.id, status: job.status, phase: job.phase ?? null }))
-    }
-  });
-}
-async function handleWaitAny(cwd, references, options, startedAt) {
-  const refs = references.filter(Boolean);
-  if (refs.length < 2) {
-    throw usageError("wait --any requires at least two job ids or thread ids.");
-  }
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const TERMINAL = TERMINAL_TAG_REGEX;
-  const targets = refs.map((reference) => {
-    let job;
-    try {
-      job = resolveResultJob(cwd, reference).job;
-    } catch (err) {
-      if (err?.code === "JOB_NOT_FINISHED") {
-        job = buildSingleJobSnapshot(cwd, reference).job;
-      } else {
-        throw err;
-      }
-    }
-    if (!job?.threadId) {
-      throw notFoundError(`Job ${job?.id ?? reference} has no thread id yet.`, "JOB_HAS_NO_THREAD");
-    }
-    return {
-      reference,
-      job,
-      eventsPath: path17.join(sessionDir, `${job.threadId}.events`)
-    };
-  });
-  const deadline = Date.now() + timeoutMs;
-  let winner = null;
-  while (!winner && Date.now() < deadline) {
-    for (const target of targets) {
-      const result = scanTerminalEvent(target.eventsPath, TERMINAL);
-      if (result) {
-        winner = { target, result };
-        break;
-      }
-    }
-    if (!winner) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
-  if (!winner) {
-    throw new CliError(`No terminal event for any target within ${Math.round(timeoutMs / 1e3)}s.`, {
-      class: "timeout",
-      code: "WAIT_TIMEOUT",
-      retryable: true,
-      suggestion: "Run `status --watch --all` to inspect live multi-job state."
-    });
-  }
-  const elapsedMs = Date.now() - startedAt;
-  emitSuccess(
-    "wait",
-    {
-      mode: "any",
-      winner: {
-        reference: winner.target.reference,
-        jobId: winner.target.job.id,
-        threadId: winner.target.job.threadId,
-        terminalTag: winner.result.tag,
-        lastEventLine: winner.result.line,
-        eventsPath: winner.target.eventsPath
-      },
-      targets: targets.map((target) => ({
-        reference: target.reference,
-        jobId: target.job.id,
-        threadId: target.job.threadId,
-        eventsPath: target.eventsPath
-      })),
-      elapsedMs
-    },
-    `${winner.result.tag} ${winner.target.job.id} after ${Math.round(elapsedMs / 1e3)}s
-`,
-    { json: options.json, startedAt }
-  );
-}
-function scanTerminalEvent(eventsPath, pattern) {
-  try {
-    const data = fs19.readFileSync(eventsPath, "utf8");
-    for (const line of data.split("\n")) {
-      const m = pattern.exec(line);
-      if (m) return { timedOut: false, tag: m[1], line };
-    }
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  return null;
-}
-var TIMELINE_SOURCES = Object.freeze(["events", "ndjson", "log", "worker_err"]);
-var TIMELINE_FORMATS = Object.freeze(["text", "json", "html"]);
-async function handleTimeline(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "format", "since", "source"],
-    booleanOptions: ["json"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const taskId = positionals[0] ?? "";
-  if (!taskId) {
-    throw usageError("timeline requires <task-id>");
-  }
-  let job;
-  try {
-    job = resolveResultJob(cwd, taskId).job;
-  } catch (err) {
-    if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, taskId).job;
-    } else {
-      throw err;
-    }
-  }
-  if (!job?.id) {
-    throw notFoundError(`Task ${taskId} was not found.`, "TASK_NOT_FOUND");
-  }
-  const format = String(options.format ?? "text").toLowerCase();
-  if (!TIMELINE_FORMATS.includes(format)) {
-    throw validationError(`Unsupported timeline format "${options.format}". Use text, json, or html.`, "INVALID_TIMELINE_FORMAT");
-  }
-  const sources = parseTimelineSources(options.source);
-  const sinceMs = parseTimelineSince(options.since);
-  const workspaceRoot = job.workspaceRoot ?? resolveWorkspaceRoot(cwd);
-  const storedJob = readStoredJob(workspaceRoot, job.id) ?? job;
-  const config = getBridgeConfig2(cwd, workspaceRoot);
-  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
-  const eventsPath = storedJob.threadId ? path17.join(sessionDir, `${storedJob.threadId}.events`) : null;
-  const ndjsonPath = storedJob.threadId ? path17.join(sessionDir, `${storedJob.threadId}.ndjson`) : null;
-  const logFile = storedJob.logFile ?? job.logFile ?? null;
-  const workerErrPath = logFile ? `${logFile}.worker.err` : null;
-  const entries = [];
-  if (sources.has("events")) entries.push(...parseTimelineEvents(eventsPath));
-  if (sources.has("ndjson")) entries.push(...parseTimelineNdjson(ndjsonPath));
-  if (sources.has("log")) entries.push(...parseTimelineLog(logFile));
-  if (sources.has("worker_err")) entries.push(...parseTimelineWorkerErr(workerErrPath));
-  const timeline = entries.filter((entry) => entry.ts >= sinceMs).sort((left, right) => left.ts - right.ts || left.order - right.order).map(({ order, ...entry }) => entry);
-  const payload = {
-    jobId: job.id,
-    threadId: storedJob.threadId ?? null,
-    sources: [...sources],
-    since: options.since ?? null,
-    count: timeline.length,
-    timeline,
-    artifacts: {
-      eventsPath,
-      ndjsonPath,
-      logFile,
-      workerErrPath
-    }
-  };
-  if (format === "json") {
-    emitSuccess("timeline", payload, JSON.stringify(timeline, null, 2) + "\n", {
-      json: options.json,
-      startedAt
-    });
-    return;
-  }
-  if (format === "html") {
-    const htmlPath = writeTimelineHtml(timeline, storedJob, logFile);
-    emitSuccess("timeline", { ...payload, html_path: htmlPath }, `${htmlPath}
-`, {
-      json: options.json,
-      startedAt
-    });
-    return;
-  }
-  emitSuccess("timeline", payload, formatTimelineText(timeline), {
-    json: options.json,
-    startedAt
-  });
-}
-function parseTimelineSources(raw) {
-  const values = String(raw ?? TIMELINE_SOURCES.join(",")).split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
-  const unknown = values.filter((value) => !TIMELINE_SOURCES.includes(value));
-  if (unknown.length > 0) {
-    throw validationError(`Unsupported timeline source "${unknown[0]}". Use events, ndjson, log, or worker_err.`, "INVALID_TIMELINE_SOURCE");
-  }
-  return new Set(values.length > 0 ? values : TIMELINE_SOURCES);
-}
-function parseTimelineSince(raw) {
-  if (raw == null || raw === "") return 0;
-  const parsed = Date.parse(raw);
-  if (!Number.isFinite(parsed)) {
-    throw validationError(`Invalid --since timestamp "${raw}". Use an ISO timestamp.`, "INVALID_TIMELINE_SINCE");
-  }
-  return parsed;
-}
-function fileMtimeMs(filePath) {
-  if (!filePath || !fs19.existsSync(filePath)) return Date.now();
-  try {
-    return fs19.statSync(filePath).mtimeMs;
-  } catch {
-    return Date.now();
-  }
-}
-function parseTimelineTimestamp(value, referenceMs) {
-  const raw = String(value ?? "").trim();
-  if (!raw) return null;
-  const direct = Date.parse(raw);
-  if (Number.isFinite(direct)) return direct;
-  const match = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(?:Z)?$/.exec(raw);
-  if (!match) return null;
-  const reference = new Date(referenceMs);
-  return Date.UTC(
-    reference.getUTCFullYear(),
-    reference.getUTCMonth(),
-    reference.getUTCDate(),
-    Number(match[1]),
-    Number(match[2]),
-    Number(match[3]),
-    Number((match[4] ?? "0").padEnd(3, "0"))
-  );
-}
-function makeTimelineEntry({ ts, source, body, tag = null, parsedFields = {}, approximate = false, order = 0 }) {
-  return {
-    ts,
-    iso: new Date(ts).toISOString(),
-    source,
-    body,
-    parsed_fields: {
-      ...tag ? { tag } : {},
-      ...parsedFields,
-      ...approximate ? { approximate_ts: true } : {}
-    },
-    order
-  };
-}
-function parseTimelineEvents(filePath) {
-  if (!filePath || !fs19.existsSync(filePath)) return [];
-  const fallbackTs = fileMtimeMs(filePath);
-  const blocks = fs19.readFileSync(filePath, "utf8").split(/\n(?=\[[^\]]+\])/).map((block) => block.trim()).filter(Boolean);
-  return blocks.map((block, index) => {
-    const header = block.split(/\r?\n/, 1)[0] ?? "";
-    const match = /^\[([^\]]+)\]\s+(.*)$/.exec(header);
-    const tag = match?.[1] ?? null;
-    let body = block;
-    let ts = fallbackTs;
-    let approximate = true;
-    if (match) {
-      const rest = match[2] ?? "";
-      const timestampMatch = /^(\d{4}-\d{2}-\d{2}T\S+|\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z?)\s*(.*)$/u.exec(rest);
-      const parsedTs = timestampMatch ? parseTimelineTimestamp(timestampMatch[1], fallbackTs) : null;
-      if (parsedTs != null) {
-        ts = parsedTs;
-        approximate = false;
-        body = `[${tag}]${timestampMatch[2] ? ` ${timestampMatch[2]}` : ""}${block.slice(header.length)}`;
-      }
-    }
-    return makeTimelineEntry({
-      ts,
-      source: "events",
-      tag,
-      body,
-      approximate,
-      order: index
-    });
-  });
-}
-function parseTimelineNdjson(filePath) {
-  if (!filePath || !fs19.existsSync(filePath)) return [];
-  const fallbackTs = fileMtimeMs(filePath);
-  return fs19.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
-    try {
-      const entry = JSON.parse(line);
-      const parsedTs = parseTimelineTimestamp(entry.ts, fallbackTs);
-      return makeTimelineEntry({
-        ts: parsedTs ?? fallbackTs,
-        source: "ndjson",
-        tag: entry.tag ?? null,
-        body: summarizeNdjsonTimelineEntry(entry),
-        parsedFields: {
-          method: entry.method ?? null,
-          threadId: entry.threadId ?? null
-        },
-        approximate: parsedTs == null,
-        order: index
-      });
-    } catch (error) {
-      return makeTimelineEntry({
-        ts: fallbackTs,
-        source: "ndjson",
-        tag: "CORRUPT_NDJSON_LINE",
-        body: line,
-        parsedFields: { error: error instanceof Error ? error.message : String(error) },
-        approximate: true,
-        order: index
-      });
-    }
-  });
-}
-function summarizeNdjsonTimelineEntry(entry) {
-  const method = entry.method ?? "event";
-  const tag = entry.tag ?? "NDJSON";
-  const item = entry.data?.item ?? null;
-  if (method === "item/completed" && item) {
-    const itemType = item.type ?? "item";
-    const preview = extractItemText(item);
-    return preview ? `ITEM_COMPLETED ${itemType} ${preview}` : `ITEM_COMPLETED ${itemType}`;
-  }
-  if (entry.data?.requestId) {
-    return `${tag} ${entry.data.requestId}`;
-  }
-  if (entry.data?.message) {
-    return `${tag} ${entry.data.message}`;
-  }
-  return `${tag} ${method} ${JSON.stringify(entry.data ?? {})}`.trim();
-}
-function parseTimelineLog(filePath) {
-  if (!filePath || !fs19.existsSync(filePath)) return [];
-  const fallbackTs = fileMtimeMs(filePath);
-  let lastTs = fallbackTs;
-  let lastApproximate = true;
-  return fs19.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
-    const match = /^\[([^\]]+)\]\s*(.*)$/.exec(line);
-    if (match) {
-      const parsedTs = parseTimelineTimestamp(match[1], fallbackTs);
-      lastTs = parsedTs ?? fallbackTs;
-      lastApproximate = parsedTs == null;
-      return makeTimelineEntry({
-        ts: lastTs,
-        source: "log",
-        body: match[2] || line,
-        approximate: lastApproximate,
-        order: index
-      });
-    }
-    return makeTimelineEntry({
-      ts: lastTs,
-      source: "log",
-      body: line,
-      approximate: lastApproximate,
-      order: index
-    });
-  });
-}
-function parseTimelineWorkerErr(filePath) {
-  if (!filePath || !fs19.existsSync(filePath)) return [];
-  const ts = fileMtimeMs(filePath);
-  return fs19.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => makeTimelineEntry({
-    ts,
-    source: "worker_err",
-    body: line,
-    approximate: true,
-    order: index
-  }));
-}
-function formatTimelineText(entries) {
-  if (entries.length === 0) return "";
-  return entries.map((entry) => {
-    const time = new Date(entry.ts).toISOString().slice(11, 23);
-    const approx = entry.parsed_fields?.approximate_ts ? "~" : " ";
-    const source = timelineSourceLabel(entry.source).padEnd(10);
-    const tag = entry.parsed_fields?.tag ? ` [${entry.parsed_fields.tag}]` : "";
-    return `${approx}${time}  [${source}]${tag} ${entry.body}`;
-  }).join("\n") + "\n";
-}
-function timelineSourceLabel(source) {
-  switch (source) {
-    case "events":
-      return "EVENT";
-    case "ndjson":
-      return "NDJSON";
-    case "log":
-      return "LOG";
-    case "worker_err":
-      return "WORKER";
-    default:
-      return String(source ?? "").toUpperCase();
-  }
-}
-function writeTimelineHtml(entries, job, logFile) {
-  const baseDir = logFile ? path17.dirname(logFile) : jobDir(job.id);
-  fs19.mkdirSync(baseDir, { recursive: true });
-  const htmlPath = path17.join(baseDir, `${job.id}.timeline.html`);
-  const rows = entries.map((entry) => {
-    const source = escapeHtml(timelineSourceLabel(entry.source));
-    const time = escapeHtml(new Date(entry.ts).toISOString());
-    const body = escapeHtml(entry.body);
-    const tag = entry.parsed_fields?.tag ? `<span class="tag">${escapeHtml(entry.parsed_fields.tag)}</span>` : "";
-    const approx = entry.parsed_fields?.approximate_ts ? `<span class="approx">~ts</span>` : "";
-    return `<details class="entry ${escapeHtml(entry.source)}" open><summary><time>${time}</time><span class="source">${source}</span>${tag}${approx}</summary><pre>${body}</pre></details>`;
-  }).join("\n");
-  const html = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>codex-bridge timeline ${escapeHtml(job.id)}</title>
-<style>
-body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;line-height:1.4;color:#1f2937;background:#f8fafc}
-h1{font-size:20px;margin:0 0 16px}
-.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-button{border:1px solid #cbd5e1;background:white;border-radius:6px;padding:6px 10px;cursor:pointer}
-.entry{background:white;border:1px solid #e2e8f0;border-radius:6px;margin:8px 0;padding:8px}
-summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-.source{font-weight:700;min-width:64px}.tag{color:#0369a1}.approx{color:#a16207}
-pre{white-space:pre-wrap;margin:8px 0 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-</style>
-</head>
-<body>
-<h1>Timeline ${escapeHtml(job.id)}</h1>
-<div class="filters">
-${TIMELINE_SOURCES.map((source) => `<button type="button" data-source="${source}">${escapeHtml(timelineSourceLabel(source))}</button>`).join("\n")}
-<button type="button" data-source="all">ALL</button>
-</div>
-${rows}
-<script>
-for (const button of document.querySelectorAll("button[data-source]")) {
-  button.addEventListener("click", () => {
-    const selected = button.dataset.source;
-    for (const entry of document.querySelectorAll(".entry")) {
-      entry.hidden = selected !== "all" && !entry.classList.contains(selected);
-    }
-  });
-}
-</script>
-</body>
-</html>
-`;
-  fs19.writeFileSync(htmlPath, html, "utf8");
-  return htmlPath;
-}
-function escapeHtml(value) {
-  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-}
-async function handleEvents(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "filter", "exclude"],
-    booleanOptions: ["json", "follow"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const reference = positionals[0] ?? "";
-  if (!reference) {
-    throw usageError("events requires <job-id-or-thread-id>");
-  }
-  if (options.filter != null && options.exclude != null) {
-    throw usageError(
-      "Pass either --filter OR --exclude, not both. --filter shows only listed tags (inclusion); --exclude shows everything except listed tags (forward-compatible)."
-    );
-  }
-  let job;
-  try {
-    job = resolveResultJob(cwd, reference).job;
-  } catch (err) {
-    if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, reference).job;
-    } else {
-      throw err;
-    }
-  }
-  if (!job?.threadId) {
-    throw notFoundError(
-      `Job ${job?.id ?? reference} has no thread id yet.`,
-      "JOB_HAS_NO_THREAD"
-    );
-  }
-  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path17.join(sessionDir, `${job.threadId}.events`);
-  const parseTagList = (raw) => {
-    if (raw == null || raw === "") return null;
-    const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
-    return tags.length > 0 ? new Set(tags) : null;
-  };
-  const filter = parseTagList(options.filter);
-  const exclude = parseTagList(options.exclude);
-  const writeEventLine = (line) => {
-    if (!options.json) process11.stdout.write(line + "\n");
-  };
-  const tagOf = (line) => {
-    const m = /^\[([^\]]+)\]/.exec(line);
-    return m ? m[1].split(":")[0].toUpperCase() : null;
-  };
-  let lastBlockIncluded = true;
-  const passes = (line) => {
-    const tag = tagOf(line);
-    if (tag == null) {
-      return lastBlockIncluded;
-    }
-    let included;
-    if (filter) included = filter.has(tag);
-    else if (exclude) included = !exclude.has(tag);
-    else included = true;
-    lastBlockIncluded = included;
-    return included;
-  };
-  const TERMINAL = TERMINAL_TAG_REGEX;
-  let initial = "";
-  let alreadyTerminal = false;
-  if (fs19.existsSync(eventsPath)) {
-    initial = fs19.readFileSync(eventsPath, "utf8");
-    for (const line of initial.split("\n")) {
-      if (!line) continue;
-      if (passes(line)) writeEventLine(line);
-      if (TERMINAL.test(line)) alreadyTerminal = true;
-    }
-  }
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  if (!options.follow || alreadyTerminal) {
-    emitSuccess(
-      "events",
-      {
-        jobId: job.id,
-        threadId: job.threadId,
-        eventsPath,
-        followed: Boolean(options.follow),
-        filter: options.filter ?? null,
-        exclude: options.exclude ?? null
-      },
-      "",
-      { json: options.json, startedAt }
-    );
-    return;
-  }
-  let timedOut = false;
-  let terminalTag = null;
-  let terminalLine = null;
-  const followStartMs = Date.now();
-  await new Promise((resolve) => {
-    let offset = initial.length;
-    let watcher = null;
-    let pollTimer = null;
-    let timer = null;
-    let done = false;
-    const finish = (reason) => {
-      if (done) return;
-      done = true;
-      if (reason === "timeout") timedOut = true;
-      if (watcher) watcher.close();
-      if (pollTimer) clearInterval(pollTimer);
-      if (timer) clearTimeout(timer);
-      resolve();
-    };
-    const scanAppended = () => {
-      let data;
-      try {
-        data = fs19.readFileSync(eventsPath, "utf8");
-      } catch (e) {
-        if (e.code === "ENOENT") return;
-        throw e;
-      }
-      if (data.length < offset) offset = 0;
-      const tail = data.slice(offset);
-      offset = data.length;
-      const lines = tail.split("\n");
-      for (let i = 0; i < lines.length - 1; i++) {
-        const line = lines[i];
-        if (!line) continue;
-        if (passes(line)) writeEventLine(line);
-        if (TERMINAL.test(line)) {
-          terminalTag = TERMINAL.exec(line)[1];
-          terminalLine = line;
-          return finish("terminal");
-        }
-      }
-    };
-    const attachWatcher = () => {
-      try {
-        watcher = fs19.watch(eventsPath, { persistent: false }, scanAppended);
-        scanAppended();
-      } catch (e) {
-        if (e.code === "ENOENT") {
-          if (!pollTimer)
-            pollTimer = setInterval(() => {
-              if (fs19.existsSync(eventsPath)) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-                attachWatcher();
-              }
-            }, 500);
-        } else {
-          throw e;
-        }
-      }
-    };
-    if (fs19.existsSync(eventsPath)) {
-      attachWatcher();
-    } else {
-      pollTimer = setInterval(() => {
-        if (fs19.existsSync(eventsPath)) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          attachWatcher();
-        }
-      }, 500);
-    }
-    timer = setTimeout(() => finish("timeout"), timeoutMs);
-  });
-  if (timedOut && !options.json) {
-    throw new CliError(
-      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
-      {
-        class: "timeout",
-        code: "WAIT_TIMEOUT",
-        retryable: true,
-        suggestion: "Run `status <job-id>` to inspect live state."
-      }
-    );
-  }
-  emitSuccess(
-    "events",
-    {
-      jobId: job.id,
-      threadId: job.threadId,
-      eventsPath,
-      followed: true,
-      filter: options.filter ?? null,
-      exclude: options.exclude ?? null,
-      timedOut,
-      // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
-      // distinguish happy-path closure from timeout without re-reading the
-      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN on success,
-      // or null when the stream ended via timeout. elapsedMs measures
-      // follow duration only (not total job elapsed time).
-      terminalTag,
-      terminalLine,
-      elapsedMs: Date.now() - followStartMs
-    },
-    "",
-    { json: options.json, startedAt }
-  );
-}
-function handleTaskResumeCandidate(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const sessionId = getCurrentClaudeSessionId();
-  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst2(listJobs(workspaceRoot)));
-  const candidate = findLatestResumableTaskJob(jobs);
-  const payload = {
-    available: Boolean(candidate),
-    sessionId,
-    candidate: candidate == null ? null : {
-      id: candidate.id,
-      status: candidate.status,
-      title: candidate.title ?? null,
-      summary: candidate.summary ?? null,
-      threadId: candidate.threadId,
-      completedAt: candidate.completedAt ?? null,
-      updatedAt: candidate.updatedAt ?? null
-    }
-  };
-  const rendered = candidate ? `Resumable task found: ${candidate.id} (${candidate.status}).
-` : "No resumable task found for this session.\n";
-  emitSuccess("task-resume-candidate", payload, rendered, {
-    json: options.json,
-    startedAt
-  });
 }
 function readCancelMeta(taskId) {
   if (!taskId) return { meta: null, warning: null };
@@ -17349,7 +15798,6 @@ function writeCancelledMeta(taskId, meta, completedAt, cleanup) {
     cancelled_at: completedAt,
     cleanup
   });
-  return taskId;
 }
 async function handleCancel(argv) {
   const startedAt = Date.now();
@@ -17362,7 +15810,7 @@ async function handleCancel(argv) {
   const keepWorktree = keepAll || Boolean(options["keep-worktree"]);
   const keepBranch = keepAll || keepWorktree || Boolean(options["keep-branch"]);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process11.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process15.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const registryTaskId = existing.registryTaskId ?? job.registryTaskId ?? job.id;
   const { meta: registryMeta, warning: registryWarning } = readCancelMeta(registryTaskId);
@@ -17500,172 +15948,1352 @@ async function handleCancel(argv) {
     startedAt
   });
 }
-function formatDoctorBytes(bytes) {
-  const value = Number(bytes);
-  if (!Number.isFinite(value) || value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let amount = value;
-  let index = 0;
-  while (amount >= 1024 && index < units.length - 1) {
-    amount /= 1024;
-    index += 1;
-  }
-  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
-}
-function formatDoctorAge(ageMs) {
-  if (ageMs == null) return "age unknown";
-  const minutes = Math.floor(ageMs / 6e4);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
-function renderDoctorReport(report, cleaned = [], options = {}) {
-  const lines = ["Codex Bridge Doctor - health report", ""];
-  const stale = report.findings.filter((entry) => entry.type === "stale_job");
-  const worktrees = report.findings.filter((entry) => entry.type === "orphan_worktree");
-  const branches = report.findings.filter((entry) => entry.type === "orphan_branch");
-  const oldSessions = report.findings.filter((entry) => entry.type === "old_session_files");
-  const disk = report.findings.filter((entry) => entry.type === "disk_usage");
-  const codex = report.findings.filter((entry) => entry.type === "codex_cli");
-  appendDoctorSection(lines, "Stale jobs", stale, (entry) => `${entry.jobId} (${entry.message}; stale for ${formatDoctorAge(entry.age_ms)})`);
-  appendDoctorSection(lines, "Orphan worktrees", worktrees, (entry) => `${entry.path} (${entry.message}${entry.age_ms == null ? "" : `; age ${formatDoctorAge(entry.age_ms)}`})`);
-  appendDoctorSection(lines, "Orphan branches", branches, (entry) => `${entry.branch} (${entry.message})`);
-  appendDoctorSection(lines, "Old session files", oldSessions, (entry) => `${entry.path} (${entry.message}; oldest ${formatDoctorAge(entry.age_ms)})`);
-  lines.push("[Disk usage]");
-  for (const entry of disk) {
-    lines.push(`  - ${entry.label}: ${entry.exists ? formatDoctorBytes(entry.bytes) : "not found"}${entry.error ? ` (${entry.error})` : ""}`);
-  }
-  lines.push("");
-  lines.push("[Codex CLI]");
-  for (const entry of codex) {
-    const marker = entry.available && entry.auth?.loggedIn ? "+" : "!";
-    lines.push(`  ${marker} ${entry.message}`);
-    if (entry.version) lines.push(`    ${entry.version}`);
-    if (entry.auth?.detail) lines.push(`    ${entry.auth.detail}`);
-  }
-  lines.push("");
-  const cleanableCount = report.findings.filter((entry) => entry.cleanable).length;
-  if (cleanableCount === 0) {
-    lines.push("All clear: no stale jobs, orphan worktrees, or orphan branches.");
-  } else if (!options.clean) {
-    lines.push("To clean up: codex-bridge doctor --clean");
-  } else {
-    const removed = cleaned.filter((entry) => entry.cleaned).length;
-    lines.push(`Cleaned ${removed} of ${cleanableCount} cleanable finding(s).`);
-  }
-  return `${lines.join("\n")}
-`;
-}
-function appendDoctorSection(lines, title, entries, formatEntry) {
-  lines.push(`[${title}]`);
-  if (entries.length === 0) {
-    lines.push("  + none");
-  } else {
-    for (const entry of entries) {
-      lines.push(`  ! ${formatEntry(entry)}`);
-    }
-  }
-  lines.push("");
-}
-function cleanPromptForFinding(finding) {
-  if (finding.type === "stale_job") return `Mark stale job ${finding.jobId} orphaned`;
-  if (finding.type === "orphan_worktree") return `Remove orphan worktree ${finding.path}`;
-  if (finding.type === "orphan_branch") return `Delete orphan branch ${finding.branch}`;
-  return `Apply cleanup for ${finding.type}`;
-}
-function promptDoctorAction(finding) {
-  if (!process11.stdin.isTTY) {
-    return Promise.resolve("no");
-  }
-  const question = `${cleanPromptForFinding(finding)}? (y/N/all/quit) `;
-  process11.stdout.write(question);
-  process11.stdin.setEncoding("utf8");
-  process11.stdin.resume();
-  return new Promise((resolve) => {
-    const onData = (chunk) => {
-      process11.stdin.pause();
-      process11.stdin.off("data", onData);
-      const answer = String(chunk).trim().toLowerCase();
-      if (answer === "y" || answer === "yes") resolve("yes");
-      else if (answer === "all" || answer === "a") resolve("all");
-      else if (answer === "quit" || answer === "q") resolve("quit");
-      else resolve("no");
-    };
-    process11.stdin.on("data", onData);
-  });
-}
-async function cleanDoctorFindings(report, options = {}) {
-  const results = [];
-  let applyAll = Boolean(options.yes);
-  for (const finding of report.findings.filter((entry) => entry.cleanable)) {
-    if (!applyAll) {
-      const answer = await promptDoctorAction(finding);
-      if (answer === "quit") break;
-      if (answer === "all") applyAll = true;
-      if (answer === "no") {
-        results.push({ finding, action: finding.action, cleaned: false, skipped: true, reason: "declined" });
-        continue;
-      }
-    }
-    const result = applyDoctorAction(finding, report, { force: options.force });
-    results.push(result);
-    if (!options.json) {
-      process11.stdout.write(result.cleaned ? "Removed.\n" : `Skipped: ${result.reason ?? result.detail ?? "not cleaned"}
-`);
-    }
-  }
-  return results;
-}
-async function handleDoctor(argv) {
-  const startedAt = Date.now();
+async function handleSend(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "clean", "yes", "force"]
+    valueOptions: [
+      "mode",
+      "effort",
+      "cwd",
+      "backend",
+      "idle-timeout-ms",
+      "turn-timeout-ms",
+      "question-timeout-ms"
+    ],
+    booleanOptions: ["json", "wait", "quiet"],
+    aliasMap: { m: "mode" }
   });
-  if (positionals.length > 0) {
-    throw usageError("`doctor` does not take positional arguments.");
+  const VALID_MODES = /* @__PURE__ */ new Set(["plan", "default"]);
+  if (options.mode != null && !VALID_MODES.has(options.mode)) {
+    throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
-  if (options.yes && !options.clean) {
-    throw usageError("`doctor --yes` requires `--clean`.");
+  const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
+  const turnTimeoutOverride = parsePositiveMsOption("--turn-timeout-ms", options["turn-timeout-ms"]);
+  const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
+  const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
+  const startedAt = Date.now();
+  const rawThreadId = positionals[0];
+  if (!rawThreadId) {
+    throw usageError("send requires <thread-id>");
   }
+  if (!isThreadId(rawThreadId)) {
+    throw invalidThreadIdError(rawThreadId, "thread-id");
+  }
+  const threadId = rawThreadId.trim();
+  const promptParts = positionals.slice(1);
   const cwd = resolveCommandCwd(options);
-  const report = await runDoctorChecks(cwd);
-  let cleaned = [];
-  if (options.clean) {
-    cleaned = await cleanDoctorFindings(report, {
-      yes: Boolean(options.yes),
-      force: Boolean(options.force),
-      json: Boolean(options.json)
+  const prompt = resolvePromptInput(options, promptParts, cwd);
+  if (!prompt) {
+    throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
+  }
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_resume");
+  const modeOverride = options.mode;
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const sendIsPlanMode = modeOverride === "plan";
+  const turnOptions = {
+    resumeThreadId: threadId,
+    prompt,
+    model: config.model,
+    effort: normalizeReasoningEffort(options.effort ?? config.effort),
+    sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : void 0,
+    onProgress: null,
+    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
+    // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
+    idleTimeoutMs: idleTimeoutOverride != null ? idleTimeoutOverride : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
+    // Turn timeout: per-invocation override > the mode-appropriate config key
+    // (turn_plan_ms for plan-mode sends, turn_default_ms otherwise) > built-in
+    // default. `send` gets a single --turn-timeout-ms flag that maps onto the
+    // right budget based on the resolved mode.
+    turnTimeoutMs: turnTimeoutOverride ?? (sendIsPlanMode ? Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : DEFAULT_CONFIG.turn_plan_ms : Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms),
+    onTurnStart: (info) => {
+      const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
+      logNdjson(s, "TURN_PARAMS", "turn/start", {
+        model: info.turnParams.model,
+        effort: info.turnParams.effort,
+        collaborationMode: info.turnParams.collaborationMode,
+        sandboxPolicy: info.turnParams.sandboxPolicy,
+        hasOutputSchema: Boolean(info.turnParams.outputSchema),
+        promptLength: info.promptLength,
+        promptPreview: info.promptPreview
+      });
+    },
+    onItemCompleted: (item, { threadId: itemThreadId }) => {
+      const effectiveThreadId = itemThreadId ?? null;
+      if (!effectiveThreadId) return;
+      const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
+      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
+        itemId: item?.id ?? null,
+        itemType: item?.type ?? null,
+        text: extractItemText(item)
+      });
+    },
+    onServerRequest: createBridgeServerRequestHandler({
+      sessionDir,
+      config,
+      questionAnswerMs: questionTimeoutOverride ?? null,
+      cwd
+    })
+  };
+  const resolvedSandboxMode = modeOverride === "default" ? "default" : "plan";
+  turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
+  if (modeOverride) {
+    turnOptions.collaborationMode = buildCollaborationMode(modeOverride, config, {
+      effort: options.effort,
+      developerInstructions: loadDeveloperInstructions(modeOverride)
     });
   }
-  emitSuccess("doctor", {
-    ...report,
-    clean: Boolean(options.clean),
-    cleaned,
-    cleanedCount: cleaned.filter((entry) => entry.cleaned).length
-  }, renderDoctorReport(report, cleaned, { clean: Boolean(options.clean) }), {
+  ensureCodexAvailable(cwd);
+  const dispatch2 = await adapter2.resume(threadId, prompt, {
+    cwd,
+    sessionDir,
+    model: config.model,
+    effort: turnOptions.effort,
+    mode: modeOverride ?? "default",
+    adapterOptions: {
+      turnOptions
+    }
+  });
+  const result = dispatch2.rawResult ?? dispatch2;
+  if (result.status !== 0) {
+    const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
+    const session2 = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    const classified = classifyError(errLike);
+    logEvent(session2, formatErrorEvent(session2, {
+      errorCode: classified.code,
+      message: classified.message,
+      phase: classified.class,
+      origin: "send",
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session2, "ERROR", "turn/completed", { error: classified });
+    emitError(errLike, { json: options.json, command: "send" });
+    return;
+  }
+  const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+  if (result.planDetected && result.planText) {
+    const planPath = writePlan(session, result.planText);
+    const steps = extractPlanSteps(result.planText);
+    logEvent(session, formatPlanEvent(session, {
+      turnId: result.turnId,
+      planTitle: result.planText.split("\n")[0]?.slice(0, 80) ?? "Plan",
+      steps,
+      planPath,
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session, "PLAN", "item/completed", {
+      turnId: result.turnId ?? null,
+      planPath,
+      planDetected: true
+    });
+    const eventsPath2 = session?.eventsPath ?? null;
+    const renderedLines2 = [`Plan updated for ${threadId}.`];
+    if (eventsPath2) renderedLines2.push(`  events: ${eventsPath2}`);
+    emitSuccess(
+      "send",
+      {
+        threadId,
+        status: result.status,
+        turnId: result.turnId ?? null,
+        eventsPath: eventsPath2,
+        phase: "plan-pending",
+        planPath,
+        planSteps: steps,
+        finalMessage: result.finalMessage ?? null
+      },
+      `${renderedLines2.join("\n")}
+`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  logEvent(session, formatDoneEvent(session, {
+    duration: Math.round((Date.now() - startedAt) / 1e3),
+    diffStat: "send follow-up",
+    files: [],
+    config: {
+      model: config.model,
+      effort: turnOptions.effort,
+      modeFlow: modeOverride ?? "resume"
+    },
+    diffPath: "not captured for send",
+    scriptPath: SCRIPT_PATH,
+    cwd
+  }));
+  logNdjson(session, "DONE", "turn/completed", {
+    turnId: result.turnId ?? null,
+    status: result.status
+  });
+  const eventsPath = session?.eventsPath ?? null;
+  const renderedLines = [`Sent to ${threadId}. Status: ${result.status}`];
+  if (eventsPath) renderedLines.push(`  events: ${eventsPath}`);
+  const payload = {
+    threadId,
+    status: result.status,
+    turnId: result.turnId ?? null,
+    eventsPath,
+    finalMessage: result.finalMessage ?? null
+  };
+  emitSuccess("send", payload, `${renderedLines.join("\n")}
+`, {
     json: options.json,
     startedAt
   });
 }
-function resolvePromptInput(options, positionals, cwd) {
-  if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path17.resolve(cwd, options["prompt-file"]));
+async function handleSteer(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "backend"],
+    booleanOptions: ["json"]
+  });
+  const [rawThreadId, turnId, ...promptParts] = positionals;
+  if (!rawThreadId || !turnId) {
+    throw usageError("steer requires <thread-id> <turn-id> <prompt...>");
   }
-  if (positionals.length === 1) {
-    const candidate = path17.resolve(cwd, positionals[0]);
+  if (!isThreadId(rawThreadId)) {
+    throw invalidThreadIdError(rawThreadId, "thread-id");
+  }
+  const threadId = rawThreadId.trim();
+  const cwd = resolveCommandCwd(options);
+  const prompt = resolvePromptInput(options, promptParts, cwd);
+  if (!prompt) {
+    throw validationError("steer requires a prompt", "MISSING_PROMPT");
+  }
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot: resolveWorkspaceRoot(cwd),
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_steering");
+  ensureCodexAvailable(cwd);
+  await adapter2.steer(threadId, turnId, prompt, { cwd });
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const session = findSession(sessionDir, threadId);
+  if (session) {
+    logNdjson(session, "STEER", "turn/steer", { turnId, prompt: prompt.slice(0, 120) });
+  }
+  emitSuccess("steer", { threadId, turnId, steered: true }, `Steered turn ${turnId} on thread ${threadId}
+`, {
+    json: options.json,
+    startedAt
+  });
+}
+async function handleRespond(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["question-id", "answer", "json-payload", "cwd", "backend"],
+    booleanOptions: ["json"]
+  });
+  const requestId = positionals[0];
+  if (!requestId) {
+    throw usageError("respond requires <request-id>");
+  }
+  const cwd = resolveCommandCwd(options);
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot: resolveWorkspaceRoot(cwd),
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_questions");
+  const pending = readPendingRequestById(sessionDir, requestId);
+  if (!pending) {
+    throw notFoundError(
+      `No pending request found: ${requestId}.`,
+      "PENDING_REQUEST_NOT_FOUND",
+      "It may have timed out or already been answered."
+    );
+  }
+  let payload;
+  if (options["json-payload"]) {
     try {
-      if (fs19.existsSync(candidate) && fs19.statSync(candidate).isFile()) {
-        return fs19.readFileSync(candidate, "utf8");
+      payload = JSON.parse(options["json-payload"]);
+    } catch (error) {
+      throw usageError(
+        `respond --json-payload must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  } else {
+    const answer = options.answer;
+    if (!answer) {
+      throw usageError("respond requires --answer");
+    }
+    if (pending.method === "item/tool/requestUserInput") {
+      const qId = options["question-id"] ?? pending.firstQuestionId ?? "q1";
+      payload = { answers: { [qId]: { answers: [answer] } } };
+    } else {
+      payload = { decision: answer };
+    }
+  }
+  await adapter2.respond(pending.threadId, requestId, payload, { sessionDir });
+  const session = findSession(sessionDir, pending.threadId);
+  if (session) {
+    logNdjson(session, "SERVER_RESPONSE", null, { requestId, payload });
+  }
+  emitSuccess(
+    "respond",
+    { status: "responded", requestId, threadId: pending.threadId },
+    `Response written for ${requestId}. Worker will deliver it.
+`,
+    { json: options.json, startedAt }
+  );
+}
+
+// src/handlers/inspect.mjs
+import fs25 from "node:fs";
+import path24 from "node:path";
+import process16 from "node:process";
+async function handleStatus(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "group", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const group = options.group != null ? String(options.group).trim() : null;
+  if (options.group != null && !group) {
+    throw usageError("--group requires a non-empty name.");
+  }
+  if (options.watch) {
+    if (positionals[0]) {
+      throw usageError("`status --watch` does not take a job-id argument; it watches ALL tracked jobs.");
+    }
+    if (options["prune-orphans"] || options.cleanup || options.wait) {
+      throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
+    }
+    const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 1e4 });
+    const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
+    await runStatusWatch(cwd, {
+      intervalMs,
+      overallTimeoutMs,
+      all: options.all,
+      group,
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+  if (options["prune-orphans"] || options.cleanup) {
+    const report2 = options.cleanup ? cleanupTerminalJobs(cwd, {
+      dryRun: Boolean(options["dry-run"]),
+      retentionDays: Number(options["retention-days"]) > 0 ? Number(options["retention-days"]) : null,
+      retentionJobs: Number(options["retention-jobs"]) > 0 ? Number(options["retention-jobs"]) : null
+    }) : pruneOrphanedJobs(cwd);
+    emitSuccess("status", report2, options.cleanup ? renderCleanupReport(report2) : renderPruneOrphansReport(report2), {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+  const reference = positionals[0] ?? "";
+  if (group && reference) {
+    throw usageError("`status --group` does not take a job id.");
+  }
+  if (reference) {
+    const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd, reference, {
+      timeoutMs: options["timeout-ms"],
+      pollIntervalMs: options["poll-interval-ms"]
+    }) : buildSingleJobSnapshot(cwd, reference);
+    emitSuccess("status", snapshot, renderJobStatusReport(snapshot.job), {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+  if (options.wait) {
+    throw usageError("`status --wait` requires a job id.");
+  }
+  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all, group }));
+  emitSuccess("status", report, renderStatusReport(report), {
+    json: options.json,
+    startedAt
+  });
+}
+async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, json: json2, startedAt }) {
+  const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
+  let ticks = 0;
+  let interrupted = false;
+  const onSigint = () => {
+    interrupted = true;
+  };
+  process16.on("SIGINT", onSigint);
+  try {
+    while (true) {
+      ticks += 1;
+      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all, group }));
+      const activeCount = snapshot.running?.length ?? 0;
+      const tickEntry = {
+        schema_version: "1.0",
+        tick: ticks,
+        ts: (/* @__PURE__ */ new Date()).toISOString(),
+        activeCount,
+        running: (snapshot.running ?? []).map((j) => ({
+          id: j.id,
+          status: j.status,
+          phase: j.phase ?? null,
+          threadId: j.threadId ?? null,
+          kind: j.kindLabel ?? j.kind ?? null
+        }))
+      };
+      if (json2) {
+        process16.stdout.write(`${JSON.stringify(tickEntry)}
+`);
+      } else {
+        process16.stdout.write(`\x1B[2J\x1B[H`);
+        process16.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
+
+`);
+        process16.stdout.write(renderStatusReport(snapshot));
       }
+      if (activeCount === 0) {
+        const summary = {
+          terminated: true,
+          reason: "all-terminal",
+          ticks,
+          final: snapshot
+        };
+        if (json2) {
+          emitSuccess("status", summary, null, { json: true, startedAt });
+        }
+        return;
+      }
+      if (interrupted) {
+        const summary = { terminated: false, reason: "sigint", ticks, final: snapshot };
+        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
+        return;
+      }
+      if (deadline && Date.now() >= deadline) {
+        const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
+        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
+        else process16.stdout.write(`
+watch timed out after ${ticks} ticks with ${activeCount} active job(s).
+`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  } finally {
+    process16.off("SIGINT", onSigint);
+  }
+}
+async function handleAwaitArtifact(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+    booleanOptions: ["json"]
+  });
+  const jobRef = positionals[0];
+  const artifactPath = positionals[1];
+  if (!jobRef || !artifactPath) {
+    throw usageError("`await-artifact <job-id> <path>` requires both a job reference and a file path.");
+  }
+  const cwd = resolveCommandCwd(options);
+  const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
+  const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
+  const resolvedPath = path24.isAbsolute(artifactPath) ? artifactPath : path24.resolve(cwd, artifactPath);
+  const deadline = Date.now() + timeoutMs;
+  let prevSize = null;
+  while (true) {
+    let jobSnapshot;
+    try {
+      jobSnapshot = buildSingleJobSnapshot(cwd, jobRef);
+    } catch (e) {
+      if (e && e.code === "JOB_NOT_FOUND") {
+        throw e;
+      }
+      throw e;
+    }
+    const jobStatus = jobSnapshot.job?.status ?? "unknown";
+    const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
+    let statInfo = null;
+    try {
+      statInfo = fs25.statSync(resolvedPath);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    if (statInfo) {
+      if (prevSize != null && prevSize === statInfo.size) {
+        const payload = {
+          exists: true,
+          path: resolvedPath,
+          size: statInfo.size,
+          terminated: jobTerminal,
+          jobStatus,
+          elapsedMs: Date.now() - startedAt,
+          recovery: buildRecovery({
+            reason: "artifact-ready",
+            retryable: false,
+            artifacts: { artifactPath: resolvedPath }
+          })
+        };
+        emitSuccess("await-artifact", payload, `artifact ready: ${resolvedPath} (${statInfo.size} bytes)
+`, {
+          json: options.json,
+          startedAt
+        });
+        return;
+      }
+      prevSize = statInfo.size;
+    }
+    if (jobTerminal) {
+      const payload = {
+        exists: Boolean(statInfo),
+        path: resolvedPath,
+        size: statInfo?.size ?? null,
+        terminated: true,
+        reason: `job-${jobStatus}`,
+        jobStatus,
+        elapsedMs: Date.now() - startedAt,
+        recovery: buildRecovery({
+          reason: `job-${jobStatus}`,
+          retryable: true,
+          nextActions: [
+            `Run result ${jobSnapshot.job?.id ?? jobRef} to inspect the terminal job output.`,
+            "Verify the producer writes the expected artifact path, then rerun or resume the task."
+          ],
+          artifacts: {
+            expectedArtifactPath: resolvedPath,
+            logFile: jobSnapshot.job?.logFile ?? null
+          },
+          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
+        })
+      };
+      if (!statInfo) {
+        process16.exitCode = 7;
+        emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
+`, {
+          json: options.json,
+          startedAt
+        });
+        return;
+      }
+      emitSuccess("await-artifact", payload, `artifact present: ${resolvedPath} (${statInfo.size} bytes, job ${jobStatus})
+`, {
+        json: options.json,
+        startedAt
+      });
+      return;
+    }
+    if (Date.now() >= deadline) {
+      const payload = {
+        exists: false,
+        path: resolvedPath,
+        terminated: false,
+        reason: "timeout",
+        jobStatus,
+        elapsedMs: Date.now() - startedAt,
+        recovery: buildRecovery({
+          reason: "timeout",
+          retryable: true,
+          nextActions: [
+            `Run status ${jobSnapshot.job?.id ?? jobRef} to confirm whether the producer is still active.`,
+            "Retry await-artifact with a larger --timeout-ms or inspect events for stalled output."
+          ],
+          artifacts: {
+            expectedArtifactPath: resolvedPath,
+            logFile: jobSnapshot.job?.logFile ?? null
+          },
+          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
+        })
+      };
+      process16.exitCode = 7;
+      emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
+`, {
+        json: options.json,
+        startedAt
+      });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
+function pruneOrphanedJobs(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = listJobs(workspaceRoot, { raw: true });
+  const reaped = [];
+  const skipped = [];
+  const ts = (/* @__PURE__ */ new Date()).toISOString();
+  for (const job of jobs) {
+    const isActive = job.status === "running" || job.status === "queued";
+    if (!isActive) continue;
+    const pid = Number(job.pid);
+    if (!Number.isFinite(pid) || pid <= 0) {
+      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "no-pid"));
+      continue;
+    }
+    let alive = false;
+    try {
+      process16.kill(pid, 0);
+      alive = true;
+    } catch (err) {
+      if (err && err.code === "EPERM") {
+        alive = true;
+      }
+    }
+    if (alive) {
+      skipped.push({ id: job.id, pid, reason: "pid-alive" });
+    } else {
+      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "dead-pid"));
+    }
+  }
+  return {
+    workspaceRoot,
+    reaped,
+    skipped,
+    reapedCount: reaped.length,
+    skippedCount: skipped.length,
+    ts,
+    recovery: buildRecovery({
+      reason: reaped.length > 0 ? "orphans-reaped" : "state-clean",
+      retryable: reaped.length > 0,
+      nextActions: reaped.length > 0 ? [
+        "Inspect result/events for reaped jobs before retrying any interrupted work.",
+        "Rerun the original task only after confirming no generated artifacts were left half-written."
+      ] : [],
+      details: { reapedCount: reaped.length, skippedCount: skipped.length }
+    })
+  };
+}
+function finalizeOrphan(workspaceRoot, job, ts, reason) {
+  const record = {
+    ...job,
+    status: "orphaned",
+    phase: "orphaned",
+    pid: null,
+    completedAt: ts,
+    errorMessage: `Reaped by status --prune-orphans at ${ts} (${reason}).`
+  };
+  writeJobFile(workspaceRoot, job.id, record);
+  upsertJob(workspaceRoot, {
+    id: job.id,
+    status: "orphaned",
+    phase: "orphaned",
+    pid: null,
+    completedAt: ts,
+    errorMessage: record.errorMessage
+  });
+  return { id: job.id, previousStatus: job.status, reason, pid: job.pid ?? null };
+}
+function renderPruneOrphansReport(report) {
+  if (report.reapedCount === 0 && report.skippedCount === 0) {
+    return "No active jobs to inspect \u2014 state is clean.\n";
+  }
+  const lines = [];
+  if (report.reapedCount === 0) {
+    lines.push(`No orphans: ${report.skippedCount} active job(s), all backed by live PIDs.`);
+  } else {
+    lines.push(`Reaped ${report.reapedCount} orphan(s) (status:"running"/"queued" with dead PIDs):`);
+    for (const entry of report.reaped) {
+      lines.push(`  - ${entry.id} (was ${entry.previousStatus}, ${entry.reason}, pid=${entry.pid ?? "null"})`);
+    }
+    if (report.skippedCount > 0) {
+      lines.push(`Kept ${report.skippedCount} active job(s) backed by live PIDs.`);
+    }
+  }
+  return `${lines.join("\n")}
+`;
+}
+function cleanupTerminalJobs(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
+  const retentionDays = options.retentionDays ?? (Number(config.artifact_retention_days) || 30);
+  const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
+  const dryRun = Boolean(options.dryRun);
+  const jobs = listJobs(workspaceRoot, { raw: true });
+  const terminal = sortJobsNewestFirst2(jobs.filter((job) => !isActiveStatus(job.status)));
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1e3;
+  const removable = terminal.filter((job, index) => {
+    const ts = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
+    return index >= retentionJobs || Number.isFinite(ts) && ts < cutoffMs;
+  });
+  const removed = [];
+  if (!dryRun && removable.length > 0) {
+    const removeIds = new Set(removable.map((job) => job.id));
+    updateState(workspaceRoot, (state) => {
+      state.jobs = (state.jobs ?? []).filter((job) => !removeIds.has(job.id));
+    });
+    for (const job of removable) {
+      for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
+        if (!filePath) continue;
+        try {
+          fs25.rmSync(filePath, { force: true });
+        } catch {
+        }
+      }
+      removed.push({ id: job.id, status: job.status, completedAt: job.completedAt ?? null });
+    }
+  }
+  return {
+    workspaceRoot,
+    dryRun,
+    retentionDays,
+    retentionJobs,
+    candidates: removable.map((job) => ({ id: job.id, status: job.status, completedAt: job.completedAt ?? null })),
+    removed,
+    removedCount: removed.length,
+    candidateCount: removable.length
+  };
+}
+function isActiveStatus(status) {
+  return status === "queued" || status === "running";
+}
+function renderCleanupReport(report) {
+  if (report.candidateCount === 0) {
+    return `No terminal jobs exceed retention (${report.retentionJobs} jobs / ${report.retentionDays} days).
+`;
+  }
+  const verb = report.dryRun ? "Would remove" : "Removed";
+  const lines = [`${verb} ${report.dryRun ? report.candidateCount : report.removedCount} terminal job(s):`];
+  const entries = report.dryRun ? report.candidates : report.removed;
+  for (const entry of entries) {
+    lines.push(`  - ${entry.id} (${entry.status}, completed=${entry.completedAt ?? "unknown"})`);
+  }
+  return `${lines.join("\n")}
+`;
+}
+async function handleResult(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const reference = positionals[0] ?? "";
+  const { workspaceRoot, job } = resolveResultJob(cwd, reference);
+  const storedJob = readStoredJob(workspaceRoot, job.id);
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    metaBackend: storedJob?.backend ?? job.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  const adapterResult = await adapter2.getResult(job.id, { cwd });
+  const payload = {
+    job,
+    storedJob,
+    adapterResult
+  };
+  emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
+    json: options.json,
+    startedAt
+  });
+}
+function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    let offset = 0;
+    let watcher = null;
+    let pollTimer = null;
+    let timer = null;
+    const finish = (payload) => {
+      if (resolved) return;
+      resolved = true;
+      if (watcher) {
+        try {
+          watcher.close();
+        } catch {
+        }
+      }
+      if (pollTimer) clearInterval(pollTimer);
+      if (timer) clearTimeout(timer);
+      resolve(payload);
+    };
+    const scan = () => {
+      try {
+        const data = fs25.readFileSync(eventsPath, "utf8");
+        if (data.length < offset) offset = 0;
+        const tail = data.slice(offset);
+        offset = data.length;
+        for (const line of tail.split("\n")) {
+          const m = pattern.exec(line);
+          if (m) {
+            finish({ timedOut: false, tag: m[1], line });
+            return;
+          }
+        }
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+      }
+    };
+    const attachWatcher = () => {
+      try {
+        watcher = fs25.watch(eventsPath, { persistent: false }, scan);
+        scan();
+      } catch (e) {
+        if (e.code === "ENOENT") {
+          if (!pollTimer) {
+            pollTimer = setInterval(() => {
+              if (fs25.existsSync(eventsPath)) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                attachWatcher();
+              }
+            }, 500);
+          }
+        } else {
+          throw e;
+        }
+      }
+    };
+    if (fs25.existsSync(eventsPath)) {
+      scan();
+      if (!resolved) attachWatcher();
+    } else {
+      pollTimer = setInterval(() => {
+        if (fs25.existsSync(eventsPath)) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          attachWatcher();
+        }
+      }, 500);
+    }
+    timer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
+  });
+}
+async function handleWait(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "group", "timeout-ms"],
+    booleanOptions: ["json", "any", "all"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const group = options.group != null ? String(options.group).trim() : null;
+  if (options.group != null && !group) {
+    throw usageError("--group requires a non-empty name.");
+  }
+  if (group) {
+    if (options.any || positionals.length > 0) {
+      throw usageError("`wait --group` cannot be combined with --any or job ids.");
+    }
+    if (!options.all) {
+      throw usageError("`wait --group <name>` requires --all.");
+    }
+    await handleWaitGroupAll(cwd, group, options, startedAt);
+    return;
+  }
+  if (options.any) {
+    await handleWaitAny(cwd, positionals, options, startedAt);
+    return;
+  }
+  const reference = positionals[0] ?? "";
+  if (!reference) {
+    throw usageError("wait requires <job-id-or-thread-id>");
+  }
+  let job;
+  try {
+    job = resolveResultJob(cwd, reference).job;
+  } catch (err) {
+    if (err?.code === "JOB_NOT_FINISHED") {
+      job = buildSingleJobSnapshot(cwd, reference).job;
+    } else {
+      throw err;
+    }
+  }
+  if (!job?.threadId) {
+    throw notFoundError(
+      `Job ${job?.id ?? reference} has no thread id yet.`,
+      "JOB_HAS_NO_THREAD"
+    );
+  }
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const eventsPath = path24.join(sessionDir, `${job.threadId}.events`);
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  const TERMINAL = TERMINAL_TAG_REGEX;
+  const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
+  if (result.timedOut) {
+    throw new CliError(
+      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
+      {
+        class: "timeout",
+        code: "WAIT_TIMEOUT",
+        retryable: true,
+        suggestion: "Run `status <job-id>` to inspect live state."
+      }
+    );
+  }
+  const elapsedMs = Date.now() - startedAt;
+  emitSuccess(
+    "wait",
+    {
+      jobId: job.id,
+      threadId: job.threadId,
+      terminalTag: result.tag,
+      lastEventLine: result.line,
+      eventsPath,
+      elapsedMs
+    },
+    `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1e3)}s
+`,
+    { json: options.json, startedAt }
+  );
+}
+async function handleWaitGroupAll(cwd, group, options, startedAt) {
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  const deadline = Date.now() + timeoutMs;
+  let jobs = [];
+  while (Date.now() <= deadline) {
+    const workspaceRoot = resolveWorkspaceRoot(cwd);
+    jobs = sortJobsNewestFirst2(listJobs(workspaceRoot).filter((job) => job.group === group));
+    if (jobs.length === 0) {
+      throw notFoundError(`No jobs found in group "${group}".`, "GROUP_NOT_FOUND");
+    }
+    const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
+    if (active.length === 0) {
+      const elapsedMs = Date.now() - startedAt;
+      const payload = {
+        mode: "group-all",
+        group,
+        total: jobs.length,
+        terminal: jobs.length,
+        jobs: jobs.map((job) => ({
+          jobId: job.id,
+          threadId: job.threadId ?? null,
+          status: job.status,
+          phase: job.phase ?? null
+        })),
+        elapsedMs
+      };
+      emitSuccess(
+        "wait",
+        payload,
+        `Group ${group} reached terminal state for ${jobs.length} job(s) after ${Math.round(elapsedMs / 1e3)}s
+`,
+        { json: options.json, startedAt }
+      );
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new CliError(`Group ${group} still has active jobs after ${Math.round(timeoutMs / 1e3)}s.`, {
+    class: "timeout",
+    code: "WAIT_TIMEOUT",
+    retryable: true,
+    suggestion: `Run \`status --group ${group}\` to inspect live group state.`,
+    details: {
+      group,
+      active: jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => ({ jobId: job.id, status: job.status, phase: job.phase ?? null }))
+    }
+  });
+}
+async function handleWaitAny(cwd, references, options, startedAt) {
+  const refs = references.filter(Boolean);
+  if (refs.length < 2) {
+    throw usageError("wait --any requires at least two job ids or thread ids.");
+  }
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const TERMINAL = TERMINAL_TAG_REGEX;
+  const targets = refs.map((reference) => {
+    let job;
+    try {
+      job = resolveResultJob(cwd, reference).job;
+    } catch (err) {
+      if (err?.code === "JOB_NOT_FINISHED") {
+        job = buildSingleJobSnapshot(cwd, reference).job;
+      } else {
+        throw err;
+      }
+    }
+    if (!job?.threadId) {
+      throw notFoundError(`Job ${job?.id ?? reference} has no thread id yet.`, "JOB_HAS_NO_THREAD");
+    }
+    return {
+      reference,
+      job,
+      eventsPath: path24.join(sessionDir, `${job.threadId}.events`)
+    };
+  });
+  const deadline = Date.now() + timeoutMs;
+  let winner = null;
+  while (!winner && Date.now() < deadline) {
+    for (const target of targets) {
+      const result = scanTerminalEvent(target.eventsPath, TERMINAL);
+      if (result) {
+        winner = { target, result };
+        break;
+      }
+    }
+    if (!winner) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  if (!winner) {
+    throw new CliError(`No terminal event for any target within ${Math.round(timeoutMs / 1e3)}s.`, {
+      class: "timeout",
+      code: "WAIT_TIMEOUT",
+      retryable: true,
+      suggestion: "Run `status --watch --all` to inspect live multi-job state."
+    });
+  }
+  const elapsedMs = Date.now() - startedAt;
+  emitSuccess(
+    "wait",
+    {
+      mode: "any",
+      winner: {
+        reference: winner.target.reference,
+        jobId: winner.target.job.id,
+        threadId: winner.target.job.threadId,
+        terminalTag: winner.result.tag,
+        lastEventLine: winner.result.line,
+        eventsPath: winner.target.eventsPath
+      },
+      targets: targets.map((target) => ({
+        reference: target.reference,
+        jobId: target.job.id,
+        threadId: target.job.threadId,
+        eventsPath: target.eventsPath
+      })),
+      elapsedMs
+    },
+    `${winner.result.tag} ${winner.target.job.id} after ${Math.round(elapsedMs / 1e3)}s
+`,
+    { json: options.json, startedAt }
+  );
+}
+function scanTerminalEvent(eventsPath, pattern) {
+  try {
+    const data = fs25.readFileSync(eventsPath, "utf8");
+    for (const line of data.split("\n")) {
+      const m = pattern.exec(line);
+      if (m) return { timedOut: false, tag: m[1], line };
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return null;
+}
+async function handleEvents(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "filter", "exclude"],
+    booleanOptions: ["json", "follow"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const reference = positionals[0] ?? "";
+  if (!reference) {
+    throw usageError("events requires <job-id-or-thread-id>");
+  }
+  if (options.filter != null && options.exclude != null) {
+    throw usageError(
+      "Pass either --filter OR --exclude, not both. --filter shows only listed tags (inclusion); --exclude shows everything except listed tags (forward-compatible)."
+    );
+  }
+  let job;
+  try {
+    job = resolveResultJob(cwd, reference).job;
+  } catch (err) {
+    if (err?.code === "JOB_NOT_FINISHED") {
+      job = buildSingleJobSnapshot(cwd, reference).job;
+    } else {
+      throw err;
+    }
+  }
+  if (!job?.threadId) {
+    throw notFoundError(
+      `Job ${job?.id ?? reference} has no thread id yet.`,
+      "JOB_HAS_NO_THREAD"
+    );
+  }
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const eventsPath = path24.join(sessionDir, `${job.threadId}.events`);
+  const parseTagList = (raw) => {
+    if (raw == null || raw === "") return null;
+    const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    return tags.length > 0 ? new Set(tags) : null;
+  };
+  const filter = parseTagList(options.filter);
+  const exclude = parseTagList(options.exclude);
+  const writeEventLine = (line) => {
+    if (!options.json) process16.stdout.write(line + "\n");
+  };
+  const tagOf = (line) => {
+    const m = /^\[([^\]]+)\]/.exec(line);
+    return m ? m[1].split(":")[0].toUpperCase() : null;
+  };
+  let lastBlockIncluded = true;
+  const passes = (line) => {
+    const tag = tagOf(line);
+    if (tag == null) {
+      return lastBlockIncluded;
+    }
+    let included;
+    if (filter) included = filter.has(tag);
+    else if (exclude) included = !exclude.has(tag);
+    else included = true;
+    lastBlockIncluded = included;
+    return included;
+  };
+  const TERMINAL = TERMINAL_TAG_REGEX;
+  let initial = "";
+  let alreadyTerminal = false;
+  if (fs25.existsSync(eventsPath)) {
+    initial = fs25.readFileSync(eventsPath, "utf8");
+    for (const line of initial.split("\n")) {
+      if (!line) continue;
+      if (passes(line)) writeEventLine(line);
+      if (TERMINAL.test(line)) alreadyTerminal = true;
+    }
+  }
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  if (!options.follow || alreadyTerminal) {
+    emitSuccess(
+      "events",
+      {
+        jobId: job.id,
+        threadId: job.threadId,
+        eventsPath,
+        followed: Boolean(options.follow),
+        filter: options.filter ?? null,
+        exclude: options.exclude ?? null
+      },
+      "",
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  let timedOut = false;
+  let terminalTag = null;
+  let terminalLine = null;
+  const followStartMs = Date.now();
+  await new Promise((resolve) => {
+    let offset = initial.length;
+    let watcher = null;
+    let pollTimer = null;
+    let timer = null;
+    let done = false;
+    const finish = (reason) => {
+      if (done) return;
+      done = true;
+      if (reason === "timeout") timedOut = true;
+      if (watcher) watcher.close();
+      if (pollTimer) clearInterval(pollTimer);
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    const scanAppended = () => {
+      let data;
+      try {
+        data = fs25.readFileSync(eventsPath, "utf8");
+      } catch (e) {
+        if (e.code === "ENOENT") return;
+        throw e;
+      }
+      if (data.length < offset) offset = 0;
+      const tail = data.slice(offset);
+      offset = data.length;
+      const lines = tail.split("\n");
+      for (let i = 0; i < lines.length - 1; i++) {
+        const line = lines[i];
+        if (!line) continue;
+        if (passes(line)) writeEventLine(line);
+        if (TERMINAL.test(line)) {
+          terminalTag = TERMINAL.exec(line)[1];
+          terminalLine = line;
+          return finish("terminal");
+        }
+      }
+    };
+    const attachWatcher = () => {
+      try {
+        watcher = fs25.watch(eventsPath, { persistent: false }, scanAppended);
+        scanAppended();
+      } catch (e) {
+        if (e.code === "ENOENT") {
+          if (!pollTimer)
+            pollTimer = setInterval(() => {
+              if (fs25.existsSync(eventsPath)) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                attachWatcher();
+              }
+            }, 500);
+        } else {
+          throw e;
+        }
+      }
+    };
+    if (fs25.existsSync(eventsPath)) {
+      attachWatcher();
+    } else {
+      pollTimer = setInterval(() => {
+        if (fs25.existsSync(eventsPath)) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          attachWatcher();
+        }
+      }, 500);
+    }
+    timer = setTimeout(() => finish("timeout"), timeoutMs);
+  });
+  if (timedOut && !options.json) {
+    throw new CliError(
+      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
+      {
+        class: "timeout",
+        code: "WAIT_TIMEOUT",
+        retryable: true,
+        suggestion: "Run `status <job-id>` to inspect live state."
+      }
+    );
+  }
+  emitSuccess(
+    "events",
+    {
+      jobId: job.id,
+      threadId: job.threadId,
+      eventsPath,
+      followed: true,
+      filter: options.filter ?? null,
+      exclude: options.exclude ?? null,
+      timedOut,
+      // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
+      // distinguish happy-path closure from timeout without re-reading the
+      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN on success,
+      // or null when the stream ended via timeout. elapsedMs measures
+      // follow duration only (not total job elapsed time).
+      terminalTag,
+      terminalLine,
+      elapsedMs: Date.now() - followStartMs
+    },
+    "",
+    { json: options.json, startedAt }
+  );
+}
+function handleTaskResumeCandidate(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const sessionId = getCurrentClaudeSessionId();
+  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst2(listJobs(workspaceRoot)));
+  const candidate = findLatestResumableTaskJob(jobs);
+  const payload = {
+    available: Boolean(candidate),
+    sessionId,
+    candidate: candidate == null ? null : {
+      id: candidate.id,
+      status: candidate.status,
+      title: candidate.title ?? null,
+      summary: candidate.summary ?? null,
+      threadId: candidate.threadId,
+      completedAt: candidate.completedAt ?? null,
+      updatedAt: candidate.updatedAt ?? null
+    }
+  };
+  const rendered = candidate ? `Resumable task found: ${candidate.id} (${candidate.status}).
+` : "No resumable task found for this session.\n";
+  emitSuccess("task-resume-candidate", payload, rendered, {
+    json: options.json,
+    startedAt
+  });
+}
+async function handleSummary(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["tail", "cwd"],
+    booleanOptions: ["json"]
+  });
+  const threadId = positionals[0];
+  if (!threadId) {
+    throw usageError("summary requires <thread-id>");
+  }
+  const cwd = resolveCommandCwd(options);
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const session = findSession(sessionDir, threadId);
+  if (!session) {
+    throw notFoundError(
+      `No session found for thread ${threadId}`,
+      "SESSION_NOT_FOUND"
+    );
+  }
+  const tailLines = parseInt(options.tail) || 200;
+  let content;
+  try {
+    content = fs25.readFileSync(session.ndjsonPath, "utf8");
+  } catch {
+    throw new CliError(
+      `Cannot read session log: ${session.ndjsonPath}`,
+      { class: "internal", code: "SESSION_LOG_UNREADABLE", retryable: false }
+    );
+  }
+  const allLines = content.split("\n").filter(Boolean);
+  const lines = allLines.slice(-tailLines);
+  const entries = [];
+  for (const line of lines) {
+    try {
+      entries.push(JSON.parse(line));
     } catch {
     }
   }
-  const text = positionals.join(" ");
-  if (text) return text;
-  return readStdinIfPiped();
+  const transcript = buildTranscript(entries, threadId);
+  emitSuccess("summary", { threadId, entries }, `${transcript}
+`, {
+    json: options.json,
+    startedAt
+  });
 }
+function buildTranscript(entries, threadId) {
+  const lines = [`## Thread ${threadId}`];
+  let currentTurnId = null;
+  let turnIndex = 0;
+  for (const entry of entries) {
+    if (entry.tag === "TURN_STARTED" || entry.method === "turn/started" && entry.data?.turn?.id) {
+      turnIndex += 1;
+      currentTurnId = entry.data?.turn?.id ?? entry.data?.turnId ?? `turn-${turnIndex}`;
+      const ts = entry.ts ? entry.ts.slice(11, 19) : "";
+      lines.push("", `### Turn ${turnIndex} \u2014 ${ts}`);
+      continue;
+    }
+    if (entry.method === "item/completed") {
+      const item = entry.data?.item ?? entry.data ?? {};
+      if (item.type === "userMessage") {
+        const text = item.content?.map((c) => c.text).join(" ") ?? "";
+        lines.push(`> ${text}`);
+      } else if (item.type === "agentMessage") {
+        lines.push("", `**Assistant:** ${item.text ?? ""}`);
+      } else if (item.type === "plan") {
+        lines.push("", `**Plan proposed:**`, item.text ?? "");
+      } else if (item.type === "commandExecution") {
+        const cmd = (item.command ?? "").slice(0, 200);
+        lines.push(`tool: shell ${cmd}`);
+      } else if (item.type === "fileChange") {
+        const files = (item.changes ?? []).map((c) => c.path).join(", ");
+        lines.push(`tool: apply_patch ${files.slice(0, 200)}`);
+      } else if (item.type === "exitedReviewMode") {
+        lines.push("", `**Review:** ${item.review ?? ""}`);
+      }
+      continue;
+    }
+    if (entry.tag === "ERROR") {
+      lines.push("", `**Error:** ${entry.data?.message ?? JSON.stringify(entry.data)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+// src/handlers/registry.mjs
+import fs26 from "node:fs";
+import path25 from "node:path";
 function readReviewedBranchHeadSha(verdict) {
   const candidates = [
     verdict?.branch_head_sha,
@@ -17688,7 +17316,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs19.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs26.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -17769,9 +17397,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path17.join(dir, "meta.json"),
-    review_path: path17.join(dir, "review.json"),
-    verdict_path: path17.join(dir, "verdict.json"),
+    meta_path: path25.join(dir, "meta.json"),
+    review_path: path25.join(dir, "review.json"),
+    verdict_path: path25.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -18172,10 +17800,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path17.join(jobDir(taskId), "verdict.json");
+    const target = path25.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs19.existsSync(target)) {
-      fs19.rmSync(target, { force: true });
+    if (fs26.existsSync(target)) {
+      fs26.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -18428,400 +18056,527 @@ async function handleMerge(argv) {
     { json: options.json, startedAt }
   );
 }
-async function handleSend(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: [
-      "mode",
-      "effort",
-      "cwd",
-      "backend",
-      "idle-timeout-ms",
-      "turn-timeout-ms",
-      "question-timeout-ms"
-    ],
-    booleanOptions: ["json", "wait", "quiet"],
-    aliasMap: { m: "mode" }
-  });
-  const VALID_MODES = /* @__PURE__ */ new Set(["plan", "default"]);
-  if (options.mode != null && !VALID_MODES.has(options.mode)) {
-    throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
+
+// src/codex-bridge.mjs
+function printUsage() {
+  const lines = ["Usage:"];
+  for (const name of Object.keys(COMMANDS)) {
+    lines.push(`  codex-bridge ${COMMANDS[name].synopsis}`);
   }
-  const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
-  const turnTimeoutOverride = parsePositiveMsOption("--turn-timeout-ms", options["turn-timeout-ms"]);
-  const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
-  const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
-  const startedAt = Date.now();
-  const rawThreadId = positionals[0];
-  if (!rawThreadId) {
-    throw usageError("send requires <thread-id>");
-  }
-  if (!isThreadId(rawThreadId)) {
-    throw invalidThreadIdError(rawThreadId, "thread-id");
-  }
-  const threadId = rawThreadId.trim();
-  const promptParts = positionals.slice(1);
-  const cwd = resolveCommandCwd(options);
-  const prompt = resolvePromptInput(options, promptParts, cwd);
-  if (!prompt) {
-    throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
-  }
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getBridgeConfig2(cwd, workspaceRoot);
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot,
-    backend: options.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  guardCapability(adapter2, "supports_resume");
-  const modeOverride = options.mode;
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const sendIsPlanMode = modeOverride === "plan";
-  const turnOptions = {
-    resumeThreadId: threadId,
-    prompt,
-    model: config.model,
-    effort: normalizeReasoningEffort(options.effort ?? config.effort),
-    sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : void 0,
-    onProgress: null,
-    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
-    // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
-    idleTimeoutMs: idleTimeoutOverride != null ? idleTimeoutOverride : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
-    // Turn timeout: per-invocation override > the mode-appropriate config key
-    // (turn_plan_ms for plan-mode sends, turn_default_ms otherwise) > built-in
-    // default. `send` gets a single --turn-timeout-ms flag that maps onto the
-    // right budget based on the resolved mode.
-    turnTimeoutMs: turnTimeoutOverride ?? (sendIsPlanMode ? Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : DEFAULT_CONFIG.turn_plan_ms : Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms),
-    onTurnStart: (info) => {
-      const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
-      logNdjson(s, "TURN_PARAMS", "turn/start", {
-        model: info.turnParams.model,
-        effort: info.turnParams.effort,
-        collaborationMode: info.turnParams.collaborationMode,
-        sandboxPolicy: info.turnParams.sandboxPolicy,
-        hasOutputSchema: Boolean(info.turnParams.outputSchema),
-        promptLength: info.promptLength,
-        promptPreview: info.promptPreview
-      });
-    },
-    onItemCompleted: (item, { threadId: itemThreadId }) => {
-      const effectiveThreadId = itemThreadId ?? null;
-      if (!effectiveThreadId) return;
-      const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
-      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
-        itemId: item?.id ?? null,
-        itemType: item?.type ?? null,
-        text: extractItemText(item)
-      });
-    },
-    onServerRequest: createBridgeServerRequestHandler({
-      sessionDir,
-      config,
-      questionAnswerMs: questionTimeoutOverride ?? null,
-      cwd
-    })
-  };
-  const resolvedSandboxMode = modeOverride === "default" ? "default" : "plan";
-  turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
-  if (modeOverride) {
-    turnOptions.collaborationMode = buildCollaborationMode(modeOverride, config, {
-      effort: options.effort,
-      developerInstructions: loadDeveloperInstructions(modeOverride)
-    });
-  }
-  ensureCodexAvailable(cwd);
-  const dispatch2 = await adapter2.resume(threadId, prompt, {
-    cwd,
-    sessionDir,
-    model: config.model,
-    effort: turnOptions.effort,
-    mode: modeOverride ?? "default",
-    adapterOptions: {
-      turnOptions
-    }
-  });
-  const result = dispatch2.rawResult ?? dispatch2;
-  if (result.status !== 0) {
-    const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
-    const session2 = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
-    const classified = classifyError(errLike);
-    logEvent(session2, formatErrorEvent(session2, {
-      errorCode: classified.code,
-      message: classified.message,
-      phase: classified.class,
-      origin: "send",
-      scriptPath: SCRIPT_PATH,
-      cwd
-    }));
-    logNdjson(session2, "ERROR", "turn/completed", { error: classified });
-    emitError(errLike, { json: options.json, command: "send" });
+  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC, "", "Run `codex-bridge <subcommand> --help` for per-command details.");
+  console.log(lines.join("\n"));
+}
+function printSubcommandUsage(name) {
+  const entry = COMMANDS[name];
+  if (!entry) {
+    printUsage();
     return;
   }
-  const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
-  if (result.planDetected && result.planText) {
-    const planPath = writePlan(session, result.planText);
-    const steps = extractPlanSteps(result.planText);
-    logEvent(session, formatPlanEvent(session, {
-      turnId: result.turnId,
-      planTitle: result.planText.split("\n")[0]?.slice(0, 80) ?? "Plan",
-      steps,
-      planPath,
-      scriptPath: SCRIPT_PATH,
-      cwd
-    }));
-    logNdjson(session, "PLAN", "item/completed", {
-      turnId: result.turnId ?? null,
-      planPath,
-      planDetected: true
-    });
-    const eventsPath2 = session?.eventsPath ?? null;
-    const renderedLines2 = [`Plan updated for ${threadId}.`];
-    if (eventsPath2) renderedLines2.push(`  events: ${eventsPath2}`);
-    emitSuccess(
-      "send",
-      {
-        threadId,
-        status: result.status,
-        turnId: result.turnId ?? null,
-        eventsPath: eventsPath2,
-        phase: "plan-pending",
-        planPath,
-        planSteps: steps,
-        finalMessage: result.finalMessage ?? null
-      },
-      `${renderedLines2.join("\n")}
-`,
-      { json: options.json, startedAt }
-    );
-    return;
+  const lines = [
+    `codex-bridge ${entry.synopsis}`,
+    "",
+    entry.summary
+  ];
+  if (entry.examples?.length) {
+    lines.push("", "Examples:");
+    for (const example of entry.examples) {
+      lines.push(`  ${example}`);
+    }
   }
-  logEvent(session, formatDoneEvent(session, {
-    duration: Math.round((Date.now() - startedAt) / 1e3),
-    diffStat: "send follow-up",
-    files: [],
-    config: {
-      model: config.model,
-      effort: turnOptions.effort,
-      modeFlow: modeOverride ?? "resume"
-    },
-    diffPath: "not captured for send",
-    scriptPath: SCRIPT_PATH,
-    cwd
-  }));
-  logNdjson(session, "DONE", "turn/completed", {
-    turnId: result.turnId ?? null,
-    status: result.status
-  });
-  const eventsPath = session?.eventsPath ?? null;
-  const renderedLines = [`Sent to ${threadId}. Status: ${result.status}`];
-  if (eventsPath) renderedLines.push(`  events: ${eventsPath}`);
-  const payload = {
-    threadId,
-    status: result.status,
-    turnId: result.turnId ?? null,
-    eventsPath,
-    finalMessage: result.finalMessage ?? null
-  };
-  emitSuccess("send", payload, `${renderedLines.join("\n")}
-`, {
-    json: options.json,
-    startedAt
-  });
+  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC);
+  console.log(lines.join("\n"));
 }
-async function handleSteer(argv) {
+var TIMELINE_SOURCES = Object.freeze(["events", "ndjson", "log", "worker_err"]);
+var TIMELINE_FORMATS = Object.freeze(["text", "json", "html"]);
+async function handleTimeline(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "backend"],
+    valueOptions: ["cwd", "format", "since", "source"],
     booleanOptions: ["json"]
   });
-  const [rawThreadId, turnId, ...promptParts] = positionals;
-  if (!rawThreadId || !turnId) {
-    throw usageError("steer requires <thread-id> <turn-id> <prompt...>");
-  }
-  if (!isThreadId(rawThreadId)) {
-    throw invalidThreadIdError(rawThreadId, "thread-id");
-  }
-  const threadId = rawThreadId.trim();
   const cwd = resolveCommandCwd(options);
-  const prompt = resolvePromptInput(options, promptParts, cwd);
-  if (!prompt) {
-    throw validationError("steer requires a prompt", "MISSING_PROMPT");
+  const taskId = positionals[0] ?? "";
+  if (!taskId) {
+    throw usageError("timeline requires <task-id>");
   }
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot: resolveWorkspaceRoot(cwd),
-    backend: options.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  guardCapability(adapter2, "supports_steering");
-  ensureCodexAvailable(cwd);
-  await adapter2.steer(threadId, turnId, prompt, { cwd });
-  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const session = findSession(sessionDir, threadId);
-  if (session) {
-    logNdjson(session, "STEER", "turn/steer", { turnId, prompt: prompt.slice(0, 120) });
-  }
-  emitSuccess("steer", { threadId, turnId, steered: true }, `Steered turn ${turnId} on thread ${threadId}
-`, {
-    json: options.json,
-    startedAt
-  });
-}
-async function handleRespond(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["question-id", "answer", "json-payload", "cwd", "backend"],
-    booleanOptions: ["json"]
-  });
-  const requestId = positionals[0];
-  if (!requestId) {
-    throw usageError("respond requires <request-id>");
-  }
-  const cwd = resolveCommandCwd(options);
-  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot: resolveWorkspaceRoot(cwd),
-    backend: options.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  guardCapability(adapter2, "supports_questions");
-  const pending = readPendingRequestById(sessionDir, requestId);
-  if (!pending) {
-    throw notFoundError(
-      `No pending request found: ${requestId}.`,
-      "PENDING_REQUEST_NOT_FOUND",
-      "It may have timed out or already been answered."
-    );
-  }
-  let payload;
-  if (options["json-payload"]) {
-    try {
-      payload = JSON.parse(options["json-payload"]);
-    } catch (error) {
-      throw usageError(
-        `respond --json-payload must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  } else {
-    const answer = options.answer;
-    if (!answer) {
-      throw usageError("respond requires --answer");
-    }
-    if (pending.method === "item/tool/requestUserInput") {
-      const qId = options["question-id"] ?? pending.firstQuestionId ?? "q1";
-      payload = { answers: { [qId]: { answers: [answer] } } };
+  let job;
+  try {
+    job = resolveResultJob(cwd, taskId).job;
+  } catch (err) {
+    if (err?.code === "JOB_NOT_FINISHED") {
+      job = buildSingleJobSnapshot(cwd, taskId).job;
     } else {
-      payload = { decision: answer };
+      throw err;
     }
   }
-  await adapter2.respond(pending.threadId, requestId, payload, { sessionDir });
-  const session = findSession(sessionDir, pending.threadId);
-  if (session) {
-    logNdjson(session, "SERVER_RESPONSE", null, { requestId, payload });
+  if (!job?.id) {
+    throw notFoundError(`Task ${taskId} was not found.`, "TASK_NOT_FOUND");
   }
-  emitSuccess(
-    "respond",
-    { status: "responded", requestId, threadId: pending.threadId },
-    `Response written for ${requestId}. Worker will deliver it.
-`,
-    { json: options.json, startedAt }
+  const format = String(options.format ?? "text").toLowerCase();
+  if (!TIMELINE_FORMATS.includes(format)) {
+    throw validationError(`Unsupported timeline format "${options.format}". Use text, json, or html.`, "INVALID_TIMELINE_FORMAT");
+  }
+  const sources = parseTimelineSources(options.source);
+  const sinceMs = parseTimelineSince(options.since);
+  const workspaceRoot = job.workspaceRoot ?? resolveWorkspaceRoot(cwd);
+  const storedJob = readStoredJob(workspaceRoot, job.id) ?? job;
+  const config = getBridgeConfig2(cwd, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+  const eventsPath = storedJob.threadId ? path26.join(sessionDir, `${storedJob.threadId}.events`) : null;
+  const ndjsonPath = storedJob.threadId ? path26.join(sessionDir, `${storedJob.threadId}.ndjson`) : null;
+  const logFile = storedJob.logFile ?? job.logFile ?? null;
+  const workerErrPath = logFile ? `${logFile}.worker.err` : null;
+  const entries = [];
+  if (sources.has("events")) entries.push(...parseTimelineEvents(eventsPath));
+  if (sources.has("ndjson")) entries.push(...parseTimelineNdjson(ndjsonPath));
+  if (sources.has("log")) entries.push(...parseTimelineLog(logFile));
+  if (sources.has("worker_err")) entries.push(...parseTimelineWorkerErr(workerErrPath));
+  const timeline = entries.filter((entry) => entry.ts >= sinceMs).sort((left, right) => left.ts - right.ts || left.order - right.order).map(({ order, ...entry }) => entry);
+  const payload = {
+    jobId: job.id,
+    threadId: storedJob.threadId ?? null,
+    sources: [...sources],
+    since: options.since ?? null,
+    count: timeline.length,
+    timeline,
+    artifacts: {
+      eventsPath,
+      ndjsonPath,
+      logFile,
+      workerErrPath
+    }
+  };
+  if (format === "json") {
+    emitSuccess("timeline", payload, JSON.stringify(timeline, null, 2) + "\n", {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+  if (format === "html") {
+    const htmlPath = writeTimelineHtml(timeline, storedJob, logFile);
+    emitSuccess("timeline", { ...payload, html_path: htmlPath }, `${htmlPath}
+`, {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+  emitSuccess("timeline", payload, formatTimelineText(timeline), {
+    json: options.json,
+    startedAt
+  });
+}
+function parseTimelineSources(raw) {
+  const values = String(raw ?? TIMELINE_SOURCES.join(",")).split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+  const unknown = values.filter((value) => !TIMELINE_SOURCES.includes(value));
+  if (unknown.length > 0) {
+    throw validationError(`Unsupported timeline source "${unknown[0]}". Use events, ndjson, log, or worker_err.`, "INVALID_TIMELINE_SOURCE");
+  }
+  return new Set(values.length > 0 ? values : TIMELINE_SOURCES);
+}
+function parseTimelineSince(raw) {
+  if (raw == null || raw === "") return 0;
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) {
+    throw validationError(`Invalid --since timestamp "${raw}". Use an ISO timestamp.`, "INVALID_TIMELINE_SINCE");
+  }
+  return parsed;
+}
+function fileMtimeMs(filePath) {
+  if (!filePath || !fs27.existsSync(filePath)) return Date.now();
+  try {
+    return fs27.statSync(filePath).mtimeMs;
+  } catch {
+    return Date.now();
+  }
+}
+function parseTimelineTimestamp(value, referenceMs) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const direct = Date.parse(raw);
+  if (Number.isFinite(direct)) return direct;
+  const match = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(?:Z)?$/.exec(raw);
+  if (!match) return null;
+  const reference = new Date(referenceMs);
+  return Date.UTC(
+    reference.getUTCFullYear(),
+    reference.getUTCMonth(),
+    reference.getUTCDate(),
+    Number(match[1]),
+    Number(match[2]),
+    Number(match[3]),
+    Number((match[4] ?? "0").padEnd(3, "0"))
   );
 }
-async function handleSummary(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["tail", "cwd"],
-    booleanOptions: ["json"]
+function makeTimelineEntry({ ts, source, body, tag = null, parsedFields = {}, approximate = false, order = 0 }) {
+  return {
+    ts,
+    iso: new Date(ts).toISOString(),
+    source,
+    body,
+    parsed_fields: {
+      ...tag ? { tag } : {},
+      ...parsedFields,
+      ...approximate ? { approximate_ts: true } : {}
+    },
+    order
+  };
+}
+function parseTimelineEvents(filePath) {
+  if (!filePath || !fs27.existsSync(filePath)) return [];
+  const fallbackTs = fileMtimeMs(filePath);
+  const blocks = fs27.readFileSync(filePath, "utf8").split(/\n(?=\[[^\]]+\])/).map((block) => block.trim()).filter(Boolean);
+  return blocks.map((block, index) => {
+    const header = block.split(/\r?\n/, 1)[0] ?? "";
+    const match = /^\[([^\]]+)\]\s+(.*)$/.exec(header);
+    const tag = match?.[1] ?? null;
+    let body = block;
+    let ts = fallbackTs;
+    let approximate = true;
+    if (match) {
+      const rest = match[2] ?? "";
+      const timestampMatch = /^(\d{4}-\d{2}-\d{2}T\S+|\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z?)\s*(.*)$/u.exec(rest);
+      const parsedTs = timestampMatch ? parseTimelineTimestamp(timestampMatch[1], fallbackTs) : null;
+      if (parsedTs != null) {
+        ts = parsedTs;
+        approximate = false;
+        body = `[${tag}]${timestampMatch[2] ? ` ${timestampMatch[2]}` : ""}${block.slice(header.length)}`;
+      }
+    }
+    return makeTimelineEntry({
+      ts,
+      source: "events",
+      tag,
+      body,
+      approximate,
+      order: index
+    });
   });
-  const threadId = positionals[0];
-  if (!threadId) {
-    throw usageError("summary requires <thread-id>");
-  }
-  const cwd = resolveCommandCwd(options);
-  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const session = findSession(sessionDir, threadId);
-  if (!session) {
-    throw notFoundError(
-      `No session found for thread ${threadId}`,
-      "SESSION_NOT_FOUND"
-    );
-  }
-  const tailLines = parseInt(options.tail) || 200;
-  let content;
-  try {
-    content = fs19.readFileSync(session.ndjsonPath, "utf8");
-  } catch {
-    throw new CliError(
-      `Cannot read session log: ${session.ndjsonPath}`,
-      { class: "internal", code: "SESSION_LOG_UNREADABLE", retryable: false }
-    );
-  }
-  const allLines = content.split("\n").filter(Boolean);
-  const lines = allLines.slice(-tailLines);
-  const entries = [];
-  for (const line of lines) {
+}
+function parseTimelineNdjson(filePath) {
+  if (!filePath || !fs27.existsSync(filePath)) return [];
+  const fallbackTs = fileMtimeMs(filePath);
+  return fs27.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
     try {
-      entries.push(JSON.parse(line));
-    } catch {
+      const entry = JSON.parse(line);
+      const parsedTs = parseTimelineTimestamp(entry.ts, fallbackTs);
+      return makeTimelineEntry({
+        ts: parsedTs ?? fallbackTs,
+        source: "ndjson",
+        tag: entry.tag ?? null,
+        body: summarizeNdjsonTimelineEntry(entry),
+        parsedFields: {
+          method: entry.method ?? null,
+          threadId: entry.threadId ?? null
+        },
+        approximate: parsedTs == null,
+        order: index
+      });
+    } catch (error) {
+      return makeTimelineEntry({
+        ts: fallbackTs,
+        source: "ndjson",
+        tag: "CORRUPT_NDJSON_LINE",
+        body: line,
+        parsedFields: { error: error instanceof Error ? error.message : String(error) },
+        approximate: true,
+        order: index
+      });
+    }
+  });
+}
+function summarizeNdjsonTimelineEntry(entry) {
+  const method = entry.method ?? "event";
+  const tag = entry.tag ?? "NDJSON";
+  const item = entry.data?.item ?? null;
+  if (method === "item/completed" && item) {
+    const itemType = item.type ?? "item";
+    const preview = extractItemText(item);
+    return preview ? `ITEM_COMPLETED ${itemType} ${preview}` : `ITEM_COMPLETED ${itemType}`;
+  }
+  if (entry.data?.requestId) {
+    return `${tag} ${entry.data.requestId}`;
+  }
+  if (entry.data?.message) {
+    return `${tag} ${entry.data.message}`;
+  }
+  return `${tag} ${method} ${JSON.stringify(entry.data ?? {})}`.trim();
+}
+function parseTimelineLog(filePath) {
+  if (!filePath || !fs27.existsSync(filePath)) return [];
+  const fallbackTs = fileMtimeMs(filePath);
+  let lastTs = fallbackTs;
+  let lastApproximate = true;
+  return fs27.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
+    const match = /^\[([^\]]+)\]\s*(.*)$/.exec(line);
+    if (match) {
+      const parsedTs = parseTimelineTimestamp(match[1], fallbackTs);
+      lastTs = parsedTs ?? fallbackTs;
+      lastApproximate = parsedTs == null;
+      return makeTimelineEntry({
+        ts: lastTs,
+        source: "log",
+        body: match[2] || line,
+        approximate: lastApproximate,
+        order: index
+      });
+    }
+    return makeTimelineEntry({
+      ts: lastTs,
+      source: "log",
+      body: line,
+      approximate: lastApproximate,
+      order: index
+    });
+  });
+}
+function parseTimelineWorkerErr(filePath) {
+  if (!filePath || !fs27.existsSync(filePath)) return [];
+  const ts = fileMtimeMs(filePath);
+  return fs27.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => makeTimelineEntry({
+    ts,
+    source: "worker_err",
+    body: line,
+    approximate: true,
+    order: index
+  }));
+}
+function formatTimelineText(entries) {
+  if (entries.length === 0) return "";
+  return entries.map((entry) => {
+    const time = new Date(entry.ts).toISOString().slice(11, 23);
+    const approx = entry.parsed_fields?.approximate_ts ? "~" : " ";
+    const source = timelineSourceLabel(entry.source).padEnd(10);
+    const tag = entry.parsed_fields?.tag ? ` [${entry.parsed_fields.tag}]` : "";
+    return `${approx}${time}  [${source}]${tag} ${entry.body}`;
+  }).join("\n") + "\n";
+}
+function timelineSourceLabel(source) {
+  switch (source) {
+    case "events":
+      return "EVENT";
+    case "ndjson":
+      return "NDJSON";
+    case "log":
+      return "LOG";
+    case "worker_err":
+      return "WORKER";
+    default:
+      return String(source ?? "").toUpperCase();
+  }
+}
+function writeTimelineHtml(entries, job, logFile) {
+  const baseDir = logFile ? path26.dirname(logFile) : jobDir(job.id);
+  fs27.mkdirSync(baseDir, { recursive: true });
+  const htmlPath = path26.join(baseDir, `${job.id}.timeline.html`);
+  const rows = entries.map((entry) => {
+    const source = escapeHtml(timelineSourceLabel(entry.source));
+    const time = escapeHtml(new Date(entry.ts).toISOString());
+    const body = escapeHtml(entry.body);
+    const tag = entry.parsed_fields?.tag ? `<span class="tag">${escapeHtml(entry.parsed_fields.tag)}</span>` : "";
+    const approx = entry.parsed_fields?.approximate_ts ? `<span class="approx">~ts</span>` : "";
+    return `<details class="entry ${escapeHtml(entry.source)}" open><summary><time>${time}</time><span class="source">${source}</span>${tag}${approx}</summary><pre>${body}</pre></details>`;
+  }).join("\n");
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>codex-bridge timeline ${escapeHtml(job.id)}</title>
+<style>
+body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;line-height:1.4;color:#1f2937;background:#f8fafc}
+h1{font-size:20px;margin:0 0 16px}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+button{border:1px solid #cbd5e1;background:white;border-radius:6px;padding:6px 10px;cursor:pointer}
+.entry{background:white;border:1px solid #e2e8f0;border-radius:6px;margin:8px 0;padding:8px}
+summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.source{font-weight:700;min-width:64px}.tag{color:#0369a1}.approx{color:#a16207}
+pre{white-space:pre-wrap;margin:8px 0 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+</style>
+</head>
+<body>
+<h1>Timeline ${escapeHtml(job.id)}</h1>
+<div class="filters">
+${TIMELINE_SOURCES.map((source) => `<button type="button" data-source="${source}">${escapeHtml(timelineSourceLabel(source))}</button>`).join("\n")}
+<button type="button" data-source="all">ALL</button>
+</div>
+${rows}
+<script>
+for (const button of document.querySelectorAll("button[data-source]")) {
+  button.addEventListener("click", () => {
+    const selected = button.dataset.source;
+    for (const entry of document.querySelectorAll(".entry")) {
+      entry.hidden = selected !== "all" && !entry.classList.contains(selected);
+    }
+  });
+}
+</script>
+</body>
+</html>
+`;
+  fs27.writeFileSync(htmlPath, html, "utf8");
+  return htmlPath;
+}
+function escapeHtml(value) {
+  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+function formatDoctorBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+}
+function formatDoctorAge(ageMs) {
+  if (ageMs == null) return "age unknown";
+  const minutes = Math.floor(ageMs / 6e4);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+function renderDoctorReport(report, cleaned = [], options = {}) {
+  const lines = ["Codex Bridge Doctor - health report", ""];
+  const stale = report.findings.filter((entry) => entry.type === "stale_job");
+  const worktrees = report.findings.filter((entry) => entry.type === "orphan_worktree");
+  const branches = report.findings.filter((entry) => entry.type === "orphan_branch");
+  const oldSessions = report.findings.filter((entry) => entry.type === "old_session_files");
+  const disk = report.findings.filter((entry) => entry.type === "disk_usage");
+  const codex = report.findings.filter((entry) => entry.type === "codex_cli");
+  appendDoctorSection(lines, "Stale jobs", stale, (entry) => `${entry.jobId} (${entry.message}; stale for ${formatDoctorAge(entry.age_ms)})`);
+  appendDoctorSection(lines, "Orphan worktrees", worktrees, (entry) => `${entry.path} (${entry.message}${entry.age_ms == null ? "" : `; age ${formatDoctorAge(entry.age_ms)}`})`);
+  appendDoctorSection(lines, "Orphan branches", branches, (entry) => `${entry.branch} (${entry.message})`);
+  appendDoctorSection(lines, "Old session files", oldSessions, (entry) => `${entry.path} (${entry.message}; oldest ${formatDoctorAge(entry.age_ms)})`);
+  lines.push("[Disk usage]");
+  for (const entry of disk) {
+    lines.push(`  - ${entry.label}: ${entry.exists ? formatDoctorBytes(entry.bytes) : "not found"}${entry.error ? ` (${entry.error})` : ""}`);
+  }
+  lines.push("");
+  lines.push("[Codex CLI]");
+  for (const entry of codex) {
+    const marker = entry.available && entry.auth?.loggedIn ? "+" : "!";
+    lines.push(`  ${marker} ${entry.message}`);
+    if (entry.version) lines.push(`    ${entry.version}`);
+    if (entry.auth?.detail) lines.push(`    ${entry.auth.detail}`);
+  }
+  lines.push("");
+  const cleanableCount = report.findings.filter((entry) => entry.cleanable).length;
+  if (cleanableCount === 0) {
+    lines.push("All clear: no stale jobs, orphan worktrees, or orphan branches.");
+  } else if (!options.clean) {
+    lines.push("To clean up: codex-bridge doctor --clean");
+  } else {
+    const removed = cleaned.filter((entry) => entry.cleaned).length;
+    lines.push(`Cleaned ${removed} of ${cleanableCount} cleanable finding(s).`);
+  }
+  return `${lines.join("\n")}
+`;
+}
+function appendDoctorSection(lines, title, entries, formatEntry) {
+  lines.push(`[${title}]`);
+  if (entries.length === 0) {
+    lines.push("  + none");
+  } else {
+    for (const entry of entries) {
+      lines.push(`  ! ${formatEntry(entry)}`);
     }
   }
-  const transcript = buildTranscript(entries, threadId);
-  emitSuccess("summary", { threadId, entries }, `${transcript}
-`, {
+  lines.push("");
+}
+function cleanPromptForFinding(finding) {
+  if (finding.type === "stale_job") return `Mark stale job ${finding.jobId} orphaned`;
+  if (finding.type === "orphan_worktree") return `Remove orphan worktree ${finding.path}`;
+  if (finding.type === "orphan_branch") return `Delete orphan branch ${finding.branch}`;
+  return `Apply cleanup for ${finding.type}`;
+}
+function promptDoctorAction(finding) {
+  if (!process17.stdin.isTTY) {
+    return Promise.resolve("no");
+  }
+  const question = `${cleanPromptForFinding(finding)}? (y/N/all/quit) `;
+  process17.stdout.write(question);
+  process17.stdin.setEncoding("utf8");
+  process17.stdin.resume();
+  return new Promise((resolve) => {
+    const onData = (chunk) => {
+      process17.stdin.pause();
+      process17.stdin.off("data", onData);
+      const answer = String(chunk).trim().toLowerCase();
+      if (answer === "y" || answer === "yes") resolve("yes");
+      else if (answer === "all" || answer === "a") resolve("all");
+      else if (answer === "quit" || answer === "q") resolve("quit");
+      else resolve("no");
+    };
+    process17.stdin.on("data", onData);
+  });
+}
+async function cleanDoctorFindings(report, options = {}) {
+  const results = [];
+  let applyAll = Boolean(options.yes);
+  for (const finding of report.findings.filter((entry) => entry.cleanable)) {
+    if (!applyAll) {
+      const answer = await promptDoctorAction(finding);
+      if (answer === "quit") break;
+      if (answer === "all") applyAll = true;
+      if (answer === "no") {
+        results.push({ finding, action: finding.action, cleaned: false, skipped: true, reason: "declined" });
+        continue;
+      }
+    }
+    const result = applyDoctorAction(finding, report, { force: options.force });
+    results.push(result);
+    if (!options.json) {
+      process17.stdout.write(result.cleaned ? "Removed.\n" : `Skipped: ${result.reason ?? result.detail ?? "not cleaned"}
+`);
+    }
+  }
+  return results;
+}
+async function handleDoctor(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "clean", "yes", "force"]
+  });
+  if (positionals.length > 0) {
+    throw usageError("`doctor` does not take positional arguments.");
+  }
+  if (options.yes && !options.clean) {
+    throw usageError("`doctor --yes` requires `--clean`.");
+  }
+  const cwd = resolveCommandCwd(options);
+  const report = await runDoctorChecks(cwd);
+  let cleaned = [];
+  if (options.clean) {
+    cleaned = await cleanDoctorFindings(report, {
+      yes: Boolean(options.yes),
+      force: Boolean(options.force),
+      json: Boolean(options.json)
+    });
+  }
+  emitSuccess("doctor", {
+    ...report,
+    clean: Boolean(options.clean),
+    cleaned,
+    cleanedCount: cleaned.filter((entry) => entry.cleaned).length
+  }, renderDoctorReport(report, cleaned, { clean: Boolean(options.clean) }), {
     json: options.json,
     startedAt
   });
-}
-function buildTranscript(entries, threadId) {
-  const lines = [`## Thread ${threadId}`];
-  let currentTurnId = null;
-  let turnIndex = 0;
-  for (const entry of entries) {
-    if (entry.tag === "TURN_STARTED" || entry.method === "turn/started" && entry.data?.turn?.id) {
-      turnIndex += 1;
-      currentTurnId = entry.data?.turn?.id ?? entry.data?.turnId ?? `turn-${turnIndex}`;
-      const ts = entry.ts ? entry.ts.slice(11, 19) : "";
-      lines.push("", `### Turn ${turnIndex} \u2014 ${ts}`);
-      continue;
-    }
-    if (entry.method === "item/completed") {
-      const item = entry.data?.item ?? entry.data ?? {};
-      if (item.type === "userMessage") {
-        const text = item.content?.map((c) => c.text).join(" ") ?? "";
-        lines.push(`> ${text}`);
-      } else if (item.type === "agentMessage") {
-        lines.push("", `**Assistant:** ${item.text ?? ""}`);
-      } else if (item.type === "plan") {
-        lines.push("", `**Plan proposed:**`, item.text ?? "");
-      } else if (item.type === "commandExecution") {
-        const cmd = (item.command ?? "").slice(0, 200);
-        lines.push(`tool: shell ${cmd}`);
-      } else if (item.type === "fileChange") {
-        const files = (item.changes ?? []).map((c) => c.path).join(", ");
-        lines.push(`tool: apply_patch ${files.slice(0, 200)}`);
-      } else if (item.type === "exitedReviewMode") {
-        lines.push("", `**Review:** ${item.review ?? ""}`);
-      }
-      continue;
-    }
-    if (entry.tag === "ERROR") {
-      lines.push("", `**Error:** ${entry.data?.message ?? JSON.stringify(entry.data)}`);
-    }
-  }
-  return lines.join("\n");
 }
 var SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
   update: handleUpdate,
-  config: handleConfig,
+  config: handleConfigShow,
   "auth-status": handleAuthStatus,
   review: handleReview,
-  "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),
+  "adversarial-review": handleAdversarialReview,
   task: handleTask,
   "task-worker": handleTaskWorker,
   send: handleSend,
@@ -18842,35 +18597,35 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   iterate: handleIterate,
   doctor: handleDoctor
 });
-process11.on("SIGPIPE", () => {
+process17.on("SIGPIPE", () => {
 });
-process11.stdout.on("error", (err) => {
+process17.stdout.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
-process11.stderr.on("error", (err) => {
+process17.stderr.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path17.join(os9.homedir(), ".codex-bridge", "crashes");
-    fs19.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path26.join(os10.homedir(), ".codex-bridge", "crashes");
+    fs27.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path17.join(crashDir, `${ts}-${process11.pid}.log`);
+    const file = path26.join(crashDir, `${ts}-${process17.pid}.log`);
     const payload = {
       kind,
       ts,
-      pid: process11.pid,
-      argv: process11.argv,
-      cwd: process11.cwd(),
-      nodeVersion: process11.version,
-      bridgeVersion: package_default.version,
+      pid: process17.pid,
+      argv: process17.argv,
+      cwd: process17.cwd(),
+      nodeVersion: process17.version,
+      bridgeVersion: BRIDGE_VERSION,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs19.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs27.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
-      process11.stderr.write(
+      process17.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
 `
       );
@@ -18879,17 +18634,17 @@ function writeCrashLog(kind, error) {
   } catch {
   }
 }
-process11.on("unhandledRejection", (reason) => {
+process17.on("unhandledRejection", (reason) => {
   writeCrashLog("unhandledRejection", reason);
-  process11.exitCode = process11.exitCode || 1;
+  process17.exitCode = process17.exitCode || 1;
 });
-process11.on("uncaughtException", (err) => {
+process17.on("uncaughtException", (err) => {
   writeCrashLog("uncaughtException", err);
-  process11.exit(process11.exitCode || 1);
+  process17.exit(process17.exitCode || 1);
 });
 async function main() {
   const startedAt = Date.now();
-  const rawArgv = process11.argv.slice(2);
+  const rawArgv = process17.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
   maybeTriggerAutoApply(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
@@ -18916,7 +18671,7 @@ async function main() {
   await handler(argv);
 }
 main().catch((error) => {
-  const rawArgv = process11.argv.slice(2);
+  const rawArgv = process17.argv.slice(2);
   const json2 = detectJsonFlag(rawArgv);
   const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
   emitError(error, { json: json2, command });

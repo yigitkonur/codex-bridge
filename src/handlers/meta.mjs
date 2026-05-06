@@ -60,6 +60,7 @@ import { COMMANDS, EXIT_CODE_DOC, GLOBAL_FLAGS_DOC } from "../commands-meta.mjs"
 const MONITOR_HOOK_EVENT = "PostToolUse";
 const MONITOR_HOOK_MATCHER = "Bash|Agent";
 const MONITOR_HOOK_SCRIPT = "tool.mjs";
+import { getSandboxEnforcementStatus, installSandboxEnforcement, uninstallSandboxEnforcement } from "../lib/sandbox-enforcement.mjs";
 import {
   buildReviewJobMetadata,
   buildTaskJob,
@@ -237,7 +238,6 @@ function installMonitorHookMirror() {
     status: getMonitorHookMirrorStatus(),
   };
 }
-
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -247,8 +247,8 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter = await resolveCommandAdapter({ cwd, workspaceRoot });
+  const sandboxEnforcement = getSandboxEnforcementStatus();
   const monitorHook = getMonitorHookMirrorStatus();
-
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -264,6 +264,11 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   } else if (!reviewGate.enabled) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
   }
+  if (sandboxEnforcement.settingsParseError) {
+    nextSteps.push(`Sandbox enforcement status could not read ${sandboxEnforcement.settingsPath}: ${sandboxEnforcement.settingsParseError}.`);
+  } else if (!sandboxEnforcement.installed) {
+    nextSteps.push("Optional: run `codex-bridge setup --enforce-sandbox` to deny sandbox downgrades at the Claude permission layer.");
+  }
   if (monitorHook.settingsParseError) {
     nextSteps.push(`Monitor hook mirror status could not read ${monitorHook.settingsPath}: ${monitorHook.settingsParseError}.`);
   } else if (!monitorHook.installed && monitorHook.hookScriptExists) {
@@ -271,7 +276,6 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   } else if (!monitorHook.installed && !monitorHook.hookScriptExists) {
     nextSteps.push("Monitor hook mirror unavailable in this install; arm Monitor manually from `result.monitor.tool_hint` after background dispatch.");
   }
-
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
     node: nodeStatus,
@@ -290,6 +294,10 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
     reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
     reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
+    sandboxEnforcementInstalled: sandboxEnforcement.installed,
+    sandboxEnforcementSettingsPath: sandboxEnforcement.settingsPath,
+    sandboxEnforcementSettingsExists: sandboxEnforcement.settingsExists,
+    sandboxEnforcementSettingsParseError: sandboxEnforcement.settingsParseError,
     monitorHookInstalled: monitorHook.installed,
     monitorHookSettingsPath: monitorHook.settingsPath,
     monitorHookSettingsExists: monitorHook.settingsExists,
@@ -302,17 +310,47 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   };
 }
 
+function installSandboxEnforcementForSetup() {
+  try {
+    return installSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_INSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --enforce-sandbox.",
+    );
+  }
+}
+
+function uninstallSandboxEnforcementForSetup() {
+  try {
+    return uninstallSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_UNINSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --disable-sandbox-enforcement.",
+    );
+  }
+}
+
 export async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook", "enforce-sandbox", "disable-sandbox-enforcement"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw conflictError(
       "Choose either --enable-review-gate or --disable-review-gate.",
       "REVIEW_GATE_CONFLICT"
+    );
+  }
+  if (options["enforce-sandbox"] && options["disable-sandbox-enforcement"]) {
+    throw conflictError(
+      "Choose either --enforce-sandbox or --disable-sandbox-enforcement.",
+      "SANDBOX_ENFORCEMENT_CONFLICT"
     );
   }
 
@@ -349,6 +387,22 @@ export async function handleSetup(argv) {
     }
   }
 
+  if (options["enforce-sandbox"]) {
+    const result = installSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.alreadyInstalled
+        ? `Sandbox enforcement deny rules already present in ${result.status.settingsPath}.`
+        : `Installed sandbox enforcement deny rules in ${result.status.settingsPath}.`
+    );
+  } else if (options["disable-sandbox-enforcement"]) {
+    const result = uninstallSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.removed > 0
+        ? `Removed ${result.removed} sandbox enforcement deny rule${result.removed === 1 ? "" : "s"} from ${result.status.settingsPath}.`
+        : `Sandbox enforcement deny rules were not present in ${result.status.settingsPath}.`
+    );
+  }
+
   if (options["install-monitor-hook"]) {
     const result = installMonitorHookMirror();
     actionsTaken.push(
@@ -357,7 +411,6 @@ export async function handleSetup(argv) {
         : `Installed Monitor PostToolUse hook mirror in ${result.status.settingsPath}.`
     );
   }
-
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
     json: options.json,
@@ -729,8 +782,7 @@ export function buildMachineReadableHelp() {
     })),
     global_flags: [
       { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
-      { flag: "--cwd <dir>", alias: "-C", description: "Parsed before or after the subcommand; overrides the working directory for all bridge operations." },
-      { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
+      { flag: "--cwd <dir>", alias: "-C", description: "Parsed before or after the subcommand; overrides the working directory for all bridge operations." },      { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
     ],
     exit_codes: {
       0: "success",

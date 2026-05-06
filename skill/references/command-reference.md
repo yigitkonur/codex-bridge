@@ -96,7 +96,7 @@ Synchronous `task --json` returns a `result.phase` and `result.next_action` alon
 | `phase` | Meaning | `next_action.command` |
 |---|---|---|
 | `plan-pending` | Plan detected; awaiting approval | `codex-bridge send <tid> --mode default "Implement the plan."` |
-| `done` | Task completed (pipeline ran clean or was skipped) | `codex-bridge result <job-id>` |
+| `done` | Task completed (pipeline ran clean or only diff capture was retained) | `codex-bridge result <job-id>` |
 | `incomplete` | Pipeline's completion check flagged gaps | `codex-bridge send <tid> "Complete the missing items"` |
 | `workspace-dirty` | Codex produced a diff but the sandbox blocked the final commit (e.g. `workspace-write` refused `.git/` writes). Success envelope includes `sandboxError` + `touchedFiles`. | `git -C <cwd> add -A && git -C <cwd> commit -m "<subject>"` (or re-run with `sandbox_policy: danger-full-access`) |
 
@@ -126,7 +126,7 @@ codex-bridge task [--backend <name>] [--write] [--effort <level>] [--mode <plan|
 | `--resume`, `--resume-last` | Continue the latest tracked thread for this session. Thread-only resume; rejected with `--worktree-auto`. Use `iterate <task_id>` for follow-up work that must preserve task worktree state. |
 | `--fresh` | Start a new thread even if a resumable one exists |
 | `--background` | Detached worker; returns immediately with a job id |
-| `--no-pipeline` | Skip the auto-review/fix/check pipeline for this single run (overrides `auto_review` / `post_task_prompt` from config). Ndjson carries a `PIPELINE_SKIPPED` entry. |
+| `--no-pipeline` | Keep diff capture but skip review/fix/check for this single run (overrides `auto_review` / `post_task_prompt` from config). Ndjson carries a `PIPELINE_SKIPPED` entry with skipped and retained stages; write no-ops return `[INCOMPLETE] no_files_touched`. |
 | `--quiet` | Suppress the `[codex] …` stderr progress stream so agents don't pattern-match the threadId out of progress lines. **`--json` implies `--quiet`** (v1.4.1) unless `--quiet=false` is passed explicitly: when the envelope is consumed by a machine, the stderr UUID trap would otherwise derail it. |
 | `--idle-timeout-ms <ms>` | Override no-event idle watchdog (default `idle_timeout_ms = 300000`) |
 | `--turn-plan-ms <ms>` | Override per-turn timeout for plan turns (default `turn_plan_ms = 1800000` = 30 min; raised in v1.3.0 from the pre-1.3.0 5 min hard-code) |

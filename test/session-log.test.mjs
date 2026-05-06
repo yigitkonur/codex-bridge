@@ -107,8 +107,7 @@ test("pipeline timeout error actions surface timeout relaunch budget", () => {
     message: "auto-review exceeded 12m",
     phase: "pipeline (completed: diff)",
     origin: "pipeline:diff",
-    failingStage: "review",
-    scriptPath: "/bridge/codex-bridge.mjs",
+    failingStage: "review",    scriptPath: "/bridge/codex-bridge.mjs",
     jobId: "job-1",
     cwd: "/tmp/project",
   });
@@ -141,7 +140,28 @@ test("plan content classifier separates routing classes", () => {
   assert.equal(classifyPlanContent("Read the code and report findings."), "read_only");
   assert.equal(classifyPlanContent("Implement the fix in src/lib/task-runtime.mjs."), "code_write");
   assert.equal(classifyPlanContent("Deploy the package after tests pass."), "external");
-  assert.equal(classifyPlanContent("Delete generated files with rm -rf dist."), "destructive");
+  assert.equal(classifyPlanContent("Delete generated files with rm -rf dist."), "destructive");});
+
+test("DONE event labels task diff separately from workspace diff", () => {
+  const rendered = formatDoneEvent(session, {
+    duration: 1,
+    diffStat: "3 files | +10 -2",
+    files: ["M dirty.txt (+9 -2)", "A new.txt (+1 -0)"],
+    config: { model: "gpt-test", effort: "high" },
+    diffPath: "/tmp/workspace.diff",
+    taskDiff: { diffStat: "1 touched file", files: ["M new.txt (+? -?)"], diffPath: "" },
+    workspaceDiff: { diffStat: "3 files | +10 -2", files: [], diffPath: "/tmp/workspace.diff" },
+    workspaceWasClean: false,
+    touchedFiles: ["new.txt"],    scriptPath: "/bridge/codex-bridge.mjs",
+    jobId: "job-1",
+    cwd: "/tmp/project",
+  });
+
+  assert.match(rendered.split("\n")[0], /1 touched file/);
+  assert.match(rendered, /task_diff: 1 touched file/);
+  assert.match(rendered, /workspace_diff: 3 files \| \+10 -2/);
+  assert.match(rendered, /workspace_was_clean: false/);
+  assert.match(rendered, /touchedFiles: \["new.txt"\]/);
 });
 
 test("session aliases map task ids to thread artifact paths", () => {

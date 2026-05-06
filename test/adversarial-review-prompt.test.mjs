@@ -27,6 +27,21 @@ const BRIDGE_SRC = fs.readFileSync(
   new URL("../src/codex-bridge.mjs", import.meta.url),
   "utf8",
 );
+// COMMANDS table moved to src/commands-meta.mjs in the Phase 2 dispatcher
+// split. Tests that grep for `adversarial-review:` synopsis text now read
+// the meta file directly.
+const COMMANDS_META_SRC = fs.readFileSync(
+  new URL("../src/commands-meta.mjs", import.meta.url),
+  "utf8",
+);
+const TASK_RUNTIME_SRC = fs.readFileSync(
+  new URL("../src/lib/task-runtime.mjs", import.meta.url),
+  "utf8",
+);
+const REVIEW_HANDLER_SRC = fs.readFileSync(
+  new URL("../src/handlers/review.mjs", import.meta.url),
+  "utf8",
+);
 const PROMPT_HELPER_SRC = fs.readFileSync(
   new URL("../src/lib/adversarial-review-prompt.mjs", import.meta.url),
   "utf8",
@@ -82,7 +97,7 @@ test("buildAdversarialReviewPrompt passes OPUS_CONCERNS at the call site", () =>
   assert.ok(callBlock.length > 0);
   assert.match(callBlock, /OPUS_CONCERNS:/);
   assert.match(callBlock, /requiredKeys:[\s\S]*?"OPUS_CONCERNS"/);
-  assert.match(BRIDGE_SRC, /buildAdversarialReviewPrompt\(ROOT_DIR,\s*context,\s*focusText,\s*opusConcerns\)/);
+  assert.match(TASK_RUNTIME_SRC, /buildAdversarialReviewPrompt\(ROOT_DIR,\s*context,\s*focusText,\s*opusConcerns\)/);
 });
 
 test("buildAdversarialReviewPrompt sanitizes USER_FOCUS before interpolation", () => {
@@ -125,7 +140,7 @@ test("buildAdversarialReviewPrompt labels imperative concerns as inert data", ()
 
 test("executeReviewRun merges brief.specific_concerns + --concern flags with order + dedup", () => {
   const block =
-    BRIDGE_SRC.match(/const briefConcerns =[\s\S]*?const prompt = buildAdversarialReviewPrompt/)?.[0] ?? "";
+    TASK_RUNTIME_SRC.match(/const briefConcerns =[\s\S]*?const prompt = buildAdversarialReviewPrompt/)?.[0] ?? "";
   assert.ok(block.length > 0, "expected the merge block in executeReviewRun");
   // Brief items first, then flag items.
   assert.match(block, /\[\.\.\.briefConcerns, \.\.\.flagConcerns\]/);
@@ -136,7 +151,7 @@ test("executeReviewRun merges brief.specific_concerns + --concern flags with ord
 
 test("validateNativeReviewRequest rejects --brief and --concern (review.md → adversarial-review redirect)", () => {
   const block =
-    BRIDGE_SRC.match(/function validateNativeReviewRequest[\s\S]*?\n\}\n/)?.[0] ?? "";
+    TASK_RUNTIME_SRC.match(/function validateNativeReviewRequest[\s\S]*?\n\}\n/)?.[0] ?? "";
   assert.ok(block.length > 0);
   assert.match(block, /REVIEW_BRIEF_UNSUPPORTED/);
   assert.match(block, /REVIEW_CONCERN_UNSUPPORTED/);
@@ -176,7 +191,7 @@ test("parseArgs non-repeatable valueOptions still last-write-wins (regression: e
 
 test("handleReviewCommand declares brief + repeatable concern in its parseCommandInput config", () => {
   const block =
-    BRIDGE_SRC.match(/async function handleReviewCommand[\s\S]*?\n\}\n/)?.[0] ?? "";
+    REVIEW_HANDLER_SRC.match(/async function handleReviewCommand[\s\S]*?\n\}\n/)?.[0] ?? "";
   assert.ok(block.length > 0);
   assert.match(block, /valueOptions:\s*\[[^\]]*"brief"[\s\S]*"task"/);
   assert.match(block, /repeatableValueOptions:\s*\["concern"\]/);
@@ -190,7 +205,7 @@ test("handleReviewCommand declares brief + repeatable concern in its parseComman
 
 test("adversarial-review help advertises brief and repeatable concern flags", () => {
   const block =
-    BRIDGE_SRC.match(/"adversarial-review": \{[\s\S]*?\n  \},/)?.[0] ?? "";
+    COMMANDS_META_SRC.match(/"adversarial-review": \{[\s\S]*?\n  \},/)?.[0] ?? "";
   assert.ok(block.length > 0);
   assert.match(block, /--brief @<path>\.json/);
   assert.match(block, /--task <task_id>/);

@@ -89,7 +89,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --mode default "Re
   | jq '.result.phase, .result.jobId'
 ```
 
-Sync `task --json` **blocks through the entire auto-pipeline** (review + completion check). With the default `auto_review: true`, a prompt with no code work can still wait for the reviewer stage before returning. For interactive or low-latency work, prefer the async pattern below; pass `--no-pipeline` only when you will run review/completion checks yourself.
+Sync `task --json` **blocks through the entire auto-pipeline** (review + completion check). With the default `auto_review: true`, a prompt with no code work still waits through the reviewer's stage timeout before returning. For interactive or low-latency work: pass `--no-pipeline` to keep diff capture while skipping review/fix/check, set `auto_review: false` in `config.yaml`, or use the async pattern below.
 
 **Async (long tasks, plan approval, questions via `requestUserInput`):** launch in the background and tail the events file with Monitor. Every `task --json` (background or foreground) returns `result.monitor.tool_hint` — pass it directly to Claude Code's Monitor tool. Full pattern in "Starting a Task" below.
 
@@ -122,7 +122,7 @@ Every task follows this lifecycle:
 1. **Plan phase** — Codex is instructed to plan first (effort: xhigh). May ask questions via `[QUESTION]` or produce a `[PLAN]`. Skip with `--mode default`.
 2. **Plan approval** — If `[PLAN]` arrives, review and approve or revise.
 3. **Execution phase** — Codex implements under the configured sandbox policy (see "Defaults that change Codex's behavior" below).
-4. **Auto-pipeline** — emits observable signals: `[PIPELINE:diff]`→`[PIPELINE:diff:done]`, then optionally `[PIPELINE:review]`→`[PIPELINE:review:done]`, `[PIPELINE:fix]`→`[PIPELINE:fix:done] files=[a,b,c]`, `[PIPELINE:check]`→`[PIPELINE:check:done]`, and finally a terminal `[PIPELINE:done]` or `[PIPELINE:failed]`. Skip entirely with `--no-pipeline`.
+4. **Auto-pipeline** — emits observable signals: `[PIPELINE:diff]`→`[PIPELINE:diff:done]`, then optionally `[PIPELINE:review]`→`[PIPELINE:review:done]`, `[PIPELINE:fix]`→`[PIPELINE:fix:done] files=[a,b,c]`, `[PIPELINE:check]`→`[PIPELINE:check:done]`, and finally a terminal `[PIPELINE:done]` or `[PIPELINE:failed]`. Use `--no-pipeline` to keep diff capture but skip review/fix/check.
 5. **Final notification** — `[DONE]`, `[INCOMPLETE]`, or `[ERROR]`.
 
 A synchronous `task --json` call returns the same lifecycle outcome as a single envelope with `result.phase ∈ { plan-pending, done, incomplete, workspace-dirty }` and `result.next_action.command`. `result.pipeline.touchedFiles` lists files the pipeline's fix stage wrote (empty if no pipeline fixes were applied). A failed Codex turn returns an `ok:false` error envelope instead (class per the exit-code table above), not a success envelope with a `phase: "error"` value. Use sync when you don't need interim progress; use async + Monitor when you do.
@@ -237,7 +237,7 @@ That footer is your source of truth — do **not** pattern-match the `Thread rea
 
 | Flag | Effect | When to use |
 |---|---|---|
-| `--no-pipeline` | Skips the auto-review/fix/check stages for this one run | You want a single turn and own the verification yourself |
+| `--no-pipeline` | Keeps diff capture, skips auto-review/fix/check, and reports no-op write tasks as `[INCOMPLETE]` | You want a single turn and own the verification yourself |
 | `--quiet` | Suppresses the `[codex] …` stderr progress stream | You want a clean console and rely on `events --follow` or Monitor |
 | `--turn-default-ms <ms>` | Override per-turn timeout for execute turns | Large scaffolds that legitimately need >10 min |
 | `--turn-plan-ms <ms>` | Override per-turn timeout for plan turns | Long-form planning across many specs |

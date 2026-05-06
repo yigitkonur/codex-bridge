@@ -7,10 +7,11 @@ This folder contains the authored runtime source. Build outputs live under
 
 | Path | Role |
 |---|---|
-| `codex-bridge.mjs` | Main CLI entry point and orchestration layer |
+| `codex-bridge.mjs` | Thin CLI entry point: usage, dispatch table, crash trap, and `main()` |
 | `adapters/codex/broker.mjs` | Standalone shared Codex app-server broker process |
 | `adapters/codex/` | Codex protocol, turn/review capture, broker, and pipeline adapter code |
-| `lib/` | Reusable client, state, config, git, session-log, render, update, and error modules |
+| `handlers/` | Command handlers grouped by domain: meta, task, review, inspect, registry |
+| `lib/` | Reusable runtime, parser, state, config, git, session-log, render, update, and error modules |
 | `prompts/` | Authored prompt source copied to bundled layouts |
 | `schemas/` | Authored JSON schema source copied to bundled layouts |
 | `templates/` | Authored developer-instruction templates copied to bundled layouts |
@@ -21,21 +22,21 @@ tests, command help, setup/auth behavior, and public docs are updated together.
 
 ## `codex-bridge.mjs`
 
-The CLI uses a single file for command metadata, parsing, handlers, and task
-orchestration.
+The CLI entrypoint stays intentionally thin. It owns process-level concerns and
+delegates command behavior to `src/handlers/` and shared runtime behavior to
+`src/lib/`.
 
 Important structures:
 
-- `COMMANDS` is the displayed help and machine-readable help source for public
-  subcommands.
+- `COMMANDS` is imported from `src/commands-meta.mjs` and is the displayed help
+  and machine-readable help source for public subcommands.
 - `SUBCOMMAND_DISPATCH` is the actual handler map.
-- `parseCommandInput` adds global `-C/--cwd`, `-h/--help`, and `-j/--json`
-  behavior through `src/lib/args.mjs`.
-- `ROOT_DIR` detects source layout vs. bundled skill/plugin layout. Any new bundled
-  asset must be reachable through this root.
-- `runBridgeTask` is the integration layer for tasks: config merge, prompt
-  decoration, developer instructions, sandbox policy, server-request handling,
-  heartbeats/checkpoints, retries, session logging, and auto-pipeline.
+- `maybeTriggerAutoApply` is imported from `src/lib/update-check.mjs` and runs
+  before handler dispatch.
+- `printUsage`, `printSubcommandUsage`, SIGPIPE/EPIPE guards, the crash trap,
+  and `main()` remain local to the entrypoint.
+- Path constants such as `ROOT_DIR`, `SCRIPT_DIR`, and `SCRIPT_PATH` come from
+  `src/lib/runtime-paths.mjs`; do not recompute `import.meta.url` in handlers.
 
 Current public subcommands are visible with:
 
@@ -46,6 +47,25 @@ node src/codex-bridge.mjs --help
 The implementation also has internal helpers such as `task-worker` and
 `task-resume-candidate`; only expose a command through plugin docs when it is
 intended for users.
+
+## Module Boundaries
+
+Current runtime ownership:
+
+- `src/commands-meta.mjs` defines command metadata, global flag help, and exit
+  code help.
+- `src/handlers/meta.mjs` handles setup, version, update, config, auth, and
+  machine-readable help data.
+- `src/handlers/task.mjs` handles task execution, background workers, send,
+  steer, respond, and cancel.
+- `src/handlers/review.mjs` handles native review and adversarial review.
+- `src/handlers/inspect.mjs` handles read-only status/result/wait/events and
+  task artifact inspection.
+- `src/handlers/registry.mjs` handles merge, verdict, verdicts, and iterate.
+- `src/lib/task-runtime.mjs` owns `runBridgeTask`, task/review execution
+  runtimes, background launch helpers, and task-runtime-only helper functions.
+- `src/lib/handler-utils.mjs` owns shared command argument/cwd/prompt helpers
+  used by multiple handler groups.
 
 ## Handler Conventions
 
@@ -63,10 +83,12 @@ When adding or changing a handler:
   `cancel` keep working.
 - For user-facing commands, update `COMMANDS`, `SUBCOMMAND_DISPATCH`,
   `plugin/commands/*.md`, skill references, and tests together.
+- If a helper is called by two or more handler groups, promote it to `src/lib/`
+  instead of duplicating it between handler files.
 
 ## Task Flow
 
-`runBridgeTask` currently:
+`src/lib/task-runtime.mjs` exports `runBridgeTask`. It currently:
 
 - Loads config with `getBridgeConfig(cwd, workspaceRoot)`.
 - Applies `skip_meta_skills` and `prompt_footer` to the prompt.
@@ -79,8 +101,8 @@ When adding or changing a handler:
   waiting for `respond`.
 - Writes `TURN_PARAMS`, `DIRECTIVES`, item-completion NDJSON, heartbeats,
   checkpoints, terminal events, partial/handoff data, and pipeline events.
-- Runs the auto-pipeline only when `--no-pipeline` is not set and at least one
-  configured stage is enabled (`auto_review` or `post_task_prompt`).
+- Keeps the diff-reporting stage for `--no-pipeline` runs while skipping
+  review/fix/check, and reports write-mode no-op runs as incomplete.
 
 Do not bypass `runBridgeTask` from task paths. `task-worker` intentionally calls
 it so foreground and background runs produce the same session artifacts.
