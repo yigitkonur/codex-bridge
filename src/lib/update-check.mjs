@@ -18,9 +18,109 @@
 // Returns a plain object so callers can render whatever they want:
 //   { skipped: boolean, reason?: string, currentVersion, latestVersion?, hasUpdate?, cacheAgeMs? }
 
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+
+import { detectHelpFlag, detectJsonFlag } from "./cli-errors.mjs";
+import { BRIDGE_VERSION } from "./runtime-paths.mjs";
+
+// Hot-path auto-apply. On every non-json, non-update/version invocation the
+// bridge:
+//   1. Triggers a cache-backed (1 h TTL) release probe — cost: one HTTPS
+//      call at most once per hour per workspace, anonymous, non-blocking.
+//   2. If a newer version exists AND no apply attempt has landed in the
+//      last hour, spawns `npx -y skills@latest add yigitkonur/codex-bridge
+//      -a claude-code -g -y` detached, with stdio routed to
+//      `~/.codex-bridge/auto-update.log` so the caller's stdio is never
+//      touched. Installer completes in the background; the NEXT invocation
+//      of the bridge picks up the new files.
+//
+// Guards (any one → no-op):
+//   - `CODEX_BRIDGE_NO_UPDATE_CHECK=1` env         → user disabled
+//   - `--json` mode                                 → would corrupt envelope
+//   - `update` / `version` subcommands              → own the update UX
+//   - help / no-subcommand                          → keep usage clean
+//   - `shouldAttemptApply()` returns false          → rate-limited (1 h)
+//
+// Never blocks, never throws, never writes to the caller's stdio.
+export function maybeTriggerAutoApply(rawArgv, subcommand) {
+  try {
+    if (process.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
+    if (detectJsonFlag(rawArgv)) return;
+    if (detectHelpFlag(rawArgv)) return;
+    if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
+    if (subcommand === "version" || subcommand === "update") return;
+
+    void checkForUpdate({ currentVersion: BRIDGE_VERSION })
+      .then((result) => {
+        if (!result || !result.hasUpdate || !result.latestVersion) return;
+        if (!shouldAttemptApply()) return;
+        // Claim the 1 h slot BEFORE spawning so concurrent invocations
+        // don't all race to install the same release.
+        markApplyAttempted(result.latestVersion);
+        spawnDetachedAutoApply(result.latestVersion);
+      })
+      .catch(() => {
+        // Anything thrown here is the update-check path's problem, not
+        // the caller's. Swallow and let the next invocation retry.
+      });
+  } catch {
+    // Must never fail the caller.
+  }
+}
+
+// Spawns `npx -y skills@latest add …` detached with stdio routed to a
+// log file in `~/.codex-bridge/auto-update.log`. Fire-and-forget: parent
+// calls `.unref()` so the caller's exit isn't delayed, and the child's
+// outcome is visible only via the log file (readable by `bridge update
+// --force` next time, or directly).
+
+export function spawnDetachedAutoApply(targetVersion) {
+  try {
+    const logDir = path.join(os.homedir(), ".codex-bridge");
+    fs.mkdirSync(logDir, { recursive: true });
+    const logFile = path.join(logDir, "auto-update.log");
+
+    // Crude rotation: if the log crosses ~2 MB, truncate. Failed installs
+    // on a loop could otherwise grow it unboundedly over months.
+    try {
+      const stat = fs.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs.truncateSync(logFile, 0);
+    } catch { /* file doesn't exist yet — fine */ }
+
+    const fd = fs.openSync(logFile, "a");
+    try {
+      const banner = `\n[${new Date().toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})\n`;
+      fs.writeSync(fd, banner);
+
+      const child = spawn(
+        "npx",
+        ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
+        {
+          detached: true,
+          stdio: ["ignore", fd, fd],
+          env: process.env,
+        }
+      );
+      // Spawn can still fail asynchronously after the constructor returns
+      // (e.g. ENOENT when npx isn't on PATH). The parent closes `fd` after
+      // unref, so reopen by path for the late diagnostic.
+      child.on("error", () => {
+        try {
+          fs.appendFileSync(logFile, `[${new Date().toISOString()}] spawn failed (npx not on PATH?)\n`, "utf8");
+        } catch { /* log unavailable */ }
+      });
+      child.unref();
+    } finally {
+      try { fs.closeSync(fd); } catch { /* already dup'd into child */ }
+    }
+  } catch {
+    // Best-effort. Any failure here (mkdir, open, spawn constructor)
+    // just means this invocation doesn't auto-apply; next one will.
+  }
+}
 
 // 1 hour cache — aligns with the auto-apply rate-limit window so a freshly
 // released version lands on user installs within ~60 min of publication.
