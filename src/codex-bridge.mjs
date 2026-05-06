@@ -206,7 +206,7 @@ import { COMMANDS, EXIT_CODE_DOC, GLOBAL_FLAGS_DOC } from "./commands-meta.mjs";
 import { buildMachineReadableHelp, handleAuthStatus, handleConfigShow, handleSetup, handleUpdate, handleVersion } from "./handlers/meta.mjs";
 import { handleAdversarialReview, handleReview } from "./handlers/review.mjs";
 import { handleCancel, handleRespond, handleSend, handleSteer, handleTask, handleTaskWorker } from "./handlers/task.mjs";
-import { handleAwaitArtifact, handleEvents, handleResult, handleStatus, handleSummary, handleTaskResumeCandidate, handleWait } from "./handlers/inspect.mjs";
+import { handleAwaitArtifact, handleEvents, handleResult, handleStatus, handleSummary, handleTaskResumeCandidate, handleTimeline, handleWait } from "./handlers/inspect.mjs";
 import { handleIterate, handleMerge, handleVerdict, handleVerdictsPending } from "./handlers/registry.mjs";
 import { parseCommandInput, resolveCommandCwd } from "./lib/handler-utils.mjs";
 import {
