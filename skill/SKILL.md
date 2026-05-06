@@ -474,6 +474,21 @@ Each task writes artifacts to `~/.codex-bridge/sessions/` (or `config.session_di
 
 A `{threadId}.pending.json` / `.response.json` pair appears transiently while a `requestUserInput` is in flight (consumed-on-read). `{threadId}.review.json` is written by adversarial review; `[REVIEW]` and `[PHASE]` remain reserved helper formats.
 
+## Forensics: when something fails
+
+The detached background worker dup's its stderr to `<logFile>.worker.err` (sibling of the per-job `.log`). Network errors, rate-limit replies, codex-CLI parser failures, sandbox denials, and process-level crashes land there. The bridge surfaces them two ways so first-pass triage stays in-stream:
+
+- **Event stream** — when worker.err grows during a turn, the bridge polls every 5 s and emits `[WORKER_STDERR] <threadId> | size=… | delta=… | class=…` with the last 500 bytes appended as `tail:`. Throttled to one block every 30 s with delta aggregation; one final drain runs on terminal so a stack trace written milliseconds before the worker exits still lands. `class` is a heuristic (`network`, `rate_limit`, `permission`, `crash`, `missing_dependency`, `unknown`) — always read the tail itself when triaging.
+- **Result envelope** — `result --json` populates `result.adapterResult.workerErr.{path, size_bytes, tail, truncated, error_class_hint}` when the file is non-empty. Read the `path` for full content; `tail` is bounded to ~500 bytes.
+
+```bash
+# Spot-check after a job fails:
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs result <task_id> --json | jq '.result.adapterResult.workerErr'
+
+# Or pull the full stderr file:
+cat "$(node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs result <task_id> --json | jq -r '.result.adapterResult.workerErr.path')"
+```
+
 ## Troubleshooting
 
 ```bash

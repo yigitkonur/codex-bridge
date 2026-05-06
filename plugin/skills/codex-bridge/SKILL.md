@@ -159,6 +159,13 @@ worktree and `subagent/*/<task_id>` branch by default. Pass `--keep-worktree`,
 `--keep-branch`, or `--keep-all` only when you intentionally want cancelled
 artifacts left behind for inspection.
 
+## Forensics: when something fails
+
+The detached worker dup's its stderr to `<logFile>.worker.err`. Network errors, codex-CLI parser failures, sandbox denials, and crash traces land there. The bridge surfaces them two ways:
+
+- **Event stream** — when worker.err grows mid-job, the bridge emits `[WORKER_STDERR] <threadId> | size=… | class=…` with a 500-byte tail. `class` is a heuristic hint (`network`, `rate_limit`, `permission`, `crash`, `missing_dependency`, `unknown`) — always read the tail itself when triaging.
+- **Result envelope** — `result --json` populates `result.adapterResult.workerErr.{path, size_bytes, tail, truncated, error_class_hint}` when the file is non-empty. Read the `path` for the full content.
+
 ## Pointers
 
 Everything below is owned by another canonical surface. Read those when you need the detail; don't expect SKILL.md to mirror them.

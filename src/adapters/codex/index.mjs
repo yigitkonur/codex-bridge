@@ -10,10 +10,13 @@ import {
 } from "./codex.mjs";
 import { readPendingRequestById, writeResponseFile } from "../../lib/pending-requests.mjs";
 import {
+  classifyStderr,
   readEvents,
+  readWorkerErrTail,
   resolveSessionDir,
   TERMINAL_TAG_REGEX,
   TERMINAL_TAGS,
+  WORKER_STDERR_TAIL_BYTES,
 } from "../../lib/session-log.mjs";
 import { buildSingleJobSnapshot, readStoredJob, resolveResultJob } from "../../lib/job-control.mjs";
 import { loadConfig } from "../../lib/config.mjs";
@@ -322,6 +325,28 @@ async function cancel(_jobId, options = {}) {
   };
 }
 
+// Build a `workerErr` summary for `result --json` from the per-job
+// `<logFile>.worker.err` sidecar. Returns null when there is no log file
+// path on record or the file is missing/empty — so consumers can branch
+// on `result.adapterResult.workerErr === null` without inspecting the
+// disk themselves. Task 20 / F-44 deliverable.
+function buildWorkerErrSummary(job, storedJob) {
+  const logFile = job?.logFile ?? storedJob?.logFile ?? null;
+  if (!logFile) return null;
+  const workerErrPath = `${logFile}.worker.err`;
+  const tailInfo = readWorkerErrTail(workerErrPath, WORKER_STDERR_TAIL_BYTES);
+  if (!tailInfo || tailInfo.totalBytes === 0) {
+    return null;
+  }
+  return {
+    path: workerErrPath,
+    size_bytes: tailInfo.totalBytes,
+    tail: tailInfo.tail,
+    truncated: Boolean(tailInfo.truncated),
+    error_class_hint: classifyStderr(tailInfo.tail),
+  };
+}
+
 async function getResult(jobId, options = {}) {
   const normalized = normalizeAdapterOptions(options);
   const cwd = normalized.cwd ?? process.cwd();
@@ -337,6 +362,7 @@ async function getResult(jobId, options = {}) {
     ? phaseForTerminalTag(terminalTag, storedJob?.result?.phase ?? job.phase ?? storedJob?.phase ?? job.status ?? "error")
     : (job.phase ?? storedJob?.phase ?? job.status ?? "error");
   const exitCode = exitCodeForTerminalTag(terminalTag, workerExitCode);
+  const workerErr = buildWorkerErrSummary(job, storedJob);
   return {
     jobId: job.id,
     threadId: job.threadId ?? storedJob?.threadId ?? null,
@@ -353,6 +379,7 @@ async function getResult(jobId, options = {}) {
     eventTerminalLine: eventState.line ?? null,
     summary: job.summary ?? storedJob?.summary ?? null,
     artifacts: storedJob?.result?.artifacts ?? {},
+    workerErr,
     raw: { job, storedJob },
   };
 }
