@@ -1,6 +1,15 @@
 import { build } from "esbuild";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Pin esbuild's working directory to the package root so the
+// `// node_modules/<pkg>/...` path comments it bakes into bundles are
+// canonical regardless of where `npm run build` is invoked from. Without
+// this, builds run from a git worktree (e.g. /tmp/cb-fresh-test) embed
+// `// ../../../<absolute-path>/node_modules/<pkg>/...`, which makes the
+// committed bundle drift vs CI's fresh build (CI's cwd IS the package root).
+const PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 // Dual-output build during the v2.0 plugin migration.
 //
@@ -83,6 +92,7 @@ for (const target of targets) {
     minify: false,
     sourcemap: false,
     logLevel: "info",
+    absWorkingDir: PACKAGE_ROOT,
   });
 
   await build({
@@ -95,6 +105,7 @@ for (const target of targets) {
     minify: false,
     sourcemap: false,
     logLevel: "info",
+    absWorkingDir: PACKAGE_ROOT,
   });
 
   for (const [src, suffix] of staticAssets) {
