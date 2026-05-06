@@ -10,6 +10,20 @@ Invoke the `codex-bridge:codex-bridge-runner` subagent via the `Agent` tool (`su
 Raw user request:
 $ARGUMENTS
 
+Plan-mode auto-detection:
+
+- The UserPromptSubmit hook may have written a session-scoped marker file at `${TMPDIR:-/tmp}/codex-bridge-${CODEX_BRIDGE_SESSION_ID:-default}.plan-mode-pin` after detecting a plan-related keyword in the user's prompt (e.g., "plan", "make a plan", or the Turkish forms "plana", "planla", "planlama").
+- Before routing, run a single Bash check:
+
+```bash
+MARKER="${TMPDIR:-/tmp}/codex-bridge-${CODEX_BRIDGE_SESSION_ID:-default}.plan-mode-pin"
+if [ -f "$MARKER" ]; then rm -f "$MARKER"; echo "PLAN_MODE_PIN=1"; else echo "PLAN_MODE_PIN=0"; fi
+```
+
+- If the marker existed (`PLAN_MODE_PIN=1`) and the user did not already pass `--mode default` or `--mode plan` in their request, prepend `--mode plan` before forwarding to the subagent.
+- If the user explicitly passed `--mode default` (or any explicit `--mode`), respect their choice — do NOT override.
+- The marker is one-shot: the bash command above deletes it on read so the next prompt without a plan keyword will not pin plan mode.
+
 Execution mode:
 
 - If the request includes `--background`, preserve it and route to the subagent.

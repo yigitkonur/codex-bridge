@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // UserPromptSubmit hook for codex-bridge plugin.
 //
-// Two responsibilities, both forward-looking:
+// Three responsibilities:
 //
 // 1. Rewake-signal delivery: scan the bridge state directory for the
 //    current cwd/session, then atomically claim matching
@@ -17,10 +17,13 @@
 //    worktree follow-up, or `task --resume-last` only for thread-only
 //    conversational continuation.
 //
-// Both responsibilities are no-ops in v2.0.0 until T15 lands the
-// artifact registry (jobs/) and T22 wires the rewake-signal write path.
-// The hook ships now so the registration is in place; the behavior
-// activates as the dependencies land.
+// 3. Plan-mode keyword detection: if the prompt mentions plan-related
+//    keywords (English + Turkish defaults), write a session-scoped
+//    marker file at `${TMPDIR}/codex-bridge-${SESSION_ID}.plan-mode-pin`.
+//    The next `/codex-bridge:task` invocation reads this marker, deletes
+//    it (one-shot), and forwards `--mode plan` to the dispatcher. The
+//    hook does not emit additionalContext for keyword matches: the
+//    pin is silent so the user is not surprised by a noisy hook.
 //
 // Failure mode: any error logs to ~/.codex-bridge/hook-errors and the
 // hook emits {"continue": true} — UserPromptSubmit on a clean exit
@@ -45,6 +48,18 @@ import {
 const HOOK_NAME = "user-prompt-submit";
 const RESUME_INTENT_PATTERN =
   /^\s*(continue codex|that codex one|keep going|dig deeper|continue|resume)\b/i;
+
+// Plan-mode trigger keywords. Bilingual default: English + Turkish.
+// Sorted longest-first at module load so multi-word entries like
+// "make a plan" win over the shorter "plan" substring match.
+const DEFAULT_PLAN_TRIGGER_KEYWORDS = [
+  "make a plan",
+  "planlama",
+  "plan me",
+  "planla",
+  "plana",
+  "plan",
+];
 
 function logHookError(err) {
   try {
@@ -74,6 +89,46 @@ function claimRewakeSignal(signalPath) {
   const claimedPath = `${signalPath}.claimed-${process.pid}-${Date.now()}`;
   fs.renameSync(signalPath, claimedPath);
   return claimedPath;
+}
+
+function planMarkerPath(sessionId) {
+  // Fallback "default" mirrors the slash command bash contract
+  // (`${CODEX_BRIDGE_SESSION_ID:-default}`), so single-session usage works
+  // without any env wiring.
+  const raw = sessionId ? String(sessionId) : "default";
+  const safe = raw.replace(/[^a-zA-Z0-9._-]+/g, "-") || "default";
+  return path.join(os.tmpdir(), `codex-bridge-${safe}.plan-mode-pin`);
+}
+
+function detectPlanKeyword(prompt, keywords = DEFAULT_PLAN_TRIGGER_KEYWORDS) {
+  if (typeof prompt !== "string" || !prompt.trim()) return null;
+  for (const raw of keywords) {
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    // Word-boundary anchors so "plan" matches "plan a refactor" but not
+    // "explanation" or "implementation".
+    const escaped = raw.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`, "i");
+    if (re.test(prompt)) return raw;
+  }
+  return null;
+}
+
+function maybePinPlanMode(input) {
+  const raw = input.prompt ?? input.user_prompt ?? "";
+  const prompt = typeof raw === "string" ? raw : "";
+  const matched = detectPlanKeyword(prompt);
+  if (!matched) return false;
+  const markerPath = planMarkerPath(currentSessionId(input));
+  const payload = JSON.stringify({
+    triggered_at: new Date().toISOString(),
+    matched_keyword: matched,
+    user_prompt_excerpt: prompt.slice(0, 200),
+  });
+  // Atomic write so a concurrent reader never sees a half-written marker.
+  const tmpPath = `${markerPath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, payload);
+  fs.renameSync(tmpPath, markerPath);
+  return true;
 }
 
 function consumePendingRewakeSignals(input) {
@@ -149,7 +204,15 @@ function main() {
     logHookError(err);
   }
 
-  // 2. Resume-intent detection.
+  // 2. Plan-mode keyword detection. Silent: writes a session-scoped
+  //    marker so the next /codex-bridge:task dispatch forwards --mode plan.
+  try {
+    maybePinPlanMode(input);
+  } catch (err) {
+    logHookError(err);
+  }
+
+  // 3. Resume-intent detection.
   // The actual "recent thread for this workspace" check requires the
   // artifact registry (T15). For now we only emit the suggestion when
   // the prompt clearly matches resume intent; the orchestrator can
