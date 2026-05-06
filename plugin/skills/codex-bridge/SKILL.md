@@ -135,7 +135,7 @@ The active backend's `capabilities` object names the booleans you should branch 
 
 Two IDs flow through every task. Use the right one or commands fail:
 
-- **`task_id`** (`task-mo…` / `review-mo…`) — canonical handle for `status`, `result`, `wait`, `events`, `cancel`, `merge`, `verdict`, `iterate`.
+- **`task_id`** (`task-mo…` / `review-mo…`) — canonical handle for `status`, `result`, `wait`, `events`, `timeline`, `cancel`, `merge`, `verdict`, `iterate`.
 - **`threadId`** (UUID v7 `019d…`) — required by `send` and `steer`. Also accepted by jobId-side commands as a convenience.
 
 **Don't pattern-match `[codex] Thread ready (019d…)` from stderr** — that's a threadId, not a task_id. The `--json` envelope (`result.jobId`, `result.threadId`, `result.eventsPath`, `result.monitor.tool_hint`) is the only canonical source — `result.jobId` is the canonical task handle.
@@ -165,6 +165,7 @@ Everything below is owned by another canonical surface. Read those when you need
 
 - **Per-subcommand reference** — `node …/codex-bridge.mjs <sub> --help`. The `--json` envelope's `error.code`, `error.suggestion`, and `result.next_action.command` are also self-documenting.
 - **Event stream** — `events --help` shows the supported filters. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary. v2.2.0 adds `[STALL_WARNING]` (early stall at 5 min), `[NEEDS_ATTENTION]` (alongside QUESTION/PLAN/ERROR for fan-out attention routing), `[ARTIFACT]` (new file created in worktree), and `[DRIFT_WARN]` (heuristic out-of-scope file detection).
+- **Merged timeline** — `timeline <task_id>` merges `.events`, `.ndjson`, task log, and worker stderr for forensic reconstruction. Use `--source`, `--since`, and `--format json|html` for focused analysis.
 - **Result state machine** — `references/state-machine.md` explains why `result --json` treats terminal events as authoritative and exposes `adapterResult.consistent`.
 - **Config keys** — `/codex-bridge:config show` prints the merged config with provenance; `/codex-bridge:config set <key>=<value>` writes a key to the workspace `.claude/codex-bridge.local.md`; `/codex-bridge:config explain <key>` describes a knob. After set/reset: restart Claude Code.
 - **Pipeline timeouts** — per-stage pipeline default is 12 min; for very large reviews use `task --pipeline-stage-timeout-ms <ms> --pipeline-total-timeout-ms <ms>`.

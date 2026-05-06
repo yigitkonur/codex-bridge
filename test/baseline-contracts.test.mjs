@@ -62,6 +62,17 @@ function withCliFixture(run) {
     upsertJob(workspace, job);
     writeJobFile(workspace, job.id, job);
     fs.writeFileSync(path.join(sessionDir, `${threadId}.events`), `[DONE] ${threadId} | duration=1s\n`, "utf8");
+    fs.writeFileSync(
+      path.join(sessionDir, `${threadId}.ndjson`),
+      JSON.stringify({
+        ts: "2026-04-30T00:00:00.500Z",
+        tag: "DONE",
+        method: "turn/completed",
+        threadId,
+        data: { status: 0 }
+      }) + "\n",
+      "utf8"
+    );
 
     return run({ workspace, pluginData, sessionDir, fakeBin, job });
   } finally {
@@ -148,7 +159,7 @@ test("baseline contract report verifies static gate, generated surfaces, and com
   assert.equal(report.static_gate.command, "npm run verify:static");
   assert.ok(report.generated_surfaces.some((surface) => surface.source === "src/codex-bridge.mjs"));
   assert.ok(report.generated_surfaces.some((surface) => surface.source === "hooks"));
-  assert.equal(report.json_envelope_probes.length, 9);
+  assert.equal(report.json_envelope_probes.length, 10);
   assert.deepEqual(report.ndjson_event_schema.fields, [
     "schema_version",
     "ts",
@@ -319,6 +330,13 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.equal(events.result.jobId, fixture.job.id);
     assert.equal(events.result.threadId, fixture.job.threadId);
     assert.doesNotMatch(events.stdout ?? JSON.stringify(events), /\[DONE\]/);
+
+    const timeline = parseEnvelope(runBridge(["timeline", fixture.job.id, "--json", "--cwd", fixture.workspace], fixture));
+    assertExpectedProbe(report, "timeline <job-id> --json", timeline);
+    assert.equal(timeline.command, "timeline");
+    assert.equal(timeline.result.jobId, fixture.job.id);
+    assert.equal(timeline.result.threadId, fixture.job.threadId);
+    assert.ok(Array.isArray(timeline.result.timeline));
 
     const error = runBridge(["does-not-exist", "--json"], fixture);
     assert.notEqual(error.status, 0);
