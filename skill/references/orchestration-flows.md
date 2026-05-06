@@ -22,7 +22,7 @@ task --json "prompt"
   → branch on result.next_action.command (substitute `node <scriptPath>` for `codex-bridge`)
 ```
 
-With the default `auto_review: true`, sync wall-time is turn-time + up to ~5 minutes of pipeline. A zero-diff prompt may still stall until the reviewer hits its 300 s timeout. Flip `auto_review: false` in `config.yaml` for snappier sync runs, or use async + Monitor.
+With the default `auto_review: true`, sync wall-time is turn-time + the configured pipeline budget (30 min total by default, usually much less because stages stop when their model call returns). For snappier foreground runs, use async + Monitor or pass `--no-pipeline` only when you will run review/completion checks yourself.
 
 A failed Codex turn returns the standard error envelope (`ok:false`, `error.class`, exit code per `command-reference.md`); sync does **not** return a success envelope with `phase:"error"`.
 

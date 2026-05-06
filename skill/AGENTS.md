@@ -73,8 +73,8 @@ Current default keys are:
 - `idle_timeout_ms: 300000`
 - `turn_plan_ms: 1800000`
 - `turn_default_ms: 1800000`
-- `pipeline_stage_ms: 300000`
-- `pipeline_total_ms: 900000`
+- `pipeline_stage_ms: 720000`
+- `pipeline_total_ms: 1800000`
 - `question_answer_ms: 300000`
 - `artifact_retention_jobs: 50`
 - `artifact_retention_days: 30`

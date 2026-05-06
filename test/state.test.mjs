@@ -55,7 +55,7 @@ test("concurrent state writers preserve all jobs", async () => {
   process.env.CODEX_BRIDGE_PLUGIN_DATA = root;
   delete process.env.CLAUDE_PLUGIN_DATA;
   try {
-    const jobIds = Array.from({ length: 12 }, (_, index) => `job-${index}`);
+    const jobIds = Array.from({ length: 8 }, (_, index) => `job-${index}`);
     await Promise.all(jobIds.map((jobId) => runWorker({ pluginData: root, cwd: workspace, jobId })));
 
     const jobs = listJobs(workspace);

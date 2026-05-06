@@ -4648,6 +4648,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
       `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
+      `    extend-timeout: ${commandPrefix(scriptPath, "task", cwd)} --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000 "<same prompt>"`,
       see("pipeline-stage-timeout")
     );
     return lines;
@@ -8217,8 +8218,12 @@ var DEFAULT_CONFIG = {
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
   // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
-  pipeline_stage_ms: 3e5,
-  pipeline_total_ms: 9e5,
+  // Raise the default stage budget from the old 5-minute floor to a
+  // 12-minute median-task budget; pipeline total follows at 30 minutes so
+  // review + fix + check can all complete without making runaway calls
+  // unbounded. Small tasks still finish as soon as their model calls return.
+  pipeline_stage_ms: 72e4,
+  pipeline_total_ms: 18e5,
   // How long `requestUserInput` waits for a human/orchestrator to answer
   // before rejecting the server request. Five minutes is tight for thoughtful
   // decisions; make it configurable so a slow loop can widen the window
@@ -10037,8 +10042,8 @@ function reviewResultTypeError(message, field) {
 }
 
 // src/adapters/codex/pipeline.mjs
-var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;
-var STAGE_TIMEOUT_MS_DEFAULT = 3e5;
+var PIPELINE_TIMEOUT_MS_DEFAULT = 18e5;
+var STAGE_TIMEOUT_MS_DEFAULT = 72e4;
 function loadExecuteInstructions(rootDir) {
   const p = path12.join(rootDir, "templates", "execute-instructions.md");
   try {
@@ -14018,7 +14023,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         const failedStage = pipelineResult.failing_stage ?? (pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff");
         const nextAction = pipelineErrored ? {
           command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
-          description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`
+          description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, rerun with a larger --pipeline-stage-timeout-ms / --pipeline-total-timeout-ms budget.`
         } : {
           command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
           description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."

@@ -51,7 +51,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --mode default "Re
   | jq '.result.phase, .result.jobId'
 ```
 
-Sync `task --json` **blocks through the entire auto-pipeline** (review + completion check). With the default `auto_review: true`, a prompt with no code work still waits through the reviewer's stage timeout before returning. For interactive or low-latency work: pass `--no-pipeline`, set `auto_review: false` in `config.yaml`, or use the async pattern below.
+Sync `task --json` **blocks through the entire auto-pipeline** (review + completion check). With the default `auto_review: true`, a prompt with no code work can still wait for the reviewer stage before returning. For interactive or low-latency work, prefer the async pattern below; pass `--no-pipeline` only when you will run review/completion checks yourself.
 
 **Async (long tasks, plan approval, questions via `requestUserInput`):** launch in the background and tail the events file with Monitor. Every `task --json` (background or foreground) returns `result.monitor.tool_hint` — pass it directly to Claude Code's Monitor tool. Full pattern in "Starting a Task" below.
 
@@ -106,8 +106,8 @@ Six independent timeout budgets, each resolved `CLI flag → config.yaml key →
 |---|---|---|---|
 | Plan turn | 30 min | `turn_plan_ms` | `--turn-plan-ms` |
 | Execute turn (also send turns in default mode) | 30 min | `turn_default_ms` | `--turn-default-ms` (task) / `--turn-timeout-ms` (send) |
-| Per-stage pipeline (review/fix/check) | 5 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
-| Pipeline total | 15 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
+| Per-stage pipeline (review/fix/check) | 12 min | `pipeline_stage_ms` | `--pipeline-stage-timeout-ms` |
+| Pipeline total | 30 min | `pipeline_total_ms` | `--pipeline-total-timeout-ms` |
 | Question unanswered (server request rejected) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | No-event idle (per turn) | 5 min | `idle_timeout_ms` | `--idle-timeout-ms` |
 
@@ -195,7 +195,7 @@ That footer is your source of truth — do **not** pattern-match the `Thread rea
 | `--quiet` | Suppresses the `[codex] …` stderr progress stream | You want a clean console and rely on `events --follow` or Monitor |
 | `--turn-default-ms <ms>` | Override per-turn timeout for execute turns | Large scaffolds that legitimately need >10 min |
 | `--turn-plan-ms <ms>` | Override per-turn timeout for plan turns | Long-form planning across many specs |
-| `--pipeline-stage-timeout-ms <ms>` | Override per-stage pipeline budget | Large diffs; native reviewer needs longer |
+| `--pipeline-stage-timeout-ms <ms>` | Override per-stage pipeline budget | Very large diffs; native reviewer needs longer than 12 min |
 | `--pipeline-total-timeout-ms <ms>` | Override total pipeline budget | Very large runs |
 | `--question-timeout-ms <ms>` | How long `requestUserInput` waits before rejecting the unanswered request | Slow loops / humans deliberating |
 | `--idle-timeout-ms <ms>` | Override the no-event idle watchdog | Reasoning-heavy tasks that go quiet between app-server events |
@@ -204,7 +204,7 @@ All values are milliseconds; malformed (non-positive / non-numeric) inputs throw
 
 ```bash
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --mode default --background \
-  --turn-default-ms 1800000 --pipeline-stage-timeout-ms 600000 --json \
+  --turn-default-ms 1800000 --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000 --json \
   "Bootstrap a complete Xcode project from the plan in ./docs/phase-1.md"
 ```
 

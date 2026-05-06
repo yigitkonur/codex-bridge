@@ -41,8 +41,10 @@ test("malformed config yaml is reported and ignored for runtime merge", () => {
   assert.ok(layers.diagnostics.some((d) => d.code === "CONFIG_PARSE_ERROR" && d.source === "skill-dir"));
 });
 
-test("new cleanup and redaction defaults are present in merged config", () => {
+test("runtime defaults include calibrated pipeline and retention budgets", () => {
   const layers = loadConfigLayers(null, null, null);
+  assert.equal(layers.mergedConfig.pipeline_stage_ms, 720_000);
+  assert.equal(layers.mergedConfig.pipeline_total_ms, 1_800_000);
   assert.equal(layers.mergedConfig.artifact_retention_jobs, 50);
   assert.equal(layers.mergedConfig.artifact_retention_days, 30);
   assert.equal(layers.mergedConfig.redact_secrets, false);

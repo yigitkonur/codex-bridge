@@ -143,6 +143,34 @@ test("auto-pipeline caps review withTimeout by remaining total budget", async ()
   }
 });
 
+test("auto-pipeline fallback budgets match calibrated runtime defaults", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-default-budgets",
+      cwd: root,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: false,
+        post_task_prompt: "",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub([]),
+      runAppServerReview: makeReviewStub([]),
+      jobId: "job-default-budgets",
+    });
+
+    assert.equal(result.stageTimeoutMs, 720_000);
+    assert.equal(result.totalTimeoutMs, 1_800_000);
+    assert.deepEqual(result.completedStages, ["diff"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("auto-pipeline treats qualified clean review wording as approved", async () => {
   const { root, session } = makeTempSession();
   try {
