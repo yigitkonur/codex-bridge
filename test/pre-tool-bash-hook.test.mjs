@@ -5,17 +5,18 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const root = new URL("../", import.meta.url);
 const hookPath = fileURLToPath(new URL("plugin/hooks/pre-tool-bash.mjs", root));
 const rootPath = fileURLToPath(root);
 
-function runHook(command, extraEnv = {}, cwd = rootPath) {
-  const input = JSON.stringify({
-    tool_name: "Bash",
-    cwd,
-    tool_input: { command },
-  });
+function runHook(command, extraEnv = {}, cwd = undefined) {
+  const inputObj = { tool_name: "Bash", tool_input: { command } };
+  if (cwd !== undefined) inputObj.cwd = cwd;
+  const input = JSON.stringify(inputObj);
   const result = spawnSync(process.execPath, [hookPath], {
     input,
     encoding: "utf8",
