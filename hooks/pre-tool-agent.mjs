@@ -43,7 +43,7 @@ const MONITOR_VALUE_FLAGS = new Set([
 ]);
 
 const DEFAULT_ROUTING = {
-  Explore: { backend: "codex", mode: "read-only" },
+  Explore: { backend: "codex", mode: "default" },
   Plan: "pass-through",
   "general-purpose": "pass-through",
 };

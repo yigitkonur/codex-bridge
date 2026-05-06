@@ -32,6 +32,23 @@ Delegate coding tasks to Codex and manage the workflow via Monitor notifications
 into writes or the project config sets a wider sandbox. For file-changing work,
 use `--write`; for bridge-managed isolation, pair it with `--worktree-auto`.
 
+**Sandbox enforcement:** users who pin a sandbox policy can opt into enforcement
+that orchestrators cannot silently downgrade with `--read-only`:
+
+```yaml
+codex_bridge:
+  sandbox_policy: "danger-full-access"
+  sandbox_enforce: true
+```
+
+Run `/codex-bridge:setup --enforce-sandbox` once to install the Claude
+permission-layer deny rules. The bridge also denies `task --read-only` in the
+PreToolUse Bash hook when `sandbox_enforce: true`, and Explore agent reroutes
+use `--write --worktree-auto` instead of `--read-only`. Known limitations:
+auto-pipeline check, standalone `review`, standalone `adversarial-review`, and
+the stop-time review gate run read-only by design; disable the stop-time review
+gate when enforcing sandbox pins.
+
 ## Identifiers (the single biggest source of derailment — read this first)
 
 Two kinds of IDs flow through every task. Use the right one or commands fail:

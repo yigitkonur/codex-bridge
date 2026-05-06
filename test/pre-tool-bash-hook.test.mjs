@@ -97,3 +97,35 @@ test("PreToolUse(Bash) rewrite suggestion does not corrupt task-bearing paths", 
     /task --worktree-auto-runner/,
   );
 });
+
+test("PreToolUse(Bash) denies read-only bridge tasks when sandbox enforcement is enabled", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-sandbox-enforce-"));
+  try {
+    fs.writeFileSync(path.join(temp, "config.yaml"), "codex_bridge:\n  sandbox_enforce: true\n");
+    const output = runHook('codex-bridge task --read-only "audit"', {}, temp);
+
+    assert.equal(isDenied(output), true);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /sandbox\.enforce: true/);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /--read-only is forbidden/);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("PreToolUse(Bash) honors cwd sandbox enforcement opt-out over workspace config", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-sandbox-precedence-"));
+  try {
+    const workspace = path.join(temp, "workspace");
+    const child = path.join(workspace, "child");
+    fs.mkdirSync(child, { recursive: true });
+    spawnSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    fs.writeFileSync(path.join(workspace, "config.yaml"), "codex_bridge:\n  sandbox_enforce: true\n");
+    fs.writeFileSync(path.join(child, "config.yaml"), "codex_bridge:\n  sandbox_enforce: false\n");
+
+    assert.deepEqual(runHook('codex-bridge task --read-only "audit"', {}, child), {
+      continue: true,
+    });
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
