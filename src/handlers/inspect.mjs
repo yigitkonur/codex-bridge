@@ -826,7 +826,10 @@ function collectWaitReferences(positionals, jobsOption) {
 function resolveWaitTargets(cwd, references) {
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  return references.map((reference) => {
+  const targets = [];
+  const seenJobIds = new Set();
+  const seenThreadIds = new Set();
+  for (const reference of references) {
     let job;
     try {
       job = resolveResultJob(cwd, reference).job;
@@ -840,12 +843,18 @@ function resolveWaitTargets(cwd, references) {
     if (!job?.threadId) {
       throw notFoundError(`Job ${job?.id ?? reference} has no thread id yet.`, "JOB_HAS_NO_THREAD");
     }
-    return {
+    if ((job.id && seenJobIds.has(job.id)) || seenThreadIds.has(job.threadId)) {
+      continue;
+    }
+    if (job.id) seenJobIds.add(job.id);
+    seenThreadIds.add(job.threadId);
+    targets.push({
       reference,
       job,
       eventsPath: path.join(sessionDir, `${job.threadId}.events`),
-    };
-  });
+    });
+  }
+  return targets;
 }
 
 function matchWaitLine(line, tags) {

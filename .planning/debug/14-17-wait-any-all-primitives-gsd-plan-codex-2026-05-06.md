@@ -85,6 +85,8 @@ Yes. The critique overstates one historical detail for this checkout: `wait --an
 | 14.17 | `codex-bridge wait --any --predicate both task-a task-b --json` returns on `[QUESTION]`, `[PLAN]`, `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, or `[CANCELLED]` with the matching job id and event path. |
 | 14.17 | `codex-bridge wait --any --predicate error ...` ignores `[DONE]` and returns on `[ERROR]` or `[INCOMPLETE]`. |
 | 14.17 | Timeout exits with code 7 / `WAIT_TIMEOUT` and includes matched and pending targets in the JSON error details. |
+| 14.17 | Passing the same job by job id and thread id waits once, not until a phantom duplicate target times out. |
+| 14.17 | A wait started before the `.events` file exists returns when the file is later created with a matching event. |
 | 14.17 | `wait --help`, `/codex-bridge:wait`, SKILL docs, README, and generated bundles advertise the same flags and predicates. |
 
 ## Out Of Scope

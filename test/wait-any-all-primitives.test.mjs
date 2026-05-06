@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,6 +50,32 @@ function runBridge(fixture, args) {
     cwd: fixture.workspace,
     env,
     encoding: "utf8",
+  });
+}
+
+function spawnBridge(fixture, args) {
+  const env = {
+    ...process.env,
+    CODEX_BRIDGE_PLUGIN_DATA: fixture.pluginData,
+    CODEX_BRIDGE_NO_UPDATE_CHECK: "1",
+  };
+  delete env.CLAUDE_PLUGIN_DATA;
+  return spawn(process.execPath, [bridgePath, ...args, "--cwd", fixture.workspace], {
+    cwd: fixture.workspace,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function waitForProcess(child) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (status, signal) => resolve({ status, signal, stdout, stderr }));
   });
 }
 
@@ -171,6 +197,40 @@ test("wait --all timeout returns partial progress in JSON errors", () => {
   }
 });
 
+test("wait --all de-duplicates job and thread aliases", () => {
+  const fixture = makeFixture("codex-bridge-wait-dedupe-");
+  const restoreEnv = useFixtureStateRoot(fixture);
+  try {
+    writeJob(fixture, {
+      id: "task-wait-dedupe",
+      threadId: "thread-wait-dedupe",
+      status: "completed",
+      phase: "done",
+      events: "[DONE] thread-wait-dedupe completed in 1s | 0 files | +0 -0\n",
+    });
+
+    const result = runBridge(fixture, [
+      "wait",
+      "--all",
+      "task-wait-dedupe",
+      "thread-wait-dedupe",
+      "--json",
+    ]);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const envelope = JSON.parse(result.stdout);
+    assert.equal(envelope.result.summary.total, 1);
+    assert.equal(envelope.result.summary.pending, 0);
+    assert.deepEqual(
+      envelope.result.jobs.map((job) => job.jobId),
+      ["task-wait-dedupe"],
+    );
+  } finally {
+    restoreEnv();
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("wait --any error predicate ignores successful terminal jobs", () => {
   const fixture = makeFixture("codex-bridge-wait-any-error-");
   const restoreEnv = useFixtureStateRoot(fixture);
@@ -280,6 +340,41 @@ test("wait --any can wake on an interrupt predicate before terminal events", () 
     assert.equal(envelope.result.terminalTag, null);
     assert.equal(envelope.result.interruptTag, "QUESTION");
     assert.equal(envelope.result.winner.eventsPath.endsWith("thread-wait-any-question.events"), true);
+  } finally {
+    restoreEnv();
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("wait observes an events file created after wait starts", async () => {
+  const fixture = makeFixture("codex-bridge-wait-live-file-");
+  const restoreEnv = useFixtureStateRoot(fixture);
+  try {
+    writeJob(fixture, {
+      id: "task-wait-live",
+      threadId: "thread-wait-live",
+      events: null,
+    });
+
+    const child = spawnBridge(fixture, [
+      "wait",
+      "task-wait-live",
+      "--timeout-ms",
+      "4000",
+      "--json",
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    fs.writeFileSync(
+      path.join(fixture.sessionDir, "thread-wait-live.events"),
+      "[DONE] thread-wait-live completed in 1s | 0 files | +0 -0\n",
+      "utf8",
+    );
+    const result = await waitForProcess(child);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const envelope = JSON.parse(result.stdout);
+    assert.equal(envelope.result.jobId, "task-wait-live");
+    assert.equal(envelope.result.terminalTag, "DONE");
   } finally {
     restoreEnv();
     fs.rmSync(fixture.root, { recursive: true, force: true });

@@ -20,8 +20,11 @@ const STATE_FILE_NAME = "state.json";
 const STATE_LOCK_FILE_NAME = "state.lock";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
-const LOCK_TIMEOUT_MS = 5_000;
 const STALE_LOCK_MS = 30_000;
+// Wait long enough to reach stale-lock recovery under real contention. A
+// shorter timeout can fail before this process ever gets a chance to reap a
+// stale sibling lock.
+const LOCK_TIMEOUT_MS = 35_000;
 const STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
 
 function nowIso() {

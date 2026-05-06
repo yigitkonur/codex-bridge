@@ -139,7 +139,8 @@ test("events --follow treats PLAN as terminal", () => {
     const envelope = JSON.parse(result.stdout);
     assert.equal(envelope.ok, true);
     assert.equal(envelope.result.followed, true);
-    assert.equal(envelope.result.timedOut, undefined);
+    assert.equal(envelope.result.timedOut, false);
+    assert.equal(envelope.result.terminalTag, "PLAN");
   } finally {
     if (previousBridgePluginData == null) {
       delete process.env.CODEX_BRIDGE_PLUGIN_DATA;

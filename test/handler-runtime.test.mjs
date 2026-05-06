@@ -641,7 +641,14 @@ test("barren checkpoint windows emit stall warnings before terminal stall", asyn
             status: "completed",
             exitCode: 0,
           }, { threadId });
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          const eventsPath = path.join(process.env.HOME, ".codex-bridge", "sessions", `${threadId}.events`);
+          const deadline = Date.now() + 5_000;
+          while (Date.now() < deadline) {
+            if (fs.existsSync(eventsPath) && fs.readFileSync(eventsPath, "utf8").includes("StallDetected")) {
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
           return {
             status: 0,
             threadId,
@@ -674,6 +681,11 @@ test("barren checkpoint windows emit stall warnings before terminal stall", asyn
         assert.ok(warningIndex < errorIndex, events);
         assert.match(events, /remaining_until_terminal:/);
         assert.match(events, /StallDetected/);
+        assert.doesNotMatch(events, /\[DONE\]/);
+        assert.doesNotMatch(events, /\[PIPELINE:done\]/);
+        assert.equal(execution.exitStatus, 1);
+        assert.equal(execution.payload.phase, "error");
+        assert.equal(execution.payload.errorCode, "StallDetected");
 
         const ndjson = fs.readFileSync(execution.session.ndjsonPath, "utf8");
         assert.match(ndjson, /"tag":"STALL_WARNING"/);

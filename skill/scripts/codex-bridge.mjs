@@ -1940,8 +1940,8 @@ var STATE_FILE_NAME = "state.json";
 var STATE_LOCK_FILE_NAME = "state.lock";
 var JOBS_DIR_NAME = "jobs";
 var MAX_JOBS = 50;
-var LOCK_TIMEOUT_MS = 5e3;
 var STALE_LOCK_MS = 3e4;
+var LOCK_TIMEOUT_MS = 35e3;
 function nowIso() {
   return (/* @__PURE__ */ new Date()).toISOString();
 }
@@ -5121,7 +5121,7 @@ function fmtSeconds(ms) {
 }
 var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE", "PLAN", "CANCELLED"]);
 var TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN|CANCELLED)\]/m;
-var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "CHECKPOINT"]);
+var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "DIRECTIVES", "CHECKPOINT"]);
 function formatTailCommand({ scriptPath, jobId, timeoutMs = 18e5, exclude = DEFAULT_MONITOR_EXCLUDE, cwd = null }) {
   const excludeClause = exclude && exclude.length > 0 ? ` --exclude ${Array.from(exclude).join(",")}` : "";
   return `${commandPrefix(scriptPath, "events", cwd)} ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
@@ -12837,7 +12837,7 @@ var COMMANDS = Object.freeze({
     synopsis: "events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclude <tags>] [--timeout-ms <ms>] [--json]",
     summary: "Stream the target's events file. `--filter` keeps only listed tags (inclusion); `--exclude` drops listed tags and shows everything else (exclusion \u2014 forward-compatible default for Monitor). Flags are mutually exclusive.",
     examples: [
-      "codex-bridge events task-abc --follow --exclude HEARTBEAT,CHECKPOINT  # default Monitor shape",
+      "codex-bridge events task-abc --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT  # default Monitor shape",
       "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED  # narrow inclusion view",
       "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT --timeout-ms 600000  # include verbose checkpoints"
     ]
@@ -14573,6 +14573,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
+  let stallTerminalDetected = false;
   const markTerminalEmitted = () => {
     terminalEmitted = true;
   };
@@ -14799,7 +14800,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
             barrenCheckpoints: checkpointState.barrenCheckpoints,
             windowMs: stallWindowMs
           });
-          terminalEmitted = true;
+          stallTerminalDetected = true;
+          markTerminalEmitted();
           stopCheckpoint();
           stopHeartbeat();
         } catch {
@@ -14921,6 +14923,36 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         ...extras
       };
     };
+    if (stallTerminalDetected) {
+      const nextAction = buildTurnErrorNextAction({
+        origin: "bridge",
+        errorCode: "StallDetected",
+        threadId: result.threadId,
+        jobId: request.jobId ?? null,
+        cwd: request.cwd,
+        stateCwd
+      });
+      const stallError = new CliError(
+        `No actionable items in ${STALL_CHECKPOINT_THRESHOLD} consecutive checkpoint windows.`,
+        {
+          class: "timeout",
+          code: "StallDetected",
+          retryable: false,
+          origin: "bridge",
+          nextAction,
+          suggestion: "Inspect the events file, then cancel or steer the stalled thread if it is still running."
+        }
+      );
+      setPhase("error", nextAction, {
+        errorCode: "StallDetected",
+        monitor,
+        stall: {
+          barrenCheckpoints: checkpointState.barrenCheckpoints,
+          windowMs: STALL_TERMINAL_THRESHOLD_MS
+        }
+      });
+      return { ...result, session, exitStatus: 1, error: stallError };
+    }
     if (result.exitStatus !== 0 && result.error) {
       const errorMessage = String(result.error.message ?? result.error);
       const origin = classifyTurnErrorOrigin(result.error);
@@ -17532,7 +17564,10 @@ function collectWaitReferences(positionals, jobsOption) {
 function resolveWaitTargets(cwd, references) {
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  return references.map((reference) => {
+  const targets = [];
+  const seenJobIds = /* @__PURE__ */ new Set();
+  const seenThreadIds = /* @__PURE__ */ new Set();
+  for (const reference of references) {
     let job;
     try {
       job = resolveResultJob(cwd, reference).job;
@@ -17546,12 +17581,18 @@ function resolveWaitTargets(cwd, references) {
     if (!job?.threadId) {
       throw notFoundError(`Job ${job?.id ?? reference} has no thread id yet.`, "JOB_HAS_NO_THREAD");
     }
-    return {
+    if (job.id && seenJobIds.has(job.id) || seenThreadIds.has(job.threadId)) {
+      continue;
+    }
+    if (job.id) seenJobIds.add(job.id);
+    seenThreadIds.add(job.threadId);
+    targets.push({
       reference,
       job,
       eventsPath: path21.join(sessionDir, `${job.threadId}.events`)
-    };
-  });
+    });
+  }
+  return targets;
 }
 function matchWaitLine(line, tags) {
   const m = /^\[([^\]]+)\]/.exec(line);

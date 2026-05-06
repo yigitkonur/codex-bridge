@@ -2076,6 +2076,7 @@ export async function runBridgeTask(request) {
   // finally-backstop reads this flag instead of scanning the events file —
   // O(1) vs reading a multi-MB log.
   let terminalEmitted = false;
+  let stallTerminalDetected = false;
   const markTerminalEmitted = () => { terminalEmitted = true; };
   const checkpointState = {
     startTime: Date.now(),
@@ -2359,7 +2360,8 @@ export async function runBridgeTask(request) {
             barrenCheckpoints: checkpointState.barrenCheckpoints,
             windowMs: stallWindowMs,
           });
-          terminalEmitted = true;
+          stallTerminalDetected = true;
+          markTerminalEmitted();
           // Stop the timers after emission — no point re-running git shell-
           // outs and re-checking a now-settled stall. Heartbeat stops too
           // because a stalled-but-still-running turn generates no new signal
@@ -2546,6 +2548,37 @@ export async function runBridgeTask(request) {
       ...extras
     };
   };
+
+  if (stallTerminalDetected) {
+    const nextAction = buildTurnErrorNextAction({
+      origin: "bridge",
+      errorCode: "StallDetected",
+      threadId: result.threadId,
+      jobId: request.jobId ?? null,
+      cwd: request.cwd,
+      stateCwd,
+    });
+    const stallError = new CliError(
+      `No actionable items in ${STALL_CHECKPOINT_THRESHOLD} consecutive checkpoint windows.`,
+      {
+        class: "timeout",
+        code: "StallDetected",
+        retryable: false,
+        origin: "bridge",
+        nextAction,
+        suggestion: "Inspect the events file, then cancel or steer the stalled thread if it is still running.",
+      }
+    );
+    setPhase("error", nextAction, {
+      errorCode: "StallDetected",
+      monitor,
+      stall: {
+        barrenCheckpoints: checkpointState.barrenCheckpoints,
+        windowMs: STALL_TERMINAL_THRESHOLD_MS,
+      },
+    });
+    return { ...result, session, exitStatus: 1, error: stallError };
+  }
 
   if (result.exitStatus !== 0 && result.error) {
     const errorMessage = String(result.error.message ?? result.error);

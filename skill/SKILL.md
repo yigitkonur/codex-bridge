@@ -156,7 +156,7 @@ Tags in the stream fall into two semantic buckets. Orchestrators should handle t
 - `[WARNING]` — circuit-breaker hit (e.g. headless-env osascript loop); cancel/steer if needed.
 - `[CONFIRMED]` — a `[QUESTION]` got an answer; no action, just lifecycle trace.
 
-**Unknown tags pass through.** The default is `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`, so any tag a future bridge version emits reaches the orchestrator verbatim while pure liveness, runtime-config echoes, and verbose checkpoint bodies stay out. Your code should tolerate tags beyond this list — if you see `[FUTURE_TAG_V1_5] …`, show it and move on; don't assume the vocabulary is closed.
+**Unknown tags pass through.** The default is `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`, so any tag a future bridge version emits reaches the orchestrator verbatim while pure liveness, runtime echoes, and verbose checkpoint bodies stay out. Your code should tolerate tags beyond this list — if you see `[FUTURE_TAG_V1_5] …`, show it and move on; don't assume the vocabulary is closed.
 
 **Heads up — `[ERROR]` is ambiguous:** the events-file `[ERROR]` fires for *any* turn-level failure, including an auto-pipeline sub-stage timeout, while the sync `task --json` envelope for the same run can still report `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` populated. Monitor self-terminates either way; treat `[ERROR]` as "something broke — read `origin:` on the error line and `result.pipeline.error` in the envelope before retrying." Full triage in [references/error-recovery.md](references/error-recovery.md).
 

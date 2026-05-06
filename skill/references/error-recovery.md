@@ -22,7 +22,7 @@ Codex-bridge maps every failure to a semantic exit code and a structured error e
 ### CLI-boundary codes introduced in the current build
 
 - `INVALID_THREAD_ID` — validation, exit 6. `send`/`steer` rejected a non-UUID thread id. Suggestion points at the canonical UUID v7 shape (`019d9a86-1c8a-7f41-8032-6c76bbe730a1`); no `thr_` prefix.
-- `WAIT_TIMEOUT` — timeout, exit 7. `wait` exceeded `--timeout-ms` with no terminal tag. `retryable: true` — agents may re-dispatch after checking `status <id>`.
+- `WAIT_TIMEOUT` — timeout, exit 7. `wait` exceeded `--timeout-ms` before the requested predicate matched. `retryable: true` — agents may re-dispatch after checking `status <id>`.
 - `REVIEW_EMPTY_DIFF` — validation, exit 6. `review --scope working-tree` (or `--scope auto` resolving there) against a clean tree and index. No billed Codex turn is spent; make a change and retry.
 - `UNKNOWN_SUBCOMMAND` — usage, exit 2. Typo at the subcommand slot. Human-readable error + suggestion go to stderr; pass `--json` to receive the structured envelope. Agents should fall back to `help --json` to enumerate valid subcommands.
 

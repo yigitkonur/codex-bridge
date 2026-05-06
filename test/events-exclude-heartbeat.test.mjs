@@ -178,7 +178,7 @@ test("events with default monitor exclude preserves checkpoint summary but drops
     // as a member, doubled trailing backslash) that happened to work for our
     // test data but would mis-escape any tag containing brackets/backslashes.
     const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    for (const tag of ["CHECKPOINT_SUMMARY", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "STALL_WARNING", "WARNING", "INCOMPLETE"]) {
+    for (const tag of ["DIRECTIVES", "CHECKPOINT_SUMMARY", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "STALL_WARNING", "WARNING", "INCOMPLETE"]) {
       assert.match(result.stdout, new RegExp(`\\[${escapeRegExp(tag)}\\]`), `${tag} should pass through`);
     }
     assert.doesNotMatch(result.stdout, /\[DIRECTIVES\]/);
