@@ -9,7 +9,7 @@ Use the literal `tool_hint` from the envelope in the parent thread. Do not wrap 
 ```json
 {
   "description": "codex-bridge events for <task_id>",
-  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs\" events <task_id> --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000",
+  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs\" events <task_id> --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000",
   "timeout_ms": 1800000,
   "persistent": false
 }
@@ -17,7 +17,7 @@ Use the literal `tool_hint` from the envelope in the parent thread. Do not wrap 
 
 Why these defaults:
 
-- `--exclude HEARTBEAT,CHECKPOINT` — heartbeats are pure liveness and full checkpoints are verbose forensic blocks. `[CHECKPOINT_SUMMARY]` remains visible; future tags pass through (forward-compat).
+- `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT` — heartbeats are pure liveness and full checkpoints are verbose forensic blocks. `[CHECKPOINT_SUMMARY]` remains visible; future tags pass through (forward-compat).
 - `--timeout-ms 1800000` (30 min) — covers most write-mode tasks; adjust manually for unusually long runs.
 - `persistent: false` — Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`/`[PLAN]`/`[CANCELLED]` and shouldn't keep running.
 

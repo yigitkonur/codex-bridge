@@ -145,7 +145,7 @@ Plan mode defaults to `effort: xhigh`, but an explicit `--effort` is honored. Em
 
 `--mode default` + `--write` skips the plan turn and runs execution directly under `workspaceWrite` (or `danger-full-access` if configured). The override flows through `buildTaskRequest` → stored job record → detached worker, so `task --background --mode default` executes in default mode as expected.
 
-Every `task` launch success envelope includes `result.runtime` with requested/effective mode, model, effort, per-stage models, enabled pipeline stages, and warning strings when a resolved value differs. It also includes `result.monitor = { command, shell_fallback, terminal_tags, exclude_tags, timeout_ms, tool_hint }`. `result.monitor.command` is a ready-to-paste `node <scriptPath> events <jobId> --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000` invocation (v1.4.0 switched the Monitor default to exclusion-based filtering so future tags pass through — `exclude_tags` names the excluded list); `result.monitor.tool_hint` is the argument object for the `Monitor` tool (`description`, `command`, `timeout_ms`, `persistent`).
+Every `task` launch success envelope includes `result.runtime` with requested/effective mode, model, effort, per-stage models, enabled pipeline stages, and warning strings when a resolved value differs. It also includes `result.monitor = { command, shell_fallback, terminal_tags, exclude_tags, timeout_ms, tool_hint }`. `result.monitor.command` is a ready-to-paste `node <scriptPath> events <jobId> --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000` invocation (v1.4.0 switched the Monitor default to exclusion-based filtering so future tags pass through — `exclude_tags` names the excluded list); `result.monitor.tool_hint` is the argument object for the `Monitor` tool (`description`, `command`, `timeout_ms`, `persistent`).
 
 Thread IDs returned by `task` are UUID v7 strings (e.g. `019d9a86-1c8a-7f41-8032-6c76bbe730a1`). There is no `thr_` prefix; do not build regexes that assume one.
 
@@ -401,7 +401,7 @@ Without `--follow`, the command dumps existing lines (filtered/excluded) and exi
     "eventsPath": "/abs/path/to/events",
     "followed": true,
     "filter": null,
-    "exclude": "HEARTBEAT,CHECKPOINT",
+    "exclude": "HEARTBEAT,DIRECTIVES,CHECKPOINT",
     "timedOut": false,
     "terminalTag": "DONE",
     "terminalLine": "[DONE] 019d… completed in 4s | 1 files | +2 -0",
@@ -423,14 +423,14 @@ Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutu
     "eventsPath": "/abs/path/to/events",
     "followed": false,
     "filter": null,
-    "exclude": "HEARTBEAT,CHECKPOINT"
+    "exclude": "HEARTBEAT,DIRECTIVES,CHECKPOINT"
   }
 }
 ```
 
 `result.followed` is the boolean coercion of the `--follow` flag (`Boolean(options.follow)`) — `true` when `--follow` was passed and a terminal tag was already in the initial dump; `false` when `--follow` was omitted entirely. If `--follow` short-circuits on an already-present terminal tag, the envelope includes `timedOut: false`, `terminalTag`, `terminalLine`, and `elapsedMs: 0`. When `--follow` was omitted entirely, those watcher fields are absent.
 
-**Recommended shape:** `--exclude HEARTBEAT,CHECKPOINT`. Every tag the bridge emits passes except the 60-s liveness pulse and verbose checkpoint body; `[CHECKPOINT_SUMMARY]` remains visible for live progress. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
+**Recommended shape:** `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`. Every tag the bridge emits passes except the 60-s liveness pulse and verbose checkpoint body; `[CHECKPOINT_SUMMARY]` remains visible for live progress. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
 
 ## setup
 

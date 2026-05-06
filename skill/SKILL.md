@@ -156,7 +156,7 @@ Tags in the stream fall into two semantic buckets. Orchestrators should handle t
 - `[WARNING]` — circuit-breaker hit (e.g. headless-env osascript loop); cancel/steer if needed.
 - `[CONFIRMED]` — a `[QUESTION]` got an answer; no action, just lifecycle trace.
 
-**Unknown tags pass through.** The default is `--exclude HEARTBEAT,CHECKPOINT`, so any tag a future bridge version emits reaches the orchestrator verbatim while pure liveness, startup/runtime echoes, and verbose checkpoint bodies stay out. Your code should tolerate tags beyond this list — if you see `[FUTURE_TAG_V1_5] …`, show it and move on; don't assume the vocabulary is closed.
+**Unknown tags pass through.** The default is `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`, so any tag a future bridge version emits reaches the orchestrator verbatim while pure liveness, startup/runtime echoes, and verbose checkpoint bodies stay out. Your code should tolerate tags beyond this list — if you see `[FUTURE_TAG_V1_5] …`, show it and move on; don't assume the vocabulary is closed.
 
 **Heads up — `[ERROR]` is ambiguous:** the events-file `[ERROR]` fires for *any* turn-level failure, including an auto-pipeline sub-stage timeout, while the sync `task --json` envelope for the same run can still report `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` populated. Monitor self-terminates either way; treat `[ERROR]` as "something broke — read `origin:` on the error line and `result.pipeline.error` in the envelope before retrying." Full triage in [references/error-recovery.md](references/error-recovery.md).
 
@@ -197,7 +197,7 @@ worktree for thread-only resume.
 **Fallback when `jq` isn't available.** Rendered (non-JSON) output ends with a one-line footer printed verbatim after Codex's final message:
 
 ```
-Job: task-mo5xxxxx-yyyyyy · Events: /Users/you/.codex-bridge/sessions/<threadId>.events · Monitor: node … events task-mo5xxxxx-yyyyyy --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000
+Job: task-mo5xxxxx-yyyyyy · Events: /Users/you/.codex-bridge/sessions/<threadId>.events · Monitor: node … events task-mo5xxxxx-yyyyyy --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000
 ```
 
 That footer is your source of truth — do **not** pattern-match the `Thread ready (019d…)` line from stderr progress. The footer's `Job:` field is the `jobId`.
@@ -385,7 +385,7 @@ Day-to-day work rarely needs these; the references have full details.
 - **Result state truth:** `result <job-id> --json` derives `adapterResult.terminalTag` from `.events` when available and reports worker/event divergence via `adapterResult.consistent`; see [references/state-machine.md](references/state-machine.md).
 - **Final answer extraction:** `result <job-id> --transcript --final-only --format text` prints the stored final assistant message without requiring NDJSON queries.
 - **Block on event predicates without streaming:** `wait <job-id> --timeout-ms 600000 --json` preserves the legacy single-job terminal payload. For fan-in, use `wait --all --jobs "id1 id2"` or `wait --any --predicate both id1 id2`; predicates are `terminal`, `interrupt`, `error`, and `both`. Exit 7 `WAIT_TIMEOUT` on deadline.
-- **Stream events with filters:** default shape is `events <job-id> --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000`. Exclusion-based filter (v1.4.0) means any new tag future bridge versions emit passes through automatically — an inclusion-based `--filter X,Y,Z` silently drops unknown tags and is *not* forward-compatible. `--filter` and `--exclude` are mutually exclusive. Filter is prefix-aware on the head tag (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix:done]`, …). Continuation lines of multi-line blocks inherit the header's decision, so excluded `[CHECKPOINT]` bodies do not leak. With `--json`, the closing envelope carries `{terminalTag, terminalLine, elapsedMs, filter, exclude}` so Monitor can distinguish happy-path close from timeout.
+- **Stream events with filters:** default shape is `events <job-id> --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000`. Exclusion-based filter (v1.4.0) means any new tag future bridge versions emit passes through automatically — an inclusion-based `--filter X,Y,Z` silently drops unknown tags and is *not* forward-compatible. `--filter` and `--exclude` are mutually exclusive. Filter is prefix-aware on the head tag (`PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix:done]`, …). Continuation lines of multi-line blocks inherit the header's decision, so excluded `[CHECKPOINT]` bodies do not leak. With `--json`, the closing envelope carries `{terminalTag, terminalLine, elapsedMs, filter, exclude}` so Monitor can distinguish happy-path close from timeout.
 - **Retrospective analysis:** `summary <thread-id>` produces a markdown transcript from the NDJSON log.
 - **Heartbeat monitor** (session-long commit tracking): see `references/monitor-patterns.md` Preset C.
 
