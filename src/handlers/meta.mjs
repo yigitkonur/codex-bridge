@@ -404,7 +404,13 @@ export async function handleSetup(argv) {
   }
 
   if (options["install-monitor-hook"]) {
-    const result = installMonitorHookMirror();
+    let result;
+    try {
+      result = installMonitorHookMirror();
+    } catch (error) {
+      actionsTaken.push(`Failed to install the Monitor hook mirror due to a filesystem error: ${error instanceof Error ? error.message : String(error)}`);
+      result = getMonitorHookMirrorStatus();
+    }
     actionsTaken.push(
       result.alreadyInstalled
         ? `Monitor PostToolUse hook mirror already present in ${result.status.settingsPath}.`
