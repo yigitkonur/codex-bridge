@@ -22,6 +22,9 @@ import process from "node:process";
 import { createHash } from "node:crypto";
 
 const HOOK_NAME = "post-tool-bash";
+const HOOK_SCOPE_ENV = "CODEX_BRIDGE_HOOK_SCOPE";
+const DEFAULT_HOOK_SCOPE = "plugin";
+const SAFE_SCOPE_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const RUNNER_AGENT_TYPES = new Set([
   "codex-bridge:codex-bridge-runner",
   "codex-bridge-runner",
@@ -91,6 +94,11 @@ function readStdinJson() {
 function workspaceKey(cwd) {
   if (!cwd) return "default";
   return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+}
+
+function hookScope() {
+  const value = (process.env[HOOK_SCOPE_ENV] ?? DEFAULT_HOOK_SCOPE).trim();
+  return SAFE_SCOPE_PATTERN.test(value) ? value : DEFAULT_HOOK_SCOPE;
 }
 
 function seenJobsFile(cwd, surface) {
@@ -400,7 +408,7 @@ function main() {
     return;
   }
 
-  const surface = input.tool_name === "Agent" ? "agent" : "bash";
+  const surface = `${hookScope()}-${input.tool_name === "Agent" ? "agent" : "bash"}`;
   const shouldInspect =
     input.tool_name === "Agent"
       ? isCodexBridgeAgentInvocation(input)

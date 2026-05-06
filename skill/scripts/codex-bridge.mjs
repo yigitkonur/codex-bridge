@@ -5366,7 +5366,7 @@ import fs8 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -15358,6 +15358,8 @@ function resolvePromptInput(options, positionals, cwd) {
 var MONITOR_HOOK_EVENT = "PostToolUse";
 var MONITOR_HOOK_MATCHER = "Bash|Agent";
 var MONITOR_HOOK_SCRIPT = "post-tool-bash.mjs";
+var MONITOR_HOOK_SCOPE_ENV = "CODEX_BRIDGE_HOOK_SCOPE";
+var MONITOR_HOOK_MIRROR_SCOPE = "user-settings";
 function resolveClaudeSettingsPath() {
   return path19.join(os7.homedir(), ".claude", "settings.json");
 }
@@ -15369,7 +15371,7 @@ function resolveMonitorHookScriptPath() {
   return candidates.find((candidate) => fs21.existsSync(candidate)) ?? candidates[0];
 }
 function monitorHookCommand(hookScriptPath) {
-  return `node ${JSON.stringify(hookScriptPath)}`;
+  return `${MONITOR_HOOK_SCOPE_ENV}=${MONITOR_HOOK_MIRROR_SCOPE} node ${JSON.stringify(hookScriptPath)}`;
 }
 function buildMonitorHookEntry(hookScriptPath) {
   return {

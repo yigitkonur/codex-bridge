@@ -60,6 +60,8 @@ import { COMMANDS, EXIT_CODE_DOC, GLOBAL_FLAGS_DOC } from "../commands-meta.mjs"
 const MONITOR_HOOK_EVENT = "PostToolUse";
 const MONITOR_HOOK_MATCHER = "Bash|Agent";
 const MONITOR_HOOK_SCRIPT = "post-tool-bash.mjs";
+const MONITOR_HOOK_SCOPE_ENV = "CODEX_BRIDGE_HOOK_SCOPE";
+const MONITOR_HOOK_MIRROR_SCOPE = "user-settings";
 import {
   buildReviewJobMetadata,
   buildTaskJob,
@@ -108,7 +110,7 @@ function resolveMonitorHookScriptPath() {
 }
 
 function monitorHookCommand(hookScriptPath) {
-  return `node ${JSON.stringify(hookScriptPath)}`;
+  return `${MONITOR_HOOK_SCOPE_ENV}=${MONITOR_HOOK_MIRROR_SCOPE} node ${JSON.stringify(hookScriptPath)}`;
 }
 
 function buildMonitorHookEntry(hookScriptPath) {

@@ -130,6 +130,18 @@ function runPostToolHook(payload) {
   return JSON.parse(result.stdout);
 }
 
+function runPostToolHookWithHome(payload, home, env = {}) {
+  const script = fileURLToPath(new URL("plugin/hooks/post-tool-bash.mjs", root));
+  const result = spawnSync(process.execPath, [script], {
+    cwd: rootPath,
+    env: { ...process.env, HOME: home, ...env },
+    input: JSON.stringify(payload),
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
 function runBridge(relativePath, args, { input = undefined, env = {} } = {}) {
   return spawnSync(
     process.execPath,
@@ -1656,6 +1668,31 @@ test("plugin PostToolUse auto-arm is visible at Bash and parent Agent boundaries
 
   assert.ok(postToolUse.some((entry) => /\bBash\b/.test(entry.matcher)));
   assert.ok(postToolUse.some((entry) => /\bAgent\b/.test(entry.matcher)));
+});
+
+test("user-settings Monitor mirror is not suppressed by plugin hook state", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-post-tool-scope-"));
+  const payload = {
+    tool_name: "Bash",
+    cwd: rootPath,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(queuedTaskEnvelope("task-mscope1-abc123")) }
+  };
+
+  try {
+    const pluginResult = runPostToolHookWithHome(payload, home);
+    assert.match(pluginResult.hookSpecificOutput.additionalContext, /task-mscope1-abc123/);
+
+    const duplicatePluginResult = runPostToolHookWithHome(payload, home);
+    assert.deepEqual(duplicatePluginResult, { continue: true });
+
+    const mirrorResult = runPostToolHookWithHome(payload, home, { CODEX_BRIDGE_HOOK_SCOPE: "user-settings" });
+    assert.match(mirrorResult.hookSpecificOutput.additionalContext, /task-mscope1-abc123/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("plugin PostToolUse rejects spoofed bridge stdout and unsafe Monitor commands", () => {
