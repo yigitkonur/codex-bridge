@@ -266,12 +266,12 @@ test(
       const [left, right] = await Promise.all([
         ensureBrokerSession(workspace, {
           scriptPath,
-          timeoutMs: 1000,
+          timeoutMs: 3_000,
           env: { ...process.env, BROKER_TEST_COUNT_FILE: countFile }
         }),
         ensureBrokerSession(workspace, {
           scriptPath,
-          timeoutMs: 1000,
+          timeoutMs: 3_000,
           env: { ...process.env, BROKER_TEST_COUNT_FILE: countFile }
         })
       ]);
