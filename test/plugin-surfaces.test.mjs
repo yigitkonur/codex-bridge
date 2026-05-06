@@ -327,6 +327,7 @@ const expectedCommands = [
   "steer.md",
   "summary.md",
   "task.md",
+  "timeline.md",
   "update.md",
   "verdict.md",
   "verdicts.md",

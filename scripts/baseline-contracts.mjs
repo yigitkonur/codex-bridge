@@ -12,6 +12,7 @@ const REQUIRED_JSON_PROBES = Object.freeze([
   "result",
   "wait",
   "events",
+  "timeline",
   "setup",
   "error"
 ]);
@@ -131,6 +132,11 @@ const JSON_ENVELOPE_PROBES = Object.freeze([
   {
     command: "events <job-id> --json",
     expected: ["result.jobId", "result.threadId", "result.eventsPath"],
+    test: "test/baseline-contracts.test.mjs"
+  },
+  {
+    command: "timeline <job-id> --json",
+    expected: ["result.jobId", "result.threadId", "result.timeline", "result.artifacts"],
     test: "test/baseline-contracts.test.mjs"
   },
   {
@@ -257,6 +263,7 @@ const READ_ONLY_COMMANDS = Object.freeze([
   "result",
   "wait",
   "events",
+  "timeline",
   "task-resume-candidate",
   "await-artifact",
   "verdicts"
