@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const hookPath = path.join(root, "plugin/hooks/pre-tool-agent.mjs");
+const hookPath = path.join(root, "plugin/hooks/tool.mjs");
 
 function makeStubPlugin() {
   const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-plugin-"));
@@ -62,7 +62,7 @@ process.exit(2);
 }
 
 function runHook({ pluginRoot, workspace, recordPath, loggedIn }) {
-  return spawnSync(process.execPath, [hookPath], {
+  return spawnSync(process.execPath, [hookPath, "PreToolUse"], {
     cwd: workspace,
     input: JSON.stringify({
       tool_name: "Agent",

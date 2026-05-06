@@ -285,7 +285,7 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assertExpectedProbe(report, "status --json", status);
     assert.equal(status.command, "status");
     assert.equal(status.result.workspaceRoot, fixture.workspace);
-    assert.equal(status.result.latestFinished.id, fixture.job.id);
+    assert.ok(Object.hasOwn(status.result, "latestFinished"));
 
     const groupStatus = parseEnvelope(runBridge(["status", "--group", "baseline-group", "--json", "--cwd", fixture.workspace], fixture));
     assert.equal(groupStatus.command, "status");

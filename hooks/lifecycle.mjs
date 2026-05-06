@@ -19,7 +19,14 @@ const BRIDGE_WORKSPACE_HASH_ENV = "CODEX_BRIDGE_WORKSPACE_HASH";
 const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
 const CLAUDE_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const BRIDGE_SCRIPT = path.resolve(SCRIPT_DIR, "..", "scripts", "codex-bridge.mjs");
+const BRIDGE_SCRIPT = path.resolve(SCRIPT_DIR, "..", "skill", "scripts", "codex-bridge.mjs");
+
+function isDisabled() {
+  const list = (process.env.CODEX_BRIDGE_HOOK_DISABLE ?? "")
+    .split(",")
+    .map((entry) => entry.trim());
+  return list.includes("lifecycle") || list.includes("all");
+}
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -58,6 +65,8 @@ function handleSessionEnd(input) {
     stdio: ["ignore", "ignore", "ignore"]
   });
 }
+
+if (isDisabled()) process.exit(0);
 
 const input = readHookInput();
 const eventName = process.argv[2] || input.hook_event_name || "";
