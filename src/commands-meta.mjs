@@ -190,8 +190,8 @@ export const EXIT_CODE_DOC = [
 ].join("\n");
 
 export const GLOBAL_FLAGS_DOC = [
-  "Global flags (every subcommand):",
+  "Global flags (parsed before or after the subcommand):",
   "  --json            Machine-readable output (error envelope under failures).",
-  "  -C, --cwd <dir>   Override the working directory.",
+  "  -C, --cwd <dir>   Override the working directory for all bridge operations.",
   "  -h, --help        Show help for the subcommand and exit."
 ].join("\n");

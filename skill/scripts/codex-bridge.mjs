@@ -5482,7 +5482,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -11618,9 +11618,9 @@ var EXIT_CODE_DOC = [
   "  8  partial success (check result details)"
 ].join("\n");
 var GLOBAL_FLAGS_DOC = [
-  "Global flags (every subcommand):",
+  "Global flags (parsed before or after the subcommand):",
   "  --json            Machine-readable output (error envelope under failures).",
-  "  -C, --cwd <dir>   Override the working directory.",
+  "  -C, --cwd <dir>   Override the working directory for all bridge operations.",
   "  -h, --help        Show help for the subcommand and exit."
 ].join("\n");
 
@@ -14029,7 +14029,7 @@ function buildMachineReadableHelp() {
     })),
     global_flags: [
       { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
-      { flag: "--cwd <dir>", alias: "-C", description: "Override the working directory." },
+      { flag: "--cwd <dir>", alias: "-C", description: "Parsed before or after the subcommand; overrides the working directory for all bridge operations." },
       { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
     ],
     exit_codes: {
@@ -16588,6 +16588,69 @@ function printSubcommandUsage(name) {
   lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC);
   console.log(lines.join("\n"));
 }
+function parseTopLevelArgv(rawArgv) {
+  const globals = {
+    cwd: null,
+    help: false,
+    json: null
+  };
+  const argv = [];
+  let subcommand = null;
+  const takeValue = (flag, index) => {
+    const value = rawArgv[index + 1];
+    if (value === void 0) {
+      throw usageError(`Missing value for ${flag}`);
+    }
+    return value;
+  };
+  for (let index = 0; index < rawArgv.length; index += 1) {
+    const token = rawArgv[index];
+    if (subcommand) {
+      argv.push(token);
+      continue;
+    }
+    if (token === "--cwd" || token === "-C") {
+      globals.cwd = takeValue(token, index);
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--cwd=")) {
+      globals.cwd = token.slice("--cwd=".length);
+      continue;
+    }
+    if (token === "--json" || token === "--json=true" || token === "-j") {
+      globals.json = true;
+      continue;
+    }
+    if (token === "--json=false") {
+      globals.json = false;
+      continue;
+    }
+    if (token === "--help" || token === "--help=true" || token === "-h") {
+      globals.help = true;
+      continue;
+    }
+    if (!subcommand) {
+      subcommand = token;
+      continue;
+    }
+    argv.push(token);
+  }
+  const globalArgv = [];
+  if (globals.cwd != null) {
+    globalArgv.push("--cwd", globals.cwd);
+  }
+  if (globals.json != null) {
+    globalArgv.push(globals.json ? "--json" : "--json=false");
+  }
+  if (globals.help) {
+    globalArgv.push("--help");
+  }
+  return {
+    subcommand,
+    argv: [...globalArgv, ...argv]
+  };
+}
 var SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
@@ -16662,17 +16725,18 @@ process16.on("uncaughtException", (err) => {
 async function main() {
   const startedAt = Date.now();
   const rawArgv = process16.argv.slice(2);
-  const [subcommand, ...argv] = rawArgv;
-  maybeTriggerAutoApply(rawArgv, subcommand);
+  const { subcommand, argv } = parseTopLevelArgv(rawArgv);
+  const dispatchArgv = subcommand ? [subcommand, ...argv] : argv;
+  maybeTriggerAutoApply(dispatchArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
-    if (detectJsonFlag(rawArgv)) {
+    if (detectJsonFlag(dispatchArgv)) {
       emitSuccess("help", buildMachineReadableHelp(), null, { json: true, startedAt });
       return;
     }
     printUsage();
     return;
   }
-  if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
+  if (COMMANDS[subcommand] && detectHelpFlag(dispatchArgv)) {
     printSubcommandUsage(subcommand);
     return;
   }
@@ -16689,8 +16753,16 @@ async function main() {
 }
 main().catch((error) => {
   const rawArgv = process16.argv.slice(2);
-  const json2 = detectJsonFlag(rawArgv);
-  const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
+  let dispatchArgv = rawArgv;
+  let subcommand = rawArgv[0] ?? null;
+  try {
+    const parsed = parseTopLevelArgv(rawArgv);
+    subcommand = parsed.subcommand;
+    dispatchArgv = parsed.subcommand ? [parsed.subcommand, ...parsed.argv] : parsed.argv;
+  } catch {
+  }
+  const json2 = detectJsonFlag(dispatchArgv) || detectJsonFlag(rawArgv);
+  const command = subcommand && COMMANDS[subcommand] ? subcommand : null;
   emitError(error, { json: json2, command });
 });
 /*! Bundled license information:

@@ -243,6 +243,77 @@ function printSubcommandUsage(name) {
   console.log(lines.join("\n"));
 }
 
+function parseTopLevelArgv(rawArgv) {
+  const globals = {
+    cwd: null,
+    help: false,
+    json: null,
+  };
+  const argv = [];
+  let subcommand = null;
+
+  const takeValue = (flag, index) => {
+    const value = rawArgv[index + 1];
+    if (value === undefined) {
+      throw usageError(`Missing value for ${flag}`);
+    }
+    return value;
+  };
+
+  for (let index = 0; index < rawArgv.length; index += 1) {
+    const token = rawArgv[index];
+
+    if (subcommand) {
+      argv.push(token);
+      continue;
+    }
+
+    if (token === "--cwd" || token === "-C") {
+      globals.cwd = takeValue(token, index);
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--cwd=")) {
+      globals.cwd = token.slice("--cwd=".length);
+      continue;
+    }
+    if (token === "--json" || token === "--json=true" || token === "-j") {
+      globals.json = true;
+      continue;
+    }
+    if (token === "--json=false") {
+      globals.json = false;
+      continue;
+    }
+    if (token === "--help" || token === "--help=true" || token === "-h") {
+      globals.help = true;
+      continue;
+    }
+
+    if (!subcommand) {
+      subcommand = token;
+      continue;
+    }
+    argv.push(token);
+  }
+
+  const globalArgv = [];
+  if (globals.cwd != null) {
+    globalArgv.push("--cwd", globals.cwd);
+  }
+  if (globals.json != null) {
+    globalArgv.push(globals.json ? "--json" : "--json=false");
+  }
+  if (globals.help) {
+    globalArgv.push("--help");
+  }
+
+  return {
+    subcommand,
+    argv: [...globalArgv, ...argv],
+  };
+}
+
 // Success output is funneled through `emitSuccess` from ./lib/cli-errors.mjs.
 // Every handler captures `startedAt = Date.now()` at entry and passes it so the
 // envelope can carry `meta.duration_ms`. Raw stdout writes are only for the
@@ -338,7 +409,8 @@ process.on("uncaughtException", (err) => {
 async function main() {
   const startedAt = Date.now();
   const rawArgv = process.argv.slice(2);
-  const [subcommand, ...argv] = rawArgv;
+  const { subcommand, argv } = parseTopLevelArgv(rawArgv);
+  const dispatchArgv = subcommand ? [subcommand, ...argv] : argv;
 
   // Hot-path auto-apply. Non-blocking fire-and-forget: cache-backed
   // release probe (1 h TTL, anonymous) + detached `npx skills@latest add
@@ -346,10 +418,10 @@ async function main() {
   // hour so concurrent invocations don't thrash. Stdio routed to
   // `~/.codex-bridge/auto-update.log` so the caller's output is never
   // touched. Opt out via `CODEX_BRIDGE_NO_UPDATE_CHECK=1`.
-  maybeTriggerAutoApply(rawArgv, subcommand);
+  maybeTriggerAutoApply(dispatchArgv, subcommand);
 
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
-    if (detectJsonFlag(rawArgv)) {
+    if (detectJsonFlag(dispatchArgv)) {
       emitSuccess("help", buildMachineReadableHelp(), null, { json: true, startedAt });
       return;
     }
@@ -359,9 +431,9 @@ async function main() {
 
   // Per-subcommand --help / -h short-circuits before the handler runs so we
   // never fire a Codex turn just to answer a discovery query. Pass the full
-  // rawArgv so the per-subcommand prompt-skipping in detectHelpFlag sees the
+  // dispatch argv so the per-subcommand prompt-skipping in detectHelpFlag sees the
   // subcommand at index 0.
-  if (COMMANDS[subcommand] && detectHelpFlag(rawArgv)) {
+  if (COMMANDS[subcommand] && detectHelpFlag(dispatchArgv)) {
     printSubcommandUsage(subcommand);
     return;
   }
@@ -381,7 +453,16 @@ async function main() {
 
 main().catch((error) => {
   const rawArgv = process.argv.slice(2);
-  const json = detectJsonFlag(rawArgv);
-  const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
+  let dispatchArgv = rawArgv;
+  let subcommand = rawArgv[0] ?? null;
+  try {
+    const parsed = parseTopLevelArgv(rawArgv);
+    subcommand = parsed.subcommand;
+    dispatchArgv = parsed.subcommand ? [parsed.subcommand, ...parsed.argv] : parsed.argv;
+  } catch {
+    // Preserve the original error; raw argv is enough to choose JSON mode.
+  }
+  const json = detectJsonFlag(dispatchArgv) || detectJsonFlag(rawArgv);
+  const command = subcommand && COMMANDS[subcommand] ? subcommand : null;
   emitError(error, { json, command });
 });

@@ -556,7 +556,7 @@ export function buildMachineReadableHelp() {
     })),
     global_flags: [
       { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
-      { flag: "--cwd <dir>", alias: "-C", description: "Override the working directory." },
+      { flag: "--cwd <dir>", alias: "-C", description: "Parsed before or after the subcommand; overrides the working directory for all bridge operations." },
       { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
     ],
     exit_codes: {
