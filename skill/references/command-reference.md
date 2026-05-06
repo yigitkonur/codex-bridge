@@ -288,6 +288,19 @@ Get the full result of a completed job. Accepts either a job id or the thread UU
 codex-bridge result [job-id-or-thread-id] [--json]
 ```
 
+With `--json`, the canonical terminal state lives under `result.adapterResult`. Branch on `result.adapterResult.terminalTag` first, then `result.adapterResult.phase` and `result.adapterResult.exitCode`. When the job has an events file, these fields are derived from the terminal event stream, not only from worker process status.
+
+Important diagnostic fields:
+
+| Field | Meaning |
+|---|---|
+| `adapterResult.terminalTag` | Event-derived terminal state: `DONE`, `ERROR`, `INCOMPLETE`, `PLAN`, `CANCELLED`, or `UNKNOWN`. |
+| `adapterResult.workerExitCode` | Worker process status preserved for diagnostics. A value of `0` does not override event-stream failure. |
+| `adapterResult.consistent` | `false` when worker status and event terminal state disagree. |
+| `adapterResult.discrepancyReason` | Human-readable explanation of that disagreement. |
+
+See [state-machine.md](state-machine.md) for the exact classification table.
+
 ## cancel
 
 Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree. Accepts either a job id or the thread UUID.

@@ -70,8 +70,8 @@ export interface NormalizedEvent {
 }
 
 export type CanonicalTag =
-  | "DONE" | "ERROR" | "INCOMPLETE"
-  | "PLAN" | "QUESTION" | "CONFIRMED"
+  | "DONE" | "ERROR" | "INCOMPLETE" | "PLAN" | "CANCELLED" | "UNKNOWN"
+  | "QUESTION" | "CONFIRMED"
   | "CHECKPOINT" | "HEARTBEAT"
   | "PIPELINE:diff" | "PIPELINE:plan" | "PIPELINE:execute" | "PIPELINE:review" | "PIPELINE:fix" | "PIPELINE:check"
   | "PIPELINE:diff:done" | "PIPELINE:plan:done" | "PIPELINE:execute:done" | "PIPELINE:review:done" | "PIPELINE:fix:done" | "PIPELINE:check:done"
@@ -96,6 +96,12 @@ export interface NormalizedResult {
     | "cancelled";
   exitCode: number;
   terminalTag: CanonicalTag | AdapterTag | null;
+  workerExitCode?: number;
+  consistent?: boolean;
+  discrepancyReason?: string | null;
+  eventsPath?: string | null;
+  terminalSource?: string;
+  eventTerminalLine?: string | null;
   summary?: string;
   artifacts?: { diff?: string; plan?: string; review?: string; verdict?: string };
   durationMs?: number;

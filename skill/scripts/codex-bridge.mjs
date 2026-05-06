@@ -4,7 +4,7 @@ import fs19 from "node:fs";
 import os9 from "node:os";
 import path17 from "node:path";
 import process11 from "node:process";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // package.json
 var package_default = {
@@ -807,6 +807,7 @@ import process9 from "node:process";
 import fs11 from "node:fs";
 import path9 from "node:path";
 import process8 from "node:process";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/lib/fs.mjs
 import fs from "node:fs";
@@ -4334,6 +4335,13 @@ function findSession(sessionDir, threadId) {
   }
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
+function readEvents(sessionOrPath, { maxBlocks = null } = {}) {
+  const eventsPath = typeof sessionOrPath === "string" ? sessionOrPath : sessionOrPath?.eventsPath;
+  if (!eventsPath || !fs7.existsSync(eventsPath)) return [];
+  const raw = fs7.readFileSync(eventsPath, "utf8");
+  const blocks = raw.split(/\n(?=\[[^\]]+\])/).map((block) => block.trim()).filter(Boolean);
+  return Number.isInteger(maxBlocks) && maxBlocks > 0 ? blocks.slice(-maxBlocks) : blocks;
+}
 function logNdjson(session, tag, method, data) {
   const entry = buildNdjsonEvent({
     ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -5621,7 +5629,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
+// node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -8623,6 +8631,10 @@ function validateConfigLayers(skillDir, overrideDir = null, workspaceRoot = null
 }
 
 // src/adapters/codex/index.mjs
+var ADAPTER_DIR = path9.dirname(fileURLToPath2(import.meta.url));
+var SOURCE_ROOT_DIR = path9.resolve(ADAPTER_DIR, "../..");
+var BUNDLE_ROOT_DIR = path9.resolve(ADAPTER_DIR, "..");
+var CONFIG_ROOT_DIR = fs11.existsSync(path9.join(SOURCE_ROOT_DIR, "schemas")) ? SOURCE_ROOT_DIR : fs11.existsSync(path9.join(BUNDLE_ROOT_DIR, "schemas")) ? BUNDLE_ROOT_DIR : null;
 function buildCapabilities() {
   return Object.freeze({
     supports_plan_mode: true,
@@ -8665,9 +8677,9 @@ var runtime = defaultRuntime;
 function normalizeAdapterOptions(options = {}) {
   return options && typeof options === "object" && !Array.isArray(options) ? options : {};
 }
-function defaultSessionDirForCwd(cwd) {
-  const config = getConfig(cwd);
-  return resolveSessionDir(config.session_dir ?? DEFAULT_CONFIG.session_dir);
+function defaultSessionDirForCwd(cwd, workspaceRoot = cwd) {
+  const config = loadConfig(CONFIG_ROOT_DIR, cwd, workspaceRoot);
+  return resolveSessionDir(config.session_dir, workspaceRoot);
 }
 function buildTurnOptions(prompt, options) {
   const adapterOptions = normalizeAdapterOptions(options.adapterOptions);
@@ -8696,6 +8708,124 @@ function eventTagForLine(line) {
   if (terminal) return terminal[1];
   const generic = /^\[([^\]]+)\]/.exec(line);
   return generic?.[1] ?? "ADAPTER:codex:event";
+}
+var EVENT_TERMINAL_PHASE = Object.freeze({
+  DONE: "done",
+  ERROR: "error",
+  INCOMPLETE: "incomplete",
+  PLAN: "plan-pending",
+  CANCELLED: "cancelled",
+  UNKNOWN: "error"
+});
+var SUCCESS_TERMINAL_TAGS = /* @__PURE__ */ new Set(["DONE", "PLAN"]);
+function workerTerminalTagForStatus(status) {
+  switch (status) {
+    case "completed":
+      return "DONE";
+    case "failed":
+    case "orphaned":
+      return "ERROR";
+    case "cancelled":
+      return "CANCELLED";
+    default:
+      return null;
+  }
+}
+function workerExitCodeForStatus(status) {
+  return status === "completed" ? 0 : 1;
+}
+function exitCodeForTerminalTag(tag, workerExitCode) {
+  if (!tag) return workerExitCode;
+  return SUCCESS_TERMINAL_TAGS.has(tag) ? 0 : 1;
+}
+function phaseForTerminalTag(tag, fallback) {
+  return EVENT_TERMINAL_PHASE[tag] ?? fallback ?? "error";
+}
+function firstEventLine(block) {
+  return String(block ?? "").split(/\r?\n/, 1)[0] ?? "";
+}
+function bracketTagForEventBlock(block) {
+  return /^\[([^\]]+)\]/.exec(firstEventLine(block))?.[1] ?? null;
+}
+function resolveStoredEventsPath(storedJob, threadId, cwd, workspaceRoot, options) {
+  const candidates = [
+    options.eventsPath,
+    storedJob?.result?.eventsPath,
+    storedJob?.result?.artifacts?.eventsPath,
+    storedJob?.eventsPath
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  if (!threadId) return null;
+  const eventDirs = [
+    options.sessionDir,
+    storedJob?.result?.eventsDir,
+    storedJob?.result?.artifacts?.eventsDir,
+    storedJob?.eventsDir
+  ];
+  const configuredEventDir = eventDirs.find((candidate) => typeof candidate === "string" && candidate.trim());
+  const sessionDir = configuredEventDir ? resolveSessionDir(configuredEventDir, workspaceRoot ?? cwd) : defaultSessionDirForCwd(cwd, workspaceRoot);
+  return path9.join(sessionDir, `${threadId}.events`);
+}
+function readEventTerminalState(eventsPath) {
+  if (!eventsPath || !fs11.existsSync(eventsPath)) {
+    return { found: false, eventsPath: eventsPath ?? null, eventsFileExists: false };
+  }
+  const events = readEvents(eventsPath);
+  let pipelineFailed = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const rawTag = bracketTagForEventBlock(events[index]);
+    if (rawTag === "PIPELINE:failed") {
+      pipelineFailed = {
+        tag: "INCOMPLETE",
+        rawTag,
+        line: firstEventLine(events[index])
+      };
+      continue;
+    }
+    if (TERMINAL_TAGS.includes(rawTag)) {
+      if (pipelineFailed && rawTag !== "ERROR") {
+        return {
+          found: true,
+          ...pipelineFailed,
+          eventsPath,
+          source: "pipeline-failed"
+        };
+      }
+      return {
+        found: true,
+        tag: rawTag,
+        rawTag,
+        line: firstEventLine(events[index]),
+        eventsPath,
+        source: "events-terminal"
+      };
+    }
+  }
+  if (pipelineFailed) {
+    return {
+      found: true,
+      ...pipelineFailed,
+      eventsPath,
+      source: "pipeline-failed"
+    };
+  }
+  return {
+    found: true,
+    tag: "UNKNOWN",
+    rawTag: null,
+    line: null,
+    eventsPath,
+    source: "events-missing-terminal"
+  };
+}
+function formatDiscrepancyReason(eventState, terminalTag, workerTerminalTag, workerExitCode) {
+  const eventTag = eventState.rawTag ? `[${eventState.rawTag}]` : "no terminal tag";
+  const classification = eventState.rawTag && eventState.rawTag !== terminalTag ? `, classified as [${terminalTag}]` : "";
+  return `events emitted ${eventTag}${classification} but worker status implied [${workerTerminalTag ?? "UNKNOWN"}] (workerExitCode=${workerExitCode})`;
 }
 async function dispatch(prompt, options = {}) {
   const normalized = normalizeAdapterOptions(options);
@@ -8772,13 +8902,26 @@ async function getResult(jobId, options = {}) {
   const cwd = normalized.cwd ?? process8.cwd();
   const { workspaceRoot, job } = resolveResultJob(cwd, jobId);
   const storedJob = readStoredJob(workspaceRoot, job.id);
-  const exitCode = job.status === "completed" ? 0 : 1;
+  const workerExitCode = workerExitCodeForStatus(job.status);
+  const workerTerminalTag = workerTerminalTagForStatus(job.status);
+  const eventsPath = resolveStoredEventsPath(storedJob, job.threadId ?? storedJob?.threadId ?? null, cwd, workspaceRoot, normalized);
+  const eventState = readEventTerminalState(eventsPath);
+  const terminalTag = eventState.found ? eventState.tag : workerTerminalTag;
+  const consistent = !eventState.found || workerTerminalTag === null || workerTerminalTag === terminalTag;
+  const phase = eventState.found ? phaseForTerminalTag(terminalTag, storedJob?.result?.phase ?? job.phase ?? storedJob?.phase ?? job.status ?? "error") : job.phase ?? storedJob?.phase ?? job.status ?? "error";
+  const exitCode = exitCodeForTerminalTag(terminalTag, workerExitCode);
   return {
     jobId: job.id,
     threadId: job.threadId ?? storedJob?.threadId ?? null,
-    phase: job.phase ?? storedJob?.phase ?? job.status ?? "error",
+    phase,
     exitCode,
-    terminalTag: job.status === "completed" ? "DONE" : job.status === "cancelled" ? "ERROR" : null,
+    terminalTag,
+    workerExitCode,
+    consistent,
+    discrepancyReason: consistent ? null : formatDiscrepancyReason(eventState, terminalTag, workerTerminalTag, workerExitCode),
+    eventsPath: eventState.eventsPath,
+    terminalSource: eventState.found ? eventState.source : "worker-status",
+    eventTerminalLine: eventState.line ?? null,
     summary: job.summary ?? storedJob?.summary ?? null,
     artifacts: storedJob?.result?.artifacts ?? {},
     raw: { job, storedJob }
@@ -11638,8 +11781,8 @@ import fs18 from "node:fs";
 import os8 from "node:os";
 import path16 from "node:path";
 import process10 from "node:process";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-var _DOCTOR_SCRIPT_DIR = path16.dirname(fileURLToPath2(import.meta.url));
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+var _DOCTOR_SCRIPT_DIR = path16.dirname(fileURLToPath3(import.meta.url));
 var _DOCTOR_SKILL_DIR = fs18.existsSync(path16.join(_DOCTOR_SCRIPT_DIR, "..", "schemas")) ? path16.join(_DOCTOR_SCRIPT_DIR, "..") : path16.join(_DOCTOR_SCRIPT_DIR, "..", "..");
 function getBridgeConfig(cwd = null, workspaceRoot = null) {
   return loadConfig(_DOCTOR_SKILL_DIR, cwd, workspaceRoot);
@@ -12064,7 +12207,7 @@ function spawnDetachedAutoApply(targetVersion) {
   } catch {
   }
 }
-var SCRIPT_DIR = path17.dirname(fileURLToPath3(import.meta.url));
+var SCRIPT_DIR = path17.dirname(fileURLToPath4(import.meta.url));
 var SCRIPT_PATH = path17.join(SCRIPT_DIR, "codex-bridge.mjs");
 var ROOT_DIR = fs19.existsSync(path17.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path17.resolve(SCRIPT_DIR, "..");
 var REVIEW_SCHEMA = path17.join(ROOT_DIR, "schemas", "review-output.schema.json");
