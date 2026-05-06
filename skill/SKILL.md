@@ -174,7 +174,7 @@ Tags in the stream fall into two semantic buckets. Orchestrators should handle t
 
 - `[QUESTION]` — Codex is blocked waiting for an answer; respond via `respond <request-id> --answer …`.
 - `[PLAN]` — plan-mode turn produced a plan; terminal for wait/Monitor. Approve via `send <thread-id> --mode default "Implement the plan."` or revise.
-- `[DONE]` / `[ERROR]` / `[INCOMPLETE]` / `[PLAN]` — terminal, Monitor self-closes. Branch on the origin line and `result.phase`.
+- `[DONE]` / `[ERROR]` / `[INCOMPLETE]` / `[PLAN]` — terminal, Monitor self-closes. Branch on the origin line and `result.adapterResult.terminalTag` from `result --json`.
 
 **Progress — periodic scan.** Informational; safe to process in batches:
 
@@ -403,7 +403,7 @@ done < .jobs.txt
 ```
 
 Rules:
-- One `result` call per job to read the structured outcome (`jq '.result.phase'`).
+- One `result` call per job to read the structured outcome (`jq '.result.adapterResult.terminalTag, .result.adapterResult.phase, .result.adapterResult.consistent'`).
 - Don't try to stack N Monitor calls — stream ownership belongs to a single tail per `.events` file, and the LLM context can't reason about N parallel streams cleanly.
 - `status --watch` is the fan-in view; `await-artifact` is the success-gate per job.
 - Worked walkthrough with interleaved outputs in [references/orchestration-flows.md](references/orchestration-flows.md#running-n-jobs-in-parallel).
@@ -535,6 +535,7 @@ When running `xcodebuild` from inside a Claude Code session on macOS, the sandbo
 | [notification-format.md](references/notification-format.md) | Exact format of each notification tag |
 | [ndjson-guide.md](references/ndjson-guide.md) | How to parse NDJSON with jq |
 | [orchestration-flows.md](references/orchestration-flows.md) | End-to-end flow diagrams |
+| [state-machine.md](references/state-machine.md) | How `result --json` derives terminal state |
 | [error-recovery.md](references/error-recovery.md) | Error types and recovery strategies |
 | [config-reference.md](references/config-reference.md) | YAML configuration options |
 | [prompt-writing.md](references/prompt-writing.md) | Writing effective Codex prompts |
