@@ -2599,7 +2599,7 @@ function tailText(text, maxChars = WORKER_STDERR_TAIL_BYTES) {
 function classifyWorkerStderr(content) {
   const text = String(content ?? "");
   if (/ENETUNREACH|ETIMEDOUT|ECONNRESET/.test(text)) return "network";
-  if (/RateLimit|429/.test(text)) return "rate_limit";
+  if (/RateLimit|HTTP 429|status.?429|\b429\b.*rate/i.test(text)) return "rate_limit";
   if (/EACCES|permission denied/i.test(text)) return "permission";
   if (/segmentation fault|SIGSEGV/i.test(text)) return "crash";
   if (/Unable to find/i.test(text) || /No such file/.test(text)) return "missing_dependency";
@@ -2633,6 +2633,7 @@ function readWorkerErrMetadata(workerErrPath) {
 function startWorkerStderrWatcher({ workerErrPath, getSession, jobId }) {
   if (!workerErrPath) return () => {};
   let lastSize = 0;
+  let lastEmittedSize = 0;
   let pendingDelta = 0;
   let lastEmitAt = 0;
 
@@ -2647,23 +2648,23 @@ function startWorkerStderrWatcher({ workerErrPath, getSession, jobId }) {
     if (!stats.isFile()) return;
     if (stats.size < lastSize) {
       lastSize = 0;
+      lastEmittedSize = 0;
       pendingDelta = 0;
     }
     if (stats.size <= lastSize) return;
     const sessionForEvent = getSession?.();
     if (!sessionForEvent?.eventsPath) return;
 
-    const previousSize = lastSize;
     const currentSize = stats.size;
+    pendingDelta += currentSize - lastSize;
     lastSize = currentSize;
-    pendingDelta += currentSize - previousSize;
 
     const now = Date.now();
     if (lastEmitAt && now - lastEmitAt < WORKER_STDERR_THROTTLE_MS) return;
 
     let newContent = "";
     try {
-      newContent = readFileSlice(workerErrPath, previousSize, currentSize);
+      newContent = readFileSlice(workerErrPath, lastEmittedSize, currentSize);
     } catch {
       newContent = "";
     }
@@ -2684,6 +2685,7 @@ function startWorkerStderrWatcher({ workerErrPath, getSession, jobId }) {
       error_class_hint: classifyWorkerStderr(newContent || tail),
     });
     pendingDelta = 0;
+    lastEmittedSize = currentSize;
     lastEmitAt = now;
   };
 
