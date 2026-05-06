@@ -119,10 +119,8 @@ function runHook(relativePath, input, env = {}) {
 
 function runPostToolHook(payload, env = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-post-tool-"));
-  // PostToolUse is now dispatched through plugin/hooks/tool.mjs with event
-  // name as the first argv argument (3-dispatcher architecture).
-  const script = fileURLToPath(new URL("plugin/hooks/tool.mjs", root));
-  const result = spawnSync(process.execPath, [script, "PostToolUse"], {
+  const script = fileURLToPath(new URL("plugin/hooks/post-tool-bash.mjs", root));
+  const result = spawnSync(process.execPath, [script], {
     cwd: rootPath,
     env: { ...process.env, HOME: home, ...env },
     input: JSON.stringify(payload),
@@ -494,6 +492,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
       "Stop",
       "SubagentStart",
       "SubagentStop",
+      "UserPromptSubmit",
     ].sort());
 
     const hookScriptRefs = collectPluginRootReferences(packagedHooks)
@@ -502,12 +501,13 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
     assert.deepEqual(hookScriptRefs, [
       "hooks/lifecycle.mjs",
       "hooks/lifecycle.mjs",
+      "hooks/post-tool-bash.mjs",
+      "hooks/pre-tool-agent.mjs",
+      "hooks/pre-tool-bash.mjs",
       "hooks/stop.mjs",
       "hooks/stop.mjs",
       "hooks/stop.mjs",
-      "hooks/tool.mjs",
-      "hooks/tool.mjs",
-      "hooks/tool.mjs",
+      "hooks/user-prompt-submit.mjs",
     ]);
 
     for (const hookScriptRef of new Set(hookScriptRefs)) {
@@ -893,9 +893,9 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
     "Stop",
     "SubagentStart",
     "SubagentStop",
+    "UserPromptSubmit",
   ].sort());
   assert.match(JSON.stringify(hooksConfig), /lifecycle\.mjs/);
-  assert.match(JSON.stringify(hooksConfig), /tool\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /stop\.mjs/);
   assert.match(sessionHook, /CODEX_COMPANION_SESSION_ID/);
   assert.match(sessionHook, /CODEX_BRIDGE_PLUGIN_DATA/);
@@ -985,9 +985,9 @@ test("plugin SessionEnd hook logs prune failures while allowing shutdown", () =>
   }
 });
 
-test("UserPromptSubmit resume intent reads Claude's documented prompt field",
-  { skip: "UserPromptSubmit hook removed in 3-dispatcher architecture (was forward-looking no-op)" },
-  () => {});
+test("UserPromptSubmit resume intent reads Claude's documented prompt field", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
 
   const output = runHook(
     "plugin/hooks/user-prompt-submit.mjs",
@@ -1076,7 +1076,7 @@ test("SessionStart writes bridge env vars to CLAUDE_ENV_FILE", () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
   const result = spawnSync(
     process.execPath,
-    [path.join(rootPath, "plugin/hooks/session-lifecycle-hook.mjs"), "SessionStart"],
+    [path.join(rootPath, "plugin/hooks/lifecycle.mjs"), "SessionStart"],
     {
       cwd: rootPath,
       env: {

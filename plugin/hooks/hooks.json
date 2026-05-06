@@ -23,13 +23,24 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/tool.mjs\" PreToolUse",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-bash.mjs\"",
             "timeout": 5
           }
         ]
@@ -39,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/tool.mjs\" PreToolUse",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-agent.mjs\"",
             "timeout": 10
           }
         ]
@@ -51,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/tool.mjs\" PostToolUse",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-bash.mjs\"",
             "timeout": 5
           }
         ]

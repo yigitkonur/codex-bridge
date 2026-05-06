@@ -12,7 +12,10 @@ function isDisabled() {
   const list = (process.env.CODEX_BRIDGE_HOOK_DISABLE ?? "")
     .split(",")
     .map((entry) => entry.trim());
-  return list.includes("tool") || list.includes("all");
+  return list.includes("tool") ||
+    list.includes("pre-tool-agent") ||
+    list.includes("post-tool-bash") ||
+    list.includes("all");
 }
 
 function readHookInput() {

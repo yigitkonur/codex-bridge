@@ -8,11 +8,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { isDisabled } from "./lib/feature-gate.mjs";
 import { appendEnvVars } from "./lib/env-propagate.mjs";
 import { computeWorkspaceHash, resolveHookCwd } from "./lib/workspace-state.mjs";
-
-if (isDisabled("session-lifecycle-hook")) process.exit(0);
 
 const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const BRIDGE_SESSION_ID_ENV = "CODEX_BRIDGE_SESSION_ID";
@@ -30,7 +27,9 @@ function isDisabled() {
   const list = (process.env.CODEX_BRIDGE_HOOK_DISABLE ?? "")
     .split(",")
     .map((entry) => entry.trim());
-  return list.includes("lifecycle") || list.includes("all");
+  return list.includes("lifecycle") ||
+    list.includes("session-lifecycle-hook") ||
+    list.includes("all");
 }
 
 function readHookInput() {

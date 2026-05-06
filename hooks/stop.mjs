@@ -58,7 +58,11 @@ function isDisabled() {
   const list = (process.env.CODEX_BRIDGE_HOOK_DISABLE ?? "")
     .split(",")
     .map((entry) => entry.trim());
-  return list.includes(HOOK_NAME) || list.includes("all");
+  return list.includes(HOOK_NAME) ||
+    list.includes("subagent-stop") ||
+    list.includes("stop-gate") ||
+    list.includes("stop-review-gate-hook") ||
+    list.includes("all");
 }
 
 function logHookError(err) {
