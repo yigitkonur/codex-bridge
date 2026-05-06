@@ -209,6 +209,17 @@ function parseBridgeError(result) {
   return payload.error;
 }
 
+function assertStopBlockEnvelope(stdout) {
+  const payload = JSON.parse(stdout);
+  assert.equal(payload.continue, true);
+  assert.equal(payload.decision, undefined);
+  assert.equal(payload.reason, undefined);
+  assert.equal(payload.hookSpecificOutput.hookEventName, "Stop");
+  assert.equal(payload.hookSpecificOutput.decision, "block");
+  assert.equal(typeof payload.hookSpecificOutput.reason, "string");
+  return payload.hookSpecificOutput.reason;
+}
+
 function runGit(cwd, args) {
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
@@ -1109,9 +1120,8 @@ if (command === "status") {
   try {
     const result = runStopGateHarness(harness);
     assert.equal(result.status, 0);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.decision, "block");
-    assert.match(payload.reason, /setup could not verify the bridge runtime/);
+    const reason = assertStopBlockEnvelope(result.stdout);
+    assert.match(reason, /setup could not verify the bridge runtime/);
   } finally {
     fs.rmSync(harness.tempRoot, { recursive: true, force: true });
   }
@@ -1143,9 +1153,8 @@ if (command === "status") {
   try {
     const result = runStopGateHarness(harness);
     assert.equal(result.status, 0);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.decision, "block");
-    assert.match(payload.reason, /Codex is not ready/);
+    const reason = assertStopBlockEnvelope(result.stdout);
+    assert.match(reason, /Codex is not ready/);
   } finally {
     fs.rmSync(harness.tempRoot, { recursive: true, force: true });
   }
@@ -1191,14 +1200,13 @@ if (command === "status") {
     const result = runStopGateHarness(harness);
     assert.equal(result.status, 0);
     assert.doesNotMatch(result.stderr, /stop-time review should not run/);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.decision, "block");
-    assert.match(payload.reason, /pending review verdicts/);
-    assert.match(payload.reason, /task-approved/);
-    assert.match(payload.reason, /task-needs/);
-    assert.match(payload.reason, /task-must/);
-    assert.match(payload.reason, /codex-bridge merge task-approved/);
-    assert.match(payload.reason, /codex-bridge iterate task-needs/);
+    const reason = assertStopBlockEnvelope(result.stdout);
+    assert.match(reason, /pending review verdicts/);
+    assert.match(reason, /task-approved/);
+    assert.match(reason, /task-needs/);
+    assert.match(reason, /task-must/);
+    assert.match(reason, /codex-bridge merge task-approved/);
+    assert.match(reason, /codex-bridge iterate task-needs/);
   } finally {
     fs.rmSync(harness.tempRoot, { recursive: true, force: true });
   }
