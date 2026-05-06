@@ -1,6 +1,6 @@
 {
   "name": "codex-bridge",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "description": "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
   "type": "module",
   "scripts": {
