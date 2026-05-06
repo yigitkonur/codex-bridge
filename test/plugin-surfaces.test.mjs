@@ -1335,14 +1335,13 @@ if (command === "status") {
     const result = runStopGateHarness(harness);
     assert.equal(result.status, 0);
     assert.doesNotMatch(result.stderr, /should not run/);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.decision, "block");
-    assert.match(payload.reason, /pending review verdicts/);
-    assert.match(payload.reason, /task-approved/);
-    assert.match(payload.reason, /task-needs/);
-    assert.match(payload.reason, /task-must/);
-    assert.match(payload.reason, /codex-bridge merge task-approved/);
-    assert.match(payload.reason, /codex-bridge iterate task-needs/);
+    const reason = assertStopBlockEnvelope(result.stdout);
+    assert.match(reason, /pending review verdicts/);
+    assert.match(reason, /task-approved/);
+    assert.match(reason, /task-needs/);
+    assert.match(reason, /task-must/);
+    assert.match(reason, /codex-bridge merge task-approved/);
+    assert.match(reason, /codex-bridge iterate task-needs/);
   } finally {
     fs.rmSync(harness.tempRoot, { recursive: true, force: true });
   }
