@@ -19,6 +19,10 @@ const runtimePaths = fs.readFileSync(new URL("../src/lib/runtime-paths.mjs", imp
 const envelopeHelpers = fs.readFileSync(new URL("../src/lib/envelope-helpers.mjs", import.meta.url), "utf8");
 const taskRuntime = fs.readFileSync(new URL("../src/lib/task-runtime.mjs", import.meta.url), "utf8");
 const updateCheck = fs.readFileSync(new URL("../src/lib/update-check.mjs", import.meta.url), "utf8");
+const handlerUtils = fs.readFileSync(new URL("../src/lib/handler-utils.mjs", import.meta.url), "utf8");
+const handlersMeta = fs.readFileSync(new URL("../src/handlers/meta.mjs", import.meta.url), "utf8");
+const handlersTask = fs.readFileSync(new URL("../src/handlers/task.mjs", import.meta.url), "utf8");
+const handlersInspect = fs.readFileSync(new URL("../src/handlers/inspect.mjs", import.meta.url), "utf8");
 
 test("broker forwards server requests and tracks downstream responses", () => {
   assert.match(broker, /setServerRequestHandler\(routeServerRequest\)/);
@@ -47,10 +51,10 @@ test("broker direct invocation detection uses platform-safe file URLs", () => {
 });
 
 test("wait terminal matching is anchored to event headers", () => {
-  assert.match(bridge, /const TERMINAL = TERMINAL_TAG_REGEX/);
-  assert.match(bridge, /TERMINAL_TAG_REGEX/);
-  assert.match(bridge, /async function handleWaitAny/);
-  assert.match(bridge, /mode: "any"/);
+  assert.match(handlersInspect, /const TERMINAL = TERMINAL_TAG_REGEX/);
+  assert.match(handlersInspect, /TERMINAL_TAG_REGEX/);
+  assert.match(handlersInspect, /async function handleWaitAny/);
+  assert.match(handlersInspect, /mode: "any"/);
   // The Monitor-hint shell fallback lives in envelope-helpers.mjs after the
   // Phase 0 dispatcher split.
   assert.match(envelopeHelpers, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*\|"\[PLAN\]"\*/);
@@ -84,26 +88,26 @@ test("task brief is delivered into effective worker prompt", () => {
   assert.match(envelopeHelpers, /renderBriefAsMarkdown\(brief\)/);
   assert.match(taskRuntime, /appendRenderedBriefToPrompt\(baseTaskPrompt, request\.brief \?\? null\)/);
   assert.match(taskRuntime, /brief: brief \?\? null/);
-  assert.match(bridge, /brief,\n\s+write,/);
+  assert.match(handlersTask, /brief,\n\s+write,/);
 });
 
 test("task rejects thread-only resume with automatic worktree creation", () => {
-  const handleTask = bridge.match(/async function handleTask\(argv\)[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  const handleTask = handlersTask.match(/async function handleTask\(argv\)[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
   assert.match(handleTask, /resumeLast && options\["worktree-auto"\]/);
   assert.match(handleTask, /RESUME_WORKTREE_CONFLICT/);
   assert.match(handleTask, /codex-bridge iterate <task_id>/);
 });
 
 test("brief schema violations preserve details and a fix suggestion", () => {
-  const handleTask = bridge.match(/if \(options\.brief\) \{[\s\S]*?const model = normalizeRequestedModel/)?.[0] ?? "";
+  const handleTask = handlersTask.match(/if \(options\.brief\) \{[\s\S]*?const model = normalizeRequestedModel/)?.[0] ?? "";
   assert.match(handleTask, /details: result\.details/);
   assert.match(handleTask, /BRIEF_SCHEMA_VIOLATION/);
   assert.match(handleTask, /valid top-level keys/);
 });
 
 test("respond and summary resolve cwd before loading config", () => {
-  const respond = bridge.match(/async function handleRespond[\s\S]*?async function handleSummary/)?.[0] ?? "";
-  const summary = bridge.match(/async function handleSummary[\s\S]*?async function main/)?.[0] ?? "";
+  const respond = handlersTask.match(/async function handleRespond[\s\S]*?\n\}/)?.[0] ?? "";
+  const summary = handlersInspect.match(/async function handleSummary[\s\S]*?function buildTranscript/)?.[0] ?? "";
   assert.match(respond, /const cwd = resolveCommandCwd\(options\);/);
   assert.match(summary, /const cwd = resolveCommandCwd\(options\);/);
 });
@@ -111,6 +115,8 @@ test("respond and summary resolve cwd before loading config", () => {
 test("session directories resolve relative to canonical workspace roots", () => {
   const callSites = [
     ...bridge.matchAll(/resolveSessionDir\(config\.session_dir, resolveWorkspaceRoot\(cwd\)\)/g),
+    ...handlersTask.matchAll(/resolveSessionDir\(config\.session_dir, resolveWorkspaceRoot\(cwd\)\)/g),
+    ...handlersInspect.matchAll(/resolveSessionDir\(config\.session_dir, resolveWorkspaceRoot\(cwd\)\)/g),
     ...taskRuntime.matchAll(/resolveSessionDir\(config\.session_dir, resolveWorkspaceRoot\(cwd\)\)/g),
   ];
   assert.ok(callSites.length >= 6, "interactive commands should pass workspace root as session_dir base");
@@ -120,14 +126,14 @@ test("session directories resolve relative to canonical workspace roots", () => 
 });
 
 test("v2.2 ergonomics hooks are wired into runtime surfaces", () => {
-  assert.match(bridge, /validateConfigLayers\(ROOT_DIR, cwd, workspaceRoot\)/);
-  assert.match(bridge, /function cleanupTerminalJobs/);
-  assert.match(bridge, /retention-days/);
+  assert.match(handlersMeta, /validateConfigLayers\(ROOT_DIR, cwd, workspaceRoot\)/);
+  assert.match(handlersInspect, /function cleanupTerminalJobs/);
+  assert.match(handlersInspect, /retention-days/);
   assert.match(taskRuntime, /prepareRuntimeSession/);
   assert.match(taskRuntime, /writeSessionAliases\(session, jobId\)/);
   assert.match(taskRuntime, /assistantPreview: checkpointState\.lastAssistantMessage/);
-  assert.match(bridge, /update_check:/);
-  assert.match(bridge, /apply:/);
+  assert.match(handlersMeta, /update_check:/);
+  assert.match(handlersMeta, /apply:/);
 });
 
 test("auto-apply stays inert for help and json discovery paths", () => {
@@ -138,17 +144,17 @@ test("auto-apply stays inert for help and json discovery paths", () => {
 });
 
 test("explicit update apply has a bounded installer timeout", () => {
-  const apply = bridge.match(/function runSkillsAddForApply[\s\S]*?function renderUpdateFailureHint/)?.[0] ?? "";
+  const apply = handlersMeta.match(/function runSkillsAddForApply[\s\S]*?function renderUpdateFailureHint/)?.[0] ?? "";
   assert.match(apply, /const timeoutMs = 600_000/);
   assert.match(apply, /timeout: timeoutMs/);
   assert.match(apply, /skills installer timed out/);
 });
 
 test("recovery-sensitive commands emit structured recovery payloads", () => {
-  const awaitArtifact = bridge.match(/async function handleAwaitArtifact[\s\S]*?function pruneOrphanedJobs/)?.[0] ?? "";
-  const prune = bridge.match(/function pruneOrphanedJobs[\s\S]*?function finalizeOrphan/)?.[0] ?? "";
-  const cancel = bridge.match(/async function handleCancel[\s\S]*?function resolvePromptInput/)?.[0] ?? "";
-  const respond = bridge.match(/async function handleRespond[\s\S]*?async function handleSummary/)?.[0] ?? "";
+  const awaitArtifact = handlersInspect.match(/async function handleAwaitArtifact[\s\S]*?function pruneOrphanedJobs/)?.[0] ?? "";
+  const prune = handlersInspect.match(/function pruneOrphanedJobs[\s\S]*?function finalizeOrphan/)?.[0] ?? "";
+  const cancel = handlersTask.match(/async function handleCancel[\s\S]*?async function handleSend/)?.[0] ?? "";
+  const respond = handlersTask.match(/async function handleRespond[\s\S]*?\n\}/)?.[0] ?? "";
 
   assert.match(awaitArtifact, /recovery: buildRecovery\(/);
   assert.match(awaitArtifact, /reason: "timeout"/);
@@ -162,7 +168,7 @@ test("recovery-sensitive commands emit structured recovery payloads", () => {
 });
 
 test("send emits plan event instead of terminal done for plan results", () => {
-  const send = bridge.match(/async function handleSend[\s\S]*?async function handleSteer/)?.[0] ?? "";
+  const send = handlersTask.match(/async function handleSend[\s\S]*?async function handleSteer/)?.[0] ?? "";
   assert.match(send, /if \(result\.planDetected && result\.planText\)/);
   assert.ok(send.indexOf("formatPlanEvent") < send.indexOf("formatDoneEvent"));
 });
@@ -217,7 +223,7 @@ test("tracked failed task results persist handoff error envelope", () => {
     /async \(\) => persistFailureErrorInPayload\(await runner\(progress\), command\)/
   );
 
-  const worker = bridge.match(/async function handleTaskWorker[\s\S]*?async function handleStatus/)?.[0] ?? "";
+  const worker = handlersTask.match(/async function handleTaskWorker[\s\S]*?async function handleCancel/)?.[0] ?? "";
   assert.match(
     worker,
     /persistFailureErrorInPayload\(\s*await runBridgeTask\(\{[\s\S]*?onProgress: progress[\s\S]*?\}\),\s*"task"\s*\)/
@@ -317,7 +323,7 @@ test("working-tree review empty check includes untracked files", () => {
 });
 
 test("version json exposes backend adapter capability contract", () => {
-  const version = bridge.match(/async function handleVersion[\s\S]*?emitSuccess\("version"/)?.[0] ?? "";
+  const version = handlersMeta.match(/async function handleVersion[\s\S]*?emitSuccess\("version"/)?.[0] ?? "";
   // BRIDGE_CAPABILITIES (which lists "backend-adapter") moved to
   // runtime-paths.mjs in the Phase 0 dispatcher split.
   assert.match(runtimePaths, /"backend-adapter"/);
@@ -327,7 +333,7 @@ test("version json exposes backend adapter capability contract", () => {
 });
 
 test("setup json exposes backend adapter capability contract", () => {
-  const setupReport = bridge.match(/async function buildSetupReport[\s\S]*?async function handleSetup/)?.[0] ?? "";
+  const setupReport = handlersMeta.match(/async function buildSetupReport[\s\S]*?async function handleSetup/)?.[0] ?? "";
   assert.match(setupReport, /const adapter = await resolveCommandAdapter/);
   assert.match(setupReport, /active_backend:\s*adapter\.name/);
   assert.match(setupReport, /adapter_capabilities:\s*adapter\.capabilities\(\)/);
@@ -341,27 +347,27 @@ test("task execution routes through backend adapter dispatch", () => {
 });
 
 test("resume, questions, steering, and cancel use adapter lifecycle methods", () => {
-  const send = bridge.match(/async function handleSend[\s\S]*?async function handleSteer/)?.[0] ?? "";
+  const send = handlersTask.match(/async function handleSend[\s\S]*?async function handleSteer/)?.[0] ?? "";
   assert.match(send, /guardCapability\(adapter, "supports_resume"\)/);
   assert.match(send, /adapter\.resume\(threadId, prompt/);
   assert.doesNotMatch(send, /runAppServerTurn\(cwd, turnOptions\)/);
 
-  const steer = bridge.match(/async function handleSteer[\s\S]*?async function handleRespond/)?.[0] ?? "";
+  const steer = handlersTask.match(/async function handleSteer[\s\S]*?async function handleRespond/)?.[0] ?? "";
   assert.match(steer, /guardCapability\(adapter, "supports_steering"\)/);
   assert.match(steer, /adapter\.steer\(threadId, turnId, prompt/);
   assert.doesNotMatch(steer, /withAppServer\(cwd/);
 
-  const respond = bridge.match(/async function handleRespond[\s\S]*?async function handleSummary/)?.[0] ?? "";
+  const respond = handlersTask.match(/async function handleRespond[\s\S]*?\n\}/)?.[0] ?? "";
   assert.match(respond, /guardCapability\(adapter, "supports_questions"\)/);
   assert.match(respond, /adapter\.respond\(pending\.threadId, requestId, payload/);
   assert.doesNotMatch(respond, /writeResponseFile/);
 
-  const cancel = bridge.match(/async function handleCancel[\s\S]*?function resolvePromptInput/)?.[0] ?? "";
+  const cancel = handlersTask.match(/async function handleCancel[\s\S]*?async function handleSend/)?.[0] ?? "";
   assert.match(cancel, /adapter\.cancel\(job\.id/);
 });
 
 test("result command asks the selected adapter for normalized result", () => {
-  const result = bridge.match(/async function handleResult[\s\S]*?function waitForTerminalEvent/)?.[0] ?? "";
+  const result = handlersInspect.match(/async function handleResult[\s\S]*?function waitForTerminalEvent/)?.[0] ?? "";
   assert.match(result, /const adapter = await resolveCommandAdapter/);
   assert.match(result, /adapter\.getResult\(job\.id, \{ cwd \}\)/);
   assert.match(result, /adapterResult/);
@@ -398,7 +404,7 @@ test("workspace-dirty recovery emits incomplete before generic error handling", 
 });
 
 test("worktree-auto keeps job state anchored to the launch workspace", () => {
-  const task = bridge.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  const task = handlersTask.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
   assert.match(task, /const stateCwd = cwd;/);
   assert.match(task, /const job = buildTaskJob\(workspaceRoot, taskMetadata, write, \{/);
 });
@@ -408,13 +414,13 @@ test("background task-worker receives the original workspace root", () => {
 });
 
 test("background task-worker reads queued jobs from original workspace root", () => {
-  const worker = bridge.match(/async function handleTaskWorker[\s\S]*?async function handleStatus/)?.[0] ?? "";
+  const worker = handlersTask.match(/async function handleTaskWorker[\s\S]*?async function handleCancel/)?.[0] ?? "";
   assert.match(worker, /const workspaceRoot = options\["workspace-root"\]/);
   assert.match(worker, /readStoredJob\(workspaceRoot, options\["job-id"\]\)/);
 });
 
 test("worktree-auto exposes the returned task id as the registry id", () => {
-  const task = bridge.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  const task = handlersTask.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
   const enqueue = taskRuntime.match(/function enqueueBackgroundTask[\s\S]*?async function runBridgeTask/)?.[0] ?? "";
   assert.match(task, /job\.registryTaskId = job\.id;/);
   assert.match(enqueue, /registryTaskId: job\.registryTaskId \?\? null/);

@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import os from "node:os";import path from "node:path";
 import process from "node:process";
 
 import { guardCapability } from "../adapters/index.mjs";
@@ -59,8 +58,7 @@ import { COMMANDS, EXIT_CODE_DOC, GLOBAL_FLAGS_DOC } from "../commands-meta.mjs"
 
 const MONITOR_HOOK_EVENT = "PostToolUse";
 const MONITOR_HOOK_MATCHER = "Bash|Agent";
-const MONITOR_HOOK_SCRIPT = "tool.mjs";
-import {
+const MONITOR_HOOK_SCRIPT = "tool.mjs";import {
   buildReviewJobMetadata,
   buildTaskJob,
   buildTaskRequest,
@@ -237,7 +235,6 @@ function installMonitorHookMirror() {
     status: getMonitorHookMirrorStatus(),
   };
 }
-
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -248,7 +245,6 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter = await resolveCommandAdapter({ cwd, workspaceRoot });
   const monitorHook = getMonitorHookMirrorStatus();
-
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -271,7 +267,6 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   } else if (!monitorHook.installed && !monitorHook.hookScriptExists) {
     nextSteps.push("Monitor hook mirror unavailable in this install; arm Monitor manually from `result.monitor.tool_hint` after background dispatch.");
   }
-
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
     node: nodeStatus,
@@ -296,8 +291,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     monitorHookSettingsParseError: monitorHook.settingsParseError,
     monitorHookScriptPath: monitorHook.hookScriptPath,
     monitorHookScriptExists: monitorHook.hookScriptExists,
-    monitorHookInstallCommand: monitorHook.installCommand,
-    actionsTaken,
+    monitorHookInstallCommand: monitorHook.installCommand,    actionsTaken,
     nextSteps
   };
 }
@@ -306,8 +300,7 @@ export async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook"]
-  });
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook"]  });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw conflictError(
@@ -357,7 +350,6 @@ export async function handleSetup(argv) {
         : `Installed Monitor PostToolUse hook mirror in ${result.status.settingsPath}.`
     );
   }
-
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
     json: options.json,
@@ -729,8 +721,7 @@ export function buildMachineReadableHelp() {
     })),
     global_flags: [
       { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
-      { flag: "--cwd <dir>", alias: "-C", description: "Parsed before or after the subcommand; overrides the working directory for all bridge operations." },
-      { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
+      { flag: "--cwd <dir>", alias: "-C", description: "Parsed before or after the subcommand; overrides the working directory for all bridge operations." },      { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
     ],
     exit_codes: {
       0: "success",
