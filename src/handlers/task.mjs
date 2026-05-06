@@ -544,6 +544,7 @@ function writeCancelledMeta(taskId, meta, completedAt, cleanup) {
     cancelled_at: completedAt,
     cleanup,
   });
+  return taskId;
 }
 
 export async function handleCancel(argv) {
@@ -693,6 +694,7 @@ export async function handleCancel(argv) {
     turnInterrupted: interrupt.interrupted,
     cleanup,
     reason: "cancelled-by-user",
+    cleanup,
     warnings,
     title: normalizedTitle,
     dispatchTitle: job.title ?? null,
