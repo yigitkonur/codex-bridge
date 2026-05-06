@@ -6,8 +6,8 @@
 // arm the Monitor" rule from SKILL.md and turns it into a deterministic
 // auto-arm.
 //
-// Idempotence: each jobId gets armed at most once per hook surface per
-// session — track in ~/.codex-bridge/hook-state/<workspace>/seen-*.txt.
+// Idempotence: each jobId gets armed at most once per hook surface via
+// an atomic per-job marker file under the bridge workspace state dir.
 //
 // Failure mode: any error logs to ~/.codex-bridge/hook-errors and the
 // hook exits 0 with no additionalContext. PostToolUse hooks can't
@@ -19,7 +19,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { createHash } from "node:crypto";
+
+import { setMarker } from "./lib/workspace-state.mjs";
 
 const HOOK_NAME = "post-tool-bash";
 const RUNNER_AGENT_TYPES = new Set([
@@ -27,13 +28,6 @@ const RUNNER_AGENT_TYPES = new Set([
   "codex-bridge-runner",
 ]);
 const JOB_ID_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
-// Cap the per-(workspace,surface) seen-jobs file so it stays bounded across
-// long-lived sessions. We never need to keep more than the most-recent
-// armed jobIds — the file exists only to suppress duplicate auto-arm on the
-// same envelope being replayed by Claude. Pruning truncates to the most
-// recent SEEN_JOBS_TRIM_TO entries when the file exceeds SEEN_JOBS_MAX.
-const SEEN_JOBS_MAX = 1000;
-const SEEN_JOBS_TRIM_TO = 500;
 // Value-consuming flags accepted by `codex-bridge task`. Used to walk the
 // argv-after-`task` and stop at the first positional (the prompt) so that
 // flags like `--background` mentioned inside the prompt text — even after
@@ -92,49 +86,12 @@ function readStdinJson() {
   return JSON.parse(raw);
 }
 
-function workspaceKey(cwd) {
-  if (!cwd) return "default";
-  return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
-}
-
-function seenJobsFile(cwd, surface) {
-  const dir = path.join(os.homedir(), ".codex-bridge", "hook-state", workspaceKey(cwd));
-  fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `seen-${surface}-jobs.txt`);
-}
-
-function isJobAlreadyArmed(cwd, surface, jobId) {
-  try {
-    const f = seenJobsFile(cwd, surface);
-    if (!fs.existsSync(f)) return false;
-    const text = fs.readFileSync(f, "utf8");
-    return text.split("\n").includes(jobId);
-  } catch {
-    return false;
-  }
-}
-
 function markJobArmed(cwd, surface, jobId) {
   try {
-    const f = seenJobsFile(cwd, surface);
-    fs.appendFileSync(f, `${jobId}\n`);
-    pruneSeenJobsFile(f);
+    return setMarker(jobId, `monitor-${surface}`, cwd);
   } catch (err) {
     logHookError(err);
-  }
-}
-
-// Bound the seen-jobs file so it can't grow without limit across long
-// sessions. Triggered after every append; only does I/O when over cap.
-function pruneSeenJobsFile(file) {
-  try {
-    const text = fs.readFileSync(file, "utf8");
-    const lines = text.split("\n").filter((line) => line.length > 0);
-    if (lines.length <= SEEN_JOBS_MAX) return;
-    const trimmed = lines.slice(-SEEN_JOBS_TRIM_TO).join("\n") + "\n";
-    fs.writeFileSync(file, trimmed);
-  } catch {
-    // Best-effort; file may have just been pruned by a concurrent hook.
+    return false;
   }
 }
 
@@ -426,12 +383,10 @@ function main() {
   }
 
   const cwd = input.cwd ?? process.cwd();
-  if (isJobAlreadyArmed(cwd, surface, monitor.jobId)) {
+  if (!markJobArmed(cwd, surface, monitor.jobId)) {
     process.stdout.write('{"continue":true}');
     return;
   }
-
-  markJobArmed(cwd, surface, monitor.jobId);
 
   const block = [
     "## Codex-Bridge: arm the Monitor for this background job",

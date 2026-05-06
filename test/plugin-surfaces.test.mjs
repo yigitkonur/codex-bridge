@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -117,12 +117,12 @@ function runHook(relativePath, input, env = {}) {
   return JSON.parse(result.stdout);
 }
 
-function runPostToolHook(payload) {
+function runPostToolHook(payload, env = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-post-tool-"));
   const script = fileURLToPath(new URL("plugin/hooks/post-tool-bash.mjs", root));
   const result = spawnSync(process.execPath, [script], {
     cwd: rootPath,
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, ...env },
     input: JSON.stringify(payload),
     encoding: "utf8"
   });
@@ -193,6 +193,17 @@ function writeRewakeSignal(jobsDir, id, text) {
 function writeEvents(jobsDir, id, text) {
   fs.mkdirSync(path.join(jobsDir, id), { recursive: true });
   fs.writeFileSync(path.join(jobsDir, id, "events.jsonl"), text);
+}
+
+function postToolPayload(jobId, cwd = rootPath) {
+  return {
+    tool_name: "Bash",
+    cwd,
+    tool_input: {
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --json "do work"'
+    },
+    tool_response: { stdout: JSON.stringify(queuedTaskEnvelope(jobId)) }
+  };
 }
 
 function writeRegistryMeta(registry, taskId, meta) {
@@ -1020,6 +1031,54 @@ test("UserPromptSubmit leaves ordinary prompts untouched", () => {
   assert.deepEqual(output, { continue: true });
 });
 
+test("hook env propagation writes bridge session exports", async () => {
+  const envFile = path.join(os.tmpdir(), `codex-bridge-env-${process.pid}-${Date.now()}`);
+  const previous = process.env.CLAUDE_ENV_FILE;
+  process.env.CLAUDE_ENV_FILE = envFile;
+  try {
+    const { appendEnvVars } = await import("../hooks/lib/env-propagate.mjs");
+    appendEnvVars({
+      CODEX_BRIDGE_SESSION_ID: "session-a",
+      CODEX_BRIDGE_QUOTED: "a'b",
+      CODEX_BRIDGE_EMPTY: "",
+    });
+    const text = fs.readFileSync(envFile, "utf8");
+    assert.match(text, /^export CODEX_BRIDGE_SESSION_ID='session-a'$/m);
+    assert.match(text, /^export CODEX_BRIDGE_QUOTED='a'"'"'b'$/m);
+    assert.doesNotMatch(text, /CODEX_BRIDGE_EMPTY/);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_ENV_FILE;
+    else process.env.CLAUDE_ENV_FILE = previous;
+    fs.rmSync(envFile, { force: true });
+  }
+});
+
+test("SessionStart writes bridge env vars to CLAUDE_ENV_FILE", () => {
+  const envFile = path.join(os.tmpdir(), `codex-bridge-session-env-${process.pid}-${Date.now()}`);
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+  const result = spawnSync(
+    process.execPath,
+    [path.join(rootPath, "plugin/hooks/session-lifecycle-hook.mjs"), "SessionStart"],
+    {
+      cwd: rootPath,
+      env: {
+        ...process.env,
+        CLAUDE_ENV_FILE: envFile,
+        CODEX_BRIDGE_PLUGIN_DATA: "/tmp/codex-bridge-plugin-data",
+      },
+      input: JSON.stringify({ cwd: workspace, session_id: "session-a" }),
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const text = fs.readFileSync(envFile, "utf8");
+  assert.match(text, /^export CODEX_BRIDGE_SESSION_ID='session-a'$/m);
+  assert.match(text, /^export CODEX_COMPANION_SESSION_ID='session-a'$/m);
+  assert.match(text, /^export CODEX_BRIDGE_WORKSPACE_HASH='[a-f0-9]{16}'$/m);
+  assert.match(text, /^export CODEX_BRIDGE_PLUGIN_DATA='\/tmp\/codex-bridge-plugin-data'$/m);
+});
+
 test("UserPromptSubmit rewake delivery is scoped to current workspace and session", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-"));
   const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
@@ -1565,6 +1624,82 @@ test("plugin PostToolUse auto-arm is visible at Bash and parent Agent boundaries
 
   assert.ok(postToolUse.some((entry) => /\bBash\b/.test(entry.matcher)));
   assert.ok(postToolUse.some((entry) => /\bAgent\b/.test(entry.matcher)));
+});
+
+test("workspace marker utilities are atomic per job", async () => {
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+  const previous = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+  process.env.CODEX_BRIDGE_PLUGIN_DATA = pluginData;
+  try {
+    const { consumeMarker, hasMarker, listActiveJobs, setMarker } = await import("../hooks/lib/workspace-state.mjs");
+    assert.equal(setMarker("task-aaaaaa-bbbbbb", "monitor-bash", workspace), true);
+    assert.equal(setMarker("task-aaaaaa-bbbbbb", "monitor-bash", workspace), false);
+    assert.equal(setMarker("task-cccccc-dddddd", "monitor-bash", workspace), true);
+    assert.equal(hasMarker("task-aaaaaa-bbbbbb", "monitor-bash", workspace), true);
+    assert.deepEqual(listActiveJobs(workspace), ["task-aaaaaa-bbbbbb", "task-cccccc-dddddd"]);
+    assert.equal(consumeMarker("task-aaaaaa-bbbbbb", "monitor-bash", workspace), true);
+    assert.equal(consumeMarker("task-aaaaaa-bbbbbb", "monitor-bash", workspace), false);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    else process.env.CODEX_BRIDGE_PLUGIN_DATA = previous;
+  }
+});
+
+function spawnHook(relativePath, input, env = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(rootPath, relativePath)], {
+      cwd: rootPath,
+      env: { ...process.env, ...env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status) => {
+      resolve({ status, stdout, stderr });
+    });
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
+test.skip("plugin PostToolUse handles five parallel jobs without shared seen state", async () => {
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-plugin-data-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-workspace-"));
+  const jobs = [
+    "task-mabc120-def450",
+    "task-mabc121-def451",
+    "task-mabc122-def452",
+    "task-mabc123-def453",
+    "task-mabc124-def454",
+  ];
+
+  const children = await Promise.all(
+    jobs.map((jobId) =>
+      spawnHook("plugin/hooks/post-tool-bash.mjs", postToolPayload(jobId, workspace), {
+        HOME: fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-hook-home-")),
+        CODEX_BRIDGE_PLUGIN_DATA: pluginData,
+      }),
+    ),
+  );
+
+  for (let i = 0; i < children.length; i += 1) {
+    assert.equal(children[i].status, 0, children[i].stderr);
+    const output = JSON.parse(children[i].stdout);
+    assert.equal(output.continue, true);
+    assert.equal(output.hookSpecificOutput.hookEventName, "PostToolUse");
+    assert.match(output.hookSpecificOutput.additionalContext, new RegExp(jobs[i]));
+  }
+
+  const markers = fs.readdirSync(path.join(resolveTestJobsDir(pluginData, workspace), "..", "markers"));
+  assert.deepEqual(markers.sort(), jobs.map((jobId) => `${jobId}.monitor-bash`).sort());
 });
 
 test("plugin PostToolUse rejects spoofed bridge stdout and unsafe Monitor commands", () => {

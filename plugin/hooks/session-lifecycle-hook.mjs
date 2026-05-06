@@ -8,10 +8,14 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { isDisabled } from "./lib/feature-gate.mjs";
+import { appendEnvVars } from "./lib/env-propagate.mjs";
+import { computeWorkspaceHash, resolveHookCwd } from "./lib/workspace-state.mjs";
 
 if (isDisabled("session-lifecycle-hook")) process.exit(0);
 
 const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+const BRIDGE_SESSION_ID_ENV = "CODEX_BRIDGE_SESSION_ID";
+const BRIDGE_WORKSPACE_HASH_ENV = "CODEX_BRIDGE_WORKSPACE_HASH";
 const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
 const CLAUDE_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -20,15 +24,6 @@ const BRIDGE_SCRIPT = path.resolve(SCRIPT_DIR, "..", "scripts", "codex-bridge.mj
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
   return raw ? JSON.parse(raw) : {};
-}
-
-function shellEscape(value) {
-  return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
-}
-
-function appendEnvVar(name, value) {
-  if (!process.env.CLAUDE_ENV_FILE || value == null || value === "") return;
-  fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ${name}=${shellEscape(value)}\n`, "utf8");
 }
 
 function resolveBridgePluginData() {
@@ -44,8 +39,13 @@ function sessionEnv(input) {
 }
 
 function handleSessionStart(input) {
-  appendEnvVar(SESSION_ID_ENV, input.session_id);
-  appendEnvVar(BRIDGE_PLUGIN_DATA_ENV, resolveBridgePluginData());
+  const cwd = resolveHookCwd(input);
+  appendEnvVars({
+    [BRIDGE_SESSION_ID_ENV]: input.session_id,
+    [SESSION_ID_ENV]: input.session_id,
+    [BRIDGE_WORKSPACE_HASH_ENV]: computeWorkspaceHash(cwd),
+    [BRIDGE_PLUGIN_DATA_ENV]: resolveBridgePluginData(),
+  });
 }
 
 function handleSessionEnd(input) {

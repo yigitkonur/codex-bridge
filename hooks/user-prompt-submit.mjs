@@ -45,7 +45,7 @@ import {
   resolveHookCwd,
   resolveJobsDir,
   resolveWorkspaceRoot,
-} from "./hook-state.mjs";
+} from "./lib/workspace-state.mjs";
 
 const HOOK_NAME = "user-prompt-submit";
 const RESUME_INTENT_PATTERN =

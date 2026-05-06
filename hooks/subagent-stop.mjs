@@ -32,7 +32,7 @@ import {
   resolveHookCwd,
   resolveJobsDir,
   resolveWorkspaceRoot,
-} from "./hook-state.mjs";
+} from "./lib/workspace-state.mjs";
 
 const HOOK_NAME = "subagent-stop";
 const BRIDGE_AGENT_TYPES = new Set([
