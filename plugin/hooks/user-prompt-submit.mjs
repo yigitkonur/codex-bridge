@@ -12,8 +12,9 @@
 //    its next reasoning step.
 //
 // 2. Plan-mode keyword detection: match the user prompt against patterns
-//    like "plan mode", "plan first", or "think hard" and remind the
-//    orchestrator that codex-bridge task dispatch defaults to plan mode.
+//    like "plan mode", "plan first", "planla", "plana", "planlama" (Turkish),
+//    or "think hard" and remind the orchestrator that codex-bridge task
+//    dispatch defaults to plan mode.
 //
 // 3. Resume-intent detection: match the user prompt against patterns
 //    like /^(continue|keep going|resume|that codex one)/i. If matched,
@@ -50,7 +51,7 @@ const HOOK_NAME = "user-prompt-submit";
 const RESUME_INTENT_PATTERN =
   /^\s*(continue codex|that codex one|keep going|dig deeper|continue|resume)\b/i;
 const PLAN_MODE_KEYWORD_PATTERN =
-  /\b(plan mode|planning mode|plan first|make a plan|draft a plan|do not (?:code|implement|edit|change) yet|don't (?:code|implement|edit|change) yet|think hard|think deeply|think through|ultrathink)\b/i;
+  /\b(plan mode|planning mode|plan first|plan me|make a plan|draft a plan|planlama|planla|plana|do not (?:code|implement|edit|change) yet|don't (?:code|implement|edit|change) yet|think hard|think deeply|think through|ultrathink)\b/i;
 
 function logHookError(err) {
   try {
