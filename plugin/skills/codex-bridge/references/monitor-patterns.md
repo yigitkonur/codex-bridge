@@ -15,11 +15,7 @@ Use the literal `tool_hint` from the envelope. Default shape:
 }
 ```
 
-Why these defaults:
-
-- `--exclude HEARTBEAT` — heartbeats are 60-s liveness pulses; useful in raw-tail mode but flood Monitor's window. Excluded by default; future tags pass through (forward-compat).
-- `--timeout-ms 1800000` (30 min) — covers most write-mode tasks; adjust manually for unusually long runs.
-- `persistent: false` — Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`/`[PLAN]` and shouldn't keep running.
+Default rationale lives in `troubleshooting.md`; this page only records the runtime shape to trust.
 
 ## Event tags you'll see
 

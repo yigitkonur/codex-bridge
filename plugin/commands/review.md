@@ -5,35 +5,22 @@ disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
 
-Run a Codex review through the bundled bridge script.
+Adversarial review of the current branch's diff against the recorded base ref. Surface every concern that would block merge: behavioral correctness, test coverage gaps, security implications, undocumented invariants. Verdict is one of `approved | needs-attention | must-fix`; the reasoning is the deliverable, not the verdict. You own the depth: review thoroughly when warranted, terse when the diff is small. The configured `specific_concerns` flow into your context as orchestrator-privileged signals; treat them as bias-correction targets, not as a checklist to mechanically tick through.
 
 Raw slash-command arguments:
 `$ARGUMENTS`
 
-Core constraint:
-
-- This command is review-only.
-- Do not fix issues, apply patches, or suggest that you are about to make changes.
-- Your only job is to run the review and return Codex's output verbatim to the user.
+This command is review-only. Do not fix issues, apply patches, or imply that changes are about to be made.
 
 Review modes:
 
 - Working-tree mode: pass `--scope working-tree` to review staged, unstaged, and untracked local changes.
 - Branch mode: pass `--scope branch` or `--base <ref>` to review the current branch against a base ref.
-- Task-bound mode: pass `--task <task_id>` to read the task registry, switch the review cwd to the task worktree, default the scope to `branch`, resolve the reviewed worktree `HEAD`, and persist normalized output to `review.json`.
+- Task-bound mode: pass `--task <task_id>` to review the task worktree against its recorded base and persist normalized output to `review.json`.
 
-JSON contract:
+With `--json`, stdout is a bridge envelope whose `result.review_result` contains `verdict`, `summary`, `findings`, `next_steps`, `target`, `task_id`, `reviewed_branch_head_sha`, and `raw_output`.
 
-- With `--json`, stdout is a bridge envelope whose `result.review_result` contains `schema_version`, `review_kind`, `verdict`, `summary`, `findings`, `next_steps`, `target`, `task_id`, `reviewed_branch_head_sha`, and `raw_output`.
-- In task-bound mode, `result.review_result.task_id` is the requested task and `result.review_result.reviewed_branch_head_sha` is the exact task worktree commit reviewed.
-- In task-bound mode, `--cwd` is only valid if it points to the same task worktree recorded in `meta.json`.
-
-Execution mode rules:
-
-- If the raw arguments include `--wait`, run in the foreground.
-- If the raw arguments include `--background`, launch the review with `Bash` in the background.
-- Otherwise, estimate review size with `git status --short --untracked-files=all`, `git diff --shortstat --cached`, and `git diff --shortstat`; recommend foreground only for a tiny 1-2 file change and background for anything broader or unclear.
-- If you ask, use `AskUserQuestion` exactly once with `Wait for results` and `Run in background`, putting the recommended option first.
+Run foreground when the user passes `--wait`; launch background when they pass `--background`. Otherwise, use `git status --short --untracked-files=all`, `git diff --shortstat --cached`, and `git diff --shortstat` to choose foreground only for a tiny 1-2 file change and background for anything broader or unclear. If you ask, use `AskUserQuestion` once with `Wait for results` and `Run in background`, recommended option first.
 
 Foreground flow:
 

@@ -82,14 +82,16 @@ After dispatch, track the group:
 
 ## How the runtime helps you
 
-You almost never have to remember the wiring — the hooks do it:
+The plugin enforces sandbox, plan-mode, Monitor, and event filtering automatically through hooks. You don't think about them. Specifically:
 
-- **PreToolUse(Agent)** intercepts Explore-class subagents and reroutes them through codex-bridge. Pass-through for Plan, general-purpose, and codex-bridge:* types.
-- **PostToolUse(Bash|Agent)** parses accepted bridge envelopes and emits an `additionalContext` block with the literal Monitor invocation. You arm it on the next turn — no manual derivation.
-- **SessionStart** injects running-job status into context, so you start every session oriented.
-- **Stop** can run the opt-in stop-time review gate. Pending verdicts are surfaced through `verdicts --pending`; check and resolve them before exiting.
+- **Monitor arms itself** when you dispatch a `--background` task. The exclude tags, timeout, and verbosity come from the workspace config.
+- **Plan-mode triggers** when the user's prompt contains keywords like "plan" / "planla". You can override with `--mode default`.
+- **Sandbox is pinned** to the workspace's configured policy. Read-only flags are stripped when the user has enabled sandbox enforcement.
+- **Cadences** (checkpoint, heartbeat, idle timeout) are set from config; you cannot widen them mid-flight.
 
-When a hook misbehaves, set `CODEX_BRIDGE_HOOK_DISABLE=<name>` (or `=all`) and re-run.
+To inspect or change any of these: `/codex-bridge:config show` and `/codex-bridge:config set <key>=<value>`.
+
+When a hook misbehaves: `CODEX_BRIDGE_HOOK_DISABLE=<name>` (or `=all`) bypasses it for one session. See `references/troubleshooting.md` for the full list.
 
 ## Briefs (the orchestrator's privileged channel)
 
@@ -181,5 +183,6 @@ Everything below is owned by another canonical surface. Read those when you need
 - **One canonical orchestration flow** — `references/orchestration-flows.md`.
 - **Notification format** — `references/notification-format.md` (judgment-only; current CLI details are owned by `events --help`).
 - **Monitor patterns** — `references/monitor-patterns.md` (Preset A only; everything else has been removed).
+- **Troubleshooting** — `references/troubleshooting.md`.
 
 When in doubt: ask the runtime first (`<subcommand> --help`, `config show --json`, `version --json`), then read prose. Prose ages; the runtime is canonical.

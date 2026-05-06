@@ -9,6 +9,12 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
+### Changed
+
+- Rewrote codex-bridge SessionStart, task, review, and Monitor skill prose to
+  emphasize delegation outcomes, review judgment, and runtime-owned Monitor
+  auto-arm behavior.
+
 ### Fixed
 
 - Made `PIPELINE_ERROR` payloads internally consistent: `origin` now matches `failing_stage`, `lastCompletedStage` carries prior progress, and review verdict/count fields are `null` unless review actually completed.
