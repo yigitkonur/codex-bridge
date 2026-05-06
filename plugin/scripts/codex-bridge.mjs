@@ -9,7 +9,7 @@ import { fileURLToPath as fileURLToPath4 } from "node:url";
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "2.2.0",
+  version: "2.2.1",
   description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
   type: "module",
   scripts: {
