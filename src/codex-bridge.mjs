@@ -4285,7 +4285,17 @@ async function runBridgeTask(request) {
         ?? (Number(config.pipeline_stage_ms) > 0 ? Number(config.pipeline_stage_ms) : null),
       totalTimeoutMs: request.pipelineTotalMs
         ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null),
+      taskMode: isPlanMode ? "plan" : "default",
+      assistantMessage: typeof result.payload?.rawOutput === "string" ? result.payload.rawOutput : "",
     });
+    if (pipelineResult?.planReady) {
+      setPhase("plan-pending", {
+        command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
+        description: "Codex emitted a plan in plan mode but produced no diff. Approve with --mode default to execute, or send revision feedback on the same thread."
+      }, { pipeline: pipelineResult, planReady: true, planClassification: pipelineResult.planClassification, monitor });
+      markTerminalEmitted();
+      return { ...result, pipeline: pipelineResult, session, planReady: true };
+    }
     if (pipelineResult?.complete === false) {
       // Branch on whether the pipeline FINISHED incomplete (Codex's check
       // stage returned `complete:false` with real missing items) or FAILED

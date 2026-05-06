@@ -7,10 +7,12 @@ import test from "node:test";
 
 import {
   captureGitDiff,
+  classifyPlanContent,
   formatDoneEvent,
   formatErrorEvent,
   formatHeartbeatEvent,
   formatPlanEvent,
+  formatPlanReadyEvent,
   formatQuestionEvent,
   formatTailCommand,
   initSession,
@@ -79,6 +81,17 @@ test("event action commands preserve originating cwd", () => {
   );
 
   assert.match(
+    formatPlanReadyEvent(session, {
+      summary: "## Plan\nImplement the change.",
+      classification: "code_write",
+      scriptPath: "/bridge/codex-bridge.mjs",
+      jobId: "job-1",
+      cwd
+    }),
+    /send --cwd '\/tmp\/project with spaces' thread-1 --mode default "Implement the plan\."/
+  );
+
+  assert.match(
     formatTailCommand({
       scriptPath: "/bridge/codex-bridge.mjs",
       jobId: "job-1",
@@ -104,6 +117,31 @@ test("pipeline timeout error actions surface timeout relaunch budget", () => {
   assert.match(event, /rerun-review:\s+node '\/bridge\/codex-bridge\.mjs' review --cwd '\/tmp\/project' --scope working-tree/);
   assert.match(event, /extend-timeout:\s+node '\/bridge\/codex-bridge\.mjs' task --cwd '\/tmp\/project' --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000 "<same prompt>"/);
   assert.match(event, /see: skill\/references\/error-recovery\.md#pipeline-stage-timeout/);
+});
+
+test("PLAN_READY is interrupt-class and renders approval actions", () => {
+  const rendered = formatPlanReadyEvent(session, {
+    summary: "## Plan\nImplement the change.",
+    classification: "code_write",
+    scriptPath: "/bridge/codex-bridge.mjs",
+    jobId: "job-1",
+    cwd: "/tmp/project",
+  });
+
+  assert.match(rendered, /^\[PLAN_READY\] thread-1 \| classification=code_write/m);
+  assert.match(rendered, /summary:\n    ## Plan\n    Implement the change\./);
+  assert.match(rendered, /approve:\s+node '\/bridge\/codex-bridge\.mjs' send --cwd '\/tmp\/project' thread-1 --mode default "Implement the plan\."/);
+  assert.match(rendered, /revise:\s+node '\/bridge\/codex-bridge\.mjs' send --cwd '\/tmp\/project' thread-1 "Revise: <your feedback>"/);
+  assert.match(rendered, /cancel:\s+node '\/bridge\/codex-bridge\.mjs' cancel --cwd '\/tmp\/project' job-1/);
+  assert.doesNotMatch(rendered, TERMINAL_TAG_REGEX);
+  assert.equal(TERMINAL_TAGS.includes("PLAN_READY"), false);
+});
+
+test("plan content classifier separates routing classes", () => {
+  assert.equal(classifyPlanContent("Read the code and report findings."), "read_only");
+  assert.equal(classifyPlanContent("Implement the fix in src/lib/task-runtime.mjs."), "code_write");
+  assert.equal(classifyPlanContent("Deploy the package after tests pass."), "external");
+  assert.equal(classifyPlanContent("Delete generated files with rm -rf dist."), "destructive");
 });
 
 test("session aliases map task ids to thread artifact paths", () => {

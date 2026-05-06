@@ -4862,6 +4862,48 @@ function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPa
   lines.push(`  revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<revision instructions>"`);
   return lines.join("\n");
 }
+function classifyPlanContent(planText) {
+  const text = String(planText ?? "").toLowerCase();
+  if (!text.trim()) return "read_only";
+  if (/\b(rm\s+-rf|delete|drop\s+table|force[- ]push|reset\s+--hard|truncate)\b/.test(text)) {
+    return "destructive";
+  }
+  if (/\b(deploy|publish|push\s+to\s+(?:main|origin|remote)|release|api\s+call|webhook|http(?:s)?:\/\/)/.test(text)) {
+    return "external";
+  }
+  if (/\b(write|edit|modify|implement|refactor|create\s+file|add\s+function|patch|fix)\b/.test(text)) {
+    return "code_write";
+  }
+  return "read_only";
+}
+function formatPlanReadyEvent(session, {
+  summary = "",
+  classification = "code_write",
+  scriptPath,
+  jobId = null,
+  cwd = null,
+  stateCwd = null
+}) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const lines = [`[PLAN_READY] ${session.threadId} | classification=${classification}`];
+  if (summary && summary.trim()) {
+    const trimmed = summary.trim();
+    const maxSummaryChars = 4e3;
+    const display = trimmed.length > maxSummaryChars ? `${trimmed.slice(0, maxSummaryChars)}
+... (truncated, ${trimmed.length - maxSummaryChars} more chars)` : trimmed;
+    lines.push("  summary:");
+    for (const line of display.split("\n")) {
+      lines.push(`    ${line}`);
+    }
+  }
+  lines.push("  next_action:");
+  lines.push(`    approve: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} --mode default "Implement the plan."`);
+  lines.push(`    revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "Revise: <your feedback>"`);
+  if (jobId) {
+    lines.push(`    cancel:  ${commandPrefix(scriptPath, "cancel", jobCwd)} ${jobId}`);
+  }
+  return lines.join("\n");
+}
 function formatConfirmedEvent(session, { requestId }) {
   return `[CONFIRMED] ${session.threadId} ${requestId} | codex resumed`;
 }
@@ -10283,6 +10325,13 @@ function reviewResultTypeError(message, field) {
 // src/adapters/codex/pipeline.mjs
 var PIPELINE_TIMEOUT_MS_DEFAULT = 18e5;
 var STAGE_TIMEOUT_MS_DEFAULT = 72e4;
+function isPlanModeHalt({ taskMode, assistantMessage, diff }) {
+  if (taskMode !== "plan") return false;
+  if (diff && Array.isArray(diff.files) && diff.files.length > 0) return false;
+  const text = typeof assistantMessage === "string" ? assistantMessage.trim() : "";
+  if (!text) return false;
+  return text.startsWith("[PLAN]") || /^\*\*Assumption/m.test(text) || /^### Plan\b/m.test(text) || /^## Plan\b/m.test(text) || /^# Plan\b/m.test(text);
+}
 function loadExecuteInstructions(rootDir) {
   const p = path13.join(rootDir, "templates", "execute-instructions.md");
   try {
@@ -10304,7 +10353,9 @@ async function runAutoPipeline(options) {
     jobId = null,
     stateCwd = cwd,
     stageTimeoutMs = null,
-    totalTimeoutMs = null
+    totalTimeoutMs = null,
+    taskMode = null,
+    assistantMessage = null
   } = options;
   const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
   const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
@@ -10347,6 +10398,55 @@ async function runAutoPipeline(options) {
     completedStages.push("diff");
     logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
     checkPipelineTimeout();
+    if (isPlanModeHalt({ taskMode, assistantMessage, diff: diff1 })) {
+      const summaryText = typeof assistantMessage === "string" ? assistantMessage : "";
+      const planClassification = classifyPlanContent(summaryText);
+      logEvent(session, formatPlanReadyEvent(session, {
+        summary: summaryText,
+        classification: planClassification,
+        scriptPath,
+        jobId,
+        cwd,
+        stateCwd
+      }));
+      logNdjson(session, "PLAN_READY", null, {
+        threadId,
+        classification: planClassification,
+        diffStat: diff1.diffStat,
+        summaryLength: summaryText.length
+      });
+      logEvent(session, formatPipelineEvent(session, {
+        stage: "done",
+        detail: `stages=${completedStages.join(",")} complete=false partial=true plan_ready=true`
+      }));
+      return {
+        complete: false,
+        partial: true,
+        planReady: true,
+        planClassification,
+        completedStages,
+        duration: Math.round((Date.now() - startTime) / 1e3),
+        diff: diff1,
+        workspaceDiff: diff1,
+        failing_stage: null,
+        stageTimeoutMs: stageMs,
+        totalTimeoutMs: totalMs,
+        reviewVerdict: null,
+        reviewFindingCount: null,
+        fixFilesTouched: [],
+        noWorkReason: null,
+        completion: normalizeCompletionResult(
+          { complete: false, missing_items: [], summary: "plan-ready awaiting approval" },
+          [],
+          "plan-ready awaiting approval",
+          false
+        ),
+        missingItems: [],
+        completionSummary: "plan-ready awaiting approval",
+        taskTouchedFiles: [],
+        touchedFiles: []
+      };
+    }
     let unstructuredReviewAttention = false;
     if (config.auto_review) {
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
@@ -15121,8 +15221,18 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         // resolution order" so we only pass resolved numbers when we have
         // them.
         stageTimeoutMs: request.pipelineStageMs ?? (Number(config.pipeline_stage_ms) > 0 ? Number(config.pipeline_stage_ms) : null),
-        totalTimeoutMs: request.pipelineTotalMs ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null)
+        totalTimeoutMs: request.pipelineTotalMs ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null),
+        taskMode: isPlanMode ? "plan" : "default",
+        assistantMessage: typeof result.payload?.rawOutput === "string" ? result.payload.rawOutput : ""
       });
+      if (pipelineResult?.planReady) {
+        setPhase("plan-pending", {
+          command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
+          description: "Codex emitted a plan in plan mode but produced no diff. Approve with --mode default to execute, or send revision feedback on the same thread."
+        }, { pipeline: pipelineResult, planReady: true, planClassification: pipelineResult.planClassification, monitor });
+        markTerminalEmitted();
+        return { ...result, pipeline: pipelineResult, session, planReady: true };
+      }
       if (pipelineResult?.complete === false) {
         const pipelineErrored = Boolean(pipelineResult.error);
         const failedStage = pipelineResult.failing_stage ?? (pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff");
