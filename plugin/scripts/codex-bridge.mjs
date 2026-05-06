@@ -9,7 +9,7 @@ import { fileURLToPath as fileURLToPath4 } from "node:url";
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "2.2.0",
+  version: "2.2.1",
   description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
   type: "module",
   scripts: {
@@ -4342,9 +4342,10 @@ function readNdjson(sessionOrPath, { maxEntries = null } = {}) {
   const selected = Number.isInteger(maxEntries) && maxEntries > 0 ? lines.slice(-maxEntries) : lines;
   return selected.map((line, index) => {
     try {
-      return JSON.parse(line);
+      return canonicalizeNdjsonEvent(JSON.parse(line));
     } catch (error) {
       return {
+        schema_version: NDJSON_EVENT_SCHEMA_VERSION,
         ts: null,
         tag: "CORRUPT_NDJSON_LINE",
         method: null,
@@ -4387,6 +4388,15 @@ function buildNdjsonEvent({ ts, tag, method = null, threadId = null, data = {} }
     threadId,
     data: data ?? {}
   };
+}
+function canonicalizeNdjsonEvent(entry) {
+  return buildNdjsonEvent({
+    ts: entry?.ts ?? null,
+    tag: entry?.tag ?? null,
+    method: entry?.method ?? null,
+    threadId: entry?.threadId ?? null,
+    data: entry?.data ?? {}
+  });
 }
 function logEvent(session, formattedBlock) {
   try {
@@ -5652,7 +5662,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -14597,12 +14607,12 @@ function summarizeTaskWaitEvents(eventsPath) {
 }
 function buildTaskWaitResult({ job, storedJob, terminal, startedAt, eventsPath, cwd }) {
   const threadId = storedJob?.threadId ?? job.threadId ?? null;
-  const sessionDir = eventsPath ? path14.dirname(eventsPath) : null;
+  const sessionDir = eventsPath ? path17.dirname(eventsPath) : null;
   const artifacts = {
     events: eventsPath,
-    ndjson: sessionDir && threadId ? path14.join(sessionDir, `${threadId}.ndjson`) : null,
-    diff: sessionDir && threadId ? path14.join(sessionDir, `${threadId}.diff`) : null,
-    plan: sessionDir && threadId ? path14.join(sessionDir, `${threadId}.plan.md`) : null,
+    ndjson: sessionDir && threadId ? path17.join(sessionDir, `${threadId}.ndjson`) : null,
+    diff: sessionDir && threadId ? path17.join(sessionDir, `${threadId}.diff`) : null,
+    plan: sessionDir && threadId ? path17.join(sessionDir, `${threadId}.plan.md`) : null,
     log: storedJob?.logFile ?? job.logFile ?? null
   };
   const rawTag = terminal.tag;
@@ -14639,9 +14649,9 @@ async function waitForBackgroundTaskCompletion({ cwd, workspaceRoot, job, timeou
       }
     );
   }
-  const config = getBridgeConfig(cwd, workspaceRoot);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
   const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
-  const eventsPath = path14.join(sessionDir, `${threadWait.job.threadId}.events`);
+  const eventsPath = path17.join(sessionDir, `${threadWait.job.threadId}.events`);
   const elapsedMs = Date.now() - startedAt;
   const remainingMs = Math.max(1, timeoutMs - elapsedMs);
   const terminal = await waitForTerminalEvent(eventsPath, TASK_WAIT_EVENT_REGEX, remainingMs);
@@ -15672,8 +15682,7 @@ async function handleTask(argv) {
       "question-timeout-ms",
       "timeout-ms",
       "brief",
-      "intercepted-from",
-      "group"
+      "intercepted-from"
     ],
     booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "wait", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
