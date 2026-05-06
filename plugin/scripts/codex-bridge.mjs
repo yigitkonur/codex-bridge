@@ -1,36 +1,9 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
-import fs16 from "node:fs";
+import fs18 from "node:fs";
 import os7 from "node:os";
-import path14 from "node:path";
-import process10 from "node:process";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// package.json
-var package_default = {
-  name: "codex-bridge",
-  version: "2.2.0",
-  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
-  type: "module",
-  scripts: {
-    "baseline:contracts": "node scripts/baseline-contracts.mjs",
-    build: "node esbuild.config.mjs",
-    dev: "node src/codex-bridge.mjs",
-    "release:package": "node scripts/package-release.mjs",
-    "smoke:runtime": "node scripts/runtime-smoke.mjs",
-    test: "node --test test/*.test.mjs",
-    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
-  },
-  author: "Yigit Konur",
-  license: "MIT",
-  engines: {
-    node: ">=22.0.0"
-  },
-  devDependencies: {
-    esbuild: "^0.24.0",
-    "js-yaml": "^4.1.0"
-  }
-};
+import path15 from "node:path";
+import process11 from "node:process";
 
 // src/lib/cli-errors.mjs
 import process2 from "node:process";
@@ -11169,7 +11142,128 @@ async function runIterateLoop(options = {}) {
   };
 }
 
-// src/codex-bridge.mjs
+// src/lib/runtime-paths.mjs
+import fs16 from "node:fs";
+import path14 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// package.json
+var package_default = {
+  name: "codex-bridge",
+  version: "2.2.0",
+  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
+  type: "module",
+  scripts: {
+    "baseline:contracts": "node scripts/baseline-contracts.mjs",
+    build: "node esbuild.config.mjs",
+    dev: "node src/codex-bridge.mjs",
+    "release:package": "node scripts/package-release.mjs",
+    "smoke:runtime": "node scripts/runtime-smoke.mjs",
+    test: "node --test test/*.test.mjs",
+    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
+  },
+  author: "Yigit Konur",
+  license: "MIT",
+  engines: {
+    node: ">=22.0.0"
+  },
+  devDependencies: {
+    esbuild: "^0.24.0",
+    "js-yaml": "^4.1.0"
+  }
+};
+
+// src/lib/runtime-paths.mjs
+function resolveDispatcherDir() {
+  const here = path14.dirname(fileURLToPath2(import.meta.url));
+  if (fs16.existsSync(path14.join(here, "codex-bridge.mjs"))) return here;
+  const parent = path14.resolve(here, "..");
+  if (fs16.existsSync(path14.join(parent, "codex-bridge.mjs"))) return parent;
+  return here;
+}
+var SCRIPT_DIR = resolveDispatcherDir();
+var SCRIPT_PATH = path14.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs16.existsSync(path14.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path14.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path14.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path14.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path14.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var BRIDGE_VERSION = package_default.version;
+var BRIDGE_SCHEMA_VERSION = "1.0";
+var BRIDGE_CAPABILITIES = Object.freeze([
+  "plan-mode",
+  "background-jobs",
+  "auto-pipeline",
+  "adversarial-review",
+  "stop-gate-review",
+  "structured-errors",
+  "per-subcommand-help",
+  "machine-readable-help",
+  "workspace-config-override",
+  "update-check",
+  "backend-adapter"
+]);
+var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
+var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
+var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
+var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
+
+// src/lib/bridge-config.mjs
+import fs17 from "node:fs";
+import process10 from "node:process";
+var BRIDGE_CONFIG_SKILL_LAYER = null;
+function getBridgeConfig(cwd = null, workspaceRoot = null) {
+  if (!cwd && !workspaceRoot) {
+    if (!BRIDGE_CONFIG_SKILL_LAYER) {
+      BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
+    }
+    return BRIDGE_CONFIG_SKILL_LAYER;
+  }
+  return loadConfig(ROOT_DIR, cwd, workspaceRoot);
+}
+async function resolveCommandAdapter({
+  cwd = null,
+  workspaceRoot = null,
+  backend = null,
+  metaBackend = null,
+  taskMetadata = null,
+  subagentType = null
+} = {}) {
+  const resolvedWorkspaceRoot = workspaceRoot ?? (cwd ? resolveWorkspaceRoot(cwd) : null);
+  return resolveAdapterForRuntime({
+    skillDir: ROOT_DIR,
+    cwd,
+    workspaceRoot: resolvedWorkspaceRoot,
+    backend,
+    metaBackend,
+    taskMetadata,
+    subagentType,
+    env: process10.env
+  });
+}
+function ensureCodexRuntimeAdapter(adapter2) {
+  if (adapter2?.name === "codex") return;
+  throw validationError(
+    `Backend '${adapter2?.name ?? "unknown"}' is selected but this CLI path is not wired to that adapter yet.`,
+    "BACKEND_INCAPABLE",
+    "Use --backend codex, unset CODEX_BRIDGE_BACKEND, or choose a config default_backend supported by this build."
+  );
+}
+var DEVELOPER_INSTRUCTIONS_FALLBACK = {
+  plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
+  default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
+};
+function loadDeveloperInstructions(mode) {
+  const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
+  try {
+    return fs17.readFileSync(templatePath, "utf8");
+  } catch {
+    return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
+  }
+}
+
+// src/lib/envelope-helpers.mjs
 function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
   return {
     schema_version: "1.0",
@@ -11180,18 +11274,119 @@ function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, de
     details
   };
 }
+function shellQuote2(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+function bridgeCommand(subcommand, cwd = null) {
+  return `node ${shellQuote2(SCRIPT_PATH)} ${subcommand}${cwd ? ` --cwd ${shellQuote2(cwd)}` : ""}`;
+}
+function appendRenderedBriefToPrompt(prompt, brief) {
+  if (!brief) return prompt ?? "";
+  const rendered = renderBriefAsMarkdown(brief);
+  return [
+    prompt ?? "",
+    "[CODEX-BRIDGE STRUCTURED BRIEF]",
+    "The following brief is part of the worker instructions. Follow the worker_assignment and verify the acceptance_criteria before finishing.",
+    rendered,
+    "[/CODEX-BRIDGE STRUCTURED BRIEF]"
+  ].filter((part) => String(part).trim()).join("\n\n");
+}
+function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
+  const identifier = jobId ?? threadId;
+  if (!identifier) return null;
+  const cliCommand = formatTailCommand({
+    scriptPath: SCRIPT_PATH,
+    jobId: identifier,
+    timeoutMs: 18e5,
+    exclude: DEFAULT_MONITOR_EXCLUDE,
+    cwd
+  });
+  const shellFallback = eventsPath ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*) break ;; esac; done` : null;
+  return {
+    command: cliCommand,
+    shell_fallback: shellFallback,
+    terminal_tags: [...TERMINAL_TAGS],
+    exclude_tags: [...DEFAULT_MONITOR_EXCLUDE],
+    timeout_ms: 18e5,
+    tool_hint: {
+      description: "codex-bridge task events (excludes heartbeat noise; passes interrupts + checkpoints through)",
+      command: cliCommand,
+      timeout_ms: 36e5,
+      persistent: false
+    }
+  };
+}
+function extractItemText(item) {
+  if (!item || typeof item !== "object") return null;
+  switch (item.type) {
+    case "agentMessage":
+      return typeof item.text === "string" ? item.text.slice(0, 500) : null;
+    case "commandExecution":
+      return typeof item.command === "string" ? item.command.slice(0, 200) : null;
+    case "fileChange": {
+      const changes = Array.isArray(item.changes) ? item.changes : [];
+      if (changes.length === 0) {
+        return typeof item.path === "string" ? item.path : null;
+      }
+      const first = changes[0] ?? {};
+      const kind = first.kind ?? first.change ?? first.op ?? "";
+      const path16 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path16}`.trim();
+      if (!summary) return null;
+      const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
+      return `${summary}${suffix}`.slice(0, 200);
+    }
+    case "plan":
+      if (typeof item.title === "string" && item.title.trim()) {
+        return item.title.slice(0, 200);
+      }
+      if (typeof item.text === "string") {
+        const firstLine = item.text.split("\n").find((line) => line.trim()) ?? "";
+        return firstLine ? firstLine.slice(0, 200) : null;
+      }
+      return null;
+    case "reasoning":
+      if (typeof item.summary === "string") {
+        return item.summary.slice(0, 200);
+      }
+      if (Array.isArray(item.summary)) {
+        for (const section of item.summary) {
+          if (typeof section === "string" && section.trim()) {
+            return section.slice(0, 200);
+          }
+          if (section && typeof section === "object" && typeof section.text === "string" && section.text.trim()) {
+            return section.text.slice(0, 200);
+          }
+        }
+      }
+      return null;
+    case "mcpToolCall":
+      if (item.server || item.tool) {
+        return `${item.server ?? ""}/${item.tool ?? ""}`.slice(0, 200);
+      }
+      return null;
+    case "commandExecutionOutput":
+    case "webSearch":
+      if (typeof item.query === "string") return item.query.slice(0, 200);
+      return null;
+    default:
+      return null;
+  }
+}
+
+// src/codex-bridge.mjs
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
   try {
-    if (!fs16.existsSync(diffPath)) return null;
-    return writeDiffArtifact(taskId, fs16.readFileSync(diffPath, "utf8"));
+    if (!fs18.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs18.readFileSync(diffPath, "utf8"));
   } catch {
     return null;
   }
 }
 function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
-    if (process10.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
+    if (process11.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
     if (detectJsonFlag(rawArgv)) return;
     if (detectHelpFlag(rawArgv)) return;
     if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return;
@@ -11208,32 +11403,32 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path14.join(os7.homedir(), ".codex-bridge");
-    fs16.mkdirSync(logDir, { recursive: true });
-    const logFile = path14.join(logDir, "auto-update.log");
+    const logDir = path15.join(os7.homedir(), ".codex-bridge");
+    fs18.mkdirSync(logDir, { recursive: true });
+    const logFile = path15.join(logDir, "auto-update.log");
     try {
-      const stat = fs16.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs16.truncateSync(logFile, 0);
+      const stat = fs18.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs18.truncateSync(logFile, 0);
     } catch {
     }
-    const fd = fs16.openSync(logFile, "a");
+    const fd = fs18.openSync(logFile, "a");
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-      fs16.writeSync(fd, banner);
+      fs18.writeSync(fd, banner);
       const child = spawn3(
         "npx",
         ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
         {
           detached: true,
           stdio: ["ignore", fd, fd],
-          env: process10.env
+          env: process11.env
         }
       );
       child.on("error", () => {
         try {
-          fs16.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+          fs18.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
 `, "utf8");
         } catch {
         }
@@ -11241,24 +11436,12 @@ function spawnDetachedAutoApply(targetVersion) {
       child.unref();
     } finally {
       try {
-        fs16.closeSync(fd);
+        fs18.closeSync(fd);
       } catch {
       }
     }
   } catch {
   }
-}
-var SCRIPT_DIR = path14.dirname(fileURLToPath2(import.meta.url));
-var SCRIPT_PATH = path14.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs16.existsSync(path14.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path14.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path14.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path14.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path14.join(ROOT_DIR, "templates", "plan-enforcement.md");
-function shellQuote2(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
-}
-function bridgeCommand(subcommand, cwd = null) {
-  return `node ${shellQuote2(SCRIPT_PATH)} ${subcommand}${cwd ? ` --cwd ${shellQuote2(cwd)}` : ""}`;
 }
 function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, cwd = null, stateCwd = null }) {
   const target = jobId ?? threadId;
@@ -11311,78 +11494,11 @@ function buildTurnErrorNextAction({ origin, errorCode, threadId, jobId = null, c
     description: threadId ? "Retry with an adjusted prompt, or cancel and start fresh." : "Start a fresh task with a revised prompt."
   };
 }
-var DEVELOPER_INSTRUCTIONS_FALLBACK = {
-  plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
-  default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
-};
-function loadDeveloperInstructions(mode) {
-  const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
-  try {
-    return fs16.readFileSync(templatePath, "utf8");
-  } catch {
-    return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
-  }
-}
-function appendRenderedBriefToPrompt(prompt, brief) {
-  if (!brief) return prompt ?? "";
-  const rendered = renderBriefAsMarkdown(brief);
-  return [
-    prompt ?? "",
-    "[CODEX-BRIDGE STRUCTURED BRIEF]",
-    "The following brief is part of the worker instructions. Follow the worker_assignment and verify the acceptance_criteria before finishing.",
-    rendered,
-    "[/CODEX-BRIDGE STRUCTURED BRIEF]"
-  ].filter((part) => String(part).trim()).join("\n\n");
-}
 function prepareRuntimeSession(session, config, jobId) {
   if (!session) return session;
   session.redactSecrets = Boolean(config?.redact_secrets);
   writeSessionAliases(session, jobId);
   return session;
-}
-var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
-var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
-var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
-var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
-var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
-var BRIDGE_CONFIG_SKILL_LAYER = null;
-function getBridgeConfig(cwd = null, workspaceRoot = null) {
-  if (!cwd && !workspaceRoot) {
-    if (!BRIDGE_CONFIG_SKILL_LAYER) {
-      BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
-    }
-    return BRIDGE_CONFIG_SKILL_LAYER;
-  }
-  return loadConfig(ROOT_DIR, cwd, workspaceRoot);
-}
-async function resolveCommandAdapter({
-  cwd = null,
-  workspaceRoot = null,
-  backend = null,
-  metaBackend = null,
-  taskMetadata = null,
-  subagentType = null
-} = {}) {
-  const resolvedWorkspaceRoot = workspaceRoot ?? (cwd ? resolveWorkspaceRoot(cwd) : null);
-  return resolveAdapterForRuntime({
-    skillDir: ROOT_DIR,
-    cwd,
-    workspaceRoot: resolvedWorkspaceRoot,
-    backend,
-    metaBackend,
-    taskMetadata,
-    subagentType,
-    env: process10.env
-  });
-}
-function ensureCodexRuntimeAdapter(adapter2) {
-  if (adapter2?.name === "codex") return;
-  throw validationError(
-    `Backend '${adapter2?.name ?? "unknown"}' is selected but this CLI path is not wired to that adapter yet.`,
-    "BACKEND_INCAPABLE",
-    "Use --backend codex, unset CODEX_BRIDGE_BACKEND, or choose a config default_backend supported by this build."
-  );
 }
 function buildJsonRpcError2(code, message, data) {
   return data === void 0 ? { code, message } : { code, message, data };
@@ -11456,88 +11572,6 @@ function appendTaskFooter(rendered, { jobId, eventsPath, eventsDir, monitorComma
   return `${base}
 ${parts.join(" \xB7 ")}
 `;
-}
-function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
-  const identifier = jobId ?? threadId;
-  if (!identifier) return null;
-  const cliCommand = formatTailCommand({
-    scriptPath: SCRIPT_PATH,
-    jobId: identifier,
-    timeoutMs: 18e5,
-    exclude: DEFAULT_MONITOR_EXCLUDE,
-    cwd
-  });
-  const shellFallback = eventsPath ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*) break ;; esac; done` : null;
-  return {
-    command: cliCommand,
-    shell_fallback: shellFallback,
-    terminal_tags: [...TERMINAL_TAGS],
-    exclude_tags: [...DEFAULT_MONITOR_EXCLUDE],
-    timeout_ms: 18e5,
-    tool_hint: {
-      description: "codex-bridge task events (excludes heartbeat noise; passes interrupts + checkpoints through)",
-      command: cliCommand,
-      timeout_ms: 36e5,
-      persistent: false
-    }
-  };
-}
-function extractItemText(item) {
-  if (!item || typeof item !== "object") return null;
-  switch (item.type) {
-    case "agentMessage":
-      return typeof item.text === "string" ? item.text.slice(0, 500) : null;
-    case "commandExecution":
-      return typeof item.command === "string" ? item.command.slice(0, 200) : null;
-    case "fileChange": {
-      const changes = Array.isArray(item.changes) ? item.changes : [];
-      if (changes.length === 0) {
-        return typeof item.path === "string" ? item.path : null;
-      }
-      const first = changes[0] ?? {};
-      const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path15 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path15}`.trim();
-      if (!summary) return null;
-      const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
-      return `${summary}${suffix}`.slice(0, 200);
-    }
-    case "plan":
-      if (typeof item.title === "string" && item.title.trim()) {
-        return item.title.slice(0, 200);
-      }
-      if (typeof item.text === "string") {
-        const firstLine = item.text.split("\n").find((line) => line.trim()) ?? "";
-        return firstLine ? firstLine.slice(0, 200) : null;
-      }
-      return null;
-    case "reasoning":
-      if (typeof item.summary === "string") {
-        return item.summary.slice(0, 200);
-      }
-      if (Array.isArray(item.summary)) {
-        for (const section of item.summary) {
-          if (typeof section === "string" && section.trim()) {
-            return section.slice(0, 200);
-          }
-          if (section && typeof section === "object" && typeof section.text === "string" && section.text.trim()) {
-            return section.text.slice(0, 200);
-          }
-        }
-      }
-      return null;
-    case "mcpToolCall":
-      if (item.server || item.tool) {
-        return `${item.server ?? ""}/${item.tool ?? ""}`.slice(0, 200);
-      }
-      return null;
-    case "commandExecutionOutput":
-    case "webSearch":
-      if (typeof item.query === "string") return item.query.slice(0, 200);
-      return null;
-    default:
-      return null;
-  }
 }
 var COMMANDS = Object.freeze({
   task: {
@@ -11811,17 +11845,17 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path14.resolve(process10.cwd(), options.cwd) : process10.cwd();
+  return options.cwd ? path15.resolve(process11.cwd(), options.cwd) : process11.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path14.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path15.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs16.existsSync(lockPath);
+  let lockExists = fs18.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -11832,7 +11866,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs16.writeFileSync(
+        fs18.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -11868,7 +11902,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs16.writeFileSync(
+      fs18.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -11881,7 +11915,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs16.rmSync(lockPath, { force: true });
+      fs18.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -11963,7 +11997,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     auth: authStatus,
     active_backend: adapter2.name,
     adapter_capabilities: adapter2.capabilities(),
-    sessionRuntime: getSessionRuntimeStatus(process10.env, workspaceRoot),
+    sessionRuntime: getSessionRuntimeStatus(process11.env, workspaceRoot),
     reviewGateEnabled: reviewGate.enabled,
     reviewGateLockPath: reviewGate.lockPath,
     reviewGateLockExists: reviewGate.lockExists,
@@ -12026,21 +12060,6 @@ async function handleSetup(argv) {
     startedAt
   });
 }
-var BRIDGE_VERSION = package_default.version;
-var BRIDGE_SCHEMA_VERSION = "1.0";
-var BRIDGE_CAPABILITIES = Object.freeze([
-  "plan-mode",
-  "background-jobs",
-  "auto-pipeline",
-  "adversarial-review",
-  "stop-gate-review",
-  "structured-errors",
-  "per-subcommand-help",
-  "machine-readable-help",
-  "workspace-config-override",
-  "update-check",
-  "backend-adapter"
-]);
 async function handleVersion(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
@@ -12058,7 +12077,7 @@ async function handleVersion(argv) {
   const payload = {
     version: BRIDGE_VERSION,
     schema_version: BRIDGE_SCHEMA_VERSION,
-    node_version: process10.version,
+    node_version: process11.version,
     codex: {
       available: codex.available,
       detail: codex.detail ?? null
@@ -12423,7 +12442,7 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 function getCurrentClaudeSessionId() {
-  return process10.env[SESSION_ID_ENV] ?? null;
+  return process11.env[SESSION_ID_ENV] ?? null;
 }
 function filterJobsForCurrentClaudeSession(jobs) {
   const sessionId = getCurrentClaudeSessionId();
@@ -12808,9 +12827,9 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 function safeRealPath(filePath) {
   try {
-    return fs16.realpathSync.native ? fs16.realpathSync.native(filePath) : fs16.realpathSync(filePath);
+    return fs18.realpathSync.native ? fs18.realpathSync.native(filePath) : fs18.realpathSync(filePath);
   } catch {
-    return path14.resolve(filePath);
+    return path15.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -12848,10 +12867,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path14.resolve(worktreePath);
-  if (options.cwd && !samePath(path14.resolve(process10.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path15.resolve(worktreePath);
+  if (options.cwd && !samePath(path15.resolve(process11.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path14.resolve(process10.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path15.resolve(process11.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -13012,14 +13031,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path14.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs16.readFileSync(absPath, "utf8");
+    return fs18.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -13111,7 +13130,7 @@ async function runForegroundCommand(job, runner, options = {}) {
       emitError(errLike, { json: true, command });
     } else {
       if (execution.rendered) {
-        process10.stdout.write(execution.rendered);
+        process11.stdout.write(execution.rendered);
       }
       emitError(errLike, { json: false, command });
     }
@@ -13129,12 +13148,12 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs16.openSync(stderrPath, "a");
+      const stderrFd = fs18.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
   }
-  const child = spawn3(process10.execPath, [
+  const child = spawn3(process11.execPath, [
     scriptPath,
     "task-worker",
     "--cwd",
@@ -13145,7 +13164,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
     jobId
   ], {
     cwd,
-    env: process10.env,
+    env: process11.env,
     detached: true,
     stdio: stdioConfig,
     windowsHide: true
@@ -13153,7 +13172,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs16.closeSync(stdioConfig[2]);
+      fs18.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -13529,9 +13548,9 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     turnTimeoutMs: null
   };
   let heartbeatTimer = null;
-  const HEARTBEAT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
-  const CHECKPOINT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
-  const STALL_CHECKPOINT_THRESHOLD = Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
+  const HEARTBEAT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
+  const CHECKPOINT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
+  const STALL_CHECKPOINT_THRESHOLD = Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
@@ -13614,7 +13633,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
             phase: heartbeatState.phase,
             lastItem: heartbeatState.lastItem,
             lastItemAgeMs: heartbeatState.lastItemAt ? now - heartbeatState.lastItemAt : null,
-            pid: process10.pid,
+            pid: process11.pid,
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
@@ -13657,7 +13676,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
               elapsedMs,
               phase: heartbeatState.phase,
               intervalMs,
-              pid: process10.pid,
+              pid: process11.pid,
               jobId: request.jobId ?? null,
               lastAssistantMessage: checkpointState.lastAssistantMessage,
               tools: toolsSnapshot,
@@ -13790,7 +13809,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path14.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path15.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -13864,10 +13883,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path14.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path14.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path14.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path14.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path15.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path15.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path15.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path15.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -14324,7 +14343,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path14.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path15.resolve(process11.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -14440,7 +14459,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
   const onSigint = () => {
     interrupted = true;
   };
-  process10.on("SIGINT", onSigint);
+  process11.on("SIGINT", onSigint);
   try {
     while (true) {
       ticks += 1;
@@ -14460,14 +14479,14 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
         }))
       };
       if (json2) {
-        process10.stdout.write(`${JSON.stringify(tickEntry)}
+        process11.stdout.write(`${JSON.stringify(tickEntry)}
 `);
       } else {
-        process10.stdout.write(`\x1B[2J\x1B[H`);
-        process10.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
+        process11.stdout.write(`\x1B[2J\x1B[H`);
+        process11.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
 
 `);
-        process10.stdout.write(renderStatusReport(snapshot));
+        process11.stdout.write(renderStatusReport(snapshot));
       }
       if (activeCount === 0) {
         const summary = {
@@ -14489,7 +14508,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
       if (deadline && Date.now() >= deadline) {
         const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
         if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        else process10.stdout.write(`
+        else process11.stdout.write(`
 watch timed out after ${ticks} ticks with ${activeCount} active job(s).
 `);
         return;
@@ -14497,7 +14516,7 @@ watch timed out after ${ticks} ticks with ${activeCount} active job(s).
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   } finally {
-    process10.off("SIGINT", onSigint);
+    process11.off("SIGINT", onSigint);
   }
 }
 async function handleAwaitArtifact(argv) {
@@ -14514,7 +14533,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path14.isAbsolute(artifactPath) ? artifactPath : path14.resolve(cwd, artifactPath);
+  const resolvedPath = path15.isAbsolute(artifactPath) ? artifactPath : path15.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -14531,7 +14550,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs16.statSync(resolvedPath);
+      statInfo = fs18.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -14583,7 +14602,7 @@ async function handleAwaitArtifact(argv) {
         })
       };
       if (!statInfo) {
-        process10.exitCode = 7;
+        process11.exitCode = 7;
         emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
 `, {
           json: options.json,
@@ -14620,7 +14639,7 @@ async function handleAwaitArtifact(argv) {
           details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
         })
       };
-      process10.exitCode = 7;
+      process11.exitCode = 7;
       emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
 `, {
         json: options.json,
@@ -14647,7 +14666,7 @@ function pruneOrphanedJobs(cwd) {
     }
     let alive = false;
     try {
-      process10.kill(pid, 0);
+      process11.kill(pid, 0);
       alive = true;
     } catch (err) {
       if (err && err.code === "EPERM") {
@@ -14740,7 +14759,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
       for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
         if (!filePath) continue;
         try {
-          fs16.rmSync(filePath, { force: true });
+          fs18.rmSync(filePath, { force: true });
         } catch {
         }
       }
@@ -14824,7 +14843,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs16.readFileSync(eventsPath, "utf8");
+        const data = fs18.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -14841,13 +14860,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs16.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs18.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs16.existsSync(eventsPath)) {
+              if (fs18.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -14859,12 +14878,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs16.existsSync(eventsPath)) {
+    if (fs18.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs16.existsSync(eventsPath)) {
+        if (fs18.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -14907,7 +14926,7 @@ async function handleWait(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = TERMINAL_TAG_REGEX;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -14964,7 +14983,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     return {
       reference,
       job,
-      eventsPath: path14.join(sessionDir, `${job.threadId}.events`)
+      eventsPath: path15.join(sessionDir, `${job.threadId}.events`)
     };
   });
   const deadline = Date.now() + timeoutMs;
@@ -15017,7 +15036,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
 }
 function scanTerminalEvent(eventsPath, pattern) {
   try {
-    const data = fs16.readFileSync(eventsPath, "utf8");
+    const data = fs18.readFileSync(eventsPath, "utf8");
     for (const line of data.split("\n")) {
       const m = pattern.exec(line);
       if (m) return { timedOut: false, tag: m[1], line };
@@ -15061,7 +15080,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path14.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -15070,7 +15089,7 @@ async function handleEvents(argv) {
   const filter = parseTagList(options.filter);
   const exclude = parseTagList(options.exclude);
   const writeEventLine = (line) => {
-    if (!options.json) process10.stdout.write(line + "\n");
+    if (!options.json) process11.stdout.write(line + "\n");
   };
   const tagOf = (line) => {
     const m = /^\[([^\]]+)\]/.exec(line);
@@ -15092,8 +15111,8 @@ async function handleEvents(argv) {
   const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs16.existsSync(eventsPath)) {
-    initial = fs16.readFileSync(eventsPath, "utf8");
+  if (fs18.existsSync(eventsPath)) {
+    initial = fs18.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -15139,7 +15158,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs16.readFileSync(eventsPath, "utf8");
+        data = fs18.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -15161,13 +15180,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs16.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs18.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs16.existsSync(eventsPath)) {
+              if (fs18.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15178,11 +15197,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs16.existsSync(eventsPath)) {
+    if (fs18.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs16.existsSync(eventsPath)) {
+        if (fs18.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15264,7 +15283,7 @@ async function handleCancel(argv) {
   });
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process10.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process11.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
@@ -15363,13 +15382,13 @@ async function handleCancel(argv) {
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path14.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path14.resolve(cwd, positionals[0]);
+    const candidate = path15.resolve(cwd, positionals[0]);
     try {
-      if (fs16.existsSync(candidate) && fs16.statSync(candidate).isFile()) {
-        return fs16.readFileSync(candidate, "utf8");
+      if (fs18.existsSync(candidate) && fs18.statSync(candidate).isFile()) {
+        return fs18.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -15400,7 +15419,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs16.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs18.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -15481,9 +15500,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path14.join(dir, "meta.json"),
-    review_path: path14.join(dir, "review.json"),
-    verdict_path: path14.join(dir, "verdict.json"),
+    meta_path: path15.join(dir, "meta.json"),
+    review_path: path15.join(dir, "review.json"),
+    verdict_path: path15.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -15884,10 +15903,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path14.join(jobDir(taskId), "verdict.json");
+    const target = path15.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs16.existsSync(target)) {
-      fs16.rmSync(target, { force: true });
+    if (fs18.existsSync(target)) {
+      fs18.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -16465,7 +16484,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs16.readFileSync(session.ndjsonPath, "utf8");
+    content = fs18.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -16552,35 +16571,35 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   verdicts: handleVerdictsPending,
   iterate: handleIterate
 });
-process10.on("SIGPIPE", () => {
+process11.on("SIGPIPE", () => {
 });
-process10.stdout.on("error", (err) => {
+process11.stdout.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
-process10.stderr.on("error", (err) => {
+process11.stderr.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path14.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs16.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path15.join(os7.homedir(), ".codex-bridge", "crashes");
+    fs18.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path14.join(crashDir, `${ts}-${process10.pid}.log`);
+    const file = path15.join(crashDir, `${ts}-${process11.pid}.log`);
     const payload = {
       kind,
       ts,
-      pid: process10.pid,
-      argv: process10.argv,
-      cwd: process10.cwd(),
-      nodeVersion: process10.version,
-      bridgeVersion: package_default.version,
+      pid: process11.pid,
+      argv: process11.argv,
+      cwd: process11.cwd(),
+      nodeVersion: process11.version,
+      bridgeVersion: BRIDGE_VERSION,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs16.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs18.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
-      process10.stderr.write(
+      process11.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
 `
       );
@@ -16589,17 +16608,17 @@ function writeCrashLog(kind, error) {
   } catch {
   }
 }
-process10.on("unhandledRejection", (reason) => {
+process11.on("unhandledRejection", (reason) => {
   writeCrashLog("unhandledRejection", reason);
-  process10.exitCode = process10.exitCode || 1;
+  process11.exitCode = process11.exitCode || 1;
 });
-process10.on("uncaughtException", (err) => {
+process11.on("uncaughtException", (err) => {
   writeCrashLog("uncaughtException", err);
-  process10.exit(process10.exitCode || 1);
+  process11.exit(process11.exitCode || 1);
 });
 async function main() {
   const startedAt = Date.now();
-  const rawArgv = process10.argv.slice(2);
+  const rawArgv = process11.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
   maybeTriggerAutoApply(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
@@ -16626,7 +16645,7 @@ async function main() {
   await handler(argv);
 }
 main().catch((error) => {
-  const rawArgv = process10.argv.slice(2);
+  const rawArgv = process11.argv.slice(2);
   const json2 = detectJsonFlag(rawArgv);
   const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
   emitError(error, { json: json2, command });

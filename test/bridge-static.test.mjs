@@ -10,6 +10,13 @@ const adapterEventVocabulary = fs.readFileSync(
   new URL("../.planning/codebase/ADAPTERS.md", import.meta.url),
   "utf8"
 );
+// Phase 0 dispatcher refactor: a few constants and helpers live in dedicated
+// lib modules now; the static contract that previously asserted them inside
+// `bridge` is repointed at the new file homes. Esbuild inlines these modules
+// into the bundled CLI, so runtime behavior is unchanged — only the source
+// layout changed.
+const runtimePaths = fs.readFileSync(new URL("../src/lib/runtime-paths.mjs", import.meta.url), "utf8");
+const envelopeHelpers = fs.readFileSync(new URL("../src/lib/envelope-helpers.mjs", import.meta.url), "utf8");
 
 test("broker forwards server requests and tracks downstream responses", () => {
   assert.match(broker, /setServerRequestHandler\(routeServerRequest\)/);
@@ -42,8 +49,10 @@ test("wait terminal matching is anchored to event headers", () => {
   assert.match(bridge, /TERMINAL_TAG_REGEX/);
   assert.match(bridge, /async function handleWaitAny/);
   assert.match(bridge, /mode: "any"/);
-  assert.match(bridge, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*\|"\[PLAN\]"\*/);
-  assert.doesNotMatch(bridge, /\*"\[DONE\]"\*\|\*"\[ERROR\]"\*\|\*"\[INCOMPLETE\]"\*\|\*"\[PLAN\]"\*/);
+  // The Monitor-hint shell fallback lives in envelope-helpers.mjs after the
+  // Phase 0 dispatcher split.
+  assert.match(envelopeHelpers, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*\|"\[PLAN\]"\*/);
+  assert.doesNotMatch(envelopeHelpers, /\*"\[DONE\]"\*\|\*"\[ERROR\]"\*\|\*"\[INCOMPLETE\]"\*\|\*"\[PLAN\]"\*/);
 });
 
 test("task retry binds same-thread retry to the failed thread id", () => {
@@ -66,9 +75,12 @@ test("resume task chooses default continue prompt before prompt decorators", () 
 });
 
 test("task brief is delivered into effective worker prompt", () => {
-  assert.match(bridge, /function appendRenderedBriefToPrompt\(prompt, brief\)/);
-  assert.match(bridge, /CODEX-BRIDGE STRUCTURED BRIEF/);
-  assert.match(bridge, /renderBriefAsMarkdown\(brief\)/);
+  // appendRenderedBriefToPrompt was extracted to envelope-helpers.mjs in
+  // Phase 0; runBridgeTask still calls it from the dispatcher.
+  assert.match(envelopeHelpers, /function appendRenderedBriefToPrompt\(prompt, brief\)/);
+  assert.match(envelopeHelpers, /CODEX-BRIDGE STRUCTURED BRIEF/);
+  assert.match(envelopeHelpers, /renderBriefAsMarkdown\(brief\)/);
+  assert.match(bridge, /appendRenderedBriefToPrompt\(baseTaskPrompt, request\.brief \?\? null\)/);
   assert.match(bridge, /brief: brief \?\? null/);
   assert.match(bridge, /brief,\n\s+write,/);
 });
@@ -301,7 +313,9 @@ test("working-tree review empty check includes untracked files", () => {
 
 test("version json exposes backend adapter capability contract", () => {
   const version = bridge.match(/async function handleVersion[\s\S]*?emitSuccess\("version"/)?.[0] ?? "";
-  assert.match(bridge, /"backend-adapter"/);
+  // BRIDGE_CAPABILITIES (which lists "backend-adapter") moved to
+  // runtime-paths.mjs in the Phase 0 dispatcher split.
+  assert.match(runtimePaths, /"backend-adapter"/);
   assert.match(version, /const adapter = await resolveCommandAdapter/);
   assert.match(version, /active_backend:\s*adapter\.name/);
   assert.match(version, /adapter_capabilities:\s*adapter\.capabilities\(\)/);
