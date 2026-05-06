@@ -191,8 +191,8 @@ test("checkpoint summary is concise and default monitor excludes verbose checkpo
   assert.match(rendered, /focus=src\/lib\/session-log\.mjs/);
   assert.match(rendered, /last="fileChange: modify src\/lib\/session-log\.mjs"/);
   assert.ok(DEFAULT_MONITOR_EXCLUDE.includes("HEARTBEAT"));
-  assert.ok(DEFAULT_MONITOR_EXCLUDE.includes("DIRECTIVES"));
   assert.ok(DEFAULT_MONITOR_EXCLUDE.includes("CHECKPOINT"));
+  assert.ok(DEFAULT_MONITOR_EXCLUDE.includes("DIRECTIVES"));
   assert.equal(DEFAULT_MONITOR_EXCLUDE.includes("STALL_WARNING"), false);
 });
 

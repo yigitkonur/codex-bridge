@@ -190,7 +190,7 @@ Current terminal tags are `DONE`, `ERROR`, `INCOMPLETE`, `PLAN`, and
 `CANCELLED`.
 `events --follow` and `wait` rely on `TERMINAL_TAG_REGEX`; `QUESTION` is
 interrupt-class but not terminal. `DEFAULT_MONITOR_EXCLUDE` is
-`["HEARTBEAT", "CHECKPOINT"]`; `CHECKPOINT_SUMMARY` is the
+`["HEARTBEAT", "DIRECTIVES", "CHECKPOINT"]`; `CHECKPOINT_SUMMARY` is the
 default live progress signal while verbose `CHECKPOINT` and runtime-config
 echoes remain opt-in.
 

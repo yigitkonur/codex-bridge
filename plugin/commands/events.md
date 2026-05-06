@@ -10,7 +10,7 @@ For a live background job, prefer the Monitor tool when the user wants progress 
 ```json
 {
   "description": "codex-bridge task events",
-  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs\" events <job-id-or-thread-id> --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000",
+  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs\" events <job-id-or-thread-id> --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000",
   "timeout_ms": 3600000,
   "persistent": false
 }

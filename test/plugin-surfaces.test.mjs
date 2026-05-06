@@ -158,7 +158,7 @@ function queuedTaskEnvelope(jobId = "task-mabc123-def456") {
       monitor: {
         tool_hint: {
           description: "codex-bridge task events",
-          command: `node "${path.join(rootPath, "plugin/scripts/codex-bridge.mjs")}" events ${jobId} --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000`,
+          command: `node "${path.join(rootPath, "plugin/scripts/codex-bridge.mjs")}" events ${jobId} --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000`,
           timeout_ms: 3600000,
           persistent: false
         }

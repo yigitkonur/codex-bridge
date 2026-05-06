@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { DEFAULT_MONITOR_EXCLUDE } from "../src/lib/session-log.mjs";
 import { upsertJob } from "../src/lib/state.mjs";
 
 const bridgePath = fileURLToPath(new URL("../src/codex-bridge.mjs", import.meta.url));
@@ -167,7 +168,7 @@ test("events with default monitor exclude preserves checkpoint summary but drops
 
     const result = spawnSync(
       process.execPath,
-      [bridgePath, "events", job.id, "--exclude", "HEARTBEAT,CHECKPOINT", "--cwd", workspace],
+      [bridgePath, "events", job.id, "--exclude", DEFAULT_MONITOR_EXCLUDE.join(","), "--cwd", workspace],
       { cwd: workspace, env, encoding: "utf8" }
     );
 
@@ -178,7 +179,7 @@ test("events with default monitor exclude preserves checkpoint summary but drops
     // as a member, doubled trailing backslash) that happened to work for our
     // test data but would mis-escape any tag containing brackets/backslashes.
     const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    for (const tag of ["DIRECTIVES", "CHECKPOINT_SUMMARY", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "STALL_WARNING", "WARNING", "INCOMPLETE"]) {
+    for (const tag of ["CHECKPOINT_SUMMARY", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "STALL_WARNING", "WARNING", "INCOMPLETE"]) {
       assert.match(result.stdout, new RegExp(`\\[${escapeRegExp(tag)}\\]`), `${tag} should pass through`);
     }
     assert.doesNotMatch(result.stdout, /\[DIRECTIVES\]/);
