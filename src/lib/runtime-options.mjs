@@ -50,6 +50,11 @@ const DEFAULT_CONFIG = {
   // config-reference.md for the threshold, family list, and enhancement
   // candidates.
   command_failure_circuit_breaker: true,
+  stop_review_gate: {
+    enabled: false,
+    timeout_ms: 600_000,
+    fast_scan_only: true,
+  },
   // Max wall-clock gap between app-server notifications before a turn is
   // declared stuck and failed with `ClientTimeout`. The prior 120s hard-code
   // was tuned for execute-heavy turns and would false-positive during

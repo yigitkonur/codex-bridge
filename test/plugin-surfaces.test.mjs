@@ -353,9 +353,11 @@ function makeStopGateHarness(fakeBridgeSource) {
   const hookDir = path.join(pluginRoot, "hooks");
   const scriptsDir = path.join(pluginRoot, "scripts");
   const workspace = path.join(tempRoot, "workspace");
+  const registry = path.join(tempRoot, "registry");
   fs.mkdirSync(hookDir, { recursive: true });
   fs.mkdirSync(scriptsDir, { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
+  fs.mkdirSync(registry, { recursive: true });
   // stop.mjs imports from ./lib/workspace-state.mjs — copy the whole hooks dir
   copyDirectory(new URL("plugin/hooks/", root), hookDir);
   fs.writeFileSync(path.join(scriptsDir, "codex-bridge.mjs"), fakeBridgeSource);
@@ -363,8 +365,21 @@ function makeStopGateHarness(fakeBridgeSource) {
   return {
     tempRoot,
     hookPath: path.join(hookDir, "stop.mjs"),
-    workspace
+    workspace,
+    registry
   };
+}
+
+function seedPendingVerdicts(harness, verdicts) {
+  for (const verdict of verdicts) {
+    const taskId = verdict.task_id;
+    const taskDir = path.join(harness.registry, taskId);
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(taskDir, "verdict.json"),
+      `${JSON.stringify({ ...verdict, schema_version: "1.0" }, null, 2)}\n`
+    );
+  }
 }
 
 function runStopGateHarness(harness, overrides = {}) {
@@ -374,7 +389,8 @@ function runStopGateHarness(harness, overrides = {}) {
     input: JSON.stringify({
       cwd: harness.workspace,
       session_id: "session-stop-gate-test",
-      stop_hook_active: false
+      stop_hook_active: false,
+      ...(overrides.input ?? {})
     }),
     encoding: "utf8",
     env: {
@@ -382,6 +398,7 @@ function runStopGateHarness(harness, overrides = {}) {
       CODEX_BRIDGE_PLUGIN_DATA: path.join(harness.tempRoot, "plugin-data"),
       CLAUDE_PLUGIN_DATA: path.join(harness.tempRoot, "claude-data"),
       CLAUDE_PLUGIN_ROOT: path.join(harness.tempRoot, "plugin"),
+      CODEX_BRIDGE_REGISTRY: harness.registry,
       ...(overrides.env ?? {})
     }
   });
@@ -906,8 +923,9 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(stopHook, /reviewGateEnabled !== true/);
   assert.match(stopHook, /Run a stop-gate review of the previous Claude turn\./);
   assert.match(stopHook, /\.codex-bridge-stop-review-gate\.lock/);
-  assert.match(stopHook, /"verdicts", "--pending", "--json"/);
-  assert.match(stopHook, /if \(!activation\.active\)/);
+  assert.match(stopHook, /CODEX_BRIDGE_REGISTRY/);
+  assert.match(stopHook, /function listPendingVerdicts/);
+  assert.match(stopHook, /stopReviewConfig\.enabled/);
   assert.match(stopHook, /maybeMigrateLegacyGate/);
   assert.match(stopHook, /config\?\.stopReviewGate === true/);
   assert.match(stopHook, /CODEX_BRIDGE_PLUGIN_DATA/);
@@ -1188,6 +1206,14 @@ if (command === "status") {
 } else if (command === "setup") {
   process.stderr.write("setup unavailable");
   process.exit(4);
+} else if (command === "verdicts") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      count: 1,
+      pending: [{ task_id: "task-approved", verdict: "approved" }]
+    }
+  }));
 } else if (command === "task") {
   process.stdout.write(JSON.stringify({ ok: true, result: { rawOutput: "ALLOW: ok" } }));
 } else {
@@ -1196,7 +1222,18 @@ if (command === "status") {
 `);
 
   try {
-    const result = runStopGateHarness(harness);
+    seedPendingVerdicts(harness, [{
+      task_id: "task-approved",
+      verdict: "approved"
+    }]);
+    fs.mkdirSync(path.join(harness.workspace, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(harness.workspace, ".claude", "codex-bridge.local.md"),
+      ["stop_review_gate:", "  enabled: true", "  fast_scan_only: false", ""].join("\n")
+    );
+    const result = runStopGateHarness(harness, {
+      input: { last_assistant_message: "Implemented the requested change." }
+    });
     assert.equal(result.status, 0);
     const reason = assertStopBlockEnvelope(result.stdout);
     assert.match(reason, /setup could not verify the bridge runtime/);
@@ -1221,6 +1258,14 @@ if (command === "status") {
       ready: false
     }
   }));
+} else if (command === "verdicts") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      count: 1,
+      pending: [{ task_id: "task-approved", verdict: "approved" }]
+    }
+  }));
 } else if (command === "task") {
   process.stdout.write(JSON.stringify({ ok: true, result: { rawOutput: "ALLOW: ok" } }));
 } else {
@@ -1229,7 +1274,18 @@ if (command === "status") {
 `);
 
   try {
-    const result = runStopGateHarness(harness);
+    seedPendingVerdicts(harness, [{
+      task_id: "task-approved",
+      verdict: "approved"
+    }]);
+    fs.mkdirSync(path.join(harness.workspace, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(harness.workspace, ".claude", "codex-bridge.local.md"),
+      ["stop_review_gate:", "  enabled: true", "  fast_scan_only: false", ""].join("\n")
+    );
+    const result = runStopGateHarness(harness, {
+      input: { last_assistant_message: "Implemented the requested change." }
+    });
     assert.equal(result.status, 0);
     const reason = assertStopBlockEnvelope(result.stdout);
     assert.match(reason, /Codex is not ready/);
@@ -1238,7 +1294,116 @@ if (command === "status") {
   }
 });
 
-test("plugin Stop hook blocks pending review verdicts before launching stop-time review", () => {
+test("plugin Stop hook blocks pending review verdicts on the default fast path", () => {
+  const harness = makeStopGateHarness(`
+import process from "node:process";
+
+const [command] = process.argv.slice(2);
+if (command === "status") {
+  process.stderr.write("status should not run on the default fast path");
+  process.exit(99);
+} else if (command === "setup") {
+  process.stderr.write("setup should not run on the default fast path");
+  process.exit(99);
+} else if (command === "verdicts") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      count: 3,
+      pending: [
+        { task_id: "task-approved", verdict: "approved", next_action: { argv: ["merge", "task-approved"] } },
+        { task_id: "task-needs", verdict: "needs-attention", next_action: { argv: ["iterate", "task-needs"] } },
+        { task_id: "task-must", verdict: "must-fix", next_action: { argv: ["iterate", "task-must"] } }
+      ]
+    }
+  }));
+} else if (command === "task") {
+  process.stderr.write("stop-time review should not run on the default fast path");
+  process.exit(99);
+} else {
+  process.exit(2);
+}
+`);
+
+  try {
+    fs.rmSync(path.join(harness.workspace, ".codex-bridge-stop-review-gate.lock"), { force: true });
+    seedPendingVerdicts(harness, [
+      { task_id: "task-approved", verdict: "approved", next_action: { argv: ["merge", "task-approved"] } },
+      { task_id: "task-needs", verdict: "needs-attention", next_action: { argv: ["iterate", "task-needs"] } },
+      { task_id: "task-must", verdict: "must-fix", next_action: { argv: ["iterate", "task-must"] } }
+    ]);
+    const result = runStopGateHarness(harness);
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.stderr, /should not run/);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.decision, "block");
+    assert.match(payload.reason, /pending review verdicts/);
+    assert.match(payload.reason, /task-approved/);
+    assert.match(payload.reason, /task-needs/);
+    assert.match(payload.reason, /task-must/);
+    assert.match(payload.reason, /codex-bridge merge task-approved/);
+    assert.match(payload.reason, /codex-bridge iterate task-needs/);
+  } finally {
+    fs.rmSync(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("plugin Stop hook skips opt-in slow review for an empty transcript", () => {
+  const harness = makeStopGateHarness(`
+import process from "node:process";
+
+const [command] = process.argv.slice(2);
+if (command === "status") {
+  process.stderr.write("status should not run when transcript is empty");
+  process.exit(99);
+} else if (command === "setup") {
+  process.stderr.write("setup should not run when transcript is empty");
+  process.exit(99);
+} else if (command === "verdicts") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      count: 1,
+      pending: [{ task_id: "task-approved", verdict: "approved" }]
+    }
+  }));
+} else if (command === "task") {
+  process.stderr.write("stop-time review should not run when transcript is empty");
+  process.exit(99);
+} else {
+  process.exit(2);
+}
+`);
+
+  try {
+    seedPendingVerdicts(harness, [{
+      task_id: "task-approved",
+      verdict: "approved"
+    }]);
+    const transcriptPath = path.join(harness.tempRoot, "empty.jsonl");
+    fs.writeFileSync(transcriptPath, "");
+    fs.mkdirSync(path.join(harness.workspace, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(harness.workspace, ".claude", "codex-bridge.local.md"),
+      [
+        "stop_review_gate:",
+        "  enabled: true",
+        "  fast_scan_only: false",
+        "  timeout_ms: 600000",
+        ""
+      ].join("\n")
+    );
+    const result = runStopGateHarness(harness, { input: { transcript_path: transcriptPath } });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.doesNotMatch(result.stderr, /should not run/);
+    assert.match(result.stderr, /no reviewable assistant message/);
+  } finally {
+    fs.rmSync(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("plugin Stop hook runs opt-in slow review with pending verdicts", () => {
   const harness = makeStopGateHarness(`
 import process from "node:process";
 
@@ -1267,38 +1432,49 @@ if (command === "status") {
     }
   }));
 } else if (command === "task") {
-  process.stderr.write("stop-time review should not run while verdicts are pending");
-  process.exit(99);
+  process.stdout.write(JSON.stringify({ ok: true, result: { rawOutput: "ALLOW: ok" } }));
 } else {
   process.exit(2);
 }
 `);
 
   try {
-    const result = runStopGateHarness(harness);
+    seedPendingVerdicts(harness, [
+      { task_id: "task-approved", verdict: "approved" },
+      { task_id: "task-needs", verdict: "needs-attention" },
+      { task_id: "task-must", verdict: "must-fix" }
+    ]);
+    fs.mkdirSync(path.join(harness.workspace, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(harness.workspace, ".claude", "codex-bridge.local.md"),
+      [
+        "stop_review_gate:",
+        "  enabled: true",
+        "  fast_scan_only: false",
+        "  timeout_ms: 600000",
+        ""
+      ].join("\n")
+    );
+    const result = runStopGateHarness(harness, {
+      input: {
+        last_assistant_message: "Implemented the requested change."
+      }
+    });
     assert.equal(result.status, 0);
-    assert.doesNotMatch(result.stderr, /stop-time review should not run/);
-    const reason = assertStopBlockEnvelope(result.stdout);
-    assert.match(reason, /pending review verdicts/);
-    assert.match(reason, /task-approved/);
-    assert.match(reason, /task-needs/);
-    assert.match(reason, /task-must/);
-    assert.match(reason, /codex-bridge merge task-approved/);
-    assert.match(reason, /codex-bridge iterate task-needs/);
+    assert.equal(result.stdout, "");
   } finally {
     fs.rmSync(harness.tempRoot, { recursive: true, force: true });
   }
 });
 
-test("plugin Stop hook leaves timeout margin for its blocking timeout result", () => {
+test("plugin Stop hook keeps the default slow-review timeout below the Stop ceiling", () => {
   const hooksConfig = readJson("plugin/hooks/hooks.json");
   const stopHook = readText("plugin/hooks/stop.mjs");
   const hookTimeoutMs = hooksConfig.hooks.Stop[0].hooks[0].timeout * 1000;
-  // New architecture uses STOP_REVIEW_TIMEOUT_MS (ms) directly instead of MINUTES.
-  const match = stopHook.match(/const STOP_REVIEW_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
 
-  assert.ok(match, "Stop hook must define STOP_REVIEW_TIMEOUT_MS in seconds");
-  assert.ok(Number(match[1]) * 1000 < hookTimeoutMs, "STOP_REVIEW_TIMEOUT_MS must be less than hooks.json timeout");
+  assert.equal(hookTimeoutMs, 30_000);
+  assert.match(stopHook, /DEFAULT_STOP_REVIEW_TIMEOUT_MS = 10 \* 60 \* 1000/);
+  assert.match(stopHook, /stopReviewTurnTimeoutMs/);
 });
 
 test("plugin Stop hook migrates legacy gate state with setup's public fields", () => {
@@ -1387,6 +1563,10 @@ process.exit(99);
 });
 
 test("plugin Stop hook enforces SIGKILL-based timeout for the long-running task spawn", () => {
+  // The opt-in slow path still needs deterministic cleanup when its
+  // internal timeout fires. spawnSync's default
+  // killSignal is SIGTERM, which the bundled bridge may take seconds to
+  // honor while it tears down app-server sockets and detached workers.
   // The hook escalates to SIGKILL on the long-running `task` invocation
   // so the timeout is deterministic; the cheap status/setup probes keep
   // SIGTERM since they finish in milliseconds.
@@ -1395,23 +1575,24 @@ test("plugin Stop hook enforces SIGKILL-based timeout for the long-running task 
   // The task spawn must pass killSignal alongside the timeout.
   assert.match(
     stopHook,
-    /timeoutMs:\s*STOP_REVIEW_TIMEOUT_MS,\s*killSignal:\s*"SIGKILL"/
+    /timeoutMs:\s*stopReviewConfig\.timeout_ms,\s*killSignal:\s*"SIGKILL"/
   );
 });
 
 test("plugin Stop hook pushes a turn-level timeout into the bridge so the broker stops the upstream Codex turn", () => {
-  // Passing --turn-default-ms inside the bridge command makes Codex cancel
-  // the turn cleanly before the spawnSync watchdog escalates.
+  // The SIGKILL-on-timeout path only kills the bridge child. The
+  // bridge's app-server broker is shared across invocations
+  // (src/lib/broker-lifecycle.mjs), so when SIGKILL fires the broker
+  // can keep its upstream `appClient.request` running with no consumer
+  // for the notifications. Passing --turn-default-ms inside the bridge
+  // command makes Codex cancel the turn cleanly before the spawnSync
+  // watchdog escalates. The inner turn timeout must therefore be
+  // strictly less than the outer spawnSync timeout (which is itself
+  // strictly less than the hooks.json ceiling).
   const stopHook = readText("plugin/hooks/stop.mjs");
-  assert.match(stopHook, /STOP_REVIEW_TURN_TIMEOUT_MS/);
+  assert.match(stopHook, /stopReviewTurnTimeoutMs/);
   assert.match(stopHook, /"--turn-default-ms"/);
-  // In the 3-dispatcher architecture STOP_REVIEW_TURN_TIMEOUT_MS is defined
-  // directly in ms; verify it is strictly less than STOP_REVIEW_TIMEOUT_MS.
-  const spawnMs = stopHook.match(/const STOP_REVIEW_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
-  const turnMs = stopHook.match(/const STOP_REVIEW_TURN_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*1000/);
-  assert.ok(spawnMs, "Stop hook must define STOP_REVIEW_TIMEOUT_MS");
-  assert.ok(turnMs, "Stop hook must define STOP_REVIEW_TURN_TIMEOUT_MS");
-  assert.ok(Number(turnMs[1]) < Number(spawnMs[1]), "STOP_REVIEW_TURN_TIMEOUT_MS must be less than STOP_REVIEW_TIMEOUT_MS");
+  assert.match(stopHook, /normalized - 60_000/);
 });
 
 test("plugin Stop hook ships the unified plugin-hook error trail", () => {

@@ -59,6 +59,14 @@ codex_bridge:
   # environment probes. Set false to disable.
   command_failure_circuit_breaker: true
 
+  # Stop hook behavior. The default fast path scans for pending review
+  # verdicts and returns immediately. Set enabled: true and fast_scan_only:
+  # false only when you explicitly want Codex to run a stop-time review.
+  stop_review_gate:
+    enabled: false
+    timeout_ms: 600000
+    fast_scan_only: true
+
   # Sandbox policy. Shipped default is "danger-full-access" so Codex can
   # commit its own work without the `workspace-write` sandbox blocking
   # `.git/` writes. This matches `codex --dangerously-bypass-approvals-and-

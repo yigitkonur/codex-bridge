@@ -27,6 +27,7 @@ export const CONFIG_SCHEMA = {
   forbid_codex_direct: { type: "boolean" },
   skip_meta_skills: { type: "boolean" },
   command_failure_circuit_breaker: { type: "boolean" },
+  stop_review_gate: { type: "object" },
   idle_timeout_ms: { type: "positive-number" },
   turn_plan_ms: { type: "positive-number" },
   turn_default_ms: { type: "positive-number" },

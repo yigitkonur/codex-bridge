@@ -19,28 +19,12 @@ import {
 const HOOK_NAME = "stop";
 const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
-// hooks.json gives the Stop hook 15 minutes. Three nested timeout layers
-// share that ceiling, each shorter than its parent so the inner one fires
-// first and the outer ones serve as escalation safety nets:
-//
-//    30_000 ms  hooks.json Stop[].timeout (Claude Code reaps the hook)
-//      ↓ -60 s
-//   840_000 ms  STOP_REVIEW_TIMEOUT_MS (spawnSync timeout + SIGKILL escalation)
-//      ↓ -60 s
-//   780_000 ms  STOP_REVIEW_TURN_TIMEOUT_MS (--turn-default-ms passed to bridge)
-//
-// The inner --turn-default-ms is what actually stops Codex's app-server
-// turn cleanly. Without it, when the spawnSync watchdog SIGKILLs the
-// bridge child, the shared detached broker (src/lib/broker-lifecycle.mjs)
-// keeps its `appClient.request` running upstream — the hook reports
-// "timed out" but Codex is still doing the review, and the next session's
-// status probe sees the broker as idle while a turn is silently active.
-// Pushing the watchdog inside the bridge ensures the turn is cancelled
-// before the hook escalates to a hard kill of the bridge child. Each 60 s
-// gap absorbs cleanup latency at its layer.
-const STOP_REVIEW_TIMEOUT_MINUTES = 0.4;
-const STOP_REVIEW_TIMEOUT_MS = 24 * 1000;
-const STOP_REVIEW_TURN_TIMEOUT_MS = 20 * 1000;
+const DEFAULT_STOP_REVIEW_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_STOP_REVIEW_CONFIG = {
+  enabled: false,
+  timeout_ms: DEFAULT_STOP_REVIEW_TIMEOUT_MS,
+  fast_scan_only: true
+};
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -93,6 +77,7 @@ const BRIDGE_SCRIPT = resolveBridgeScript();
 // the bundled bridge. Update both files in lockstep if the layout changes.
 const BRIDGE_PLUGIN_DATA_ENV = "CODEX_BRIDGE_PLUGIN_DATA";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const REGISTRY_ENV = "CODEX_BRIDGE_REGISTRY";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const BRIDGE_AGENT_TYPES = new Set([
@@ -264,19 +249,62 @@ function runBridge(cwd, input, args, options = {}) {
     },
     encoding: "utf8",
     timeout: options.timeoutMs ?? 15000,
-    // The Stop hook leaves a small margin under hooks.json's 30s ceiling
-    // (see STOP_REVIEW_TIMEOUT_MINUTES). That margin only protects us if the
-    // bridge process actually exits when its timeout fires. spawnSync's
-    // default killSignal is SIGTERM; the bundled bridge holds open app-server
-    // sockets and detached child workers, so SIGTERM may take a few seconds
-    // to propagate through async cleanup — eating into the 60-second budget
-    // and risking Claude Code reaping the hook before emitBlock writes. The
-    // long-running `task` spawn passes killSignal: 'SIGKILL' explicitly so
-    // the timeout is deterministic and the hook always has time to emit a
-    // decision. Cheap calls (`status --json`, `setup --json`) keep SIGTERM
-    // since they finish in milliseconds and graceful shutdown is preferred.
+    // The long-running `task` spawn passes killSignal: "SIGKILL" explicitly
+    // so an opt-in stop review has deterministic cleanup under its internal
+    // timeout. Cheap calls keep SIGTERM since they should finish quickly and
+    // graceful shutdown is preferred.
     ...(options.killSignal ? { killSignal: options.killSignal } : {})
   });
+}
+
+function extractBooleanConfig(raw, key) {
+  const match = raw.match(new RegExp(`^\\s*${key}\\s*:\\s*(true|false)\\s*(?:#.*)?$`, "mi"));
+  return match ? match[1] === "true" : undefined;
+}
+
+function extractNumberConfig(raw, key) {
+  const match = raw.match(new RegExp(`^\\s*${key}\\s*:\\s*(\\d+)\\s*(?:#.*)?$`, "mi"));
+  return match ? Number(match[1]) : undefined;
+}
+
+function parseStopReviewGateConfig(raw) {
+  if (!raw || !/stop_review_gate\s*:/.test(raw)) return {};
+  const enabled = extractBooleanConfig(raw, "enabled");
+  const timeoutMs = extractNumberConfig(raw, "timeout_ms");
+  const fastScanOnly = extractBooleanConfig(raw, "fast_scan_only");
+  return {
+    ...(enabled === undefined ? {} : { enabled }),
+    ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeout_ms: timeoutMs } : {}),
+    ...(fastScanOnly === undefined ? {} : { fast_scan_only: fastScanOnly })
+  };
+}
+
+function workspaceConfigPaths(cwd) {
+  const projectRoot = resolveProjectRoot(cwd);
+  const paths = [
+    path.join(projectRoot, "config.yaml"),
+    path.join(cwd, "config.yaml"),
+    path.join(projectRoot, ".claude", "codex-bridge.local.md"),
+    path.join(cwd, ".claude", "codex-bridge.local.md")
+  ];
+  return [...new Set(paths)];
+}
+
+function loadStopReviewGateConfig(cwd) {
+  let config = { ...DEFAULT_STOP_REVIEW_CONFIG };
+  for (const configPath of workspaceConfigPaths(cwd)) {
+    if (!fs.existsSync(configPath)) continue;
+    try {
+      config = {
+        ...config,
+        ...parseStopReviewGateConfig(fs.readFileSync(configPath, "utf8"))
+      };
+    } catch {
+      // Ignore unreadable local config in the Stop hook. The hook should
+      // stay fail-open unless it can positively prove it must block.
+    }
+  }
+  return config;
 }
 
 function parseJson(stdout) {
@@ -331,25 +359,59 @@ function buildPendingVerdictsBlockReason(pending, count) {
   return `Codex Bridge has ${total} pending review verdict${total === 1 ? "" : "s"} blocking session stop: ${shown}${suffix}. Resolve them with merge, iterate, or verdict --discard before ending the session.`;
 }
 
-function pendingVerdictsBlockReason(cwd, input) {
-  const result = runBridge(cwd, input, ["verdicts", "--pending", "--json"], { timeoutMs: 15000 });
-  if (result.error) {
-    return `Codex Bridge stop-time review gate could not check pending verdicts: ${result.error.message}. Run /codex-bridge:verdicts --pending manually or remove the gate lock to disable the gate.`;
+function registryRoot() {
+  const override = process.env[REGISTRY_ENV];
+  return override && override.length > 0
+    ? override
+    : path.join(os.homedir(), ".codex-bridge", "jobs");
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
   }
-  if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || "").trim();
-    return detail
-      ? `Codex Bridge stop-time review gate could not check pending verdicts: ${detail}`
-      : "Codex Bridge stop-time review gate could not check pending verdicts.";
+}
+
+function listPendingVerdicts() {
+  const root = registryRoot();
+  if (!fs.existsSync(root)) return [];
+  const pendingVerdicts = new Set(["approved", "needs-attention", "must-fix"]);
+  const taskIds = fs
+    .readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name !== "." && entry.name !== ".." && /^[A-Za-z0-9._-]+$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  const pending = [];
+  for (const taskId of taskIds) {
+    const taskDir = path.join(root, taskId);
+    const verdict = readJsonFile(path.join(taskDir, "verdict.json"));
+    if (!verdict || !pendingVerdicts.has(verdict.verdict)) continue;
+    const meta = readJsonFile(path.join(taskDir, "meta.json"));
+    if (verdict.merged_at || meta?.merged_at || meta?.phase === "merged") continue;
+    if (verdict.superseded_by || meta?.superseded_by || meta?.phase === "superseded") continue;
+    pending.push({
+      task_id: taskId,
+      verdict: verdict.verdict,
+      summary: verdict.summary ?? null,
+      decided_at: verdict.decided_at,
+      next_action: verdict.next_action ?? null
+    });
   }
-  const payload = parseJson(result.stdout);
-  if (!payload?.ok || !payload.result) {
-    return "Codex Bridge stop-time review gate could not parse pending verdict output. Run /codex-bridge:verdicts --pending manually or remove the gate lock to disable the gate.";
+  return pending;
+}
+
+function pendingVerdictsBlockReason() {
+  try {
+    const pending = listPendingVerdicts();
+    if (pending.length === 0) return null;
+    return buildPendingVerdictsBlockReason(pending, pending.length);
+  } catch (error) {
+    return `Codex Bridge stop-time review gate could not check pending verdicts: ${
+      error instanceof Error ? error.message : String(error)
+    }. Run /codex-bridge:verdicts --pending manually or remove the gate lock to disable the gate.`;
   }
-  const pending = Array.isArray(payload.result.pending) ? payload.result.pending : [];
-  const count = Number.isInteger(payload.result.count) ? payload.result.count : pending.length;
-  if (count <= 0 && pending.length === 0) return null;
-  return buildPendingVerdictsBlockReason(pending, count);
 }
 
 function resolveProjectRoot(cwd) {
@@ -455,6 +517,17 @@ ALLOW: <short reason>
 BLOCK: <short reason>
 
 Block only for concrete correctness, safety, or verification issues that Claude should address before stopping. Do not block for style preferences, optional follow-ups, or broad improvement ideas.${claudeResponseBlock}`;
+}
+
+function hasReviewableTranscript(input) {
+  const fromPayload = String(input.last_assistant_message ?? "").trim();
+  if (fromPayload) return true;
+  return Boolean(extractLastAssistantText(input?.transcript_path));
+}
+
+function stopReviewTurnTimeoutMs(timeoutMs) {
+  const normalized = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_STOP_REVIEW_TIMEOUT_MS;
+  return Math.max(1000, normalized - 60_000);
 }
 
 function parseStopReview(rawOutput) {
@@ -637,13 +710,35 @@ function main() {
   }
 
   const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const stopReviewConfig = loadStopReviewGateConfig(cwd);
+  const pendingReason = pendingVerdictsBlockReason();
+  if (pendingReason && !stopReviewConfig.enabled) {
+    emitBlock(blockReason(pendingReason, null));
+    return;
+  }
+  if (!pendingReason) {
+    return;
+  }
+  if (stopReviewConfig.fast_scan_only) {
+    emitBlock(blockReason(pendingReason, null));
+    return;
+  }
+
+  if (!hasReviewableTranscript(input)) {
+    stderrLine("Codex Bridge stop-time review gate is enabled, but the Stop transcript has no reviewable assistant message; skipping review.");
+    return;
+  }
+
   const runningNote = runningJobNote(cwd, input);
   let activation = reviewGateActivation(cwd);
   activation = maybeMigrateLegacyGate(cwd, input, activation);
 
-  if (!activation.active) {
-    stderrLine(runningNote);
-    return;
+  if (!activation.active && stopReviewConfig.enabled) {
+    activation = {
+      active: true,
+      source: "config",
+      lockPath: path.join(resolveProjectRoot(cwd), REVIEW_GATE_LOCK_FILE)
+    };
   }
 
   const setup = runBridge(cwd, input, ["setup", "--json"], { timeoutMs: 15000 });
@@ -674,13 +769,18 @@ function main() {
       stderrLine(runningNote);
       return;
     }
-    emitBlock(
-      blockReason(
-        `Codex Bridge stop-time review gate lock is present (${activation.lockPath}), but setup did not confirm the gate is enabled. Run /codex-bridge:setup or remove the lock file to disable the gate.`,
-        runningNote
-      )
-    );
-    return;
+    if (activation.source !== "config") {
+      emitBlock(
+        blockReason(
+          `Codex Bridge stop-time review gate lock is present (${activation.lockPath}), but setup did not confirm the gate is enabled. Run /codex-bridge:setup or remove the lock file to disable the gate.`,
+          runningNote
+        )
+      );
+      return;
+    }
+    // Local config is the new opt-in path. It does not need the legacy
+    // project lock, but setup still has a chance above to suppress duplicate
+    // stop-review behavior when the official OpenAI Codex plugin owns it.
   }
 
   if (!setupResult.ready) {
@@ -690,12 +790,6 @@ function main() {
         runningNote
       )
     );
-    return;
-  }
-
-  const pendingReason = pendingVerdictsBlockReason(cwd, input);
-  if (pendingReason) {
-    emitBlock(blockReason(pendingReason, runningNote));
     return;
   }
 
@@ -735,11 +829,11 @@ function main() {
         "--read-only",
         "--no-pipeline",
         "--turn-default-ms",
-        String(STOP_REVIEW_TURN_TIMEOUT_MS),
+        String(stopReviewTurnTimeoutMs(stopReviewConfig.timeout_ms)),
         "--prompt-file",
         promptFile
       ],
-      { timeoutMs: STOP_REVIEW_TIMEOUT_MS, killSignal: "SIGKILL" }
+      { timeoutMs: stopReviewConfig.timeout_ms, killSignal: "SIGKILL" }
     );
   } finally {
     try {
@@ -751,7 +845,7 @@ function main() {
   }
 
   if (review.error?.code === "ETIMEDOUT") {
-    emitBlock(`The stop-time Codex Bridge review timed out after ${STOP_REVIEW_TIMEOUT_MINUTES} minutes. Run /codex-bridge:review --wait manually or disable the gate.`);
+    emitBlock(`The stop-time Codex Bridge review timed out after ${Math.round(stopReviewConfig.timeout_ms / 60000)} minutes. Run /codex-bridge:review --wait manually or disable the gate.`);
     return;
   }
 

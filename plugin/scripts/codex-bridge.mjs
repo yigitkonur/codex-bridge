@@ -8306,6 +8306,11 @@ var DEFAULT_CONFIG = {
   // config-reference.md for the threshold, family list, and enhancement
   // candidates.
   command_failure_circuit_breaker: true,
+  stop_review_gate: {
+    enabled: false,
+    timeout_ms: 6e5,
+    fast_scan_only: true
+  },
   // Max wall-clock gap between app-server notifications before a turn is
   // declared stuck and failed with `ClientTimeout`. The prior 120s hard-code
   // was tuned for execute-heavy turns and would false-positive during
@@ -8429,6 +8434,7 @@ var CONFIG_SCHEMA = {
   forbid_codex_direct: { type: "boolean" },
   skip_meta_skills: { type: "boolean" },
   command_failure_circuit_breaker: { type: "boolean" },
+  stop_review_gate: { type: "object" },
   idle_timeout_ms: { type: "positive-number" },
   turn_plan_ms: { type: "positive-number" },
   turn_default_ms: { type: "positive-number" },

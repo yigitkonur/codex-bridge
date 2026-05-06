@@ -28,6 +28,12 @@ Delegate coding tasks to Codex and manage the workflow via Monitor notifications
 
 **Claude Code plugin install:** when installed as a Claude Code plugin instead of a standalone skill, prefer the native slash commands: `/codex-bridge:task`, `/codex-bridge:review`, `/codex-bridge:adversarial-review`, `/codex-bridge:status`, `/codex-bridge:result`, `/codex-bridge:events`, `/codex-bridge:wait`, `/codex-bridge:send`, `/codex-bridge:respond`, and `/codex-bridge:cancel`. The command files invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs"` and use the `codex-bridge:codex-bridge-runner` subagent for substantial task delegation, so Claude Code gets a fresh worker context while the bridge remains the source of truth for job IDs and Monitor hints. Plugin hooks export the Claude session id for job scoping. If the official OpenAI Codex plugin/skill is enabled, prefer it for standard `/codex:*` review-gate behavior; use `codex-bridge` when the official plugin is unavailable or when the user explicitly wants `codex-bridge` orchestration, Monitor-ready event files, or `/codex-bridge:*` commands. The `codex-bridge` stop-time review gate is project-specific and opt-in only: `/codex-bridge:setup --enable-review-gate` creates `.codex-bridge-stop-review-gate.lock` in the git root, but that mode is suppressed while the official OpenAI Codex plugin is enabled; without the lock file, the Stop hook exits without running Codex.
 
+## Stop Hook Behavior
+
+By default, the Stop hook uses a fast path with a 30-second Claude Code ceiling. It scans for pending codex-bridge verdicts and returns immediately; pending verdicts emit a blocking decision with the commands needed to resolve them.
+
+Opt-in slow review is controlled by `stop_review_gate` in `config.yaml` or `.claude/codex-bridge.local.md`. Set `enabled: true` and `fast_scan_only: false` to run a stop-time Codex review of the previous assistant turn, with `timeout_ms: 600000` as the shipped 10-minute review budget. Claude Code's hook timeout remains a hard ceiling, so users who raise the slow review budget must also raise the Stop hook timeout intentionally.
+
 **Write-mode default:** tasks are read-only unless the command explicitly opts
 into writes or the project config sets a wider sandbox. For file-changing work,
 use `--write`; for bridge-managed isolation, pair it with `--worktree-auto`.
