@@ -61,6 +61,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+
+      - name: install dependencies
+        # bump-version.mjs runs `npm run build` to regenerate the version-
+        # stamped bundles; that needs node_modules.
+        run: npm ci
 
       - name: configure git identity
         run: |
@@ -103,12 +109,20 @@ jobs:
               continue
             fi
 
+            # Stage version-bearing files PLUS the regenerated bundles
+            # (bump-version.mjs runs `npm run build` after stamping the
+            # version, so the bundles' embedded `version: "<n>"` field
+            # matches the new package.json). Without staging the bundles,
+            # main drifts one version behind every patch bump and every PR
+            # CI fails the bundle-match check.
             git add \
               package.json \
               .claude-plugin/plugin.json \
               plugin/.claude-plugin/plugin.json \
               skill/SKILL.md \
-              plugin/skills/codex-bridge/SKILL.md
+              plugin/skills/codex-bridge/SKILL.md \
+              skill/scripts/codex-bridge.mjs \
+              plugin/scripts/codex-bridge.mjs
             git commit -m "chore(release): bump v${PREVIOUS} → v${NEXT} [skip ci]"
             git tag "v${NEXT}"
 
