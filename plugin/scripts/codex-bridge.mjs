@@ -1,8 +1,8 @@
 // src/codex-bridge.mjs
-import fs24 from "node:fs";
-import os7 from "node:os";
-import path22 from "node:path";
-import process16 from "node:process";
+import fs26 from "node:fs";
+import os9 from "node:os";
+import path25 from "node:path";
+import process17 from "node:process";
 
 // src/lib/cli-errors.mjs
 import process2 from "node:process";
@@ -4246,6 +4246,15 @@ import path7 from "node:path";
 import os3 from "node:os";
 import { spawnSync as spawnSync4 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
+var NDJSON_EVENT_SCHEMA_VERSION = "1.0";
+var NDJSON_EVENT_FIELDS = Object.freeze([
+  "schema_version",
+  "ts",
+  "tag",
+  "method",
+  "threadId",
+  "data"
+]);
 function resolveSessionDir(configDir, baseDir = process.cwd()) {
   const configured = configDir ?? "~/.codex-bridge/sessions";
   const expanded = configured.replace(/^~/, os3.homedir());
@@ -4298,17 +4307,27 @@ function findSession(sessionDir, threadId) {
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
 function logNdjson(session, tag, method, data) {
-  const entry = {
+  const entry = buildNdjsonEvent({
     ts: (/* @__PURE__ */ new Date()).toISOString(),
     tag,
-    method: method ?? null,
+    method,
     threadId: session.threadId,
-    data: data ?? {}
-  };
+    data
+  });
   try {
     fs7.appendFileSync(session.ndjsonPath, redactText(JSON.stringify(entry), session) + "\n");
   } catch {
   }
+}
+function buildNdjsonEvent({ ts, tag, method = null, threadId = null, data = {} }) {
+  return {
+    schema_version: NDJSON_EVENT_SCHEMA_VERSION,
+    ts,
+    tag,
+    method: method ?? null,
+    threadId,
+    data: data ?? {}
+  };
 }
 function logEvent(session, formattedBlock) {
   try {
@@ -4657,6 +4676,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
       `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
+      `    extend-timeout: ${commandPrefix(scriptPath, "task", cwd)} --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000 "<same prompt>"`,
       see("pipeline-stage-timeout")
     );
     return lines;
@@ -4849,6 +4869,48 @@ function formatPlanEvent(session, { turnId, planTitle, steps, planPath, scriptPa
   lines.push("actions:");
   lines.push(`  approve: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} --mode default "Implement the plan."`);
   lines.push(`  revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "<revision instructions>"`);
+  return lines.join("\n");
+}
+function classifyPlanContent(planText) {
+  const text = String(planText ?? "").toLowerCase();
+  if (!text.trim()) return "read_only";
+  if (/\b(rm\s+-rf|delete|drop\s+table|force[- ]push|reset\s+--hard|truncate)\b/.test(text)) {
+    return "destructive";
+  }
+  if (/\b(deploy|publish|push\s+to\s+(?:main|origin|remote)|release|api\s+call|webhook|http(?:s)?:\/\/)/.test(text)) {
+    return "external";
+  }
+  if (/\b(write|edit|modify|implement|refactor|create\s+file|add\s+function|patch|fix)\b/.test(text)) {
+    return "code_write";
+  }
+  return "read_only";
+}
+function formatPlanReadyEvent(session, {
+  summary = "",
+  classification = "code_write",
+  scriptPath,
+  jobId = null,
+  cwd = null,
+  stateCwd = null
+}) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const lines = [`[PLAN_READY] ${session.threadId} | classification=${classification}`];
+  if (summary && summary.trim()) {
+    const trimmed = summary.trim();
+    const maxSummaryChars = 4e3;
+    const display = trimmed.length > maxSummaryChars ? `${trimmed.slice(0, maxSummaryChars)}
+... (truncated, ${trimmed.length - maxSummaryChars} more chars)` : trimmed;
+    lines.push("  summary:");
+    for (const line of display.split("\n")) {
+      lines.push(`    ${line}`);
+    }
+  }
+  lines.push("  next_action:");
+  lines.push(`    approve: ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} --mode default "Implement the plan."`);
+  lines.push(`    revise:  ${commandPrefix(scriptPath, "send", cwd)} ${session.threadId} "Revise: <your feedback>"`);
+  if (jobId) {
+    lines.push(`    cancel:  ${commandPrefix(scriptPath, "cancel", jobCwd)} ${jobId}`);
+  }
   return lines.join("\n");
 }
 function formatConfirmedEvent(session, { requestId }) {
@@ -5214,6 +5276,12 @@ function filterJobsForCurrentSession(jobs, options = {}) {
   }
   return jobs.filter((job) => job.sessionId === sessionId);
 }
+function filterJobsForGroup(jobs, group) {
+  if (!group) {
+    return jobs;
+  }
+  return jobs.filter((job) => job.group === group);
+}
 function getJobTypeLabel(job) {
   if (typeof job.kindLabel === "string" && job.kindLabel) {
     return job.kindLabel;
@@ -5401,7 +5469,8 @@ function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
   const allJobs = listJobs(workspaceRoot);
-  const jobs = sortJobsNewestFirst2(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
+  const visibleJobs = options.group ? filterJobsForGroup(allJobs, options.group) : options.all ? allJobs : filterJobsForCurrentSession(allJobs, options);
+  const jobs = sortJobsNewestFirst2(visibleJobs);
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
   const running = jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => enrichJob(job, { maxProgressLines }));
@@ -5412,6 +5481,7 @@ function buildStatusSnapshot(cwd, options = {}) {
     workspaceRoot,
     config,
     sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
+    group: options.group ?? null,
     running,
     latestFinished,
     recent,
@@ -5519,7 +5589,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -8174,6 +8244,8 @@ var DEFAULT_CONFIG = {
   // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
   // sandbox`. See skill/references/config-reference.md for the full matrix.
   sandbox_policy: "danger-full-access",
+  sandbox_enforce: false,
+  forbid_codex_direct: true,
   // When true, prepend a strong orchestrator directive telling Codex to skip
   // any internal planning / ceremony / meta-skill chains it would normally
   // walk before execution (framework-agnostic — covers any skill that
@@ -8226,8 +8298,12 @@ var DEFAULT_CONFIG = {
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
   // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
-  pipeline_stage_ms: 3e5,
-  pipeline_total_ms: 9e5,
+  // Raise the default stage budget from the old 5-minute floor to a
+  // 12-minute median-task budget; pipeline total follows at 30 minutes so
+  // review + fix + check can all complete without making runaway calls
+  // unbounded. Small tasks still finish as soon as their model calls return.
+  pipeline_stage_ms: 72e4,
+  pipeline_total_ms: 18e5,
   // How long `requestUserInput` waits for a human/orchestrator to answer
   // before rejecting the server request. Five minutes is tight for thoughtful
   // decisions; make it configurable so a slow loop can widen the window
@@ -8236,6 +8312,13 @@ var DEFAULT_CONFIG = {
   artifact_retention_jobs: 50,
   artifact_retention_days: 30,
   redact_secrets: false,
+  // v2.2.0 — [STALL_WARNING] fires at this wall-clock gap of zero actionable
+  // progress. Default 5 min (one checkpoint interval). The terminal StallDetected
+  // fires after the full STALL_CHECKPOINT_THRESHOLD × checkpoint interval (15 min
+  // by default). Configurable so short-budget automation can widen or narrow the
+  // early-warning window. Set to 0 to disable [STALL_WARNING] (does not affect
+  // the terminal stall detector).
+  stall_warning_threshold_ms: 5 * 60 * 1e3,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function resolveEffort(config, options = {}) {
@@ -8302,6 +8385,8 @@ var CONFIG_SCHEMA = {
   allow_questions: { type: "boolean" },
   session_dir: { type: "string" },
   sandbox_policy: { type: "enum", values: ["danger-full-access", "workspace-write", "read-only"] },
+  sandbox_enforce: { type: "boolean" },
+  forbid_codex_direct: { type: "boolean" },
   skip_meta_skills: { type: "boolean" },
   command_failure_circuit_breaker: { type: "boolean" },
   idle_timeout_ms: { type: "positive-number" },
@@ -8315,7 +8400,8 @@ var CONFIG_SCHEMA = {
   redact_secrets: { type: "boolean" },
   prompt_footer: { type: "string" },
   default_backend: { type: "string" },
-  adapter_routing: { type: "object" }
+  adapter_routing: { type: "object" },
+  stall_warning_threshold_ms: { type: "positive-number" }
 };
 function isConfigValueValid(schema2, value) {
   return schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
@@ -9287,6 +9373,21 @@ function buildAdversarialReviewPrompt(rootDir, context, focusText, opusConcerns 
   );
 }
 
+// src/lib/local-config.mjs
+import path12 from "node:path";
+var LOCAL_CONFIG_RELATIVE_PATH = path12.join(".claude", "codex-bridge.local.md");
+var DEFAULT_BODY = [
+  "",
+  "# Codex Bridge \u2014 project-local configuration",
+  "",
+  "This file holds project-local overrides for the codex-bridge plugin.",
+  "Settings live in the YAML frontmatter at the top of the file. Edit the",
+  "frontmatter or use the `/codex-bridge:config` slash command. Markdown",
+  "below the closing `---` is preserved across edits and is yours to use",
+  "for notes.",
+  ""
+].join("\n");
+
 // src/lib/render.mjs
 function severityRank(severity) {
   switch (severity) {
@@ -9418,15 +9519,15 @@ function formatCodexResumeCommand(job) {
 }
 function appendActiveJobsTable(lines, jobs) {
   lines.push("Active jobs:");
-  lines.push("| Job | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Job | Group | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const job of jobs) {
     const actions = [`codex-bridge status ${job.id}`];
     if (job.status === "queued" || job.status === "running") {
       actions.push(`codex-bridge cancel ${job.id}`);
     }
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.group ?? "")} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
     );
   }
 }
@@ -9437,6 +9538,9 @@ function pushJobDetails(lines, job, options = {}) {
   }
   if (job.phase) {
     lines.push(`  Phase: ${job.phase}`);
+  }
+  if (job.group) {
+    lines.push(`  Group: ${job.group}`);
   }
   if (options.showElapsed && job.elapsed) {
     lines.push(`  Elapsed: ${job.elapsed}`);
@@ -9496,10 +9600,18 @@ function renderSetupReport(report) {
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
+    `- monitor hook mirror: ${report.monitorHookInstalled ? "installed" : "not installed"} (${report.monitorHookSettingsPath ?? "n/a"})`,
+    `- sandbox enforcement: ${report.sandboxEnforcementInstalled ? "installed" : "not installed"} (${report.sandboxEnforcementSettingsPath ?? "n/a"})`,
     ""
   ];
   if (report.reviewGateSuppressionReason) {
     lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
+  }
+  if (report.monitorHookSettingsParseError) {
+    lines.push(`Monitor hook settings warning: ${report.monitorHookSettingsParseError}`, "");
+  }
+  if (report.sandboxEnforcementSettingsParseError) {
+    lines.push(`Sandbox enforcement settings warning: ${report.sandboxEnforcementSettingsParseError}`, "");
   }
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");
@@ -9766,7 +9878,7 @@ function renderCancelReport(job) {
 
 // src/adapters/codex/pipeline.mjs
 import fs15 from "node:fs";
-import path13 from "node:path";
+import path14 from "node:path";
 
 // src/lib/review-result.mjs
 var REVIEW_RESULT_SCHEMA_VERSION = "1.0";
@@ -10047,7 +10159,7 @@ function reviewResultTypeError(message, field) {
 
 // src/lib/work-delta.mjs
 import fs14 from "node:fs";
-import path12 from "node:path";
+import path13 from "node:path";
 import { spawnSync as spawnSync5 } from "node:child_process";
 function runGit2(cwd, args) {
   try {
@@ -10061,9 +10173,9 @@ function runGit2(cwd, args) {
   }
 }
 function resolveInsideCwd2(cwd, relativePath) {
-  const root = path12.resolve(cwd);
-  const absolutePath = path12.resolve(root, relativePath);
-  if (absolutePath !== root && !absolutePath.startsWith(root + path12.sep)) {
+  const root = path13.resolve(cwd);
+  const absolutePath = path13.resolve(root, relativePath);
+  if (absolutePath !== root && !absolutePath.startsWith(root + path13.sep)) {
     return null;
   }
   return absolutePath;
@@ -10113,10 +10225,17 @@ function hasWorkChangedSince(cwd, startFingerprint, touchedFiles = []) {
 }
 
 // src/adapters/codex/pipeline.mjs
-var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;
-var STAGE_TIMEOUT_MS_DEFAULT = 3e5;
+var PIPELINE_TIMEOUT_MS_DEFAULT = 18e5;
+var STAGE_TIMEOUT_MS_DEFAULT = 72e4;
+function isPlanModeHalt({ taskMode, assistantMessage, diff }) {
+  if (taskMode !== "plan") return false;
+  if (diff && Array.isArray(diff.files) && diff.files.length > 0) return false;
+  const text = typeof assistantMessage === "string" ? assistantMessage.trim() : "";
+  if (!text) return false;
+  return text.startsWith("[PLAN]") || /^\*\*Assumption/m.test(text) || /^### Plan\b/m.test(text) || /^## Plan\b/m.test(text) || /^# Plan\b/m.test(text);
+}
 function loadExecuteInstructions(rootDir) {
-  const p = path13.join(rootDir, "templates", "execute-instructions.md");
+  const p = path14.join(rootDir, "templates", "execute-instructions.md");
   try {
     return fs15.readFileSync(p, "utf8");
   } catch {
@@ -10137,6 +10256,8 @@ async function runAutoPipeline(options) {
     stateCwd = cwd,
     stageTimeoutMs = null,
     totalTimeoutMs = null,
+    taskMode = null,
+    assistantMessage = null,
     expectedWriteWork = false,
     turnStartWorkFingerprint = null,
     turnTouchedFiles = []
@@ -10190,6 +10311,55 @@ async function runAutoPipeline(options) {
     completedStages.push("diff");
     logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
     checkPipelineTimeout();
+    if (isPlanModeHalt({ taskMode, assistantMessage, diff: diff1 })) {
+      const summaryText = typeof assistantMessage === "string" ? assistantMessage : "";
+      const planClassification = classifyPlanContent(summaryText);
+      logEvent(session, formatPlanReadyEvent(session, {
+        summary: summaryText,
+        classification: planClassification,
+        scriptPath,
+        jobId,
+        cwd,
+        stateCwd
+      }));
+      logNdjson(session, "PLAN_READY", null, {
+        threadId,
+        classification: planClassification,
+        diffStat: diff1.diffStat,
+        summaryLength: summaryText.length
+      });
+      logEvent(session, formatPipelineEvent(session, {
+        stage: "done",
+        detail: `stages=${completedStages.join(",")} complete=false partial=true plan_ready=true`
+      }));
+      return {
+        complete: false,
+        partial: true,
+        planReady: true,
+        planClassification,
+        completedStages,
+        duration: Math.round((Date.now() - startTime) / 1e3),
+        diff: diff1,
+        workspaceDiff: diff1,
+        failing_stage: null,
+        stageTimeoutMs: stageMs,
+        totalTimeoutMs: totalMs,
+        reviewVerdict: null,
+        reviewFindingCount: null,
+        fixFilesTouched: [],
+        noWorkReason: null,
+        completion: normalizeCompletionResult(
+          { complete: false, missing_items: [], summary: "plan-ready awaiting approval" },
+          [],
+          "plan-ready awaiting approval",
+          false
+        ),
+        missingItems: [],
+        completionSummary: "plan-ready awaiting approval",
+        taskTouchedFiles: [],
+        touchedFiles: []
+      };
+    }
     let unstructuredReviewAttention = false;
     if (config.auto_review) {
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
@@ -10751,12 +10921,12 @@ function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
 // src/lib/update-check.mjs
 import { spawn as spawn3 } from "node:child_process";
 import fs17 from "node:fs";
-import path15 from "node:path";
+import path16 from "node:path";
 import os6 from "node:os";
 
 // src/lib/runtime-paths.mjs
 import fs16 from "node:fs";
-import path14 from "node:path";
+import path15 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // package.json
@@ -10787,18 +10957,18 @@ var package_default = {
 
 // src/lib/runtime-paths.mjs
 function resolveDispatcherDir() {
-  const here = path14.dirname(fileURLToPath2(import.meta.url));
-  if (fs16.existsSync(path14.join(here, "codex-bridge.mjs"))) return here;
-  const parent = path14.resolve(here, "..");
-  if (fs16.existsSync(path14.join(parent, "codex-bridge.mjs"))) return parent;
+  const here = path15.dirname(fileURLToPath2(import.meta.url));
+  if (fs16.existsSync(path15.join(here, "codex-bridge.mjs"))) return here;
+  const parent = path15.resolve(here, "..");
+  if (fs16.existsSync(path15.join(parent, "codex-bridge.mjs"))) return parent;
   return here;
 }
 var SCRIPT_DIR = resolveDispatcherDir();
-var SCRIPT_PATH = path14.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs16.existsSync(path14.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path14.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path14.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path14.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path14.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var SCRIPT_PATH = path15.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs16.existsSync(path15.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path15.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path15.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path15.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path15.join(ROOT_DIR, "templates", "plan-enforcement.md");
 var BRIDGE_VERSION = package_default.version;
 var BRIDGE_SCHEMA_VERSION = "1.0";
 var BRIDGE_CAPABILITIES = Object.freeze([
@@ -10841,9 +11011,9 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path15.join(os6.homedir(), ".codex-bridge");
+    const logDir = path16.join(os6.homedir(), ".codex-bridge");
     fs17.mkdirSync(logDir, { recursive: true });
-    const logFile = path15.join(logDir, "auto-update.log");
+    const logFile = path16.join(logDir, "auto-update.log");
     try {
       const stat = fs17.statSync(logFile);
       if (stat.size > 2 * 1024 * 1024) fs17.truncateSync(logFile, 0);
@@ -10888,7 +11058,7 @@ var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/relea
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
-  const root = pluginDataDir ? path15.join(pluginDataDir, "codex-bridge-update.json") : path15.join(os6.homedir(), ".codex-bridge", "update-cache.json");
+  const root = pluginDataDir ? path16.join(pluginDataDir, "codex-bridge-update.json") : path16.join(os6.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
@@ -10904,7 +11074,7 @@ function readCache() {
 function writeCache(entry) {
   try {
     const p = cachePath();
-    fs17.mkdirSync(path15.dirname(p), { recursive: true });
+    fs17.mkdirSync(path16.dirname(p), { recursive: true });
     fs17.writeFileSync(p, JSON.stringify(entry, null, 2));
     return true;
   } catch {
@@ -10930,7 +11100,7 @@ function removeStaleLock(lockPath, staleMs) {
 function acquireCacheLock(staleMs) {
   const lockPath = cacheLockPath();
   try {
-    fs17.mkdirSync(path15.dirname(lockPath), { recursive: true });
+    fs17.mkdirSync(path16.dirname(lockPath), { recursive: true });
   } catch {
     return null;
   }
@@ -11416,11 +11586,384 @@ async function runIterateLoop(options = {}) {
   };
 }
 
-// src/lib/bridge-config.mjs
+// src/lib/sandbox-enforcement.mjs
+var SANDBOX_ENFORCEMENT_MARKER_KEY = "_codex_bridge_sandbox_enforce";
+var SANDBOX_ENFORCEMENT_MARKER_VALUE = "codex-bridge";
+var SANDBOX_ENFORCEMENT_DENY_RULES = Object.freeze([
+  {
+    tool: "Bash",
+    matcher: { command: ".*codex-bridge(?:\\.mjs)?\\s+task\\b.*--read-only" },
+    reason: "sandbox.enforce: true (workspace policy) - --read-only forbidden",
+    [SANDBOX_ENFORCEMENT_MARKER_KEY]: SANDBOX_ENFORCEMENT_MARKER_VALUE
+  },
+  {
+    tool: "Bash",
+    matcher: {
+      command: ".*codex\\s+(?:exec\\s+)?.*(?:--sandbox(?:\\s+|=)|-s(?:\\s+|=))(?:read-only|workspace-write)"
+    },
+    reason: "Direct codex CLI sandbox downgrade forbidden",
+    [SANDBOX_ENFORCEMENT_MARKER_KEY]: SANDBOX_ENFORCEMENT_MARKER_VALUE
+  }
+]);
+
+// src/lib/doctor-checks.mjs
+import { spawnSync as spawnSync6 } from "node:child_process";
 import fs18 from "node:fs";
+import os7 from "node:os";
+import path17 from "node:path";
 import process10 from "node:process";
-var BRIDGE_CONFIG_SKILL_LAYER = null;
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+var _DOCTOR_SCRIPT_DIR = path17.dirname(fileURLToPath3(import.meta.url));
+var _DOCTOR_SKILL_DIR = fs18.existsSync(path17.join(_DOCTOR_SCRIPT_DIR, "..", "schemas")) ? path17.join(_DOCTOR_SCRIPT_DIR, "..") : path17.join(_DOCTOR_SCRIPT_DIR, "..", "..");
 function getBridgeConfig(cwd = null, workspaceRoot = null) {
+  return loadConfig(_DOCTOR_SKILL_DIR, cwd, workspaceRoot);
+}
+var OLD_SESSION_AGE_DAYS = 30;
+var WORKTREE_ROOT_NAME = ".codex-bridge-worktrees";
+var BRANCH_PREFIX = "subagent/codex/";
+function pidIsAlive2(pid) {
+  const normalized = Number(pid);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return false;
+  }
+  try {
+    process10.kill(normalized, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    return true;
+  }
+}
+function ageMsFrom(value, now = Date.now()) {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? Math.max(0, now - parsed) : null;
+}
+function liveJobStatuses() {
+  return /* @__PURE__ */ new Set(["queued", "running"]);
+}
+function buildJobMap(jobs) {
+  return new Map(jobs.filter((job) => job?.id).map((job) => [job.id, job]));
+}
+function defaultWorktreeRoot2(repoRoot) {
+  return path17.resolve(repoRoot, "..", WORKTREE_ROOT_NAME);
+}
+function safeReadDir(dir) {
+  try {
+    return fs18.readdirSync(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+function directorySizeBytes(dir) {
+  if (!dir || !fs18.existsSync(dir)) {
+    return { path: dir, exists: false, bytes: 0, error: null };
+  }
+  const result = runCommand("du", ["-sk", dir], { timeout: 2e4 });
+  if (!result.error && result.status === 0) {
+    const kb = Number(result.stdout.trim().split(/\s+/)[0]);
+    return {
+      path: dir,
+      exists: true,
+      bytes: Number.isFinite(kb) ? kb * 1024 : 0,
+      error: null
+    };
+  }
+  return {
+    path: dir,
+    exists: true,
+    bytes: 0,
+    error: result.error?.message ?? result.stderr.trim() ?? result.stdout.trim() ?? `exit ${result.status}`
+  };
+}
+function listLocalBranches(repoRoot) {
+  const result = spawnSync6("git", ["branch", "--list", `${BRANCH_PREFIX}*`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 1e4
+  });
+  if (result.status !== 0) return [];
+  return result.stdout.split(/\r?\n/).map((line) => line.trim().replace(/^\*\s+/, "")).filter((line) => line.startsWith(BRANCH_PREFIX));
+}
+function listGitWorktrees(repoRoot) {
+  const result = spawnSync6("git", ["worktree", "list", "--porcelain"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 1e4
+  });
+  if (result.status !== 0) return [];
+  const entries = [];
+  let current = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      if (current) entries.push(current);
+      current = { path: line.slice("worktree ".length), branch: null };
+    } else if (line.startsWith("branch ") && current) {
+      current.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+function checkStaleJobs(workspaceRoot, options = {}) {
+  const now = options.now ?? Date.now();
+  const findings = [];
+  for (const job of listJobs(workspaceRoot, { raw: true })) {
+    if (job?.status !== "running" && job?.status !== "queued") continue;
+    const pid = Number(job.pid);
+    if (pidIsAlive2(pid)) continue;
+    findings.push({
+      type: "stale_job",
+      severity: "error",
+      action: "mark_orphaned",
+      cleanable: true,
+      jobId: job.id,
+      pid: Number.isFinite(pid) && pid > 0 ? pid : null,
+      status: job.status,
+      message: job.pid ? `registry says ${job.status}, PID ${job.pid} not alive` : `registry says ${job.status}, no PID recorded`,
+      age_ms: ageMsFrom(job.updatedAt ?? job.createdAt, now)
+    });
+  }
+  return findings;
+}
+function checkOrphanWorktrees(repoRoot, workspaceRoot, options = {}) {
+  const now = options.now ?? Date.now();
+  const jobs = buildJobMap(listJobs(workspaceRoot, { raw: true }));
+  const worktreeRoot = defaultWorktreeRoot2(repoRoot);
+  const findings = [];
+  for (const entry of safeReadDir(worktreeRoot)) {
+    if (!entry.isDirectory() || !entry.name.startsWith("task-")) continue;
+    const taskId = entry.name;
+    const job = jobs.get(taskId);
+    if (job && liveJobStatuses().has(job.status)) continue;
+    const worktreePath = path17.join(worktreeRoot, entry.name);
+    let stat = null;
+    try {
+      stat = fs18.statSync(worktreePath);
+    } catch {
+    }
+    findings.push({
+      type: "orphan_worktree",
+      severity: "warning",
+      action: "remove_worktree",
+      cleanable: true,
+      taskId,
+      path: worktreePath,
+      jobStatus: job?.status ?? null,
+      message: job ? `worktree exists for non-live job (${job.status})` : "worktree has no registry entry",
+      age_ms: stat ? Math.max(0, now - stat.mtimeMs) : null
+    });
+  }
+  return findings;
+}
+function checkOrphanBranches(repoRoot, workspaceRoot) {
+  const jobs = buildJobMap(listJobs(workspaceRoot, { raw: true }));
+  const worktreeBranches = new Set(listGitWorktrees(repoRoot).map((entry) => entry.branch).filter(Boolean));
+  const findings = [];
+  for (const branch of listLocalBranches(repoRoot)) {
+    const taskId = branch.slice(BRANCH_PREFIX.length);
+    const job = jobs.get(taskId);
+    if (job && liveJobStatuses().has(job.status) && worktreeBranches.has(branch)) continue;
+    if (job && liveJobStatuses().has(job.status) && !worktreeBranches.has(branch)) {
+      findings.push({
+        type: "orphan_branch",
+        severity: "warning",
+        action: "delete_branch",
+        cleanable: true,
+        taskId,
+        branch,
+        jobStatus: job.status,
+        message: "branch has a live registry entry but no corresponding worktree"
+      });
+      continue;
+    }
+    findings.push({
+      type: "orphan_branch",
+      severity: "warning",
+      action: "delete_branch",
+      cleanable: true,
+      taskId,
+      branch,
+      jobStatus: job?.status ?? null,
+      message: job ? `branch exists for non-live job (${job.status})` : "branch has no registry entry"
+    });
+  }
+  return findings;
+}
+function checkOldSessionFiles(cwd, workspaceRoot, options = {}) {
+  const now = options.now ?? Date.now();
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+  const cutoffMs = now - OLD_SESSION_AGE_DAYS * 24 * 60 * 60 * 1e3;
+  let count = 0;
+  let oldestMs = null;
+  for (const entry of safeReadDir(sessionDir)) {
+    if (!entry.isFile() || !/\.(events|ndjson)$/.test(entry.name)) continue;
+    const filePath = path17.join(sessionDir, entry.name);
+    let stat;
+    try {
+      stat = fs18.statSync(filePath);
+    } catch {
+      continue;
+    }
+    if (stat.mtimeMs >= cutoffMs) continue;
+    count += 1;
+    oldestMs = oldestMs == null ? stat.mtimeMs : Math.min(oldestMs, stat.mtimeMs);
+  }
+  if (count === 0) return [];
+  return [{
+    type: "old_session_files",
+    severity: "warning",
+    action: null,
+    cleanable: false,
+    path: sessionDir,
+    count,
+    older_than_days: OLD_SESSION_AGE_DAYS,
+    age_ms: oldestMs == null ? null : Math.max(0, now - oldestMs),
+    message: `${count} session event/log file(s) older than ${OLD_SESSION_AGE_DAYS} days`
+  }];
+}
+function checkDiskUsage(cwd, workspaceRoot) {
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+  const checks = [
+    { type: "disk_usage", severity: "info", label: "sessions_dir", ...directorySizeBytes(sessionDir) },
+    { type: "disk_usage", severity: "info", label: "jobs_dir", ...directorySizeBytes(resolveJobsDir(workspaceRoot)) },
+    { type: "disk_usage", severity: "info", label: "codex_rollouts", ...directorySizeBytes(path17.join(os7.homedir(), ".codex", "sessions")) }
+  ];
+  return checks.map((check) => ({
+    ...check,
+    action: null,
+    cleanable: false,
+    message: check.error ? `unable to measure ${check.label}: ${check.error}` : `${check.label}: ${check.bytes} bytes`
+  }));
+}
+async function checkCodexCli(cwd) {
+  const availability = getCodexAvailability(cwd);
+  const auth = availability.available ? await getCodexAuthStatus(cwd) : null;
+  return [{
+    type: "codex_cli",
+    severity: availability.available && auth?.loggedIn ? "info" : "warning",
+    action: null,
+    cleanable: false,
+    available: availability.available,
+    version: availability.detail ?? null,
+    auth: auth ? {
+      loggedIn: Boolean(auth.loggedIn),
+      detail: auth.detail ?? null,
+      source: auth.source ?? null,
+      provider: auth.provider ?? null
+    } : null,
+    message: availability.available ? `Codex CLI available; auth ${auth?.loggedIn ? "logged in" : "not logged in"}` : `Codex CLI unavailable: ${availability.detail}`
+  }];
+}
+async function runDoctorChecks(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  let repoRoot = workspaceRoot;
+  const gitRoot = spawnSync6("git", ["rev-parse", "--show-toplevel"], {
+    cwd: workspaceRoot,
+    encoding: "utf8",
+    timeout: 5e3
+  });
+  if (gitRoot.status === 0 && gitRoot.stdout.trim()) {
+    repoRoot = gitRoot.stdout.trim();
+  }
+  const actionableFindings = [
+    ...checkStaleJobs(workspaceRoot),
+    ...checkOrphanWorktrees(repoRoot, workspaceRoot),
+    ...checkOrphanBranches(repoRoot, workspaceRoot)
+  ];
+  const informationalFindings = [
+    ...checkOldSessionFiles(cwd, workspaceRoot),
+    ...checkDiskUsage(cwd, workspaceRoot),
+    ...await checkCodexCli(cwd)
+  ];
+  return {
+    workspaceRoot,
+    repoRoot,
+    findings: [...actionableFindings, ...informationalFindings]
+  };
+}
+function assertSafeBranch(branch) {
+  if (typeof branch !== "string" || !branch.startsWith(BRANCH_PREFIX) || /[\s;|&`$()<>"'\\]/.test(branch)) {
+    throw new Error(`unsafe branch name: ${JSON.stringify(branch)}`);
+  }
+}
+function worktreeStatus(worktreePath) {
+  const result = spawnSync6("git", ["-C", worktreePath, "status", "--porcelain", "--untracked-files=all"], {
+    encoding: "utf8",
+    timeout: 1e4
+  });
+  if (result.status !== 0) return null;
+  return result.stdout.trim();
+}
+function applyDoctorAction(finding, context, options = {}) {
+  if (!finding?.cleanable) {
+    return { finding, action: finding?.action ?? null, cleaned: false, skipped: true, reason: "not-cleanable" };
+  }
+  if (finding.action === "mark_orphaned") {
+    const ts = (/* @__PURE__ */ new Date()).toISOString();
+    const existing = listJobs(context.workspaceRoot, { raw: true }).find((job) => job.id === finding.jobId) ?? {};
+    const record = {
+      ...existing,
+      id: finding.jobId,
+      status: "orphaned",
+      phase: "orphaned",
+      pid: null,
+      completedAt: ts,
+      errorMessage: `Marked orphaned by doctor at ${ts}.`
+    };
+    updateState(context.workspaceRoot, (state) => {
+      state.jobs = (state.jobs ?? []).map((job) => job.id === finding.jobId ? { ...job, ...record } : job);
+    });
+    writeJobFile(context.workspaceRoot, finding.jobId, record);
+    upsertJob(context.workspaceRoot, record);
+    return { finding, action: finding.action, cleaned: true, skipped: false };
+  }
+  if (finding.action === "remove_worktree") {
+    const dirty = worktreeStatus(finding.path);
+    if (dirty && !options.force) {
+      return { finding, action: finding.action, cleaned: false, skipped: true, reason: "dirty-worktree", detail: dirty };
+    }
+    const remove = spawnSync6("git", ["worktree", "remove", "--force", finding.path], {
+      cwd: context.repoRoot,
+      encoding: "utf8",
+      timeout: 3e4
+    });
+    if (remove.status !== 0 && finding.path.includes(`${path17.sep}${WORKTREE_ROOT_NAME}${path17.sep}`)) {
+      fs18.rmSync(finding.path, { recursive: true, force: true });
+    }
+    return {
+      finding,
+      action: finding.action,
+      cleaned: !fs18.existsSync(finding.path),
+      skipped: false,
+      detail: remove.status === 0 ? null : remove.stderr.trim() || remove.stdout.trim() || null
+    };
+  }
+  if (finding.action === "delete_branch") {
+    assertSafeBranch(finding.branch);
+    const result = spawnSync6("git", ["branch", "-D", finding.branch], {
+      cwd: context.repoRoot,
+      encoding: "utf8",
+      timeout: 3e4
+    });
+    return {
+      finding,
+      action: finding.action,
+      cleaned: result.status === 0,
+      skipped: false,
+      detail: result.status === 0 ? null : result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`
+    };
+  }
+  return { finding, action: finding.action, cleaned: false, skipped: true, reason: "unknown-action" };
+}
+
+// src/lib/bridge-config.mjs
+import fs19 from "node:fs";
+import process11 from "node:process";
+var BRIDGE_CONFIG_SKILL_LAYER = null;
+function getBridgeConfig2(cwd = null, workspaceRoot = null) {
   if (!cwd && !workspaceRoot) {
     if (!BRIDGE_CONFIG_SKILL_LAYER) {
       BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
@@ -11446,7 +11989,7 @@ async function resolveCommandAdapter({
     metaBackend,
     taskMetadata,
     subagentType,
-    env: process10.env
+    env: process11.env
   });
 }
 function ensureCodexRuntimeAdapter(adapter2) {
@@ -11464,7 +12007,7 @@ var DEVELOPER_INSTRUCTIONS_FALLBACK = {
 function loadDeveloperInstructions(mode) {
   const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
   try {
-    return fs18.readFileSync(templatePath, "utf8");
+    return fs19.readFileSync(templatePath, "utf8");
   } catch {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
@@ -11537,8 +12080,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path23 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path23}`.trim();
+      const path26 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path26}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -11584,7 +12127,7 @@ function extractItemText(item) {
 // src/commands-meta.mjs
 var COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
+    synopsis: "task [--group <name>] [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
     summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
@@ -11650,10 +12193,11 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
-    summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
+    synopsis: "status [job-id] [--group <name>] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "List jobs, or inspect one by id. With --group, list all jobs tagged with that group. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
+      "codex-bridge status --group audit-2026-05",
       "codex-bridge status task-abc --wait --timeout-ms 600000",
       "codex-bridge status --all --json",
       "codex-bridge status --watch --interval 5s",
@@ -11666,11 +12210,12 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge result task-abc --json"]
   },
   wait: {
-    synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
-    summary: "Block until target job events emit [DONE], [ERROR], [INCOMPLETE], or [PLAN]. With --any, return the first terminal job from N targets.",
+    synopsis: "wait [--any] <job-id-or-thread-id...> | --group <name> --all [--timeout-ms <ms>] [--json]",
+    summary: "Block until target job events emit [DONE], [ERROR], [INCOMPLETE], or [PLAN]. With --any, return the first terminal job from N targets. With --group <name> --all, wait for every grouped job to become terminal.",
     examples: [
       "codex-bridge wait task-abc --timeout-ms 600000 --json",
       "codex-bridge wait --any task-a task-b task-c --json",
+      "codex-bridge wait --group audit-2026-05 --all --json",
       "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
     ]
   },
@@ -11720,9 +12265,20 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge update --json", "codex-bridge update --force"]
   },
   config: {
-    synopsis: "config show [--json]",
-    summary: "Show effective merged config + which files the values came from (defaults < skill-dir < workspace-root < cwd). Use when a config knob seems to have no effect.",
-    examples: ["codex-bridge config show", "codex-bridge config show --json"]
+    synopsis: "config <show|set|reset|explain|path|validate|template> [args] [--json]",
+    summary: "Conversational config editor. 'show' prints effective config with provenance; 'set key=value' writes to .claude/codex-bridge.local.md; 'reset [key]' restores defaults; 'explain key' describes a knob; 'path' prints the config file path; 'validate' schema-checks the workspace config; 'template' prints a blank config template. After set/reset: restart Claude Code (hooks load at session start).",
+    examples: [
+      "codex-bridge config show",
+      "codex-bridge config show --json",
+      "codex-bridge config set mode=default",
+      "codex-bridge config set idle_timeout_ms=600000",
+      "codex-bridge config reset mode",
+      "codex-bridge config reset",
+      "codex-bridge config explain mode",
+      "codex-bridge config path",
+      "codex-bridge config validate",
+      "codex-bridge config template"
+    ]
   },
   "auth-status": {
     synopsis: "auth-status [--json]",
@@ -11749,6 +12305,16 @@ var COMMANDS = Object.freeze({
     synopsis: "verdicts --pending [--json]",
     summary: "Flat list of approved-but-unmerged or needs-attention verdicts. Used by the Stop gate hook to decide whether to block session exit. Idempotent.",
     examples: ["codex-bridge verdicts --pending --json"]
+  },
+  doctor: {
+    synopsis: "doctor [--clean [--yes] [--force]] [--json]",
+    summary: "Health check: stale jobs, orphan worktrees, orphan branches, disk usage, Codex CLI status. Use --clean to interactively remove orphans; --clean --yes to skip prompts.",
+    examples: [
+      "codex-bridge doctor",
+      "codex-bridge doctor --json",
+      "codex-bridge doctor --clean",
+      "codex-bridge doctor --clean --yes"
+    ]
   }
 });
 var EXIT_CODE_DOC = [
@@ -11771,18 +12337,21 @@ var GLOBAL_FLAGS_DOC = [
 ].join("\n");
 
 // src/handlers/meta.mjs
-import { spawnSync as spawnSync6 } from "node:child_process";
-import process13 from "node:process";
+import { spawnSync as spawnSync7 } from "node:child_process";
+import fs23 from "node:fs";
+import os8 from "node:os";
+import path21 from "node:path";
+import process14 from "node:process";
 
 // src/lib/stop-review-gate.mjs
-import fs19 from "node:fs";
-import path16 from "node:path";
+import fs20 from "node:fs";
+import path18 from "node:path";
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path16.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path18.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs19.existsSync(lockPath);
+  let lockExists = fs20.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -11793,7 +12362,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs19.writeFileSync(
+        fs20.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -11829,7 +12398,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs19.writeFileSync(
+      fs20.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -11842,7 +12411,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs19.rmSync(lockPath, { force: true });
+      fs20.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -11878,14 +12447,14 @@ function applyStopReviewGateSnapshot(snapshot) {
 
 // src/lib/task-runtime.mjs
 import { spawn as spawn4 } from "node:child_process";
-import fs20 from "node:fs";
-import path17 from "node:path";
-import process11 from "node:process";
+import fs21 from "node:fs";
+import path19 from "node:path";
+import process12 from "node:process";
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
   try {
-    if (!fs20.existsSync(diffPath)) return null;
-    return writeDiffArtifact(taskId, fs20.readFileSync(diffPath, "utf8"));
+    if (!fs21.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs21.readFileSync(diffPath, "utf8"));
   } catch {
     return null;
   }
@@ -12096,7 +12665,7 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 function getCurrentClaudeSessionId() {
-  return process11.env[SESSION_ID_ENV] ?? null;
+  return process12.env[SESSION_ID_ENV] ?? null;
 }
 function filterJobsForCurrentClaudeSession(jobs) {
   const sessionId = getCurrentClaudeSessionId();
@@ -12157,7 +12726,7 @@ async function executeReviewRun(request) {
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
   const startedAt = Date.now();
-  const reviewConfig = getBridgeConfig(request.cwd, resolveWorkspaceRoot(request.cwd));
+  const reviewConfig = getBridgeConfig2(request.cwd, resolveWorkspaceRoot(request.cwd));
   const reviewSessionDir = resolveSessionDir(reviewConfig.session_dir, resolveWorkspaceRoot(request.cwd));
   const logReviewTerminalEvent = (session, result2, { reviewKind, targetLabel }) => {
     if (result2.status === 0) {
@@ -12481,9 +13050,9 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 function safeRealPath(filePath) {
   try {
-    return fs20.realpathSync.native ? fs20.realpathSync.native(filePath) : fs20.realpathSync(filePath);
+    return fs21.realpathSync.native ? fs21.realpathSync.native(filePath) : fs21.realpathSync(filePath);
   } catch {
-    return path17.resolve(filePath);
+    return path19.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -12521,10 +13090,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path17.resolve(worktreePath);
-  if (options.cwd && !samePath(path17.resolve(process11.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path19.resolve(worktreePath);
+  if (options.cwd && !samePath(path19.resolve(process12.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path17.resolve(process11.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path19.resolve(process12.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -12685,14 +13254,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path17.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path19.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs20.readFileSync(absPath, "utf8");
+    return fs21.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -12784,7 +13353,7 @@ async function runForegroundCommand(job, runner, options = {}) {
       emitError(errLike, { json: true, command });
     } else {
       if (execution.rendered) {
-        process11.stdout.write(execution.rendered);
+        process12.stdout.write(execution.rendered);
       }
       emitError(errLike, { json: false, command });
     }
@@ -12802,12 +13371,12 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs20.openSync(stderrPath, "a");
+      const stderrFd = fs21.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
   }
-  const child = spawn4(process11.execPath, [
+  const child = spawn4(process12.execPath, [
     scriptPath,
     "task-worker",
     "--cwd",
@@ -12818,7 +13387,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
     jobId
   ], {
     cwd,
-    env: process11.env,
+    env: process12.env,
     detached: true,
     stdio: stdioConfig,
     windowsHide: true
@@ -12826,7 +13395,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs20.closeSync(stdioConfig[2]);
+      fs21.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -12892,7 +13461,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       request: spawnedRecord.request
     });
   }
-  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir, job.workspaceRoot);
+  const resolvedSessionDir = resolveSessionDir(getBridgeConfig2(cwd ?? null, job.workspaceRoot).session_dir, job.workspaceRoot);
   return {
     payload: {
       jobId: job.id,
@@ -12913,7 +13482,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 async function runBridgeTask(request) {
   const stateCwd = request.stateCwd ?? request.cwd;
   const workspaceRoot = resolveWorkspaceRoot(stateCwd);
-  const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
+  const config = getBridgeConfig2(request.cwd ?? null, workspaceRoot);
   const adapter2 = await resolveCommandAdapter({
     cwd: request.cwd ?? null,
     workspaceRoot,
@@ -13129,9 +13698,9 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     turnTimeoutMs: null
   };
   let heartbeatTimer = null;
-  const HEARTBEAT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
-  const CHECKPOINT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
-  const STALL_CHECKPOINT_THRESHOLD = Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
+  const HEARTBEAT_INTERVAL_MS = Number(process12.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process12.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
+  const CHECKPOINT_INTERVAL_MS = Number(process12.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process12.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
+  const STALL_CHECKPOINT_THRESHOLD = Number(process12.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process12.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
@@ -13214,7 +13783,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
             phase: heartbeatState.phase,
             lastItem: heartbeatState.lastItem,
             lastItemAgeMs: heartbeatState.lastItemAt ? now - heartbeatState.lastItemAt : null,
-            pid: process11.pid,
+            pid: process12.pid,
             jobId: request.jobId ?? null,
             budgetRemainingMs: budgetRemaining,
             scriptPath: SCRIPT_PATH,
@@ -13257,7 +13826,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
               elapsedMs,
               phase: heartbeatState.phase,
               intervalMs,
-              pid: process11.pid,
+              pid: process12.pid,
               jobId: request.jobId ?? null,
               lastAssistantMessage: checkpointState.lastAssistantMessage,
               tools: toolsSnapshot,
@@ -13391,7 +13960,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path17.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path19.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -13465,10 +14034,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path17.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path17.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path17.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path17.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path19.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path19.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path19.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path19.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -13732,9 +14301,9 @@ function extractPlanSteps(planText) {
 }
 
 // src/lib/handler-utils.mjs
-import fs21 from "node:fs";
-import path18 from "node:path";
-import process12 from "node:process";
+import fs22 from "node:fs";
+import path20 from "node:path";
+import process13 from "node:process";
 function normalizeRequestedModel(model) {
   if (model == null) {
     return null;
@@ -13792,20 +14361,20 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path18.resolve(process12.cwd(), options.cwd) : process12.cwd();
+  return options.cwd ? path20.resolve(process13.cwd(), options.cwd) : process13.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path18.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path20.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path18.resolve(cwd, positionals[0]);
+    const candidate = path20.resolve(cwd, positionals[0]);
     try {
-      if (fs21.existsSync(candidate) && fs21.statSync(candidate).isFile()) {
-        return fs21.readFileSync(candidate, "utf8");
+      if (fs22.existsSync(candidate) && fs22.statSync(candidate).isFile()) {
+        return fs22.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -13816,6 +14385,137 @@ function resolvePromptInput(options, positionals, cwd) {
 }
 
 // src/handlers/meta.mjs
+var MONITOR_HOOK_EVENT = "PostToolUse";
+var MONITOR_HOOK_MATCHER = "Bash|Agent";
+var MONITOR_HOOK_SCRIPT = "tool.mjs";
+function resolveClaudeSettingsPath() {
+  return path21.join(os8.homedir(), ".claude", "settings.json");
+}
+function resolveMonitorHookScriptPath() {
+  const candidates = [
+    path21.join(ROOT_DIR, "hooks", MONITOR_HOOK_SCRIPT),
+    path21.resolve(ROOT_DIR, "..", "hooks", MONITOR_HOOK_SCRIPT)
+  ];
+  return candidates.find((candidate) => fs23.existsSync(candidate)) ?? candidates[0];
+}
+function monitorHookCommand(hookScriptPath) {
+  return `node ${JSON.stringify(hookScriptPath)} PostToolUse`;
+}
+function buildMonitorHookEntry(hookScriptPath) {
+  return {
+    matcher: MONITOR_HOOK_MATCHER,
+    hooks: [
+      {
+        type: "command",
+        command: monitorHookCommand(hookScriptPath),
+        timeout: 5
+      }
+    ]
+  };
+}
+function readClaudeSettings(settingsPath) {
+  if (!fs23.existsSync(settingsPath)) {
+    return { exists: false, settings: {}, parseError: null };
+  }
+  try {
+    const raw = fs23.readFileSync(settingsPath, "utf8");
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        exists: true,
+        settings: null,
+        parseError: "settings file must contain a JSON object"
+      };
+    }
+    return { exists: true, settings: parsed, parseError: null };
+  } catch (err) {
+    return {
+      exists: true,
+      settings: null,
+      parseError: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+function hasMonitorHookMirror(settings, hookScriptPath) {
+  const postToolUse = settings?.hooks?.[MONITOR_HOOK_EVENT];
+  if (!Array.isArray(postToolUse)) return false;
+  const command = monitorHookCommand(hookScriptPath);
+  return postToolUse.some(
+    (entry) => entry?.matcher === MONITOR_HOOK_MATCHER && Array.isArray(entry.hooks) && entry.hooks.some(
+      (hook) => hook?.type === "command" && hook?.command === command
+    )
+  );
+}
+function getMonitorHookMirrorStatus() {
+  const settingsPath = resolveClaudeSettingsPath();
+  const hookScriptPath = resolveMonitorHookScriptPath();
+  const read = readClaudeSettings(settingsPath);
+  return {
+    installed: read.settings ? hasMonitorHookMirror(read.settings, hookScriptPath) : false,
+    settingsPath,
+    settingsExists: read.exists,
+    settingsParseError: read.parseError,
+    hookScriptPath,
+    hookScriptExists: fs23.existsSync(hookScriptPath),
+    installCommand: "codex-bridge setup --install-monitor-hook"
+  };
+}
+function writeClaudeSettings(settingsPath, settings) {
+  fs23.mkdirSync(path21.dirname(settingsPath), { recursive: true });
+  const tmpPath = `${settingsPath}.tmp-${process14.pid}-${Date.now()}`;
+  fs23.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
+`, "utf8");
+  fs23.renameSync(tmpPath, settingsPath);
+}
+function installMonitorHookMirror() {
+  const settingsPath = resolveClaudeSettingsPath();
+  const hookScriptPath = resolveMonitorHookScriptPath();
+  if (!fs23.existsSync(hookScriptPath)) {
+    throw validationError(
+      `Cannot install Monitor hook mirror because ${MONITOR_HOOK_SCRIPT} was not found at ${hookScriptPath}.`,
+      "MONITOR_HOOK_SCRIPT_MISSING",
+      "Run this from a packaged codex-bridge plugin install, or arm Monitor manually from result.monitor.tool_hint."
+    );
+  }
+  const read = readClaudeSettings(settingsPath);
+  if (read.parseError) {
+    throw validationError(
+      `Cannot update ${settingsPath}: ${read.parseError}.`,
+      "CLAUDE_SETTINGS_PARSE_ERROR",
+      "Fix ~/.claude/settings.json so it is valid JSON, then rerun setup --install-monitor-hook."
+    );
+  }
+  const settings = read.settings ?? {};
+  if (settings.hooks == null) {
+    settings.hooks = {};
+  }
+  if (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks must be a JSON object.`,
+      "CLAUDE_SETTINGS_HOOKS_INVALID",
+      "Fix ~/.claude/settings.json hooks shape, then rerun setup --install-monitor-hook."
+    );
+  }
+  const existing = settings.hooks[MONITOR_HOOK_EVENT];
+  if (existing == null) {
+    settings.hooks[MONITOR_HOOK_EVENT] = [];
+  } else if (!Array.isArray(existing)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks.${MONITOR_HOOK_EVENT} must be an array.`,
+      "CLAUDE_SETTINGS_POST_TOOL_USE_INVALID",
+      "Fix ~/.claude/settings.json hooks.PostToolUse shape, then rerun setup --install-monitor-hook."
+    );
+  }
+  const alreadyInstalled = hasMonitorHookMirror(settings, hookScriptPath);
+  if (!alreadyInstalled) {
+    settings.hooks[MONITOR_HOOK_EVENT].push(buildMonitorHookEntry(hookScriptPath));
+    writeClaudeSettings(settingsPath, settings);
+  }
+  return {
+    alreadyInstalled,
+    status: getMonitorHookMirrorStatus()
+  };
+}
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -13825,6 +14525,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
+  const monitorHook = getMonitorHookMirrorStatus();
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -13840,6 +14541,13 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   } else if (!reviewGate.enabled) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
   }
+  if (monitorHook.settingsParseError) {
+    nextSteps.push(`Monitor hook mirror status could not read ${monitorHook.settingsPath}: ${monitorHook.settingsParseError}.`);
+  } else if (!monitorHook.installed && monitorHook.hookScriptExists) {
+    nextSteps.push("Optional: run `codex-bridge setup --install-monitor-hook` to mirror the Monitor PostToolUse hook into Claude user settings.");
+  } else if (!monitorHook.installed && !monitorHook.hookScriptExists) {
+    nextSteps.push("Monitor hook mirror unavailable in this install; arm Monitor manually from `result.monitor.tool_hint` after background dispatch.");
+  }
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
     node: nodeStatus,
@@ -13848,7 +14556,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     auth: authStatus,
     active_backend: adapter2.name,
     adapter_capabilities: adapter2.capabilities(),
-    sessionRuntime: getSessionRuntimeStatus(process13.env, workspaceRoot),
+    sessionRuntime: getSessionRuntimeStatus(process14.env, workspaceRoot),
     reviewGateEnabled: reviewGate.enabled,
     reviewGateLockPath: reviewGate.lockPath,
     reviewGateLockExists: reviewGate.lockExists,
@@ -13858,6 +14566,13 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
     reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
     reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
+    monitorHookInstalled: monitorHook.installed,
+    monitorHookSettingsPath: monitorHook.settingsPath,
+    monitorHookSettingsExists: monitorHook.settingsExists,
+    monitorHookSettingsParseError: monitorHook.settingsParseError,
+    monitorHookScriptPath: monitorHook.hookScriptPath,
+    monitorHookScriptExists: monitorHook.hookScriptExists,
+    monitorHookInstallCommand: monitorHook.installCommand,
     actionsTaken,
     nextSteps
   };
@@ -13866,7 +14581,7 @@ async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook"]
   });
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw conflictError(
@@ -13905,6 +14620,12 @@ async function handleSetup(argv) {
       );
     }
   }
+  if (options["install-monitor-hook"]) {
+    const result = installMonitorHookMirror();
+    actionsTaken.push(
+      result.alreadyInstalled ? `Monitor PostToolUse hook mirror already present in ${result.status.settingsPath}.` : `Installed Monitor PostToolUse hook mirror in ${result.status.settingsPath}.`
+    );
+  }
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
     json: options.json,
@@ -13928,7 +14649,7 @@ async function handleVersion(argv) {
   const payload = {
     version: BRIDGE_VERSION,
     schema_version: BRIDGE_SCHEMA_VERSION,
-    node_version: process13.version,
+    node_version: process14.version,
     codex: {
       available: codex.available,
       detail: codex.detail ?? null
@@ -13970,7 +14691,7 @@ async function handleConfigShow(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
-  const effective = getBridgeConfig(cwd, workspaceRoot);
+  const effective = getBridgeConfig2(cwd, workspaceRoot);
   const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
   const overrides = {};
   for (const [k, v] of Object.entries(effective)) {
@@ -14144,7 +14865,7 @@ function runSkillsAddForApply(jsonMode) {
   const command = "npx -y skills@latest add yigitkonur/codex-bridge -a claude-code -g -y";
   const timeoutMs = 6e5;
   try {
-    const result = spawnSync6(
+    const result = spawnSync7(
       "npx",
       ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
       {
@@ -14218,7 +14939,7 @@ function buildMachineReadableHelp() {
     })),
     global_flags: [
       { flag: "--json", alias: "-j", description: "Machine-readable output (error envelope on failure)." },
-      { flag: "--cwd <dir>", alias: "-C", description: "Override the working directory." },
+      { flag: "--cwd <dir>", alias: "-C", description: "Parsed before or after the subcommand; overrides the working directory for all bridge operations." },
       { flag: "--help", alias: "-h", description: "Show per-subcommand help and exit." }
     ],
     exit_codes: {
@@ -14318,8 +15039,8 @@ async function handleReview(argv) {
 }
 
 // src/handlers/task.mjs
-import path19 from "node:path";
-import process14 from "node:process";
+import path22 from "node:path";
+import process15 from "node:process";
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -14553,7 +15274,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path19.resolve(process14.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path22.resolve(process15.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -14612,7 +15333,7 @@ async function handleCancel(argv) {
   });
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process14.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process15.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
@@ -14747,7 +15468,7 @@ async function handleSend(argv) {
     throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
   }
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getBridgeConfig(cwd, workspaceRoot);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
   const adapter2 = await resolveCommandAdapter({
     cwd,
     workspaceRoot,
@@ -14937,7 +15658,7 @@ async function handleSteer(argv) {
   guardCapability(adapter2, "supports_steering");
   ensureCodexAvailable(cwd);
   await adapter2.steer(threadId, turnId, prompt, { cwd });
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const session = findSession(sessionDir, threadId);
   if (session) {
@@ -14960,7 +15681,7 @@ async function handleRespond(argv) {
     throw usageError("respond requires <request-id>");
   }
   const cwd = resolveCommandCwd(options);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const adapter2 = await resolveCommandAdapter({
     cwd,
@@ -15013,9 +15734,9 @@ async function handleRespond(argv) {
 }
 
 // src/handlers/inspect.mjs
-import fs22 from "node:fs";
-import path20 from "node:path";
-import process15 from "node:process";
+import fs24 from "node:fs";
+import path23 from "node:path";
+import process16 from "node:process";
 async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -15081,7 +15802,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
   const onSigint = () => {
     interrupted = true;
   };
-  process15.on("SIGINT", onSigint);
+  process16.on("SIGINT", onSigint);
   try {
     while (true) {
       ticks += 1;
@@ -15101,14 +15822,14 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
         }))
       };
       if (json2) {
-        process15.stdout.write(`${JSON.stringify(tickEntry)}
+        process16.stdout.write(`${JSON.stringify(tickEntry)}
 `);
       } else {
-        process15.stdout.write(`\x1B[2J\x1B[H`);
-        process15.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
+        process16.stdout.write(`\x1B[2J\x1B[H`);
+        process16.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
 
 `);
-        process15.stdout.write(renderStatusReport(snapshot));
+        process16.stdout.write(renderStatusReport(snapshot));
       }
       if (activeCount === 0) {
         const summary = {
@@ -15130,7 +15851,7 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
       if (deadline && Date.now() >= deadline) {
         const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
         if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        else process15.stdout.write(`
+        else process16.stdout.write(`
 watch timed out after ${ticks} ticks with ${activeCount} active job(s).
 `);
         return;
@@ -15138,7 +15859,7 @@ watch timed out after ${ticks} ticks with ${activeCount} active job(s).
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   } finally {
-    process15.off("SIGINT", onSigint);
+    process16.off("SIGINT", onSigint);
   }
 }
 async function handleAwaitArtifact(argv) {
@@ -15155,7 +15876,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path20.isAbsolute(artifactPath) ? artifactPath : path20.resolve(cwd, artifactPath);
+  const resolvedPath = path23.isAbsolute(artifactPath) ? artifactPath : path23.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -15172,7 +15893,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs22.statSync(resolvedPath);
+      statInfo = fs24.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -15224,7 +15945,7 @@ async function handleAwaitArtifact(argv) {
         })
       };
       if (!statInfo) {
-        process15.exitCode = 7;
+        process16.exitCode = 7;
         emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
 `, {
           json: options.json,
@@ -15261,7 +15982,7 @@ async function handleAwaitArtifact(argv) {
           details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
         })
       };
-      process15.exitCode = 7;
+      process16.exitCode = 7;
       emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
 `, {
         json: options.json,
@@ -15288,7 +16009,7 @@ function pruneOrphanedJobs(cwd) {
     }
     let alive = false;
     try {
-      process15.kill(pid, 0);
+      process16.kill(pid, 0);
       alive = true;
     } catch (err) {
       if (err && err.code === "EPERM") {
@@ -15360,7 +16081,7 @@ function renderPruneOrphansReport(report) {
 }
 function cleanupTerminalJobs(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getBridgeConfig(cwd, workspaceRoot);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
   const retentionDays = options.retentionDays ?? (Number(config.artifact_retention_days) || 30);
   const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
   const dryRun = Boolean(options.dryRun);
@@ -15381,7 +16102,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
       for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
         if (!filePath) continue;
         try {
-          fs22.rmSync(filePath, { force: true });
+          fs24.rmSync(filePath, { force: true });
         } catch {
         }
       }
@@ -15465,7 +16186,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs22.readFileSync(eventsPath, "utf8");
+        const data = fs24.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -15482,13 +16203,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs22.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs24.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs22.existsSync(eventsPath)) {
+              if (fs24.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15500,12 +16221,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs22.existsSync(eventsPath)) {
+    if (fs24.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs22.existsSync(eventsPath)) {
+        if (fs24.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15546,9 +16267,9 @@ async function handleWait(argv) {
       "JOB_HAS_NO_THREAD"
     );
   }
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path20.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path23.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = TERMINAL_TAG_REGEX;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -15585,7 +16306,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     throw usageError("wait --any requires at least two job ids or thread ids.");
   }
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const TERMINAL = TERMINAL_TAG_REGEX;
   const targets = refs.map((reference) => {
@@ -15605,7 +16326,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     return {
       reference,
       job,
-      eventsPath: path20.join(sessionDir, `${job.threadId}.events`)
+      eventsPath: path23.join(sessionDir, `${job.threadId}.events`)
     };
   });
   const deadline = Date.now() + timeoutMs;
@@ -15658,7 +16379,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
 }
 function scanTerminalEvent(eventsPath, pattern) {
   try {
-    const data = fs22.readFileSync(eventsPath, "utf8");
+    const data = fs24.readFileSync(eventsPath, "utf8");
     for (const line of data.split("\n")) {
       const m = pattern.exec(line);
       if (m) return { timedOut: false, tag: m[1], line };
@@ -15700,9 +16421,9 @@ async function handleEvents(argv) {
       "JOB_HAS_NO_THREAD"
     );
   }
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path20.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path23.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -15711,7 +16432,7 @@ async function handleEvents(argv) {
   const filter = parseTagList(options.filter);
   const exclude = parseTagList(options.exclude);
   const writeEventLine = (line) => {
-    if (!options.json) process15.stdout.write(line + "\n");
+    if (!options.json) process16.stdout.write(line + "\n");
   };
   const tagOf = (line) => {
     const m = /^\[([^\]]+)\]/.exec(line);
@@ -15733,8 +16454,8 @@ async function handleEvents(argv) {
   const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs22.existsSync(eventsPath)) {
-    initial = fs22.readFileSync(eventsPath, "utf8");
+  if (fs24.existsSync(eventsPath)) {
+    initial = fs24.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -15780,7 +16501,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs22.readFileSync(eventsPath, "utf8");
+        data = fs24.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -15802,13 +16523,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs22.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs24.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs22.existsSync(eventsPath)) {
+              if (fs24.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15819,11 +16540,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs22.existsSync(eventsPath)) {
+    if (fs24.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs22.existsSync(eventsPath)) {
+        if (fs24.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15908,7 +16629,7 @@ async function handleSummary(argv) {
     throw usageError("summary requires <thread-id>");
   }
   const cwd = resolveCommandCwd(options);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const config = getBridgeConfig2(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const session = findSession(sessionDir, threadId);
   if (!session) {
@@ -15920,7 +16641,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs22.readFileSync(session.ndjsonPath, "utf8");
+    content = fs24.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -15983,8 +16704,8 @@ function buildTranscript(entries, threadId) {
 }
 
 // src/handlers/registry.mjs
-import fs23 from "node:fs";
-import path21 from "node:path";
+import fs25 from "node:fs";
+import path24 from "node:path";
 function readReviewedBranchHeadSha(verdict) {
   const candidates = [
     verdict?.branch_head_sha,
@@ -16007,7 +16728,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs23.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs25.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -16088,9 +16809,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path21.join(dir, "meta.json"),
-    review_path: path21.join(dir, "review.json"),
-    verdict_path: path21.join(dir, "verdict.json"),
+    meta_path: path24.join(dir, "meta.json"),
+    review_path: path24.join(dir, "review.json"),
+    verdict_path: path24.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -16408,7 +17129,7 @@ async function handleIterate(argv) {
   guardCapability(adapter2, "supports_adversarial_review");
   ensureCodexAvailable(cwd);
   if (!input.taskId) ensureGitRepository(cwd);
-  const config = getBridgeConfig(cwd, workspaceRoot);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
   const model = normalizeRequestedModel(options.model ?? config.model);
   const effort = normalizeReasoningEffort(options.effort ?? config.effort);
   const payload = await runIterateLoop({
@@ -16491,10 +17212,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path21.join(jobDir(taskId), "verdict.json");
+    const target = path24.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs23.existsSync(target)) {
-      fs23.rmSync(target, { force: true });
+    if (fs25.existsSync(target)) {
+      fs25.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -16777,6 +17498,155 @@ function printSubcommandUsage(name) {
   lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC);
   console.log(lines.join("\n"));
 }
+function formatDoctorBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+}
+function formatDoctorAge(ageMs) {
+  if (ageMs == null) return "age unknown";
+  const minutes = Math.floor(ageMs / 6e4);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+function renderDoctorReport(report, cleaned = [], options = {}) {
+  const lines = ["Codex Bridge Doctor - health report", ""];
+  const stale = report.findings.filter((entry) => entry.type === "stale_job");
+  const worktrees = report.findings.filter((entry) => entry.type === "orphan_worktree");
+  const branches = report.findings.filter((entry) => entry.type === "orphan_branch");
+  const oldSessions = report.findings.filter((entry) => entry.type === "old_session_files");
+  const disk = report.findings.filter((entry) => entry.type === "disk_usage");
+  const codex = report.findings.filter((entry) => entry.type === "codex_cli");
+  appendDoctorSection(lines, "Stale jobs", stale, (entry) => `${entry.jobId} (${entry.message}; stale for ${formatDoctorAge(entry.age_ms)})`);
+  appendDoctorSection(lines, "Orphan worktrees", worktrees, (entry) => `${entry.path} (${entry.message}${entry.age_ms == null ? "" : `; age ${formatDoctorAge(entry.age_ms)}`})`);
+  appendDoctorSection(lines, "Orphan branches", branches, (entry) => `${entry.branch} (${entry.message})`);
+  appendDoctorSection(lines, "Old session files", oldSessions, (entry) => `${entry.path} (${entry.message}; oldest ${formatDoctorAge(entry.age_ms)})`);
+  lines.push("[Disk usage]");
+  for (const entry of disk) {
+    lines.push(`  - ${entry.label}: ${entry.exists ? formatDoctorBytes(entry.bytes) : "not found"}${entry.error ? ` (${entry.error})` : ""}`);
+  }
+  lines.push("");
+  lines.push("[Codex CLI]");
+  for (const entry of codex) {
+    const marker = entry.available && entry.auth?.loggedIn ? "+" : "!";
+    lines.push(`  ${marker} ${entry.message}`);
+    if (entry.version) lines.push(`    ${entry.version}`);
+    if (entry.auth?.detail) lines.push(`    ${entry.auth.detail}`);
+  }
+  lines.push("");
+  const cleanableCount = report.findings.filter((entry) => entry.cleanable).length;
+  if (cleanableCount === 0) {
+    lines.push("All clear: no stale jobs, orphan worktrees, or orphan branches.");
+  } else if (!options.clean) {
+    lines.push("To clean up: codex-bridge doctor --clean");
+  } else {
+    const removed = cleaned.filter((entry) => entry.cleaned).length;
+    lines.push(`Cleaned ${removed} of ${cleanableCount} cleanable finding(s).`);
+  }
+  return `${lines.join("\n")}
+`;
+}
+function appendDoctorSection(lines, title, entries, formatEntry) {
+  lines.push(`[${title}]`);
+  if (entries.length === 0) {
+    lines.push("  + none");
+  } else {
+    for (const entry of entries) {
+      lines.push(`  ! ${formatEntry(entry)}`);
+    }
+  }
+  lines.push("");
+}
+function cleanPromptForFinding(finding) {
+  if (finding.type === "stale_job") return `Mark stale job ${finding.jobId} orphaned`;
+  if (finding.type === "orphan_worktree") return `Remove orphan worktree ${finding.path}`;
+  if (finding.type === "orphan_branch") return `Delete orphan branch ${finding.branch}`;
+  return `Apply cleanup for ${finding.type}`;
+}
+function promptDoctorAction(finding) {
+  if (!process17.stdin.isTTY) {
+    return Promise.resolve("no");
+  }
+  const question = `${cleanPromptForFinding(finding)}? (y/N/all/quit) `;
+  process17.stdout.write(question);
+  process17.stdin.setEncoding("utf8");
+  process17.stdin.resume();
+  return new Promise((resolve) => {
+    const onData = (chunk) => {
+      process17.stdin.pause();
+      process17.stdin.off("data", onData);
+      const answer = String(chunk).trim().toLowerCase();
+      if (answer === "y" || answer === "yes") resolve("yes");
+      else if (answer === "all" || answer === "a") resolve("all");
+      else if (answer === "quit" || answer === "q") resolve("quit");
+      else resolve("no");
+    };
+    process17.stdin.on("data", onData);
+  });
+}
+async function cleanDoctorFindings(report, options = {}) {
+  const results = [];
+  let applyAll = Boolean(options.yes);
+  for (const finding of report.findings.filter((entry) => entry.cleanable)) {
+    if (!applyAll) {
+      const answer = await promptDoctorAction(finding);
+      if (answer === "quit") break;
+      if (answer === "all") applyAll = true;
+      if (answer === "no") {
+        results.push({ finding, action: finding.action, cleaned: false, skipped: true, reason: "declined" });
+        continue;
+      }
+    }
+    const result = applyDoctorAction(finding, report, { force: options.force });
+    results.push(result);
+    if (!options.json) {
+      process17.stdout.write(result.cleaned ? "Removed.\n" : `Skipped: ${result.reason ?? result.detail ?? "not cleaned"}
+`);
+    }
+  }
+  return results;
+}
+async function handleDoctor(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "clean", "yes", "force"]
+  });
+  if (positionals.length > 0) {
+    throw usageError("`doctor` does not take positional arguments.");
+  }
+  if (options.yes && !options.clean) {
+    throw usageError("`doctor --yes` requires `--clean`.");
+  }
+  const cwd = resolveCommandCwd(options);
+  const report = await runDoctorChecks(cwd);
+  let cleaned = [];
+  if (options.clean) {
+    cleaned = await cleanDoctorFindings(report, {
+      yes: Boolean(options.yes),
+      force: Boolean(options.force),
+      json: Boolean(options.json)
+    });
+  }
+  emitSuccess("doctor", {
+    ...report,
+    clean: Boolean(options.clean),
+    cleaned,
+    cleanedCount: cleaned.filter((entry) => entry.cleaned).length
+  }, renderDoctorReport(report, cleaned, { clean: Boolean(options.clean) }), {
+    json: options.json,
+    startedAt
+  });
+}
 var SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
@@ -16801,37 +17671,38 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   merge: handleMerge,
   verdict: handleVerdict,
   verdicts: handleVerdictsPending,
-  iterate: handleIterate
+  iterate: handleIterate,
+  doctor: handleDoctor
 });
-process16.on("SIGPIPE", () => {
+process17.on("SIGPIPE", () => {
 });
-process16.stdout.on("error", (err) => {
+process17.stdout.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
-process16.stderr.on("error", (err) => {
+process17.stderr.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path22.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs24.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path25.join(os9.homedir(), ".codex-bridge", "crashes");
+    fs26.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path22.join(crashDir, `${ts}-${process16.pid}.log`);
+    const file = path25.join(crashDir, `${ts}-${process17.pid}.log`);
     const payload = {
       kind,
       ts,
-      pid: process16.pid,
-      argv: process16.argv,
-      cwd: process16.cwd(),
-      nodeVersion: process16.version,
+      pid: process17.pid,
+      argv: process17.argv,
+      cwd: process17.cwd(),
+      nodeVersion: process17.version,
       bridgeVersion: BRIDGE_VERSION,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs24.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs26.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
-      process16.stderr.write(
+      process17.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
 `
       );
@@ -16840,17 +17711,17 @@ function writeCrashLog(kind, error) {
   } catch {
   }
 }
-process16.on("unhandledRejection", (reason) => {
+process17.on("unhandledRejection", (reason) => {
   writeCrashLog("unhandledRejection", reason);
-  process16.exitCode = process16.exitCode || 1;
+  process17.exitCode = process17.exitCode || 1;
 });
-process16.on("uncaughtException", (err) => {
+process17.on("uncaughtException", (err) => {
   writeCrashLog("uncaughtException", err);
-  process16.exit(process16.exitCode || 1);
+  process17.exit(process17.exitCode || 1);
 });
 async function main() {
   const startedAt = Date.now();
-  const rawArgv = process16.argv.slice(2);
+  const rawArgv = process17.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
   maybeTriggerAutoApply(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
@@ -16877,7 +17748,7 @@ async function main() {
   await handler(argv);
 }
 main().catch((error) => {
-  const rawArgv = process16.argv.slice(2);
+  const rawArgv = process17.argv.slice(2);
   const json2 = detectJsonFlag(rawArgv);
   const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
   emitError(error, { json: json2, command });
