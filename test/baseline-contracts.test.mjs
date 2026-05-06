@@ -84,6 +84,7 @@ function runBridge(args, { workspace, pluginData, fakeBin }) {
       CODEX_BRIDGE_PLUGIN_DATA: pluginData,
       CODEX_BRIDGE_NO_UPDATE_CHECK: "1",
       CODEX_BRIDGE_BACKEND: "",
+      CODEX_COMPANION_SESSION_ID: "",
       PATH: fakeBin,
     },
   });
@@ -138,6 +139,15 @@ test("baseline contract report verifies static gate, generated surfaces, and com
   assert.ok(report.generated_surfaces.some((surface) => surface.source === "src/codex-bridge.mjs"));
   assert.ok(report.generated_surfaces.some((surface) => surface.source === "hooks"));
   assert.equal(report.json_envelope_probes.length, 9);
+  assert.deepEqual(report.ndjson_event_schema.fields, [
+    "schema_version",
+    "ts",
+    "tag",
+    "method",
+    "threadId",
+    "data",
+  ]);
+  assert.equal(report.ndjson_event_schema.version, "1.0");
   assert.deepEqual(
     report.dispatch_commands.filter(
       (command) =>

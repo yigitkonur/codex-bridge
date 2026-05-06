@@ -4274,6 +4274,15 @@ import path7 from "node:path";
 import os3 from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
+var NDJSON_EVENT_SCHEMA_VERSION = "1.0";
+var NDJSON_EVENT_FIELDS = Object.freeze([
+  "schema_version",
+  "ts",
+  "tag",
+  "method",
+  "threadId",
+  "data"
+]);
 function resolveSessionDir(configDir, baseDir = process.cwd()) {
   const configured = configDir ?? "~/.codex-bridge/sessions";
   const expanded = configured.replace(/^~/, os3.homedir());
@@ -4326,17 +4335,27 @@ function findSession(sessionDir, threadId) {
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
 function logNdjson(session, tag, method, data) {
-  const entry = {
+  const entry = buildNdjsonEvent({
     ts: (/* @__PURE__ */ new Date()).toISOString(),
     tag,
-    method: method ?? null,
+    method,
     threadId: session.threadId,
-    data: data ?? {}
-  };
+    data
+  });
   try {
     fs7.appendFileSync(session.ndjsonPath, redactText(JSON.stringify(entry), session) + "\n");
   } catch {
   }
+}
+function buildNdjsonEvent({ ts, tag, method = null, threadId = null, data = {} }) {
+  return {
+    schema_version: NDJSON_EVENT_SCHEMA_VERSION,
+    ts,
+    tag,
+    method: method ?? null,
+    threadId,
+    data: data ?? {}
+  };
 }
 function logEvent(session, formattedBlock) {
   try {
@@ -5510,7 +5529,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
