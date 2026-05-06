@@ -1,9 +1,8 @@
 // src/codex-bridge.mjs
-import { spawn as spawn5, spawnSync as spawnSync5 } from "node:child_process";
-import fs19 from "node:fs";
+import fs23 from "node:fs";
 import os7 from "node:os";
-import path16 from "node:path";
-import process12 from "node:process";
+import path21 from "node:path";
+import process16 from "node:process";
 
 // src/lib/cli-errors.mjs
 import process2 from "node:process";
@@ -1071,8 +1070,8 @@ function extractPluginEntries(parsed) {
   return null;
 }
 function detectOfficialOpenAICodexPluginUncached(options = {}) {
-  const spawn6 = options.spawnSync ?? spawnSync3;
-  const result = spawn6("claude", ["plugin", "list", "--json"], {
+  const spawn5 = options.spawnSync ?? spawnSync3;
+  const result = spawn5("claude", ["plugin", "list", "--json"], {
     cwd: options.cwd ?? process.cwd(),
     env: options.env ?? process.env,
     encoding: "utf8",
@@ -11392,8 +11391,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path17 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path17}`.trim();
+      const path22 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path22}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -11625,16 +11624,122 @@ var GLOBAL_FLAGS_DOC = [
   "  -h, --help        Show help for the subcommand and exit."
 ].join("\n");
 
-// src/lib/task-runtime.mjs
-import { spawn as spawn4 } from "node:child_process";
+// src/handlers/meta.mjs
+import { spawnSync as spawnSync5 } from "node:child_process";
+import process13 from "node:process";
+
+// src/lib/stop-review-gate.mjs
 import fs18 from "node:fs";
 import path15 from "node:path";
+function resolveStopReviewGateLockPath(workspaceRoot) {
+  return path15.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+}
+function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
+  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
+  let lockExists = fs18.existsSync(lockPath);
+  let migratedFromLegacyConfig = false;
+  if (!lockExists) {
+    let legacyEnabled = false;
+    try {
+      legacyEnabled = getConfig(workspaceRoot)?.stopReviewGate === true;
+    } catch {
+      legacyEnabled = false;
+    }
+    if (legacyEnabled) {
+      try {
+        fs18.writeFileSync(
+          lockPath,
+          [
+            "# Codex Bridge stop-time review gate",
+            "# Presence of this file enables the Claude Code Stop hook for this project.",
+            "# Migrated from legacy state.json config.stopReviewGate=true.",
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      } catch {
+        lockExists = true;
+        migratedFromLegacyConfig = true;
+      }
+    }
+  }
+  const reviewGateSuppressionReason = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE ? "official-openai-codex-plugin-active" : officialPlugin.status === OFFICIAL_PLUGIN_STATUS.UNKNOWN ? "official-openai-codex-plugin-status-unknown" : null;
+  return {
+    enabled: lockExists && reviewGateSuppressionReason == null,
+    lockPath,
+    lockExists,
+    migratedFromLegacyConfig,
+    officialOpenAICodexPluginStatus: officialPlugin.status,
+    officialOpenAICodexPlugin: officialPlugin.plugin ?? null,
+    officialOpenAICodexPluginDetail: officialPlugin.detail ?? null,
+    reviewGateSuppressedByOfficialPlugin: officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE,
+    reviewGateLockIgnored: lockExists && reviewGateSuppressionReason != null,
+    reviewGateSuppressionReason
+  };
+}
+function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
+  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
+  if (enabled) {
+    try {
+      fs18.writeFileSync(
+        lockPath,
+        [
+          "# Codex Bridge stop-time review gate",
+          "# Presence of this file enables the Claude Code Stop hook for this project.",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+    } catch {
+    }
+  } else {
+    try {
+      fs18.rmSync(lockPath, { force: true });
+    } catch {
+    }
+    try {
+      setConfig(workspaceRoot, "stopReviewGate", false);
+    } catch {
+    }
+  }
+  return readStopReviewGate(workspaceRoot, officialPlugin);
+}
+function applyStopReviewGateSnapshot(snapshot) {
+  const gate = readStopReviewGate(snapshot.workspaceRoot);
+  return {
+    ...snapshot,
+    officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
+    officialOpenAICodexPlugin: gate.officialOpenAICodexPlugin,
+    officialOpenAICodexPluginDetail: gate.officialOpenAICodexPluginDetail,
+    reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
+    reviewGateLockIgnored: gate.reviewGateLockIgnored,
+    reviewGateSuppressionReason: gate.reviewGateSuppressionReason,
+    config: {
+      ...snapshot.config,
+      stopReviewGate: gate.enabled,
+      stopReviewGateLockPath: gate.lockPath,
+      stopReviewGateLockExists: gate.lockExists,
+      officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
+      reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
+      reviewGateLockIgnored: gate.reviewGateLockIgnored,
+      reviewGateSuppressionReason: gate.reviewGateSuppressionReason
+    },
+    needsReview: gate.enabled
+  };
+}
+
+// src/lib/task-runtime.mjs
+import { spawn as spawn4 } from "node:child_process";
+import fs19 from "node:fs";
+import path16 from "node:path";
 import process11 from "node:process";
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
   try {
-    if (!fs18.existsSync(diffPath)) return null;
-    return writeDiffArtifact(taskId, fs18.readFileSync(diffPath, "utf8"));
+    if (!fs19.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs19.readFileSync(diffPath, "utf8"));
   } catch {
     return null;
   }
@@ -12230,9 +12335,9 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 function safeRealPath(filePath) {
   try {
-    return fs18.realpathSync.native ? fs18.realpathSync.native(filePath) : fs18.realpathSync(filePath);
+    return fs19.realpathSync.native ? fs19.realpathSync.native(filePath) : fs19.realpathSync(filePath);
   } catch {
-    return path15.resolve(filePath);
+    return path16.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -12270,10 +12375,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path15.resolve(worktreePath);
-  if (options.cwd && !samePath(path15.resolve(process11.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path16.resolve(worktreePath);
+  if (options.cwd && !samePath(path16.resolve(process11.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path15.resolve(process11.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path16.resolve(process11.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -12434,14 +12539,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow2(path15.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
-function readPromptFileOrThrow2(absPath) {
+function readPromptFileOrThrow(absPath) {
   try {
-    return fs18.readFileSync(absPath, "utf8");
+    return fs19.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -12551,7 +12656,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs18.openSync(stderrPath, "a");
+      const stderrFd = fs19.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
@@ -12575,7 +12680,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs18.closeSync(stdioConfig[2]);
+      fs19.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -13135,7 +13240,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path15.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path16.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -13209,10 +13314,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path15.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path15.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path15.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path15.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path16.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path16.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path16.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path16.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -13437,35 +13542,10 @@ function extractPlanSteps(planText) {
   return steps.length > 0 ? steps : [{ number: 1, text: planText?.split("\n")[0] ?? "Plan", status: "pending" }];
 }
 
-// src/codex-bridge.mjs
-function printUsage() {
-  const lines = ["Usage:"];
-  for (const name of Object.keys(COMMANDS)) {
-    lines.push(`  codex-bridge ${COMMANDS[name].synopsis}`);
-  }
-  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC, "", "Run `codex-bridge <subcommand> --help` for per-command details.");
-  console.log(lines.join("\n"));
-}
-function printSubcommandUsage(name) {
-  const entry = COMMANDS[name];
-  if (!entry) {
-    printUsage();
-    return;
-  }
-  const lines = [
-    `codex-bridge ${entry.synopsis}`,
-    "",
-    entry.summary
-  ];
-  if (entry.examples?.length) {
-    lines.push("", "Examples:");
-    for (const example of entry.examples) {
-      lines.push(`  ${example}`);
-    }
-  }
-  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC);
-  console.log(lines.join("\n"));
-}
+// src/lib/handler-utils.mjs
+import fs20 from "node:fs";
+import path17 from "node:path";
+import process12 from "node:process";
 function normalizeRequestedModel(model) {
   if (model == null) {
     return null;
@@ -13523,109 +13603,30 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path16.resolve(process12.cwd(), options.cwd) : process12.cwd();
+  return options.cwd ? path17.resolve(process12.cwd(), options.cwd) : process12.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
-function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path16.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
-}
-function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
-  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs19.existsSync(lockPath);
-  let migratedFromLegacyConfig = false;
-  if (!lockExists) {
-    let legacyEnabled = false;
+function resolvePromptInput(options, positionals, cwd) {
+  if (options["prompt-file"]) {
+    return readPromptFileOrThrow(path17.resolve(cwd, options["prompt-file"]));
+  }
+  if (positionals.length === 1) {
+    const candidate = path17.resolve(cwd, positionals[0]);
     try {
-      legacyEnabled = getConfig(workspaceRoot)?.stopReviewGate === true;
-    } catch {
-      legacyEnabled = false;
-    }
-    if (legacyEnabled) {
-      try {
-        fs19.writeFileSync(
-          lockPath,
-          [
-            "# Codex Bridge stop-time review gate",
-            "# Presence of this file enables the Claude Code Stop hook for this project.",
-            "# Migrated from legacy state.json config.stopReviewGate=true.",
-            ""
-          ].join("\n"),
-          "utf8"
-        );
-        lockExists = true;
-        migratedFromLegacyConfig = true;
-      } catch {
-        lockExists = true;
-        migratedFromLegacyConfig = true;
+      if (fs20.existsSync(candidate) && fs20.statSync(candidate).isFile()) {
+        return fs20.readFileSync(candidate, "utf8");
       }
-    }
-  }
-  const reviewGateSuppressionReason = officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE ? "official-openai-codex-plugin-active" : officialPlugin.status === OFFICIAL_PLUGIN_STATUS.UNKNOWN ? "official-openai-codex-plugin-status-unknown" : null;
-  return {
-    enabled: lockExists && reviewGateSuppressionReason == null,
-    lockPath,
-    lockExists,
-    migratedFromLegacyConfig,
-    officialOpenAICodexPluginStatus: officialPlugin.status,
-    officialOpenAICodexPlugin: officialPlugin.plugin ?? null,
-    officialOpenAICodexPluginDetail: officialPlugin.detail ?? null,
-    reviewGateSuppressedByOfficialPlugin: officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ACTIVE,
-    reviewGateLockIgnored: lockExists && reviewGateSuppressionReason != null,
-    reviewGateSuppressionReason
-  };
-}
-function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
-  const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  if (enabled) {
-    try {
-      fs19.writeFileSync(
-        lockPath,
-        [
-          "# Codex Bridge stop-time review gate",
-          "# Presence of this file enables the Claude Code Stop hook for this project.",
-          ""
-        ].join("\n"),
-        "utf8"
-      );
-    } catch {
-    }
-  } else {
-    try {
-      fs19.rmSync(lockPath, { force: true });
-    } catch {
-    }
-    try {
-      setConfig(workspaceRoot, "stopReviewGate", false);
     } catch {
     }
   }
-  return readStopReviewGate(workspaceRoot, officialPlugin);
+  const text = positionals.join(" ");
+  if (text) return text;
+  return readStdinIfPiped();
 }
-function applyStopReviewGateSnapshot(snapshot) {
-  const gate = readStopReviewGate(snapshot.workspaceRoot);
-  return {
-    ...snapshot,
-    officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
-    officialOpenAICodexPlugin: gate.officialOpenAICodexPlugin,
-    officialOpenAICodexPluginDetail: gate.officialOpenAICodexPluginDetail,
-    reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
-    reviewGateLockIgnored: gate.reviewGateLockIgnored,
-    reviewGateSuppressionReason: gate.reviewGateSuppressionReason,
-    config: {
-      ...snapshot.config,
-      stopReviewGate: gate.enabled,
-      stopReviewGateLockPath: gate.lockPath,
-      stopReviewGateLockExists: gate.lockExists,
-      officialOpenAICodexPluginStatus: gate.officialOpenAICodexPluginStatus,
-      reviewGateSuppressedByOfficialPlugin: gate.reviewGateSuppressedByOfficialPlugin,
-      reviewGateLockIgnored: gate.reviewGateLockIgnored,
-      reviewGateSuppressionReason: gate.reviewGateSuppressionReason
-    },
-    needsReview: gate.enabled
-  };
-}
+
+// src/handlers/meta.mjs
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -13658,7 +13659,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     auth: authStatus,
     active_backend: adapter2.name,
     adapter_capabilities: adapter2.capabilities(),
-    sessionRuntime: getSessionRuntimeStatus(process12.env, workspaceRoot),
+    sessionRuntime: getSessionRuntimeStatus(process13.env, workspaceRoot),
     reviewGateEnabled: reviewGate.enabled,
     reviewGateLockPath: reviewGate.lockPath,
     reviewGateLockExists: reviewGate.lockExists,
@@ -13738,7 +13739,7 @@ async function handleVersion(argv) {
   const payload = {
     version: BRIDGE_VERSION,
     schema_version: BRIDGE_SCHEMA_VERSION,
-    node_version: process12.version,
+    node_version: process13.version,
     codex: {
       available: codex.available,
       detail: codex.detail ?? null
@@ -14044,6 +14045,11 @@ function buildMachineReadableHelp() {
     }
   };
 }
+
+// src/handlers/review.mjs
+function handleAdversarialReview(argv) {
+  return handleReviewCommand(argv, { reviewName: "Adversarial Review" });
+}
 async function handleReviewCommand(argv, config) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -14121,6 +14127,10 @@ async function handleReview(argv) {
     validateRequest: validateNativeReviewRequest
   });
 }
+
+// src/handlers/task.mjs
+import path18 from "node:path";
+import process14 from "node:process";
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -14354,7 +14364,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path16.resolve(process12.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path18.resolve(process14.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -14405,887 +14415,6 @@ async function handleTaskWorker(argv) {
     { logFile }
   );
 }
-async function handleStatus(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
-    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
-  });
-  const cwd = resolveCommandCwd(options);
-  if (options.watch) {
-    if (positionals[0]) {
-      throw usageError("`status --watch` does not take a job-id argument; it watches ALL tracked jobs.");
-    }
-    if (options["prune-orphans"] || options.cleanup || options.wait) {
-      throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
-    }
-    const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 1e4 });
-    const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
-    await runStatusWatch(cwd, {
-      intervalMs,
-      overallTimeoutMs,
-      all: options.all,
-      json: options.json,
-      startedAt
-    });
-    return;
-  }
-  if (options["prune-orphans"] || options.cleanup) {
-    const report2 = options.cleanup ? cleanupTerminalJobs(cwd, {
-      dryRun: Boolean(options["dry-run"]),
-      retentionDays: Number(options["retention-days"]) > 0 ? Number(options["retention-days"]) : null,
-      retentionJobs: Number(options["retention-jobs"]) > 0 ? Number(options["retention-jobs"]) : null
-    }) : pruneOrphanedJobs(cwd);
-    emitSuccess("status", report2, options.cleanup ? renderCleanupReport(report2) : renderPruneOrphansReport(report2), {
-      json: options.json,
-      startedAt
-    });
-    return;
-  }
-  const reference = positionals[0] ?? "";
-  if (reference) {
-    const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd, reference, {
-      timeoutMs: options["timeout-ms"],
-      pollIntervalMs: options["poll-interval-ms"]
-    }) : buildSingleJobSnapshot(cwd, reference);
-    emitSuccess("status", snapshot, renderJobStatusReport(snapshot.job), {
-      json: options.json,
-      startedAt
-    });
-    return;
-  }
-  if (options.wait) {
-    throw usageError("`status --wait` requires a job id.");
-  }
-  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
-  emitSuccess("status", report, renderStatusReport(report), {
-    json: options.json,
-    startedAt
-  });
-}
-async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: json2, startedAt }) {
-  const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
-  let ticks = 0;
-  let interrupted = false;
-  const onSigint = () => {
-    interrupted = true;
-  };
-  process12.on("SIGINT", onSigint);
-  try {
-    while (true) {
-      ticks += 1;
-      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all }));
-      const activeCount = snapshot.running?.length ?? 0;
-      const tickEntry = {
-        schema_version: "1.0",
-        tick: ticks,
-        ts: (/* @__PURE__ */ new Date()).toISOString(),
-        activeCount,
-        running: (snapshot.running ?? []).map((j) => ({
-          id: j.id,
-          status: j.status,
-          phase: j.phase ?? null,
-          threadId: j.threadId ?? null,
-          kind: j.kindLabel ?? j.kind ?? null
-        }))
-      };
-      if (json2) {
-        process12.stdout.write(`${JSON.stringify(tickEntry)}
-`);
-      } else {
-        process12.stdout.write(`\x1B[2J\x1B[H`);
-        process12.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
-
-`);
-        process12.stdout.write(renderStatusReport(snapshot));
-      }
-      if (activeCount === 0) {
-        const summary = {
-          terminated: true,
-          reason: "all-terminal",
-          ticks,
-          final: snapshot
-        };
-        if (json2) {
-          emitSuccess("status", summary, null, { json: true, startedAt });
-        }
-        return;
-      }
-      if (interrupted) {
-        const summary = { terminated: false, reason: "sigint", ticks, final: snapshot };
-        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        return;
-      }
-      if (deadline && Date.now() >= deadline) {
-        const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
-        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
-        else process12.stdout.write(`
-watch timed out after ${ticks} ticks with ${activeCount} active job(s).
-`);
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-  } finally {
-    process12.off("SIGINT", onSigint);
-  }
-}
-async function handleAwaitArtifact(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json"]
-  });
-  const jobRef = positionals[0];
-  const artifactPath = positionals[1];
-  if (!jobRef || !artifactPath) {
-    throw usageError("`await-artifact <job-id> <path>` requires both a job reference and a file path.");
-  }
-  const cwd = resolveCommandCwd(options);
-  const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
-  const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path16.isAbsolute(artifactPath) ? artifactPath : path16.resolve(cwd, artifactPath);
-  const deadline = Date.now() + timeoutMs;
-  let prevSize = null;
-  while (true) {
-    let jobSnapshot;
-    try {
-      jobSnapshot = buildSingleJobSnapshot(cwd, jobRef);
-    } catch (e) {
-      if (e && e.code === "JOB_NOT_FOUND") {
-        throw e;
-      }
-      throw e;
-    }
-    const jobStatus = jobSnapshot.job?.status ?? "unknown";
-    const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
-    let statInfo = null;
-    try {
-      statInfo = fs19.statSync(resolvedPath);
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-    if (statInfo) {
-      if (prevSize != null && prevSize === statInfo.size) {
-        const payload = {
-          exists: true,
-          path: resolvedPath,
-          size: statInfo.size,
-          terminated: jobTerminal,
-          jobStatus,
-          elapsedMs: Date.now() - startedAt,
-          recovery: buildRecovery({
-            reason: "artifact-ready",
-            retryable: false,
-            artifacts: { artifactPath: resolvedPath }
-          })
-        };
-        emitSuccess("await-artifact", payload, `artifact ready: ${resolvedPath} (${statInfo.size} bytes)
-`, {
-          json: options.json,
-          startedAt
-        });
-        return;
-      }
-      prevSize = statInfo.size;
-    }
-    if (jobTerminal) {
-      const payload = {
-        exists: Boolean(statInfo),
-        path: resolvedPath,
-        size: statInfo?.size ?? null,
-        terminated: true,
-        reason: `job-${jobStatus}`,
-        jobStatus,
-        elapsedMs: Date.now() - startedAt,
-        recovery: buildRecovery({
-          reason: `job-${jobStatus}`,
-          retryable: true,
-          nextActions: [
-            `Run result ${jobSnapshot.job?.id ?? jobRef} to inspect the terminal job output.`,
-            "Verify the producer writes the expected artifact path, then rerun or resume the task."
-          ],
-          artifacts: {
-            expectedArtifactPath: resolvedPath,
-            logFile: jobSnapshot.job?.logFile ?? null
-          },
-          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
-        })
-      };
-      if (!statInfo) {
-        process12.exitCode = 7;
-        emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
-`, {
-          json: options.json,
-          startedAt
-        });
-        return;
-      }
-      emitSuccess("await-artifact", payload, `artifact present: ${resolvedPath} (${statInfo.size} bytes, job ${jobStatus})
-`, {
-        json: options.json,
-        startedAt
-      });
-      return;
-    }
-    if (Date.now() >= deadline) {
-      const payload = {
-        exists: false,
-        path: resolvedPath,
-        terminated: false,
-        reason: "timeout",
-        jobStatus,
-        elapsedMs: Date.now() - startedAt,
-        recovery: buildRecovery({
-          reason: "timeout",
-          retryable: true,
-          nextActions: [
-            `Run status ${jobSnapshot.job?.id ?? jobRef} to confirm whether the producer is still active.`,
-            "Retry await-artifact with a larger --timeout-ms or inspect events for stalled output."
-          ],
-          artifacts: {
-            expectedArtifactPath: resolvedPath,
-            logFile: jobSnapshot.job?.logFile ?? null
-          },
-          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
-        })
-      };
-      process12.exitCode = 7;
-      emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
-`, {
-        json: options.json,
-        startedAt
-      });
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-}
-function pruneOrphanedJobs(cwd) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = listJobs(workspaceRoot, { raw: true });
-  const reaped = [];
-  const skipped = [];
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
-  for (const job of jobs) {
-    const isActive = job.status === "running" || job.status === "queued";
-    if (!isActive) continue;
-    const pid = Number(job.pid);
-    if (!Number.isFinite(pid) || pid <= 0) {
-      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "no-pid"));
-      continue;
-    }
-    let alive = false;
-    try {
-      process12.kill(pid, 0);
-      alive = true;
-    } catch (err) {
-      if (err && err.code === "EPERM") {
-        alive = true;
-      }
-    }
-    if (alive) {
-      skipped.push({ id: job.id, pid, reason: "pid-alive" });
-    } else {
-      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "dead-pid"));
-    }
-  }
-  return {
-    workspaceRoot,
-    reaped,
-    skipped,
-    reapedCount: reaped.length,
-    skippedCount: skipped.length,
-    ts,
-    recovery: buildRecovery({
-      reason: reaped.length > 0 ? "orphans-reaped" : "state-clean",
-      retryable: reaped.length > 0,
-      nextActions: reaped.length > 0 ? [
-        "Inspect result/events for reaped jobs before retrying any interrupted work.",
-        "Rerun the original task only after confirming no generated artifacts were left half-written."
-      ] : [],
-      details: { reapedCount: reaped.length, skippedCount: skipped.length }
-    })
-  };
-}
-function finalizeOrphan(workspaceRoot, job, ts, reason) {
-  const record = {
-    ...job,
-    status: "orphaned",
-    phase: "orphaned",
-    pid: null,
-    completedAt: ts,
-    errorMessage: `Reaped by status --prune-orphans at ${ts} (${reason}).`
-  };
-  writeJobFile(workspaceRoot, job.id, record);
-  upsertJob(workspaceRoot, {
-    id: job.id,
-    status: "orphaned",
-    phase: "orphaned",
-    pid: null,
-    completedAt: ts,
-    errorMessage: record.errorMessage
-  });
-  return { id: job.id, previousStatus: job.status, reason, pid: job.pid ?? null };
-}
-function renderPruneOrphansReport(report) {
-  if (report.reapedCount === 0 && report.skippedCount === 0) {
-    return "No active jobs to inspect \u2014 state is clean.\n";
-  }
-  const lines = [];
-  if (report.reapedCount === 0) {
-    lines.push(`No orphans: ${report.skippedCount} active job(s), all backed by live PIDs.`);
-  } else {
-    lines.push(`Reaped ${report.reapedCount} orphan(s) (status:"running"/"queued" with dead PIDs):`);
-    for (const entry of report.reaped) {
-      lines.push(`  - ${entry.id} (was ${entry.previousStatus}, ${entry.reason}, pid=${entry.pid ?? "null"})`);
-    }
-    if (report.skippedCount > 0) {
-      lines.push(`Kept ${report.skippedCount} active job(s) backed by live PIDs.`);
-    }
-  }
-  return `${lines.join("\n")}
-`;
-}
-function cleanupTerminalJobs(cwd, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getBridgeConfig(cwd, workspaceRoot);
-  const retentionDays = options.retentionDays ?? (Number(config.artifact_retention_days) || 30);
-  const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
-  const dryRun = Boolean(options.dryRun);
-  const jobs = listJobs(workspaceRoot, { raw: true });
-  const terminal = sortJobsNewestFirst2(jobs.filter((job) => !isActiveStatus(job.status)));
-  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1e3;
-  const removable = terminal.filter((job, index) => {
-    const ts = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
-    return index >= retentionJobs || Number.isFinite(ts) && ts < cutoffMs;
-  });
-  const removed = [];
-  if (!dryRun && removable.length > 0) {
-    const removeIds = new Set(removable.map((job) => job.id));
-    updateState(workspaceRoot, (state) => {
-      state.jobs = (state.jobs ?? []).filter((job) => !removeIds.has(job.id));
-    });
-    for (const job of removable) {
-      for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
-        if (!filePath) continue;
-        try {
-          fs19.rmSync(filePath, { force: true });
-        } catch {
-        }
-      }
-      removed.push({ id: job.id, status: job.status, completedAt: job.completedAt ?? null });
-    }
-  }
-  return {
-    workspaceRoot,
-    dryRun,
-    retentionDays,
-    retentionJobs,
-    candidates: removable.map((job) => ({ id: job.id, status: job.status, completedAt: job.completedAt ?? null })),
-    removed,
-    removedCount: removed.length,
-    candidateCount: removable.length
-  };
-}
-function isActiveStatus(status) {
-  return status === "queued" || status === "running";
-}
-function renderCleanupReport(report) {
-  if (report.candidateCount === 0) {
-    return `No terminal jobs exceed retention (${report.retentionJobs} jobs / ${report.retentionDays} days).
-`;
-  }
-  const verb = report.dryRun ? "Would remove" : "Removed";
-  const lines = [`${verb} ${report.dryRun ? report.candidateCount : report.removedCount} terminal job(s):`];
-  const entries = report.dryRun ? report.candidates : report.removed;
-  for (const entry of entries) {
-    lines.push(`  - ${entry.id} (${entry.status}, completed=${entry.completedAt ?? "unknown"})`);
-  }
-  return `${lines.join("\n")}
-`;
-}
-async function handleResult(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveResultJob(cwd, reference);
-  const storedJob = readStoredJob(workspaceRoot, job.id);
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot,
-    metaBackend: storedJob?.backend ?? job.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  const adapterResult = await adapter2.getResult(job.id, { cwd });
-  const payload = {
-    job,
-    storedJob,
-    adapterResult
-  };
-  emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
-    json: options.json,
-    startedAt
-  });
-}
-function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
-  return new Promise((resolve) => {
-    let resolved = false;
-    let offset = 0;
-    let watcher = null;
-    let pollTimer = null;
-    let timer = null;
-    const finish = (payload) => {
-      if (resolved) return;
-      resolved = true;
-      if (watcher) {
-        try {
-          watcher.close();
-        } catch {
-        }
-      }
-      if (pollTimer) clearInterval(pollTimer);
-      if (timer) clearTimeout(timer);
-      resolve(payload);
-    };
-    const scan = () => {
-      try {
-        const data = fs19.readFileSync(eventsPath, "utf8");
-        if (data.length < offset) offset = 0;
-        const tail = data.slice(offset);
-        offset = data.length;
-        for (const line of tail.split("\n")) {
-          const m = pattern.exec(line);
-          if (m) {
-            finish({ timedOut: false, tag: m[1], line });
-            return;
-          }
-        }
-      } catch (e) {
-        if (e.code !== "ENOENT") throw e;
-      }
-    };
-    const attachWatcher = () => {
-      try {
-        watcher = fs19.watch(eventsPath, { persistent: false }, scan);
-        scan();
-      } catch (e) {
-        if (e.code === "ENOENT") {
-          if (!pollTimer) {
-            pollTimer = setInterval(() => {
-              if (fs19.existsSync(eventsPath)) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-                attachWatcher();
-              }
-            }, 500);
-          }
-        } else {
-          throw e;
-        }
-      }
-    };
-    if (fs19.existsSync(eventsPath)) {
-      scan();
-      if (!resolved) attachWatcher();
-    } else {
-      pollTimer = setInterval(() => {
-        if (fs19.existsSync(eventsPath)) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          attachWatcher();
-        }
-      }, 500);
-    }
-    timer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
-  });
-}
-async function handleWait(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms"],
-    booleanOptions: ["json", "any"]
-  });
-  const cwd = resolveCommandCwd(options);
-  if (options.any) {
-    await handleWaitAny(cwd, positionals, options, startedAt);
-    return;
-  }
-  const reference = positionals[0] ?? "";
-  if (!reference) {
-    throw usageError("wait requires <job-id-or-thread-id>");
-  }
-  let job;
-  try {
-    job = resolveResultJob(cwd, reference).job;
-  } catch (err) {
-    if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, reference).job;
-    } else {
-      throw err;
-    }
-  }
-  if (!job?.threadId) {
-    throw notFoundError(
-      `Job ${job?.id ?? reference} has no thread id yet.`,
-      "JOB_HAS_NO_THREAD"
-    );
-  }
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const TERMINAL = TERMINAL_TAG_REGEX;
-  const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
-  if (result.timedOut) {
-    throw new CliError(
-      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
-      {
-        class: "timeout",
-        code: "WAIT_TIMEOUT",
-        retryable: true,
-        suggestion: "Run `status <job-id>` to inspect live state."
-      }
-    );
-  }
-  const elapsedMs = Date.now() - startedAt;
-  emitSuccess(
-    "wait",
-    {
-      jobId: job.id,
-      threadId: job.threadId,
-      terminalTag: result.tag,
-      lastEventLine: result.line,
-      eventsPath,
-      elapsedMs
-    },
-    `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1e3)}s
-`,
-    { json: options.json, startedAt }
-  );
-}
-async function handleWaitAny(cwd, references, options, startedAt) {
-  const refs = references.filter(Boolean);
-  if (refs.length < 2) {
-    throw usageError("wait --any requires at least two job ids or thread ids.");
-  }
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const TERMINAL = TERMINAL_TAG_REGEX;
-  const targets = refs.map((reference) => {
-    let job;
-    try {
-      job = resolveResultJob(cwd, reference).job;
-    } catch (err) {
-      if (err?.code === "JOB_NOT_FINISHED") {
-        job = buildSingleJobSnapshot(cwd, reference).job;
-      } else {
-        throw err;
-      }
-    }
-    if (!job?.threadId) {
-      throw notFoundError(`Job ${job?.id ?? reference} has no thread id yet.`, "JOB_HAS_NO_THREAD");
-    }
-    return {
-      reference,
-      job,
-      eventsPath: path16.join(sessionDir, `${job.threadId}.events`)
-    };
-  });
-  const deadline = Date.now() + timeoutMs;
-  let winner = null;
-  while (!winner && Date.now() < deadline) {
-    for (const target of targets) {
-      const result = scanTerminalEvent(target.eventsPath, TERMINAL);
-      if (result) {
-        winner = { target, result };
-        break;
-      }
-    }
-    if (!winner) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
-  if (!winner) {
-    throw new CliError(`No terminal event for any target within ${Math.round(timeoutMs / 1e3)}s.`, {
-      class: "timeout",
-      code: "WAIT_TIMEOUT",
-      retryable: true,
-      suggestion: "Run `status --watch --all` to inspect live multi-job state."
-    });
-  }
-  const elapsedMs = Date.now() - startedAt;
-  emitSuccess(
-    "wait",
-    {
-      mode: "any",
-      winner: {
-        reference: winner.target.reference,
-        jobId: winner.target.job.id,
-        threadId: winner.target.job.threadId,
-        terminalTag: winner.result.tag,
-        lastEventLine: winner.result.line,
-        eventsPath: winner.target.eventsPath
-      },
-      targets: targets.map((target) => ({
-        reference: target.reference,
-        jobId: target.job.id,
-        threadId: target.job.threadId,
-        eventsPath: target.eventsPath
-      })),
-      elapsedMs
-    },
-    `${winner.result.tag} ${winner.target.job.id} after ${Math.round(elapsedMs / 1e3)}s
-`,
-    { json: options.json, startedAt }
-  );
-}
-function scanTerminalEvent(eventsPath, pattern) {
-  try {
-    const data = fs19.readFileSync(eventsPath, "utf8");
-    for (const line of data.split("\n")) {
-      const m = pattern.exec(line);
-      if (m) return { timedOut: false, tag: m[1], line };
-    }
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  return null;
-}
-async function handleEvents(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "filter", "exclude"],
-    booleanOptions: ["json", "follow"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const reference = positionals[0] ?? "";
-  if (!reference) {
-    throw usageError("events requires <job-id-or-thread-id>");
-  }
-  if (options.filter != null && options.exclude != null) {
-    throw usageError(
-      "Pass either --filter OR --exclude, not both. --filter shows only listed tags (inclusion); --exclude shows everything except listed tags (forward-compatible)."
-    );
-  }
-  let job;
-  try {
-    job = resolveResultJob(cwd, reference).job;
-  } catch (err) {
-    if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, reference).job;
-    } else {
-      throw err;
-    }
-  }
-  if (!job?.threadId) {
-    throw notFoundError(
-      `Job ${job?.id ?? reference} has no thread id yet.`,
-      "JOB_HAS_NO_THREAD"
-    );
-  }
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
-  const parseTagList = (raw) => {
-    if (raw == null || raw === "") return null;
-    const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
-    return tags.length > 0 ? new Set(tags) : null;
-  };
-  const filter = parseTagList(options.filter);
-  const exclude = parseTagList(options.exclude);
-  const writeEventLine = (line) => {
-    if (!options.json) process12.stdout.write(line + "\n");
-  };
-  const tagOf = (line) => {
-    const m = /^\[([^\]]+)\]/.exec(line);
-    return m ? m[1].split(":")[0].toUpperCase() : null;
-  };
-  let lastBlockIncluded = true;
-  const passes = (line) => {
-    const tag = tagOf(line);
-    if (tag == null) {
-      return lastBlockIncluded;
-    }
-    let included;
-    if (filter) included = filter.has(tag);
-    else if (exclude) included = !exclude.has(tag);
-    else included = true;
-    lastBlockIncluded = included;
-    return included;
-  };
-  const TERMINAL = TERMINAL_TAG_REGEX;
-  let initial = "";
-  let alreadyTerminal = false;
-  if (fs19.existsSync(eventsPath)) {
-    initial = fs19.readFileSync(eventsPath, "utf8");
-    for (const line of initial.split("\n")) {
-      if (!line) continue;
-      if (passes(line)) writeEventLine(line);
-      if (TERMINAL.test(line)) alreadyTerminal = true;
-    }
-  }
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  if (!options.follow || alreadyTerminal) {
-    emitSuccess(
-      "events",
-      {
-        jobId: job.id,
-        threadId: job.threadId,
-        eventsPath,
-        followed: Boolean(options.follow),
-        filter: options.filter ?? null,
-        exclude: options.exclude ?? null
-      },
-      "",
-      { json: options.json, startedAt }
-    );
-    return;
-  }
-  let timedOut = false;
-  let terminalTag = null;
-  let terminalLine = null;
-  const followStartMs = Date.now();
-  await new Promise((resolve) => {
-    let offset = initial.length;
-    let watcher = null;
-    let pollTimer = null;
-    let timer = null;
-    let done = false;
-    const finish = (reason) => {
-      if (done) return;
-      done = true;
-      if (reason === "timeout") timedOut = true;
-      if (watcher) watcher.close();
-      if (pollTimer) clearInterval(pollTimer);
-      if (timer) clearTimeout(timer);
-      resolve();
-    };
-    const scanAppended = () => {
-      let data;
-      try {
-        data = fs19.readFileSync(eventsPath, "utf8");
-      } catch (e) {
-        if (e.code === "ENOENT") return;
-        throw e;
-      }
-      if (data.length < offset) offset = 0;
-      const tail = data.slice(offset);
-      offset = data.length;
-      const lines = tail.split("\n");
-      for (let i = 0; i < lines.length - 1; i++) {
-        const line = lines[i];
-        if (!line) continue;
-        if (passes(line)) writeEventLine(line);
-        if (TERMINAL.test(line)) {
-          terminalTag = TERMINAL.exec(line)[1];
-          terminalLine = line;
-          return finish("terminal");
-        }
-      }
-    };
-    const attachWatcher = () => {
-      try {
-        watcher = fs19.watch(eventsPath, { persistent: false }, scanAppended);
-        scanAppended();
-      } catch (e) {
-        if (e.code === "ENOENT") {
-          if (!pollTimer)
-            pollTimer = setInterval(() => {
-              if (fs19.existsSync(eventsPath)) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-                attachWatcher();
-              }
-            }, 500);
-        } else {
-          throw e;
-        }
-      }
-    };
-    if (fs19.existsSync(eventsPath)) {
-      attachWatcher();
-    } else {
-      pollTimer = setInterval(() => {
-        if (fs19.existsSync(eventsPath)) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          attachWatcher();
-        }
-      }, 500);
-    }
-    timer = setTimeout(() => finish("timeout"), timeoutMs);
-  });
-  if (timedOut && !options.json) {
-    throw new CliError(
-      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
-      {
-        class: "timeout",
-        code: "WAIT_TIMEOUT",
-        retryable: true,
-        suggestion: "Run `status <job-id>` to inspect live state."
-      }
-    );
-  }
-  emitSuccess(
-    "events",
-    {
-      jobId: job.id,
-      threadId: job.threadId,
-      eventsPath,
-      followed: true,
-      filter: options.filter ?? null,
-      exclude: options.exclude ?? null,
-      timedOut,
-      // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
-      // distinguish happy-path closure from timeout without re-reading the
-      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN on success,
-      // or null when the stream ended via timeout. elapsedMs measures
-      // follow duration only (not total job elapsed time).
-      terminalTag,
-      terminalLine,
-      elapsedMs: Date.now() - followStartMs
-    },
-    "",
-    { json: options.json, startedAt }
-  );
-}
-function handleTaskResumeCandidate(argv) {
-  const startedAt = Date.now();
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const sessionId = getCurrentClaudeSessionId();
-  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst2(listJobs(workspaceRoot)));
-  const candidate = findLatestResumableTaskJob(jobs);
-  const payload = {
-    available: Boolean(candidate),
-    sessionId,
-    candidate: candidate == null ? null : {
-      id: candidate.id,
-      status: candidate.status,
-      title: candidate.title ?? null,
-      summary: candidate.summary ?? null,
-      threadId: candidate.threadId,
-      completedAt: candidate.completedAt ?? null,
-      updatedAt: candidate.updatedAt ?? null
-    }
-  };
-  const rendered = candidate ? `Resumable task found: ${candidate.id} (${candidate.status}).
-` : "No resumable task found for this session.\n";
-  emitSuccess("task-resume-candidate", payload, rendered, {
-    json: options.json,
-    startedAt
-  });
-}
 async function handleCancel(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -15294,7 +14423,7 @@ async function handleCancel(argv) {
   });
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process12.env });
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process14.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
@@ -15391,23 +14520,1282 @@ async function handleCancel(argv) {
     startedAt
   });
 }
-function resolvePromptInput(options, positionals, cwd) {
-  if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
+async function handleSend(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: [
+      "mode",
+      "effort",
+      "cwd",
+      "backend",
+      "idle-timeout-ms",
+      "turn-timeout-ms",
+      "question-timeout-ms"
+    ],
+    booleanOptions: ["json", "wait", "quiet"],
+    aliasMap: { m: "mode" }
+  });
+  const VALID_MODES = /* @__PURE__ */ new Set(["plan", "default"]);
+  if (options.mode != null && !VALID_MODES.has(options.mode)) {
+    throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
   }
-  if (positionals.length === 1) {
-    const candidate = path16.resolve(cwd, positionals[0]);
+  const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
+  const turnTimeoutOverride = parsePositiveMsOption("--turn-timeout-ms", options["turn-timeout-ms"]);
+  const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
+  const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
+  const startedAt = Date.now();
+  const rawThreadId = positionals[0];
+  if (!rawThreadId) {
+    throw usageError("send requires <thread-id>");
+  }
+  if (!isThreadId(rawThreadId)) {
+    throw invalidThreadIdError(rawThreadId, "thread-id");
+  }
+  const threadId = rawThreadId.trim();
+  const promptParts = positionals.slice(1);
+  const cwd = resolveCommandCwd(options);
+  const prompt = resolvePromptInput(options, promptParts, cwd);
+  if (!prompt) {
+    throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
+  }
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_resume");
+  const modeOverride = options.mode;
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const sendIsPlanMode = modeOverride === "plan";
+  const turnOptions = {
+    resumeThreadId: threadId,
+    prompt,
+    model: config.model,
+    effort: normalizeReasoningEffort(options.effort ?? config.effort),
+    sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : void 0,
+    onProgress: null,
+    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
+    // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
+    idleTimeoutMs: idleTimeoutOverride != null ? idleTimeoutOverride : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
+    // Turn timeout: per-invocation override > the mode-appropriate config key
+    // (turn_plan_ms for plan-mode sends, turn_default_ms otherwise) > built-in
+    // default. `send` gets a single --turn-timeout-ms flag that maps onto the
+    // right budget based on the resolved mode.
+    turnTimeoutMs: turnTimeoutOverride ?? (sendIsPlanMode ? Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : DEFAULT_CONFIG.turn_plan_ms : Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms),
+    onTurnStart: (info) => {
+      const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
+      logNdjson(s, "TURN_PARAMS", "turn/start", {
+        model: info.turnParams.model,
+        effort: info.turnParams.effort,
+        collaborationMode: info.turnParams.collaborationMode,
+        sandboxPolicy: info.turnParams.sandboxPolicy,
+        hasOutputSchema: Boolean(info.turnParams.outputSchema),
+        promptLength: info.promptLength,
+        promptPreview: info.promptPreview
+      });
+    },
+    onItemCompleted: (item, { threadId: itemThreadId }) => {
+      const effectiveThreadId = itemThreadId ?? null;
+      if (!effectiveThreadId) return;
+      const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
+      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
+        itemId: item?.id ?? null,
+        itemType: item?.type ?? null,
+        text: extractItemText(item)
+      });
+    },
+    onServerRequest: createBridgeServerRequestHandler({
+      sessionDir,
+      config,
+      questionAnswerMs: questionTimeoutOverride ?? null,
+      cwd
+    })
+  };
+  const resolvedSandboxMode = modeOverride === "default" ? "default" : "plan";
+  turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
+  if (modeOverride) {
+    turnOptions.collaborationMode = buildCollaborationMode(modeOverride, config, {
+      effort: options.effort,
+      developerInstructions: loadDeveloperInstructions(modeOverride)
+    });
+  }
+  ensureCodexAvailable(cwd);
+  const dispatch2 = await adapter2.resume(threadId, prompt, {
+    cwd,
+    sessionDir,
+    model: config.model,
+    effort: turnOptions.effort,
+    mode: modeOverride ?? "default",
+    adapterOptions: {
+      turnOptions
+    }
+  });
+  const result = dispatch2.rawResult ?? dispatch2;
+  if (result.status !== 0) {
+    const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
+    const session2 = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    const classified = classifyError(errLike);
+    logEvent(session2, formatErrorEvent(session2, {
+      errorCode: classified.code,
+      message: classified.message,
+      phase: classified.class,
+      origin: "send",
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session2, "ERROR", "turn/completed", { error: classified });
+    emitError(errLike, { json: options.json, command: "send" });
+    return;
+  }
+  const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+  if (result.planDetected && result.planText) {
+    const planPath = writePlan(session, result.planText);
+    const steps = extractPlanSteps(result.planText);
+    logEvent(session, formatPlanEvent(session, {
+      turnId: result.turnId,
+      planTitle: result.planText.split("\n")[0]?.slice(0, 80) ?? "Plan",
+      steps,
+      planPath,
+      scriptPath: SCRIPT_PATH,
+      cwd
+    }));
+    logNdjson(session, "PLAN", "item/completed", {
+      turnId: result.turnId ?? null,
+      planPath,
+      planDetected: true
+    });
+    const eventsPath2 = session?.eventsPath ?? null;
+    const renderedLines2 = [`Plan updated for ${threadId}.`];
+    if (eventsPath2) renderedLines2.push(`  events: ${eventsPath2}`);
+    emitSuccess(
+      "send",
+      {
+        threadId,
+        status: result.status,
+        turnId: result.turnId ?? null,
+        eventsPath: eventsPath2,
+        phase: "plan-pending",
+        planPath,
+        planSteps: steps,
+        finalMessage: result.finalMessage ?? null
+      },
+      `${renderedLines2.join("\n")}
+`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  logEvent(session, formatDoneEvent(session, {
+    duration: Math.round((Date.now() - startedAt) / 1e3),
+    diffStat: "send follow-up",
+    files: [],
+    config: {
+      model: config.model,
+      effort: turnOptions.effort,
+      modeFlow: modeOverride ?? "resume"
+    },
+    diffPath: "not captured for send",
+    scriptPath: SCRIPT_PATH,
+    cwd
+  }));
+  logNdjson(session, "DONE", "turn/completed", {
+    turnId: result.turnId ?? null,
+    status: result.status
+  });
+  const eventsPath = session?.eventsPath ?? null;
+  const renderedLines = [`Sent to ${threadId}. Status: ${result.status}`];
+  if (eventsPath) renderedLines.push(`  events: ${eventsPath}`);
+  const payload = {
+    threadId,
+    status: result.status,
+    turnId: result.turnId ?? null,
+    eventsPath,
+    finalMessage: result.finalMessage ?? null
+  };
+  emitSuccess("send", payload, `${renderedLines.join("\n")}
+`, {
+    json: options.json,
+    startedAt
+  });
+}
+async function handleSteer(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "backend"],
+    booleanOptions: ["json"]
+  });
+  const [rawThreadId, turnId, ...promptParts] = positionals;
+  if (!rawThreadId || !turnId) {
+    throw usageError("steer requires <thread-id> <turn-id> <prompt...>");
+  }
+  if (!isThreadId(rawThreadId)) {
+    throw invalidThreadIdError(rawThreadId, "thread-id");
+  }
+  const threadId = rawThreadId.trim();
+  const cwd = resolveCommandCwd(options);
+  const prompt = resolvePromptInput(options, promptParts, cwd);
+  if (!prompt) {
+    throw validationError("steer requires a prompt", "MISSING_PROMPT");
+  }
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot: resolveWorkspaceRoot(cwd),
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_steering");
+  ensureCodexAvailable(cwd);
+  await adapter2.steer(threadId, turnId, prompt, { cwd });
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const session = findSession(sessionDir, threadId);
+  if (session) {
+    logNdjson(session, "STEER", "turn/steer", { turnId, prompt: prompt.slice(0, 120) });
+  }
+  emitSuccess("steer", { threadId, turnId, steered: true }, `Steered turn ${turnId} on thread ${threadId}
+`, {
+    json: options.json,
+    startedAt
+  });
+}
+async function handleRespond(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["question-id", "answer", "json-payload", "cwd", "backend"],
+    booleanOptions: ["json"]
+  });
+  const requestId = positionals[0];
+  if (!requestId) {
+    throw usageError("respond requires <request-id>");
+  }
+  const cwd = resolveCommandCwd(options);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot: resolveWorkspaceRoot(cwd),
+    backend: options.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  guardCapability(adapter2, "supports_questions");
+  const pending = readPendingRequestById(sessionDir, requestId);
+  if (!pending) {
+    throw notFoundError(
+      `No pending request found: ${requestId}.`,
+      "PENDING_REQUEST_NOT_FOUND",
+      "It may have timed out or already been answered."
+    );
+  }
+  let payload;
+  if (options["json-payload"]) {
     try {
-      if (fs19.existsSync(candidate) && fs19.statSync(candidate).isFile()) {
-        return fs19.readFileSync(candidate, "utf8");
+      payload = JSON.parse(options["json-payload"]);
+    } catch (error) {
+      throw usageError(
+        `respond --json-payload must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  } else {
+    const answer = options.answer;
+    if (!answer) {
+      throw usageError("respond requires --answer");
+    }
+    if (pending.method === "item/tool/requestUserInput") {
+      const qId = options["question-id"] ?? pending.firstQuestionId ?? "q1";
+      payload = { answers: { [qId]: { answers: [answer] } } };
+    } else {
+      payload = { decision: answer };
+    }
+  }
+  await adapter2.respond(pending.threadId, requestId, payload, { sessionDir });
+  const session = findSession(sessionDir, pending.threadId);
+  if (session) {
+    logNdjson(session, "SERVER_RESPONSE", null, { requestId, payload });
+  }
+  emitSuccess(
+    "respond",
+    { status: "responded", requestId, threadId: pending.threadId },
+    `Response written for ${requestId}. Worker will deliver it.
+`,
+    { json: options.json, startedAt }
+  );
+}
+
+// src/handlers/inspect.mjs
+import fs21 from "node:fs";
+import path19 from "node:path";
+import process15 from "node:process";
+async function handleStatus(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
+  });
+  const cwd = resolveCommandCwd(options);
+  if (options.watch) {
+    if (positionals[0]) {
+      throw usageError("`status --watch` does not take a job-id argument; it watches ALL tracked jobs.");
+    }
+    if (options["prune-orphans"] || options.cleanup || options.wait) {
+      throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
+    }
+    const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 1e4 });
+    const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
+    await runStatusWatch(cwd, {
+      intervalMs,
+      overallTimeoutMs,
+      all: options.all,
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+  if (options["prune-orphans"] || options.cleanup) {
+    const report2 = options.cleanup ? cleanupTerminalJobs(cwd, {
+      dryRun: Boolean(options["dry-run"]),
+      retentionDays: Number(options["retention-days"]) > 0 ? Number(options["retention-days"]) : null,
+      retentionJobs: Number(options["retention-jobs"]) > 0 ? Number(options["retention-jobs"]) : null
+    }) : pruneOrphanedJobs(cwd);
+    emitSuccess("status", report2, options.cleanup ? renderCleanupReport(report2) : renderPruneOrphansReport(report2), {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+  const reference = positionals[0] ?? "";
+  if (reference) {
+    const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd, reference, {
+      timeoutMs: options["timeout-ms"],
+      pollIntervalMs: options["poll-interval-ms"]
+    }) : buildSingleJobSnapshot(cwd, reference);
+    emitSuccess("status", snapshot, renderJobStatusReport(snapshot.job), {
+      json: options.json,
+      startedAt
+    });
+    return;
+  }
+  if (options.wait) {
+    throw usageError("`status --wait` requires a job id.");
+  }
+  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
+  emitSuccess("status", report, renderStatusReport(report), {
+    json: options.json,
+    startedAt
+  });
+}
+async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: json2, startedAt }) {
+  const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
+  let ticks = 0;
+  let interrupted = false;
+  const onSigint = () => {
+    interrupted = true;
+  };
+  process15.on("SIGINT", onSigint);
+  try {
+    while (true) {
+      ticks += 1;
+      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all }));
+      const activeCount = snapshot.running?.length ?? 0;
+      const tickEntry = {
+        schema_version: "1.0",
+        tick: ticks,
+        ts: (/* @__PURE__ */ new Date()).toISOString(),
+        activeCount,
+        running: (snapshot.running ?? []).map((j) => ({
+          id: j.id,
+          status: j.status,
+          phase: j.phase ?? null,
+          threadId: j.threadId ?? null,
+          kind: j.kindLabel ?? j.kind ?? null
+        }))
+      };
+      if (json2) {
+        process15.stdout.write(`${JSON.stringify(tickEntry)}
+`);
+      } else {
+        process15.stdout.write(`\x1B[2J\x1B[H`);
+        process15.stdout.write(`watch tick #${ticks} \xB7 ${tickEntry.ts} \xB7 active=${activeCount}
+
+`);
+        process15.stdout.write(renderStatusReport(snapshot));
       }
+      if (activeCount === 0) {
+        const summary = {
+          terminated: true,
+          reason: "all-terminal",
+          ticks,
+          final: snapshot
+        };
+        if (json2) {
+          emitSuccess("status", summary, null, { json: true, startedAt });
+        }
+        return;
+      }
+      if (interrupted) {
+        const summary = { terminated: false, reason: "sigint", ticks, final: snapshot };
+        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
+        return;
+      }
+      if (deadline && Date.now() >= deadline) {
+        const summary = { terminated: false, reason: "watch-timeout", ticks, final: snapshot };
+        if (json2) emitSuccess("status", summary, null, { json: true, startedAt });
+        else process15.stdout.write(`
+watch timed out after ${ticks} ticks with ${activeCount} active job(s).
+`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  } finally {
+    process15.off("SIGINT", onSigint);
+  }
+}
+async function handleAwaitArtifact(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+    booleanOptions: ["json"]
+  });
+  const jobRef = positionals[0];
+  const artifactPath = positionals[1];
+  if (!jobRef || !artifactPath) {
+    throw usageError("`await-artifact <job-id> <path>` requires both a job reference and a file path.");
+  }
+  const cwd = resolveCommandCwd(options);
+  const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
+  const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
+  const resolvedPath = path19.isAbsolute(artifactPath) ? artifactPath : path19.resolve(cwd, artifactPath);
+  const deadline = Date.now() + timeoutMs;
+  let prevSize = null;
+  while (true) {
+    let jobSnapshot;
+    try {
+      jobSnapshot = buildSingleJobSnapshot(cwd, jobRef);
+    } catch (e) {
+      if (e && e.code === "JOB_NOT_FOUND") {
+        throw e;
+      }
+      throw e;
+    }
+    const jobStatus = jobSnapshot.job?.status ?? "unknown";
+    const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
+    let statInfo = null;
+    try {
+      statInfo = fs21.statSync(resolvedPath);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    if (statInfo) {
+      if (prevSize != null && prevSize === statInfo.size) {
+        const payload = {
+          exists: true,
+          path: resolvedPath,
+          size: statInfo.size,
+          terminated: jobTerminal,
+          jobStatus,
+          elapsedMs: Date.now() - startedAt,
+          recovery: buildRecovery({
+            reason: "artifact-ready",
+            retryable: false,
+            artifacts: { artifactPath: resolvedPath }
+          })
+        };
+        emitSuccess("await-artifact", payload, `artifact ready: ${resolvedPath} (${statInfo.size} bytes)
+`, {
+          json: options.json,
+          startedAt
+        });
+        return;
+      }
+      prevSize = statInfo.size;
+    }
+    if (jobTerminal) {
+      const payload = {
+        exists: Boolean(statInfo),
+        path: resolvedPath,
+        size: statInfo?.size ?? null,
+        terminated: true,
+        reason: `job-${jobStatus}`,
+        jobStatus,
+        elapsedMs: Date.now() - startedAt,
+        recovery: buildRecovery({
+          reason: `job-${jobStatus}`,
+          retryable: true,
+          nextActions: [
+            `Run result ${jobSnapshot.job?.id ?? jobRef} to inspect the terminal job output.`,
+            "Verify the producer writes the expected artifact path, then rerun or resume the task."
+          ],
+          artifacts: {
+            expectedArtifactPath: resolvedPath,
+            logFile: jobSnapshot.job?.logFile ?? null
+          },
+          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
+        })
+      };
+      if (!statInfo) {
+        process15.exitCode = 7;
+        emitSuccess("await-artifact", payload, `job reached ${jobStatus} without producing ${resolvedPath}
+`, {
+          json: options.json,
+          startedAt
+        });
+        return;
+      }
+      emitSuccess("await-artifact", payload, `artifact present: ${resolvedPath} (${statInfo.size} bytes, job ${jobStatus})
+`, {
+        json: options.json,
+        startedAt
+      });
+      return;
+    }
+    if (Date.now() >= deadline) {
+      const payload = {
+        exists: false,
+        path: resolvedPath,
+        terminated: false,
+        reason: "timeout",
+        jobStatus,
+        elapsedMs: Date.now() - startedAt,
+        recovery: buildRecovery({
+          reason: "timeout",
+          retryable: true,
+          nextActions: [
+            `Run status ${jobSnapshot.job?.id ?? jobRef} to confirm whether the producer is still active.`,
+            "Retry await-artifact with a larger --timeout-ms or inspect events for stalled output."
+          ],
+          artifacts: {
+            expectedArtifactPath: resolvedPath,
+            logFile: jobSnapshot.job?.logFile ?? null
+          },
+          details: { jobId: jobSnapshot.job?.id ?? null, jobStatus }
+        })
+      };
+      process15.exitCode = 7;
+      emitSuccess("await-artifact", payload, `timeout waiting for ${resolvedPath} (job ${jobStatus})
+`, {
+        json: options.json,
+        startedAt
+      });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
+function pruneOrphanedJobs(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = listJobs(workspaceRoot, { raw: true });
+  const reaped = [];
+  const skipped = [];
+  const ts = (/* @__PURE__ */ new Date()).toISOString();
+  for (const job of jobs) {
+    const isActive = job.status === "running" || job.status === "queued";
+    if (!isActive) continue;
+    const pid = Number(job.pid);
+    if (!Number.isFinite(pid) || pid <= 0) {
+      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "no-pid"));
+      continue;
+    }
+    let alive = false;
+    try {
+      process15.kill(pid, 0);
+      alive = true;
+    } catch (err) {
+      if (err && err.code === "EPERM") {
+        alive = true;
+      }
+    }
+    if (alive) {
+      skipped.push({ id: job.id, pid, reason: "pid-alive" });
+    } else {
+      reaped.push(finalizeOrphan(workspaceRoot, job, ts, "dead-pid"));
+    }
+  }
+  return {
+    workspaceRoot,
+    reaped,
+    skipped,
+    reapedCount: reaped.length,
+    skippedCount: skipped.length,
+    ts,
+    recovery: buildRecovery({
+      reason: reaped.length > 0 ? "orphans-reaped" : "state-clean",
+      retryable: reaped.length > 0,
+      nextActions: reaped.length > 0 ? [
+        "Inspect result/events for reaped jobs before retrying any interrupted work.",
+        "Rerun the original task only after confirming no generated artifacts were left half-written."
+      ] : [],
+      details: { reapedCount: reaped.length, skippedCount: skipped.length }
+    })
+  };
+}
+function finalizeOrphan(workspaceRoot, job, ts, reason) {
+  const record = {
+    ...job,
+    status: "orphaned",
+    phase: "orphaned",
+    pid: null,
+    completedAt: ts,
+    errorMessage: `Reaped by status --prune-orphans at ${ts} (${reason}).`
+  };
+  writeJobFile(workspaceRoot, job.id, record);
+  upsertJob(workspaceRoot, {
+    id: job.id,
+    status: "orphaned",
+    phase: "orphaned",
+    pid: null,
+    completedAt: ts,
+    errorMessage: record.errorMessage
+  });
+  return { id: job.id, previousStatus: job.status, reason, pid: job.pid ?? null };
+}
+function renderPruneOrphansReport(report) {
+  if (report.reapedCount === 0 && report.skippedCount === 0) {
+    return "No active jobs to inspect \u2014 state is clean.\n";
+  }
+  const lines = [];
+  if (report.reapedCount === 0) {
+    lines.push(`No orphans: ${report.skippedCount} active job(s), all backed by live PIDs.`);
+  } else {
+    lines.push(`Reaped ${report.reapedCount} orphan(s) (status:"running"/"queued" with dead PIDs):`);
+    for (const entry of report.reaped) {
+      lines.push(`  - ${entry.id} (was ${entry.previousStatus}, ${entry.reason}, pid=${entry.pid ?? "null"})`);
+    }
+    if (report.skippedCount > 0) {
+      lines.push(`Kept ${report.skippedCount} active job(s) backed by live PIDs.`);
+    }
+  }
+  return `${lines.join("\n")}
+`;
+}
+function cleanupTerminalJobs(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getBridgeConfig(cwd, workspaceRoot);
+  const retentionDays = options.retentionDays ?? (Number(config.artifact_retention_days) || 30);
+  const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
+  const dryRun = Boolean(options.dryRun);
+  const jobs = listJobs(workspaceRoot, { raw: true });
+  const terminal = sortJobsNewestFirst2(jobs.filter((job) => !isActiveStatus(job.status)));
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1e3;
+  const removable = terminal.filter((job, index) => {
+    const ts = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
+    return index >= retentionJobs || Number.isFinite(ts) && ts < cutoffMs;
+  });
+  const removed = [];
+  if (!dryRun && removable.length > 0) {
+    const removeIds = new Set(removable.map((job) => job.id));
+    updateState(workspaceRoot, (state) => {
+      state.jobs = (state.jobs ?? []).filter((job) => !removeIds.has(job.id));
+    });
+    for (const job of removable) {
+      for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
+        if (!filePath) continue;
+        try {
+          fs21.rmSync(filePath, { force: true });
+        } catch {
+        }
+      }
+      removed.push({ id: job.id, status: job.status, completedAt: job.completedAt ?? null });
+    }
+  }
+  return {
+    workspaceRoot,
+    dryRun,
+    retentionDays,
+    retentionJobs,
+    candidates: removable.map((job) => ({ id: job.id, status: job.status, completedAt: job.completedAt ?? null })),
+    removed,
+    removedCount: removed.length,
+    candidateCount: removable.length
+  };
+}
+function isActiveStatus(status) {
+  return status === "queued" || status === "running";
+}
+function renderCleanupReport(report) {
+  if (report.candidateCount === 0) {
+    return `No terminal jobs exceed retention (${report.retentionJobs} jobs / ${report.retentionDays} days).
+`;
+  }
+  const verb = report.dryRun ? "Would remove" : "Removed";
+  const lines = [`${verb} ${report.dryRun ? report.candidateCount : report.removedCount} terminal job(s):`];
+  const entries = report.dryRun ? report.candidates : report.removed;
+  for (const entry of entries) {
+    lines.push(`  - ${entry.id} (${entry.status}, completed=${entry.completedAt ?? "unknown"})`);
+  }
+  return `${lines.join("\n")}
+`;
+}
+async function handleResult(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const reference = positionals[0] ?? "";
+  const { workspaceRoot, job } = resolveResultJob(cwd, reference);
+  const storedJob = readStoredJob(workspaceRoot, job.id);
+  const adapter2 = await resolveCommandAdapter({
+    cwd,
+    workspaceRoot,
+    metaBackend: storedJob?.backend ?? job.backend ?? null
+  });
+  ensureCodexRuntimeAdapter(adapter2);
+  const adapterResult = await adapter2.getResult(job.id, { cwd });
+  const payload = {
+    job,
+    storedJob,
+    adapterResult
+  };
+  emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
+    json: options.json,
+    startedAt
+  });
+}
+function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    let offset = 0;
+    let watcher = null;
+    let pollTimer = null;
+    let timer = null;
+    const finish = (payload) => {
+      if (resolved) return;
+      resolved = true;
+      if (watcher) {
+        try {
+          watcher.close();
+        } catch {
+        }
+      }
+      if (pollTimer) clearInterval(pollTimer);
+      if (timer) clearTimeout(timer);
+      resolve(payload);
+    };
+    const scan = () => {
+      try {
+        const data = fs21.readFileSync(eventsPath, "utf8");
+        if (data.length < offset) offset = 0;
+        const tail = data.slice(offset);
+        offset = data.length;
+        for (const line of tail.split("\n")) {
+          const m = pattern.exec(line);
+          if (m) {
+            finish({ timedOut: false, tag: m[1], line });
+            return;
+          }
+        }
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+      }
+    };
+    const attachWatcher = () => {
+      try {
+        watcher = fs21.watch(eventsPath, { persistent: false }, scan);
+        scan();
+      } catch (e) {
+        if (e.code === "ENOENT") {
+          if (!pollTimer) {
+            pollTimer = setInterval(() => {
+              if (fs21.existsSync(eventsPath)) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                attachWatcher();
+              }
+            }, 500);
+          }
+        } else {
+          throw e;
+        }
+      }
+    };
+    if (fs21.existsSync(eventsPath)) {
+      scan();
+      if (!resolved) attachWatcher();
+    } else {
+      pollTimer = setInterval(() => {
+        if (fs21.existsSync(eventsPath)) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          attachWatcher();
+        }
+      }, 500);
+    }
+    timer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
+  });
+}
+async function handleWait(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms"],
+    booleanOptions: ["json", "any"]
+  });
+  const cwd = resolveCommandCwd(options);
+  if (options.any) {
+    await handleWaitAny(cwd, positionals, options, startedAt);
+    return;
+  }
+  const reference = positionals[0] ?? "";
+  if (!reference) {
+    throw usageError("wait requires <job-id-or-thread-id>");
+  }
+  let job;
+  try {
+    job = resolveResultJob(cwd, reference).job;
+  } catch (err) {
+    if (err?.code === "JOB_NOT_FINISHED") {
+      job = buildSingleJobSnapshot(cwd, reference).job;
+    } else {
+      throw err;
+    }
+  }
+  if (!job?.threadId) {
+    throw notFoundError(
+      `Job ${job?.id ?? reference} has no thread id yet.`,
+      "JOB_HAS_NO_THREAD"
+    );
+  }
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const eventsPath = path19.join(sessionDir, `${job.threadId}.events`);
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  const TERMINAL = TERMINAL_TAG_REGEX;
+  const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
+  if (result.timedOut) {
+    throw new CliError(
+      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
+      {
+        class: "timeout",
+        code: "WAIT_TIMEOUT",
+        retryable: true,
+        suggestion: "Run `status <job-id>` to inspect live state."
+      }
+    );
+  }
+  const elapsedMs = Date.now() - startedAt;
+  emitSuccess(
+    "wait",
+    {
+      jobId: job.id,
+      threadId: job.threadId,
+      terminalTag: result.tag,
+      lastEventLine: result.line,
+      eventsPath,
+      elapsedMs
+    },
+    `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1e3)}s
+`,
+    { json: options.json, startedAt }
+  );
+}
+async function handleWaitAny(cwd, references, options, startedAt) {
+  const refs = references.filter(Boolean);
+  if (refs.length < 2) {
+    throw usageError("wait --any requires at least two job ids or thread ids.");
+  }
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const TERMINAL = TERMINAL_TAG_REGEX;
+  const targets = refs.map((reference) => {
+    let job;
+    try {
+      job = resolveResultJob(cwd, reference).job;
+    } catch (err) {
+      if (err?.code === "JOB_NOT_FINISHED") {
+        job = buildSingleJobSnapshot(cwd, reference).job;
+      } else {
+        throw err;
+      }
+    }
+    if (!job?.threadId) {
+      throw notFoundError(`Job ${job?.id ?? reference} has no thread id yet.`, "JOB_HAS_NO_THREAD");
+    }
+    return {
+      reference,
+      job,
+      eventsPath: path19.join(sessionDir, `${job.threadId}.events`)
+    };
+  });
+  const deadline = Date.now() + timeoutMs;
+  let winner = null;
+  while (!winner && Date.now() < deadline) {
+    for (const target of targets) {
+      const result = scanTerminalEvent(target.eventsPath, TERMINAL);
+      if (result) {
+        winner = { target, result };
+        break;
+      }
+    }
+    if (!winner) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  if (!winner) {
+    throw new CliError(`No terminal event for any target within ${Math.round(timeoutMs / 1e3)}s.`, {
+      class: "timeout",
+      code: "WAIT_TIMEOUT",
+      retryable: true,
+      suggestion: "Run `status --watch --all` to inspect live multi-job state."
+    });
+  }
+  const elapsedMs = Date.now() - startedAt;
+  emitSuccess(
+    "wait",
+    {
+      mode: "any",
+      winner: {
+        reference: winner.target.reference,
+        jobId: winner.target.job.id,
+        threadId: winner.target.job.threadId,
+        terminalTag: winner.result.tag,
+        lastEventLine: winner.result.line,
+        eventsPath: winner.target.eventsPath
+      },
+      targets: targets.map((target) => ({
+        reference: target.reference,
+        jobId: target.job.id,
+        threadId: target.job.threadId,
+        eventsPath: target.eventsPath
+      })),
+      elapsedMs
+    },
+    `${winner.result.tag} ${winner.target.job.id} after ${Math.round(elapsedMs / 1e3)}s
+`,
+    { json: options.json, startedAt }
+  );
+}
+function scanTerminalEvent(eventsPath, pattern) {
+  try {
+    const data = fs21.readFileSync(eventsPath, "utf8");
+    for (const line of data.split("\n")) {
+      const m = pattern.exec(line);
+      if (m) return { timedOut: false, tag: m[1], line };
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return null;
+}
+async function handleEvents(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "filter", "exclude"],
+    booleanOptions: ["json", "follow"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const reference = positionals[0] ?? "";
+  if (!reference) {
+    throw usageError("events requires <job-id-or-thread-id>");
+  }
+  if (options.filter != null && options.exclude != null) {
+    throw usageError(
+      "Pass either --filter OR --exclude, not both. --filter shows only listed tags (inclusion); --exclude shows everything except listed tags (forward-compatible)."
+    );
+  }
+  let job;
+  try {
+    job = resolveResultJob(cwd, reference).job;
+  } catch (err) {
+    if (err?.code === "JOB_NOT_FINISHED") {
+      job = buildSingleJobSnapshot(cwd, reference).job;
+    } else {
+      throw err;
+    }
+  }
+  if (!job?.threadId) {
+    throw notFoundError(
+      `Job ${job?.id ?? reference} has no thread id yet.`,
+      "JOB_HAS_NO_THREAD"
+    );
+  }
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const eventsPath = path19.join(sessionDir, `${job.threadId}.events`);
+  const parseTagList = (raw) => {
+    if (raw == null || raw === "") return null;
+    const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    return tags.length > 0 ? new Set(tags) : null;
+  };
+  const filter = parseTagList(options.filter);
+  const exclude = parseTagList(options.exclude);
+  const writeEventLine = (line) => {
+    if (!options.json) process15.stdout.write(line + "\n");
+  };
+  const tagOf = (line) => {
+    const m = /^\[([^\]]+)\]/.exec(line);
+    return m ? m[1].split(":")[0].toUpperCase() : null;
+  };
+  let lastBlockIncluded = true;
+  const passes = (line) => {
+    const tag = tagOf(line);
+    if (tag == null) {
+      return lastBlockIncluded;
+    }
+    let included;
+    if (filter) included = filter.has(tag);
+    else if (exclude) included = !exclude.has(tag);
+    else included = true;
+    lastBlockIncluded = included;
+    return included;
+  };
+  const TERMINAL = TERMINAL_TAG_REGEX;
+  let initial = "";
+  let alreadyTerminal = false;
+  if (fs21.existsSync(eventsPath)) {
+    initial = fs21.readFileSync(eventsPath, "utf8");
+    for (const line of initial.split("\n")) {
+      if (!line) continue;
+      if (passes(line)) writeEventLine(line);
+      if (TERMINAL.test(line)) alreadyTerminal = true;
+    }
+  }
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  if (!options.follow || alreadyTerminal) {
+    emitSuccess(
+      "events",
+      {
+        jobId: job.id,
+        threadId: job.threadId,
+        eventsPath,
+        followed: Boolean(options.follow),
+        filter: options.filter ?? null,
+        exclude: options.exclude ?? null
+      },
+      "",
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  let timedOut = false;
+  let terminalTag = null;
+  let terminalLine = null;
+  const followStartMs = Date.now();
+  await new Promise((resolve) => {
+    let offset = initial.length;
+    let watcher = null;
+    let pollTimer = null;
+    let timer = null;
+    let done = false;
+    const finish = (reason) => {
+      if (done) return;
+      done = true;
+      if (reason === "timeout") timedOut = true;
+      if (watcher) watcher.close();
+      if (pollTimer) clearInterval(pollTimer);
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    const scanAppended = () => {
+      let data;
+      try {
+        data = fs21.readFileSync(eventsPath, "utf8");
+      } catch (e) {
+        if (e.code === "ENOENT") return;
+        throw e;
+      }
+      if (data.length < offset) offset = 0;
+      const tail = data.slice(offset);
+      offset = data.length;
+      const lines = tail.split("\n");
+      for (let i = 0; i < lines.length - 1; i++) {
+        const line = lines[i];
+        if (!line) continue;
+        if (passes(line)) writeEventLine(line);
+        if (TERMINAL.test(line)) {
+          terminalTag = TERMINAL.exec(line)[1];
+          terminalLine = line;
+          return finish("terminal");
+        }
+      }
+    };
+    const attachWatcher = () => {
+      try {
+        watcher = fs21.watch(eventsPath, { persistent: false }, scanAppended);
+        scanAppended();
+      } catch (e) {
+        if (e.code === "ENOENT") {
+          if (!pollTimer)
+            pollTimer = setInterval(() => {
+              if (fs21.existsSync(eventsPath)) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                attachWatcher();
+              }
+            }, 500);
+        } else {
+          throw e;
+        }
+      }
+    };
+    if (fs21.existsSync(eventsPath)) {
+      attachWatcher();
+    } else {
+      pollTimer = setInterval(() => {
+        if (fs21.existsSync(eventsPath)) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          attachWatcher();
+        }
+      }, 500);
+    }
+    timer = setTimeout(() => finish("timeout"), timeoutMs);
+  });
+  if (timedOut && !options.json) {
+    throw new CliError(
+      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
+      {
+        class: "timeout",
+        code: "WAIT_TIMEOUT",
+        retryable: true,
+        suggestion: "Run `status <job-id>` to inspect live state."
+      }
+    );
+  }
+  emitSuccess(
+    "events",
+    {
+      jobId: job.id,
+      threadId: job.threadId,
+      eventsPath,
+      followed: true,
+      filter: options.filter ?? null,
+      exclude: options.exclude ?? null,
+      timedOut,
+      // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
+      // distinguish happy-path closure from timeout without re-reading the
+      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN on success,
+      // or null when the stream ended via timeout. elapsedMs measures
+      // follow duration only (not total job elapsed time).
+      terminalTag,
+      terminalLine,
+      elapsedMs: Date.now() - followStartMs
+    },
+    "",
+    { json: options.json, startedAt }
+  );
+}
+function handleTaskResumeCandidate(argv) {
+  const startedAt = Date.now();
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const sessionId = getCurrentClaudeSessionId();
+  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst2(listJobs(workspaceRoot)));
+  const candidate = findLatestResumableTaskJob(jobs);
+  const payload = {
+    available: Boolean(candidate),
+    sessionId,
+    candidate: candidate == null ? null : {
+      id: candidate.id,
+      status: candidate.status,
+      title: candidate.title ?? null,
+      summary: candidate.summary ?? null,
+      threadId: candidate.threadId,
+      completedAt: candidate.completedAt ?? null,
+      updatedAt: candidate.updatedAt ?? null
+    }
+  };
+  const rendered = candidate ? `Resumable task found: ${candidate.id} (${candidate.status}).
+` : "No resumable task found for this session.\n";
+  emitSuccess("task-resume-candidate", payload, rendered, {
+    json: options.json,
+    startedAt
+  });
+}
+async function handleSummary(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["tail", "cwd"],
+    booleanOptions: ["json"]
+  });
+  const threadId = positionals[0];
+  if (!threadId) {
+    throw usageError("summary requires <thread-id>");
+  }
+  const cwd = resolveCommandCwd(options);
+  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
+  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
+  const session = findSession(sessionDir, threadId);
+  if (!session) {
+    throw notFoundError(
+      `No session found for thread ${threadId}`,
+      "SESSION_NOT_FOUND"
+    );
+  }
+  const tailLines = parseInt(options.tail) || 200;
+  let content;
+  try {
+    content = fs21.readFileSync(session.ndjsonPath, "utf8");
+  } catch {
+    throw new CliError(
+      `Cannot read session log: ${session.ndjsonPath}`,
+      { class: "internal", code: "SESSION_LOG_UNREADABLE", retryable: false }
+    );
+  }
+  const allLines = content.split("\n").filter(Boolean);
+  const lines = allLines.slice(-tailLines);
+  const entries = [];
+  for (const line of lines) {
+    try {
+      entries.push(JSON.parse(line));
     } catch {
     }
   }
-  const text = positionals.join(" ");
-  if (text) return text;
-  return readStdinIfPiped();
+  const transcript = buildTranscript(entries, threadId);
+  emitSuccess("summary", { threadId, entries }, `${transcript}
+`, {
+    json: options.json,
+    startedAt
+  });
 }
+function buildTranscript(entries, threadId) {
+  const lines = [`## Thread ${threadId}`];
+  let currentTurnId = null;
+  let turnIndex = 0;
+  for (const entry of entries) {
+    if (entry.tag === "TURN_STARTED" || entry.method === "turn/started" && entry.data?.turn?.id) {
+      turnIndex += 1;
+      currentTurnId = entry.data?.turn?.id ?? entry.data?.turnId ?? `turn-${turnIndex}`;
+      const ts = entry.ts ? entry.ts.slice(11, 19) : "";
+      lines.push("", `### Turn ${turnIndex} \u2014 ${ts}`);
+      continue;
+    }
+    if (entry.method === "item/completed") {
+      const item = entry.data?.item ?? entry.data ?? {};
+      if (item.type === "userMessage") {
+        const text = item.content?.map((c) => c.text).join(" ") ?? "";
+        lines.push(`> ${text}`);
+      } else if (item.type === "agentMessage") {
+        lines.push("", `**Assistant:** ${item.text ?? ""}`);
+      } else if (item.type === "plan") {
+        lines.push("", `**Plan proposed:**`, item.text ?? "");
+      } else if (item.type === "commandExecution") {
+        const cmd = (item.command ?? "").slice(0, 200);
+        lines.push(`tool: shell ${cmd}`);
+      } else if (item.type === "fileChange") {
+        const files = (item.changes ?? []).map((c) => c.path).join(", ");
+        lines.push(`tool: apply_patch ${files.slice(0, 200)}`);
+      } else if (item.type === "exitedReviewMode") {
+        lines.push("", `**Review:** ${item.review ?? ""}`);
+      }
+      continue;
+    }
+    if (entry.tag === "ERROR") {
+      lines.push("", `**Error:** ${entry.data?.message ?? JSON.stringify(entry.data)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+// src/handlers/registry.mjs
+import fs22 from "node:fs";
+import path20 from "node:path";
 function readReviewedBranchHeadSha(verdict) {
   const candidates = [
     verdict?.branch_head_sha,
@@ -15430,7 +15818,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs19.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs22.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -15511,9 +15899,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path16.join(dir, "meta.json"),
-    review_path: path16.join(dir, "review.json"),
-    verdict_path: path16.join(dir, "verdict.json"),
+    meta_path: path20.join(dir, "meta.json"),
+    review_path: path20.join(dir, "review.json"),
+    verdict_path: path20.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -15914,10 +16302,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path16.join(jobDir(taskId), "verdict.json");
+    const target = path20.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs19.existsSync(target)) {
-      fs19.rmSync(target, { force: true });
+    if (fs22.existsSync(target)) {
+      fs22.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -16170,391 +16558,35 @@ async function handleMerge(argv) {
     { json: options.json, startedAt }
   );
 }
-async function handleSend(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: [
-      "mode",
-      "effort",
-      "cwd",
-      "backend",
-      "idle-timeout-ms",
-      "turn-timeout-ms",
-      "question-timeout-ms"
-    ],
-    booleanOptions: ["json", "wait", "quiet"],
-    aliasMap: { m: "mode" }
-  });
-  const VALID_MODES = /* @__PURE__ */ new Set(["plan", "default"]);
-  if (options.mode != null && !VALID_MODES.has(options.mode)) {
-    throw usageError(`mode must be plan or default, got ${JSON.stringify(options.mode)}`);
+
+// src/codex-bridge.mjs
+function printUsage() {
+  const lines = ["Usage:"];
+  for (const name of Object.keys(COMMANDS)) {
+    lines.push(`  codex-bridge ${COMMANDS[name].synopsis}`);
   }
-  const idleTimeoutOverride = parsePositiveMsOption("--idle-timeout-ms", options["idle-timeout-ms"]);
-  const turnTimeoutOverride = parsePositiveMsOption("--turn-timeout-ms", options["turn-timeout-ms"]);
-  const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
-  const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
-  const startedAt = Date.now();
-  const rawThreadId = positionals[0];
-  if (!rawThreadId) {
-    throw usageError("send requires <thread-id>");
-  }
-  if (!isThreadId(rawThreadId)) {
-    throw invalidThreadIdError(rawThreadId, "thread-id");
-  }
-  const threadId = rawThreadId.trim();
-  const promptParts = positionals.slice(1);
-  const cwd = resolveCommandCwd(options);
-  const prompt = resolvePromptInput(options, promptParts, cwd);
-  if (!prompt) {
-    throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
-  }
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getBridgeConfig(cwd, workspaceRoot);
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot,
-    backend: options.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  guardCapability(adapter2, "supports_resume");
-  const modeOverride = options.mode;
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const sendIsPlanMode = modeOverride === "plan";
-  const turnOptions = {
-    resumeThreadId: threadId,
-    prompt,
-    model: config.model,
-    effort: normalizeReasoningEffort(options.effort ?? config.effort),
-    sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : void 0,
-    onProgress: null,
-    // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
-    // → 300_000 fallback. Mirrors the `task` path; see runBridgeTask.
-    idleTimeoutMs: idleTimeoutOverride != null ? idleTimeoutOverride : Number(config.idle_timeout_ms) > 0 ? Number(config.idle_timeout_ms) : DEFAULT_CONFIG.idle_timeout_ms,
-    // Turn timeout: per-invocation override > the mode-appropriate config key
-    // (turn_plan_ms for plan-mode sends, turn_default_ms otherwise) > built-in
-    // default. `send` gets a single --turn-timeout-ms flag that maps onto the
-    // right budget based on the resolved mode.
-    turnTimeoutMs: turnTimeoutOverride ?? (sendIsPlanMode ? Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : DEFAULT_CONFIG.turn_plan_ms : Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms),
-    onTurnStart: (info) => {
-      const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
-      logNdjson(s, "TURN_PARAMS", "turn/start", {
-        model: info.turnParams.model,
-        effort: info.turnParams.effort,
-        collaborationMode: info.turnParams.collaborationMode,
-        sandboxPolicy: info.turnParams.sandboxPolicy,
-        hasOutputSchema: Boolean(info.turnParams.outputSchema),
-        promptLength: info.promptLength,
-        promptPreview: info.promptPreview
-      });
-    },
-    onItemCompleted: (item, { threadId: itemThreadId }) => {
-      const effectiveThreadId = itemThreadId ?? null;
-      if (!effectiveThreadId) return;
-      const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
-      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
-        itemId: item?.id ?? null,
-        itemType: item?.type ?? null,
-        text: extractItemText(item)
-      });
-    },
-    onServerRequest: createBridgeServerRequestHandler({
-      sessionDir,
-      config,
-      questionAnswerMs: questionTimeoutOverride ?? null,
-      cwd
-    })
-  };
-  const resolvedSandboxMode = modeOverride === "default" ? "default" : "plan";
-  turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
-  if (modeOverride) {
-    turnOptions.collaborationMode = buildCollaborationMode(modeOverride, config, {
-      effort: options.effort,
-      developerInstructions: loadDeveloperInstructions(modeOverride)
-    });
-  }
-  ensureCodexAvailable(cwd);
-  const dispatch2 = await adapter2.resume(threadId, prompt, {
-    cwd,
-    sessionDir,
-    model: config.model,
-    effort: turnOptions.effort,
-    mode: modeOverride ?? "default",
-    adapterOptions: {
-      turnOptions
-    }
-  });
-  const result = dispatch2.rawResult ?? dispatch2;
-  if (result.status !== 0) {
-    const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
-    const session2 = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
-    const classified = classifyError(errLike);
-    logEvent(session2, formatErrorEvent(session2, {
-      errorCode: classified.code,
-      message: classified.message,
-      phase: classified.class,
-      origin: "send",
-      scriptPath: SCRIPT_PATH,
-      cwd
-    }));
-    logNdjson(session2, "ERROR", "turn/completed", { error: classified });
-    emitError(errLike, { json: options.json, command: "send" });
+  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC, "", "Run `codex-bridge <subcommand> --help` for per-command details.");
+  console.log(lines.join("\n"));
+}
+function printSubcommandUsage(name) {
+  const entry = COMMANDS[name];
+  if (!entry) {
+    printUsage();
     return;
   }
-  const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
-  if (result.planDetected && result.planText) {
-    const planPath = writePlan(session, result.planText);
-    const steps = extractPlanSteps(result.planText);
-    logEvent(session, formatPlanEvent(session, {
-      turnId: result.turnId,
-      planTitle: result.planText.split("\n")[0]?.slice(0, 80) ?? "Plan",
-      steps,
-      planPath,
-      scriptPath: SCRIPT_PATH,
-      cwd
-    }));
-    logNdjson(session, "PLAN", "item/completed", {
-      turnId: result.turnId ?? null,
-      planPath,
-      planDetected: true
-    });
-    const eventsPath2 = session?.eventsPath ?? null;
-    const renderedLines2 = [`Plan updated for ${threadId}.`];
-    if (eventsPath2) renderedLines2.push(`  events: ${eventsPath2}`);
-    emitSuccess(
-      "send",
-      {
-        threadId,
-        status: result.status,
-        turnId: result.turnId ?? null,
-        eventsPath: eventsPath2,
-        phase: "plan-pending",
-        planPath,
-        planSteps: steps,
-        finalMessage: result.finalMessage ?? null
-      },
-      `${renderedLines2.join("\n")}
-`,
-      { json: options.json, startedAt }
-    );
-    return;
-  }
-  logEvent(session, formatDoneEvent(session, {
-    duration: Math.round((Date.now() - startedAt) / 1e3),
-    diffStat: "send follow-up",
-    files: [],
-    config: {
-      model: config.model,
-      effort: turnOptions.effort,
-      modeFlow: modeOverride ?? "resume"
-    },
-    diffPath: "not captured for send",
-    scriptPath: SCRIPT_PATH,
-    cwd
-  }));
-  logNdjson(session, "DONE", "turn/completed", {
-    turnId: result.turnId ?? null,
-    status: result.status
-  });
-  const eventsPath = session?.eventsPath ?? null;
-  const renderedLines = [`Sent to ${threadId}. Status: ${result.status}`];
-  if (eventsPath) renderedLines.push(`  events: ${eventsPath}`);
-  const payload = {
-    threadId,
-    status: result.status,
-    turnId: result.turnId ?? null,
-    eventsPath,
-    finalMessage: result.finalMessage ?? null
-  };
-  emitSuccess("send", payload, `${renderedLines.join("\n")}
-`, {
-    json: options.json,
-    startedAt
-  });
-}
-async function handleSteer(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "backend"],
-    booleanOptions: ["json"]
-  });
-  const [rawThreadId, turnId, ...promptParts] = positionals;
-  if (!rawThreadId || !turnId) {
-    throw usageError("steer requires <thread-id> <turn-id> <prompt...>");
-  }
-  if (!isThreadId(rawThreadId)) {
-    throw invalidThreadIdError(rawThreadId, "thread-id");
-  }
-  const threadId = rawThreadId.trim();
-  const cwd = resolveCommandCwd(options);
-  const prompt = resolvePromptInput(options, promptParts, cwd);
-  if (!prompt) {
-    throw validationError("steer requires a prompt", "MISSING_PROMPT");
-  }
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot: resolveWorkspaceRoot(cwd),
-    backend: options.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  guardCapability(adapter2, "supports_steering");
-  ensureCodexAvailable(cwd);
-  await adapter2.steer(threadId, turnId, prompt, { cwd });
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const session = findSession(sessionDir, threadId);
-  if (session) {
-    logNdjson(session, "STEER", "turn/steer", { turnId, prompt: prompt.slice(0, 120) });
-  }
-  emitSuccess("steer", { threadId, turnId, steered: true }, `Steered turn ${turnId} on thread ${threadId}
-`, {
-    json: options.json,
-    startedAt
-  });
-}
-async function handleRespond(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["question-id", "answer", "json-payload", "cwd", "backend"],
-    booleanOptions: ["json"]
-  });
-  const requestId = positionals[0];
-  if (!requestId) {
-    throw usageError("respond requires <request-id>");
-  }
-  const cwd = resolveCommandCwd(options);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const adapter2 = await resolveCommandAdapter({
-    cwd,
-    workspaceRoot: resolveWorkspaceRoot(cwd),
-    backend: options.backend ?? null
-  });
-  ensureCodexRuntimeAdapter(adapter2);
-  guardCapability(adapter2, "supports_questions");
-  const pending = readPendingRequestById(sessionDir, requestId);
-  if (!pending) {
-    throw notFoundError(
-      `No pending request found: ${requestId}.`,
-      "PENDING_REQUEST_NOT_FOUND",
-      "It may have timed out or already been answered."
-    );
-  }
-  let payload;
-  if (options["json-payload"]) {
-    try {
-      payload = JSON.parse(options["json-payload"]);
-    } catch (error) {
-      throw usageError(
-        `respond --json-payload must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  } else {
-    const answer = options.answer;
-    if (!answer) {
-      throw usageError("respond requires --answer");
-    }
-    if (pending.method === "item/tool/requestUserInput") {
-      const qId = options["question-id"] ?? pending.firstQuestionId ?? "q1";
-      payload = { answers: { [qId]: { answers: [answer] } } };
-    } else {
-      payload = { decision: answer };
+  const lines = [
+    `codex-bridge ${entry.synopsis}`,
+    "",
+    entry.summary
+  ];
+  if (entry.examples?.length) {
+    lines.push("", "Examples:");
+    for (const example of entry.examples) {
+      lines.push(`  ${example}`);
     }
   }
-  await adapter2.respond(pending.threadId, requestId, payload, { sessionDir });
-  const session = findSession(sessionDir, pending.threadId);
-  if (session) {
-    logNdjson(session, "SERVER_RESPONSE", null, { requestId, payload });
-  }
-  emitSuccess(
-    "respond",
-    { status: "responded", requestId, threadId: pending.threadId },
-    `Response written for ${requestId}. Worker will deliver it.
-`,
-    { json: options.json, startedAt }
-  );
-}
-async function handleSummary(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["tail", "cwd"],
-    booleanOptions: ["json"]
-  });
-  const threadId = positionals[0];
-  if (!threadId) {
-    throw usageError("summary requires <thread-id>");
-  }
-  const cwd = resolveCommandCwd(options);
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const session = findSession(sessionDir, threadId);
-  if (!session) {
-    throw notFoundError(
-      `No session found for thread ${threadId}`,
-      "SESSION_NOT_FOUND"
-    );
-  }
-  const tailLines = parseInt(options.tail) || 200;
-  let content;
-  try {
-    content = fs19.readFileSync(session.ndjsonPath, "utf8");
-  } catch {
-    throw new CliError(
-      `Cannot read session log: ${session.ndjsonPath}`,
-      { class: "internal", code: "SESSION_LOG_UNREADABLE", retryable: false }
-    );
-  }
-  const allLines = content.split("\n").filter(Boolean);
-  const lines = allLines.slice(-tailLines);
-  const entries = [];
-  for (const line of lines) {
-    try {
-      entries.push(JSON.parse(line));
-    } catch {
-    }
-  }
-  const transcript = buildTranscript(entries, threadId);
-  emitSuccess("summary", { threadId, entries }, `${transcript}
-`, {
-    json: options.json,
-    startedAt
-  });
-}
-function buildTranscript(entries, threadId) {
-  const lines = [`## Thread ${threadId}`];
-  let currentTurnId = null;
-  let turnIndex = 0;
-  for (const entry of entries) {
-    if (entry.tag === "TURN_STARTED" || entry.method === "turn/started" && entry.data?.turn?.id) {
-      turnIndex += 1;
-      currentTurnId = entry.data?.turn?.id ?? entry.data?.turnId ?? `turn-${turnIndex}`;
-      const ts = entry.ts ? entry.ts.slice(11, 19) : "";
-      lines.push("", `### Turn ${turnIndex} \u2014 ${ts}`);
-      continue;
-    }
-    if (entry.method === "item/completed") {
-      const item = entry.data?.item ?? entry.data ?? {};
-      if (item.type === "userMessage") {
-        const text = item.content?.map((c) => c.text).join(" ") ?? "";
-        lines.push(`> ${text}`);
-      } else if (item.type === "agentMessage") {
-        lines.push("", `**Assistant:** ${item.text ?? ""}`);
-      } else if (item.type === "plan") {
-        lines.push("", `**Plan proposed:**`, item.text ?? "");
-      } else if (item.type === "commandExecution") {
-        const cmd = (item.command ?? "").slice(0, 200);
-        lines.push(`tool: shell ${cmd}`);
-      } else if (item.type === "fileChange") {
-        const files = (item.changes ?? []).map((c) => c.path).join(", ");
-        lines.push(`tool: apply_patch ${files.slice(0, 200)}`);
-      } else if (item.type === "exitedReviewMode") {
-        lines.push("", `**Review:** ${item.review ?? ""}`);
-      }
-      continue;
-    }
-    if (entry.tag === "ERROR") {
-      lines.push("", `**Error:** ${entry.data?.message ?? JSON.stringify(entry.data)}`);
-    }
-  }
-  return lines.join("\n");
+  lines.push("", GLOBAL_FLAGS_DOC, "", EXIT_CODE_DOC);
+  console.log(lines.join("\n"));
 }
 var SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
@@ -16563,7 +16595,7 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   config: handleConfigShow,
   "auth-status": handleAuthStatus,
   review: handleReview,
-  "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),
+  "adversarial-review": handleAdversarialReview,
   task: handleTask,
   "task-worker": handleTaskWorker,
   send: handleSend,
@@ -16582,35 +16614,35 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   verdicts: handleVerdictsPending,
   iterate: handleIterate
 });
-process12.on("SIGPIPE", () => {
+process16.on("SIGPIPE", () => {
 });
-process12.stdout.on("error", (err) => {
+process16.stdout.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
-process12.stderr.on("error", (err) => {
+process16.stderr.on("error", (err) => {
   if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
   throw err;
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path16.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs19.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path21.join(os7.homedir(), ".codex-bridge", "crashes");
+    fs23.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path16.join(crashDir, `${ts}-${process12.pid}.log`);
+    const file = path21.join(crashDir, `${ts}-${process16.pid}.log`);
     const payload = {
       kind,
       ts,
-      pid: process12.pid,
-      argv: process12.argv,
-      cwd: process12.cwd(),
-      nodeVersion: process12.version,
+      pid: process16.pid,
+      argv: process16.argv,
+      cwd: process16.cwd(),
+      nodeVersion: process16.version,
       bridgeVersion: BRIDGE_VERSION,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs19.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs23.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
-      process12.stderr.write(
+      process16.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
 `
       );
@@ -16619,17 +16651,17 @@ function writeCrashLog(kind, error) {
   } catch {
   }
 }
-process12.on("unhandledRejection", (reason) => {
+process16.on("unhandledRejection", (reason) => {
   writeCrashLog("unhandledRejection", reason);
-  process12.exitCode = process12.exitCode || 1;
+  process16.exitCode = process16.exitCode || 1;
 });
-process12.on("uncaughtException", (err) => {
+process16.on("uncaughtException", (err) => {
   writeCrashLog("uncaughtException", err);
-  process12.exit(process12.exitCode || 1);
+  process16.exit(process16.exitCode || 1);
 });
 async function main() {
   const startedAt = Date.now();
-  const rawArgv = process12.argv.slice(2);
+  const rawArgv = process16.argv.slice(2);
   const [subcommand, ...argv] = rawArgv;
   maybeTriggerAutoApply(rawArgv, subcommand);
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
@@ -16656,7 +16688,7 @@ async function main() {
   await handler(argv);
 }
 main().catch((error) => {
-  const rawArgv = process12.argv.slice(2);
+  const rawArgv = process16.argv.slice(2);
   const json2 = detectJsonFlag(rawArgv);
   const command = rawArgv[0] && COMMANDS[rawArgv[0]] ? rawArgv[0] : null;
   emitError(error, { json: json2, command });
