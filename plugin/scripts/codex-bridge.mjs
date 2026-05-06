@@ -9,7 +9,7 @@ import { fileURLToPath as fileURLToPath4 } from "node:url";
 // package.json
 var package_default = {
   name: "codex-bridge",
-  version: "2.2.1",
+  version: "2.2.2",
   description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
   type: "module",
   scripts: {
@@ -5629,7 +5629,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -16551,10 +16551,10 @@ async function handleTimeline(argv) {
   const sinceMs = parseTimelineSince(options.since);
   const workspaceRoot = job.workspaceRoot ?? resolveWorkspaceRoot(cwd);
   const storedJob = readStoredJob(workspaceRoot, job.id) ?? job;
-  const config = getBridgeConfig(cwd, workspaceRoot);
+  const config = getBridgeConfig2(cwd, workspaceRoot);
   const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
-  const eventsPath = storedJob.threadId ? path14.join(sessionDir, `${storedJob.threadId}.events`) : null;
-  const ndjsonPath = storedJob.threadId ? path14.join(sessionDir, `${storedJob.threadId}.ndjson`) : null;
+  const eventsPath = storedJob.threadId ? path17.join(sessionDir, `${storedJob.threadId}.events`) : null;
+  const ndjsonPath = storedJob.threadId ? path17.join(sessionDir, `${storedJob.threadId}.ndjson`) : null;
   const logFile = storedJob.logFile ?? job.logFile ?? null;
   const workerErrPath = logFile ? `${logFile}.worker.err` : null;
   const entries = [];
@@ -16615,9 +16615,9 @@ function parseTimelineSince(raw) {
   return parsed;
 }
 function fileMtimeMs(filePath) {
-  if (!filePath || !fs16.existsSync(filePath)) return Date.now();
+  if (!filePath || !fs19.existsSync(filePath)) return Date.now();
   try {
-    return fs16.statSync(filePath).mtimeMs;
+    return fs19.statSync(filePath).mtimeMs;
   } catch {
     return Date.now();
   }
@@ -16655,9 +16655,9 @@ function makeTimelineEntry({ ts, source, body, tag = null, parsedFields = {}, ap
   };
 }
 function parseTimelineEvents(filePath) {
-  if (!filePath || !fs16.existsSync(filePath)) return [];
+  if (!filePath || !fs19.existsSync(filePath)) return [];
   const fallbackTs = fileMtimeMs(filePath);
-  const blocks = fs16.readFileSync(filePath, "utf8").split(/\n(?=\[[^\]]+\])/).map((block) => block.trim()).filter(Boolean);
+  const blocks = fs19.readFileSync(filePath, "utf8").split(/\n(?=\[[^\]]+\])/).map((block) => block.trim()).filter(Boolean);
   return blocks.map((block, index) => {
     const header = block.split(/\r?\n/, 1)[0] ?? "";
     const match = /^\[([^\]]+)\]\s+(.*)$/.exec(header);
@@ -16686,9 +16686,9 @@ function parseTimelineEvents(filePath) {
   });
 }
 function parseTimelineNdjson(filePath) {
-  if (!filePath || !fs16.existsSync(filePath)) return [];
+  if (!filePath || !fs19.existsSync(filePath)) return [];
   const fallbackTs = fileMtimeMs(filePath);
-  return fs16.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
+  return fs19.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
     try {
       const entry = JSON.parse(line);
       const parsedTs = parseTimelineTimestamp(entry.ts, fallbackTs);
@@ -16735,11 +16735,11 @@ function summarizeNdjsonTimelineEntry(entry) {
   return `${tag} ${method} ${JSON.stringify(entry.data ?? {})}`.trim();
 }
 function parseTimelineLog(filePath) {
-  if (!filePath || !fs16.existsSync(filePath)) return [];
+  if (!filePath || !fs19.existsSync(filePath)) return [];
   const fallbackTs = fileMtimeMs(filePath);
   let lastTs = fallbackTs;
   let lastApproximate = true;
-  return fs16.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
+  return fs19.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
     const match = /^\[([^\]]+)\]\s*(.*)$/.exec(line);
     if (match) {
       const parsedTs = parseTimelineTimestamp(match[1], fallbackTs);
@@ -16763,9 +16763,9 @@ function parseTimelineLog(filePath) {
   });
 }
 function parseTimelineWorkerErr(filePath) {
-  if (!filePath || !fs16.existsSync(filePath)) return [];
+  if (!filePath || !fs19.existsSync(filePath)) return [];
   const ts = fileMtimeMs(filePath);
-  return fs16.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => makeTimelineEntry({
+  return fs19.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line, index) => makeTimelineEntry({
     ts,
     source: "worker_err",
     body: line,
@@ -16798,9 +16798,9 @@ function timelineSourceLabel(source) {
   }
 }
 function writeTimelineHtml(entries, job, logFile) {
-  const baseDir = logFile ? path14.dirname(logFile) : jobDir(job.id);
-  fs16.mkdirSync(baseDir, { recursive: true });
-  const htmlPath = path14.join(baseDir, `${job.id}.timeline.html`);
+  const baseDir = logFile ? path17.dirname(logFile) : jobDir(job.id);
+  fs19.mkdirSync(baseDir, { recursive: true });
+  const htmlPath = path17.join(baseDir, `${job.id}.timeline.html`);
   const rows = entries.map((entry) => {
     const source = escapeHtml(timelineSourceLabel(entry.source));
     const time = escapeHtml(new Date(entry.ts).toISOString());
@@ -16845,7 +16845,7 @@ for (const button of document.querySelectorAll("button[data-source]")) {
 </body>
 </html>
 `;
-  fs16.writeFileSync(htmlPath, html, "utf8");
+  fs19.writeFileSync(htmlPath, html, "utf8");
   return htmlPath;
 }
 function escapeHtml(value) {
