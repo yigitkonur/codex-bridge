@@ -27,7 +27,7 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 [ERROR] {threadId} failed | {errorCode}
   {errorMessage}
   origin: {origin}
-  failing_stage: {stage}           # only on pipeline origins when a TimeoutError triggered the failure
+  failing_stage: {stage}           # only on pipeline origins; matches the failed pipeline stage
   upstream_request_id: {uuid}      # v1.5.0+; only when the upstream error message carried a `request id: <uuid>` correlation handle
   phase: {currentPhase}
   actions:
@@ -48,12 +48,12 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 | `upstream:auth` (v1.5.0) | Upstream 401 Unauthorized (direct Codex auth or proxy-layer). Deterministic; no retry policy will help. Policy `none / maxAttempts: 0`. `[HANDOFF]` precedes `[ERROR]` immediately. |
 | `upstream:invalid-request` (v1.5.0) | Upstream 400 `invalid_request_error` not covered by the more specific `response-chain-lost` matcher. Some proxy-layer 400s are transient; retry policy `same-thread / maxAttempts: 3 / backoffMs: [2000, 5000, 12000]` before surfacing. |
 | `turn` | Every other turn-level failure: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget exhaustion, etc. Distinguish by `{errorCode}`. |
-| `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. `<lastCompleted>` is the last stage that *finished* — see `failing_stage:` for the one that actually stalled. |
+| `pipeline:<stage>` | Auto-pipeline sub-stage failure. `<stage>` matches `failing_stage:`; `PIPELINE_ERROR.lastCompletedStage` records the last stage that finished. |
 | `bridge` | Bridge-layer safety net tripped. The emitted token is the bare string `bridge` (no `bridge:stall` / `bridge:unhandled-exit` sub-tokens — distinguish those two sub-cases by `{errorCode}`: `StallDetected` vs `UnhandledExit`). Indicates a bridge bug; treat as a bug report. |
 
-The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) carry `data.origin` with the same values plus `data.failing_stage` when applicable.
+The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) carry `data.origin` with the same values plus `data.failing_stage` when applicable. `PIPELINE_ERROR` also carries `data.lastCompletedStage`; `data.reviewVerdict` and `data.reviewFindingCount` are `null` unless the review stage completed.
 
-`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:diff` + `failing_stage: review` + `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` vs `origin: upstream:*` in tooling.
+`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:review` + `failing_stage: review` + `phase: pipeline (completed: diff)`, followed by `[PIPELINE:failed] failing_stage=review last_completed=diff stages=diff touched=0`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` vs `origin: upstream:*` in tooling.
 
 The `actions:` block is **cause-aware**: an idle-timeout `[ERROR]` suggests `relaunch: … --idle-timeout-ms 900000 …`, a compact-proxy 502 suggests narrowing required-reads + a shorter follow-up `send`, a pipeline sub-stage failure points at `rerun-review` rather than retrying the whole task, and so on. Every block ends with a `see:` line deep-linking into `skill/references/error-recovery.md` for the full recipe.
 

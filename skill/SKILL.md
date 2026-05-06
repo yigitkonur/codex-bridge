@@ -149,7 +149,7 @@ Six independent timeout budgets, each resolved `CLI flag → config.yaml key →
 | Question unanswered (server request rejected) | 5 min | `question_answer_ms` | `--question-timeout-ms` |
 | No-event idle (per turn) | 5 min | `idle_timeout_ms` | `--idle-timeout-ms` |
 
-Idle fires a `[ERROR] … | ClientTimeout` with `origin: idle` (v1.4.1+; pre-1.4.1 this collapsed to `origin: turn`); pipeline-stage timeouts fire with `origin: pipeline:<lastCompleted>` and a separate `failing_stage: <actualStage>` field. If Monitor goes silent and `status <id>` still reports `running` past the relevant timeout plus ~60 s buffer, the task is genuinely stuck — `cancel <id>` recovers.
+Idle fires a `[ERROR] … | ClientTimeout` with `origin: idle` (v1.4.1+; pre-1.4.1 this collapsed to `origin: turn`); pipeline-stage timeouts fire with `origin: pipeline:<actualStage>` and matching `failing_stage: <actualStage>`, while `PIPELINE_ERROR.lastCompletedStage` preserves the last finished stage. If Monitor goes silent and `status <id>` still reports `running` past the relevant timeout plus ~60 s buffer, the task is genuinely stuck — `cancel <id>` recovers.
 
 ### Observability guarantee (v1.3.0)
 
@@ -337,7 +337,7 @@ Each `[ERROR]` block carries an `origin:` line. The canonical vocabulary actuall
 | `upstream:auth` (v1.5.0) | Upstream 401 Unauthorized (direct Codex or proxy). | Reauth the right layer (`codex login` or proxy reauth); do not retry. Paired with `[HANDOFF]`. |
 | `upstream:invalid-request` (v1.5.0) | Upstream 400 `invalid_request_error` not covered by `response-chain-lost`. | Bridge auto-retries 3× with backoff. On exhaustion: rebuild prompt, relaunch fresh task. |
 | `turn` | Every other turn-level failure. Distinguish by `errorCode`: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget, etc. | See [error-recovery.md](references/error-recovery.md). |
-| `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. Check `failing_stage:` for the stage that actually stalled; the main task may still have succeeded. | `inspect` with `result`, then `rerun-review`. |
+| `pipeline:<stage>` | Auto-pipeline sub-stage failure. `<stage>` matches `failing_stage:`; `PIPELINE_ERROR.lastCompletedStage` records the previous completed stage. The main task may still have succeeded. | `inspect` with `result`, then `rerun-review`. |
 | `bridge` | Bridge safety net fired — indicates a bridge bug. Distinguish `StallDetected` vs `UnhandledExit` by `errorCode`. | File a report with the jobId + events file. |
 
 A pipeline-origin `[ERROR]` can coexist with a `task --json` success envelope whose `result.phase: "incomplete"` and `result.pipeline.error` are set — read the envelope before retrying. The `actions:` block inside each `[ERROR]` is cause-aware and always ends with a `see:` line pointing to the right anchor in [references/error-recovery.md](references/error-recovery.md).

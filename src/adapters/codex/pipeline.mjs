@@ -601,20 +601,17 @@ export async function runAutoPipeline(options) {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
 
-    const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
-    const origin = `pipeline:${lastStage}`;
-    // `failing_stage` names the stage that *actually* stalled/errored — a
-    // separate field from `origin` (which keeps its "last-completed" semantics
-    // for backward compatibility with tooling that already filters on it).
-    // Pre-1.4.1 readers had to guess whether `origin: pipeline:diff` meant
-    // "diff failed" or "diff completed and review failed". TimeoutError's
-    // `label` and PipelineStageError's `stage` both carry the authoritative
-    // source; map them to the canonical stage token used in `completedStages`.
     const failingStage = error instanceof TimeoutError
       ? mapStageLabel(error.label)
       : error instanceof PipelineStageError
         ? error.stage
         : null;
+    const lastCompletedStage = completedStages[completedStages.length - 1] ?? null;
+    const origin = `pipeline:${failingStage ?? "pipeline"}`;
+    const reviewPayload = buildTerminalReviewPayload(completedStages, {
+      reviewVerdict,
+      reviewFindingCount,
+    });
     const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
@@ -635,11 +632,11 @@ export async function runAutoPipeline(options) {
       error: errorMessage,
       origin,
       failing_stage: failingStage,
+      lastCompletedStage,
       partial: true,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       touchedFiles: fixFilesTouched,
     });
@@ -648,7 +645,7 @@ export async function runAutoPipeline(options) {
     // to render as [PIPELINE:failed] instead of the stale [PIPELINE:pipeline:failed].
     logEvent(session, formatPipelineEvent(session, {
       stage: "failed",
-      detail: `failing_stage=${failingStage ?? "unknown"} at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+      detail: `failing_stage=${failingStage ?? "unknown"} last_completed=${lastCompletedStage ?? "none"} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
 
     const completion = normalizeCompletionResult(
@@ -664,11 +661,12 @@ export async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       diff: finalDiff,
+      origin,
       failing_stage: failingStage,
+      lastCompletedStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       completion,
       missingItems: [],
@@ -676,6 +674,20 @@ export async function runAutoPipeline(options) {
       touchedFiles: fixFilesTouched,
     };
   }
+}
+
+function buildTerminalReviewPayload(completedStages, { reviewVerdict, reviewFindingCount }) {
+  if (!completedStages.includes("review")) {
+    return {
+      reviewVerdict: null,
+      reviewFindingCount: null,
+    };
+  }
+
+  return {
+    reviewVerdict,
+    reviewFindingCount,
+  };
 }
 
 function normalizeCompletionResult(completionResult, missingItems, completionSummary, complete) {

@@ -93,8 +93,8 @@ A client-side timeout fired. The canonical `origin:` vocabulary actually emitted
 |---|---|---|
 | `origin: idle` | No-event idle watchdog (`idle_timeout_ms` / `--idle-timeout-ms`, default 300 s). See [#idle-timeout](#idle-timeout). | Re-run with `--idle-timeout-ms 900000` if the task is reasoning-heavy; otherwise suspect real stall → `cancel <id>` |
 | `origin: turn` + message mentions "turn exceeded" | Per-turn ceiling (`turn_plan_ms` / `turn_default_ms`). | Re-run with a larger `--turn-default-ms` (e.g. `1800000` for large scaffolds) |
-| `origin: pipeline:<lastCompleted>` + `failing_stage: review` / `fix` / `check` | Per-stage pipeline timeout (`pipeline_stage_ms`, default 12 min). See [#pipeline-stage-timeout](#pipeline-stage-timeout). | Inspect result; rerun review from the worktree; if it repeats, relaunch with larger `--pipeline-stage-timeout-ms` |
-| `origin: pipeline:<lastCompleted>` + `failing_stage: pipeline-total` | Total pipeline budget (`pipeline_total_ms`, default 30 min). | Inspect result; relaunch with larger `--pipeline-total-timeout-ms` |
+| `origin: pipeline:<stage>` + matching `failing_stage: review` / `fix` / `check` | Per-stage pipeline timeout (`pipeline_stage_ms`, default 5 min). See [#pipeline-stage-timeout](#pipeline-stage-timeout). | Re-run with larger `--pipeline-stage-timeout-ms`, or `--no-pipeline` if you want to own completion checking |
+| `origin: pipeline:pipeline-total` + `failing_stage: pipeline-total` | Total pipeline budget (`pipeline_total_ms`, default 15 min). | Re-run with larger `--pipeline-total-timeout-ms`, or `--no-pipeline` |
 | `QUESTION_TIMEOUT` ndjson entry (`question_answer_ms`, default 5 min). The bridge logs the timeout and replies to the upstream server request with `result: { answers: {} }` — an empty-answer success response, not a rejection (`src/codex-bridge.mjs:2197`). | Human/orchestrator didn't answer `requestUserInput` in time. | If the answer was slow rather than missing, re-run with `--question-timeout-ms 1800000` |
 
 Before v1.4.1, every timeout branch collapsed to `origin: turn` with recovery tables that string-matched on the message. The vocabulary above is the emitted truth — reader code can branch on the `origin:` / `failing_stage:` fields directly.
@@ -155,7 +155,7 @@ The upstream WS/stream disconnected before `turn/completed` — WebSocket closed
 
 ### pipeline-stage-timeout {#pipeline-stage-timeout}
 
-An auto-pipeline sub-stage (review / fix / check) exceeded its per-stage budget. The main turn may already have succeeded — the pipeline runs **after** Codex reports the turn complete. `origin: pipeline:<lastCompleted>` names the last stage that finished; `failing_stage: <actualStage>` (v1.4.1+) names the one that actually stalled.
+An auto-pipeline sub-stage (review / fix / check) exceeded its per-stage budget. The main turn may already have succeeded — the pipeline runs **after** Codex reports the turn complete. `origin: pipeline:<actualStage>` and `failing_stage: <actualStage>` name the stage that stalled; `PIPELINE_ERROR.lastCompletedStage` records the last stage that finished.
 
 - **Inspect:** `result <jobId>` — the main task's diff and `[DONE]` may already be in place.
 - **Rerun review only:** `review --scope working-tree` skips the full task and just re-runs the reviewer.

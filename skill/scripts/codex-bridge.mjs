@@ -10909,9 +10909,13 @@ async function runAutoPipeline(options) {
     } catch {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
-    const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
-    const origin = `pipeline:${lastStage}`;
     const failingStage = error instanceof TimeoutError ? mapStageLabel(error.label) : error instanceof PipelineStageError ? error.stage : null;
+    const lastCompletedStage = completedStages[completedStages.length - 1] ?? null;
+    const origin = `pipeline:${failingStage ?? "pipeline"}`;
+    const reviewPayload = buildTerminalReviewPayload(completedStages, {
+      reviewVerdict,
+      reviewFindingCount
+    });
     const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
@@ -10931,17 +10935,17 @@ async function runAutoPipeline(options) {
       error: errorMessage,
       origin,
       failing_stage: failingStage,
+      lastCompletedStage,
       partial: true,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
       stage: "failed",
-      detail: `failing_stage=${failingStage ?? "unknown"} at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+      detail: `failing_stage=${failingStage ?? "unknown"} last_completed=${lastCompletedStage ?? "none"} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
     const completion = normalizeCompletionResult(
       { complete: false, missing_items: [], summary: null },
@@ -10956,11 +10960,12 @@ async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       diff: finalDiff,
+      origin,
       failing_stage: failingStage,
+      lastCompletedStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       completion,
       missingItems: [],
@@ -10968,6 +10973,18 @@ async function runAutoPipeline(options) {
       touchedFiles: fixFilesTouched
     };
   }
+}
+function buildTerminalReviewPayload(completedStages, { reviewVerdict, reviewFindingCount }) {
+  if (!completedStages.includes("review")) {
+    return {
+      reviewVerdict: null,
+      reviewFindingCount: null
+    };
+  }
+  return {
+    reviewVerdict,
+    reviewFindingCount
+  };
 }
 function normalizeCompletionResult(completionResult, missingItems, completionSummary, complete) {
   const source = completionResult && typeof completionResult === "object" && !Array.isArray(completionResult) ? completionResult : {};
