@@ -45,7 +45,7 @@ The claim that default Monitor should include a mid-stage progress signal is cor
 | Stall-warning visibility | Adjacent but not required. `[STALL_WARNING]` handles barren progress; `[CHECKPOINT_SUMMARY]` handles normal progress. |
 | Event-noise cluster | Same audience-density theme, but this case should not redesign all events. |
 | Monitor filter defaults | Direct fix surface. Must remain exclusion-based for forward compatibility. |
-| `DIRECTIVES` default filtering | Adjacent noise concern but out of scope for this case. `[DIRECTIVES]` should continue passing through the default stream unless a separate event-noise issue changes that contract. |
+| `DIRECTIVES` default filtering | Same Monitor noise surface: startup/runtime echoes are useful in raw `.events` files but too repetitive for default LLM Monitor context. |
 
 # Phase 2 — GSD Implementation Plan
 
@@ -74,7 +74,7 @@ The claim that default Monitor should include a mid-stage progress signal is cor
 |---|---|---|---|
 | Checkpoint event shape | Emit `[CHECKPOINT_SUMMARY] ... tools=N (...) ... last="..."` before existing verbose `[CHECKPOINT]` | Live progress has a concise tag; forensic detail remains available | `formatCheckpointSummaryEvent` unit test; event fixture keeps summary while dropping verbose body |
 | Monitor default contract | Default Monitor command becomes `events <id> --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000` | Default stream includes `[CHECKPOINT_SUMMARY]` and excludes heartbeat liveness, startup directives, and verbose `[CHECKPOINT]` | `DEFAULT_MONITOR_EXCLUDE` assertion; plugin surface expected hint |
-| Documentation | References explain default-visible summary and verbose opt-in via `--exclude HEARTBEAT` | Agents stop hand-authoring brittle inclusion filters or noisy defaults | `rg` stale-string scan |
+| Documentation | References explain default-visible summary and verbose opt-in by relaxing the default exclude list | Agents stop hand-authoring brittle inclusion filters or noisy defaults | `rg` stale-string scan |
 | Generated outputs | Bundled scripts reflect source constants and examples | Installed skill/plugin behave like source checkout | `npm run build`; grep generated `DEFAULT_MONITOR_EXCLUDE` |
 
 ## Risk And Rollback

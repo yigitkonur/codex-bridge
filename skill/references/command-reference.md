@@ -430,7 +430,7 @@ Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutu
 
 `result.followed` is the boolean coercion of the `--follow` flag (`Boolean(options.follow)`) — `true` when `--follow` was passed and a terminal tag was already in the initial dump; `false` when `--follow` was omitted entirely. If `--follow` short-circuits on an already-present terminal tag, the envelope includes `timedOut: false`, `terminalTag`, `terminalLine`, and `elapsedMs: 0`. When `--follow` was omitted entirely, those watcher fields are absent.
 
-**Recommended shape:** `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`. Every tag the bridge emits passes except the 60-s liveness pulse and verbose checkpoint body; `[CHECKPOINT_SUMMARY]` remains visible for live progress. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
+**Recommended shape:** `--exclude HEARTBEAT,DIRECTIVES,CHECKPOINT`. Every tag the bridge emits passes except the 60-s liveness pulse, startup/runtime echoes, and verbose checkpoint body; `[CHECKPOINT_SUMMARY]` remains visible for live progress. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
 
 ## setup
 
