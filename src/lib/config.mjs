@@ -14,7 +14,7 @@ export {
   resolveModel,
 } from "./runtime-options.mjs";
 
-const CONFIG_SCHEMA = {
+export const CONFIG_SCHEMA = {
   mode: { type: "enum", values: ["plan", "default"] },
   model: { type: "string" },
   effort: { type: "enum", values: ["none", "minimal", "low", "medium", "high", "xhigh"] },
@@ -52,6 +52,64 @@ function isConfigValueValid(schema, value) {
     true
   );
 }
+
+// Parse a string value from the CLI into the JS type the schema expects.
+// Returns `{ ok: true, value }` or `{ ok: false, error }`.
+export function parseConfigValue(key, rawValue) {
+  const schema = CONFIG_SCHEMA[key];
+  if (!schema) {
+    return { ok: false, error: `Unknown config key '${key}'.` };
+  }
+  if (schema.type === "boolean") {
+    if (rawValue === "true" || rawValue === "1") return { ok: true, value: true };
+    if (rawValue === "false" || rawValue === "0") return { ok: true, value: false };
+    return { ok: false, error: `Invalid value for '${key}'; expected boolean (true/false).` };
+  }
+  if (schema.type === "positive-number") {
+    const n = Number(rawValue);
+    if (!Number.isFinite(n) || n <= 0) {
+      return { ok: false, error: `Invalid value for '${key}'; expected a positive number.` };
+    }
+    return { ok: true, value: n };
+  }
+  if (schema.type === "enum") {
+    if (!schema.values.includes(rawValue)) {
+      return { ok: false, error: `Invalid value for '${key}'; expected one of: ${schema.values.join(", ")}.` };
+    }
+    return { ok: true, value: rawValue };
+  }
+  if (schema.type === "string") {
+    return { ok: true, value: rawValue };
+  }
+  // object type cannot be set via single-value CLI arg
+  return { ok: false, error: `Config key '${key}' has type 'object' and cannot be set via command line.` };
+}
+
+// Human-readable description of each config key for `config explain`.
+export const CONFIG_KEY_DOCS = {
+  mode: "Execution mode: 'plan' (default) sends a planning turn first, then an execute turn. 'default' skips the plan turn and executes directly. Valid values: plan | default.",
+  model: "Codex model to use. Example: 'gpt-5.4'. Can be overridden per-invocation with --model.",
+  effort: "Reasoning effort for execute turns. Plan turns are always forced to 'xhigh'. Valid values: none | minimal | low | medium | high | xhigh.",
+  auto_review: "When true, runs a native code review after every successful execute turn (the auto-pipeline). Set to false to skip review and finish immediately. Boolean.",
+  post_task_prompt: "Prompt appended after the task prompt asking Codex to self-review its own work. Set to empty string to disable.",
+  allow_questions: "When true, Codex may ask clarifying questions mid-task (via item/tool/requestUserInput). Use 'respond <task-id>' to answer. Boolean.",
+  session_dir: "Directory where session artifacts (.events, .ndjson, .diff, .plan.md, .review.json) are stored. Defaults to ~/.codex-bridge/sessions.",
+  sandbox_policy: "Filesystem sandbox applied to Codex. 'danger-full-access' = no sandbox (default). 'workspace-write' = writes restricted to cwd. 'read-only' = no writes. Valid values: danger-full-access | workspace-write | read-only.",
+  skip_meta_skills: "When true, prepends a directive telling Codex to skip internal meta-skill planning scaffolding (docs/, plans/ etc). Reduces overhead for orchestrator-driven flows. Boolean.",
+  command_failure_circuit_breaker: "When true, monitors repeated same-family command failures (osascript, open -a, AppleScript, computer-use/*) and emits a [WARNING] event after 3 consecutive failures. Boolean.",
+  idle_timeout_ms: "Max milliseconds between app-server notifications before the turn is declared stuck (ClientTimeout). Default: 300000 (5 min). Positive number.",
+  turn_plan_ms: "Wall-clock ceiling per plan turn in milliseconds. Default: 1800000 (30 min). Positive number.",
+  turn_default_ms: "Wall-clock ceiling per execute turn in milliseconds. Default: 1800000 (30 min). Positive number.",
+  pipeline_stage_ms: "Per-stage timeout for the auto-pipeline (review, fix, check) in milliseconds. Default: 300000 (5 min). Positive number.",
+  pipeline_total_ms: "Total wall-clock budget for the entire auto-pipeline in milliseconds. Default: 900000 (15 min). Positive number.",
+  question_answer_ms: "How long to wait for a 'respond' answer to a Codex question before timing out. Default: 300000 (5 min). Positive number.",
+  artifact_retention_jobs: "Max number of terminal jobs to keep when running 'status --cleanup'. Positive number.",
+  artifact_retention_days: "Max age in days of terminal job artifacts to keep when running 'status --cleanup'. Positive number.",
+  redact_secrets: "When true, scrub likely-secret strings from persisted event and NDJSON text. Boolean.",
+  prompt_footer: "Text appended to every task prompt. Useful for project-wide instructions. String.",
+  default_backend: "Override the backend adapter. Normally auto-detected. String.",
+  adapter_routing: "Advanced: per-adapter routing rules. Object (cannot be set via config set; edit the file directly).",
+};
 
 function parseConfigFile(filePath, source) {
   if (!filePath || !fs.existsSync(filePath)) {

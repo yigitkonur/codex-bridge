@@ -99,6 +99,13 @@ import {
 } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import {
+  readLocalConfig,
+  writeLocalConfig,
+  resolveLocalConfigPath,
+  serializeLocalConfig,
+  getDefaultLocalConfigBody,
+} from "./lib/local-config.mjs";
+import {
   renderNativeReviewResult,
   renderReviewResult,
   renderStoredJobResult,
@@ -113,6 +120,9 @@ import {
   buildCollaborationMode,
   buildSandboxPolicy,
   COMPLETION_CHECK_SCHEMA,
+  CONFIG_SCHEMA,
+  CONFIG_KEY_DOCS,
+  parseConfigValue,
   DEFAULT_CONFIG,
   resolveConfigLayers,
   resolveConfigSources,
@@ -819,9 +829,20 @@ const COMMANDS = Object.freeze({
     examples: ["codex-bridge update --json", "codex-bridge update --force"]
   },
   config: {
-    synopsis: "config show [--json]",
-    summary: "Show effective merged config + which files the values came from (defaults < skill-dir < workspace-root < cwd). Use when a config knob seems to have no effect.",
-    examples: ["codex-bridge config show", "codex-bridge config show --json"]
+    synopsis: "config <show|set|reset|explain|path|validate|template> [args] [--json]",
+    summary: "Conversational config editor. 'show' prints effective config with provenance; 'set key=value' writes to .claude/codex-bridge.local.md; 'reset [key]' restores defaults; 'explain key' describes a knob; 'path' prints the config file path; 'validate' schema-checks the workspace config; 'template' prints a blank config template. After set/reset: restart Claude Code (hooks load at session start).",
+    examples: [
+      "codex-bridge config show",
+      "codex-bridge config show --json",
+      "codex-bridge config set mode=default",
+      "codex-bridge config set idle_timeout_ms=600000",
+      "codex-bridge config reset mode",
+      "codex-bridge config reset",
+      "codex-bridge config explain mode",
+      "codex-bridge config path",
+      "codex-bridge config validate",
+      "codex-bridge config template",
+    ]
   },
   "auth-status": {
     synopsis: "auth-status [--json]",
@@ -1372,85 +1393,306 @@ async function handleVersion(argv) {
 // config.yaml, why isn't it taking effect?" situations. The layered
 // resolution (DEFAULT_CONFIG < skill-dir < workspaceRoot < cwd) is
 // otherwise opaque.
-async function handleConfigShow(argv) {
+//
+// Actions: show [<key-glob>] | set <key>=<value> | reset [<key>] |
+//          explain <key> | path | validate | template
+async function handleConfig(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "lenient"]
   });
   const action = positionals[0] ?? "show";
-  if (action !== "show") {
+  const SUPPORTED_ACTIONS = ["show", "set", "reset", "explain", "path", "validate", "template"];
+  if (!SUPPORTED_ACTIONS.includes(action)) {
     throw usageError(
-      `config: unknown action '${action}'. Supported: show.`
+      `config: unknown action '${action}'. Supported: ${SUPPORTED_ACTIONS.join(", ")}.`
     );
   }
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
-  const effective = getBridgeConfig(cwd, workspaceRoot);
-  const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
 
-  // Diff against defaults so the caller can see which keys were overridden
-  // (useful for a human-eyeballing the output).
-  const overrides = {};
-  for (const [k, v] of Object.entries(effective)) {
-    if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
-      overrides[k] = v;
+  // ── show ─────────────────────────────────────────────────────────────────
+  if (action === "show") {
+    const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
+    const effective = getBridgeConfig(cwd, workspaceRoot);
+    const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+    const layers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+
+    // Build per-key provenance: highest-priority layer that set the key wins.
+    const provenance = {};
+    for (const k of Object.keys(effective)) {
+      if (Object.prototype.hasOwnProperty.call(layers.cwdConfig, k)) {
+        provenance[k] = "cwd config.yaml";
+      } else if (Object.prototype.hasOwnProperty.call(layers.workspaceConfig, k)) {
+        provenance[k] = "workspace-root config.yaml";
+      } else if (Object.prototype.hasOwnProperty.call(layers.skillConfig, k)) {
+        provenance[k] = "skill-dir config.yaml";
+      } else {
+        provenance[k] = "plugin defaults";
+      }
     }
-  }
 
-  const payload = {
-    sources: {
-      defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
-      skill_config_path: sources.skillConfigPath,
-      skill_config_exists: sources.skillConfigExists,
-      workspace_config_path: sources.workspaceConfigPath,
-      workspace_config_exists: sources.workspaceConfigExists,
-      override_config_path: sources.overrideConfigPath,
-      override_config_exists: sources.overrideConfigExists,
-    },
-    effective_config: effective,
-    overrides_vs_defaults: overrides,
-    diagnostics,
-    warnings: diagnostics.filter((d) => d.severity === "warning"),
-    errors: diagnostics.filter((d) => d.severity === "error"),
-    precedence_order_low_to_high: [
-      "DEFAULT_CONFIG",
-      "skill-dir config.yaml",
-      "workspace-root config.yaml",
-      "cwd config.yaml",
-    ],
-  };
-
-  const linePresence = (p, ok) =>
-    p ? `${p} (${ok ? "present" : "not found"})` : "(n/a — cwd == workspace root)";
-  const lines = [
-    "Config resolution (lowest → highest precedence):",
-    `  1. built-in defaults — src/lib/config.mjs::DEFAULT_CONFIG`,
-    `  2. skill-dir         — ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
-    `  3. workspace-root    — ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
-    `  4. cwd               — ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
-    "",
-    "Effective config:",
-  ];
-  for (const [k, v] of Object.entries(effective)) {
-    const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
-    const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
-    lines.push(`  ${marker} ${k}: ${preview}`);
-  }
-  if (Object.keys(overrides).length > 0) {
-    lines.push("", "* = differs from DEFAULT_CONFIG");
-  }
-  if (diagnostics.length > 0) {
-    lines.push("", "Diagnostics:");
-    for (const diagnostic of diagnostics) {
-      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} — ${diagnostic.message}`);
+    // Diff against defaults so the caller can see which keys were overridden.
+    const overrides = {};
+    for (const [k, v] of Object.entries(effective)) {
+      if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
+        overrides[k] = v;
+      }
     }
-  }
-  const rendered = `${lines.join("\n")}\n`;
 
-  emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    const payload = {
+      sources: {
+        defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
+        skill_config_path: sources.skillConfigPath,
+        skill_config_exists: sources.skillConfigExists,
+        workspace_config_path: sources.workspaceConfigPath,
+        workspace_config_exists: sources.workspaceConfigExists,
+        override_config_path: sources.overrideConfigPath,
+        override_config_exists: sources.overrideConfigExists,
+      },
+      effective_config: effective,
+      overrides_vs_defaults: overrides,
+      provenance,
+      diagnostics,
+      warnings: diagnostics.filter((d) => d.severity === "warning"),
+      errors: diagnostics.filter((d) => d.severity === "error"),
+      precedence_order_low_to_high: [
+        "DEFAULT_CONFIG",
+        "skill-dir config.yaml",
+        "workspace-root config.yaml",
+        "cwd config.yaml",
+      ],
+    };
+
+    const linePresence = (p, ok) =>
+      p ? `${p} (${ok ? "present" : "not found"})` : "(n/a — cwd == workspace root)";
+    const lines = [
+      "Config resolution (lowest → highest precedence):",
+      `  1. built-in defaults — src/lib/config.mjs::DEFAULT_CONFIG`,
+      `  2. skill-dir         — ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
+      `  3. workspace-root    — ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
+      `  4. cwd               — ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
+      "",
+      "Effective config:",
+    ];
+    const globPattern = positionals[1];
+    for (const [k, v] of Object.entries(effective)) {
+      if (globPattern && !k.includes(globPattern.replace(/\*/g, ""))) continue;
+      const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
+      const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
+      const src = provenance[k] ? `  # ← ${provenance[k]}` : "";
+      lines.push(`  ${marker} ${k}: ${preview}${src}`);
+    }
+    if (Object.keys(overrides).length > 0) {
+      lines.push("", "* = differs from DEFAULT_CONFIG");
+    }
+    if (diagnostics.length > 0) {
+      lines.push("", "Diagnostics:");
+      for (const diagnostic of diagnostics) {
+        lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} — ${diagnostic.message}`);
+      }
+    }
+    const rendered = `${lines.join("\n")}\n`;
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+
+  // ── path ──────────────────────────────────────────────────────────────────
+  if (action === "path") {
+    const filePath = resolveLocalConfigPath(workspaceRoot);
+    const exists = fs.existsSync(filePath);
+    const payload = { path: filePath, exists };
+    const rendered = `${filePath}${exists ? "" : " (does not exist yet)"}\n`;
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+
+  // ── template ──────────────────────────────────────────────────────────────
+  if (action === "template") {
+    const template = serializeLocalConfig({}, getDefaultLocalConfigBody());
+    const payload = { template };
+    emitSuccess("config", payload, template, { json: options.json, startedAt });
+    return;
+  }
+
+  // ── explain ───────────────────────────────────────────────────────────────
+  if (action === "explain") {
+    const key = positionals[1];
+    if (!key) {
+      throw usageError("config explain: missing key. Usage: config explain <key>");
+    }
+    const doc = CONFIG_KEY_DOCS[key];
+    if (!doc) {
+      throw usageError(
+        `config explain: unknown key '${key}'. Known keys: ${Object.keys(CONFIG_SCHEMA).join(", ")}.`
+      );
+    }
+    const payload = { key, doc, valid_values: CONFIG_SCHEMA[key] };
+    const rendered = `${key}:\n  ${doc}\n`;
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+
+  // ── validate ──────────────────────────────────────────────────────────────
+  if (action === "validate") {
+    const local = readLocalConfig(workspaceRoot);
+    if (!local.exists) {
+      const payload = { valid: true, path: local.filePath, exists: false, diagnostics: [] };
+      const rendered = `No local config found at ${local.filePath} — nothing to validate.\n`;
+      emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+      return;
+    }
+    if (local.parseError) {
+      const payload = {
+        valid: false,
+        path: local.filePath,
+        exists: true,
+        diagnostics: [{ severity: "error", code: "CONFIG_PARSE_ERROR", message: local.parseError }],
+      };
+      const rendered = `ERROR: Could not parse ${local.filePath}: ${local.parseError}\n`;
+      emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+      return;
+    }
+    const diagnostics = [];
+    for (const [k, v] of Object.entries(local.frontmatter)) {
+      const schema = CONFIG_SCHEMA[k];
+      if (!schema) {
+        diagnostics.push({
+          severity: "warning",
+          code: "CONFIG_UNKNOWN_KEY",
+          key: k,
+          message: `Unknown config key '${k}' — will be ignored by the bridge runtime.`,
+        });
+        continue;
+      }
+      // Validate the stored JS value per schema type.
+      const valid = (
+        schema.type === "boolean" ? typeof v === "boolean" :
+        schema.type === "positive-number" ? (typeof v === "number" && v > 0) :
+        schema.type === "enum" ? (typeof v === "string" && schema.values.includes(v)) :
+        schema.type === "string" ? typeof v === "string" :
+        schema.type === "object" ? (v && typeof v === "object" && !Array.isArray(v)) :
+        true
+      );
+      if (!valid) {
+        const hint = schema.type === "enum"
+          ? `expected one of: ${schema.values.join(", ")}`
+          : `expected ${schema.type}`;
+        diagnostics.push({
+          severity: "error",
+          code: "CONFIG_INVALID_VALUE",
+          key: k,
+          message: `Invalid value for '${k}' (${JSON.stringify(v)}); ${hint}.`,
+        });
+      }
+    }
+    const valid = !diagnostics.some((d) => d.severity === "error");
+    const payload = { valid, path: local.filePath, exists: true, diagnostics };
+    let rendered;
+    if (diagnostics.length === 0) {
+      rendered = `OK — ${local.filePath} is valid.\n`;
+    } else {
+      const lines = [`${valid ? "WARNINGS" : "ERRORS"} in ${local.filePath}:`];
+      for (const d of diagnostics) {
+        lines.push(`  ${d.severity.toUpperCase()} ${d.code} ${d.key ?? ""} — ${d.message}`);
+      }
+      rendered = `${lines.join("\n")}\n`;
+    }
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+
+  // ── set ───────────────────────────────────────────────────────────────────
+  if (action === "set") {
+    const assignment = positionals[1];
+    if (!assignment || !assignment.includes("=")) {
+      throw usageError(
+        "config set: expected <key>=<value>. Example: config set mode=default"
+      );
+    }
+    const eqIdx = assignment.indexOf("=");
+    const key = assignment.slice(0, eqIdx);
+    const rawValue = assignment.slice(eqIdx + 1);
+
+    if (!CONFIG_SCHEMA[key]) {
+      throw usageError(
+        `config set: unknown key '${key}'. Known keys: ${Object.keys(CONFIG_SCHEMA).join(", ")}.`
+      );
+    }
+
+    const parsed = parseConfigValue(key, rawValue);
+    if (!parsed.ok && !options.lenient) {
+      throw usageError(`config set: ${parsed.error}`);
+    }
+    const value = parsed.ok ? parsed.value : rawValue;
+
+    const local = readLocalConfig(workspaceRoot);
+    if (local.parseError) {
+      throw usageError(
+        `config set: cannot write — ${local.filePath} has a YAML parse error: ${local.parseError}`
+      );
+    }
+    const previousValue = local.frontmatter[key];
+    local.frontmatter[key] = value;
+    const writtenPath = writeLocalConfig(workspaceRoot, local.frontmatter, local.body);
+
+    const payload = {
+      key,
+      value,
+      previous_value: previousValue ?? null,
+      path: writtenPath,
+      requires_restart: true,
+    };
+    const prevStr = previousValue !== undefined ? JSON.stringify(previousValue) : "(unset)";
+    const rendered = [
+      `Set ${key} = ${JSON.stringify(value)} (was ${prevStr}).`,
+      `Wrote to: ${writtenPath}`,
+      `NOTE: Hooks load at session start — restart Claude Code to apply this change.`,
+    ].join("\n") + "\n";
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+
+  // ── reset ─────────────────────────────────────────────────────────────────
+  if (action === "reset") {
+    const key = positionals[1];
+    const local = readLocalConfig(workspaceRoot);
+    if (local.parseError) {
+      throw usageError(
+        `config reset: cannot write — ${local.filePath} has a YAML parse error: ${local.parseError}`
+      );
+    }
+    let removed;
+    if (key) {
+      if (!Object.prototype.hasOwnProperty.call(local.frontmatter, key)) {
+        const payload = { key, removed: false, path: local.filePath };
+        const rendered = `Key '${key}' was not set in ${local.filePath} — nothing to reset.\n`;
+        emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+        return;
+      }
+      removed = { [key]: local.frontmatter[key] };
+      delete local.frontmatter[key];
+    } else {
+      removed = { ...local.frontmatter };
+      local.frontmatter = {};
+    }
+    const writtenPath = writeLocalConfig(workspaceRoot, local.frontmatter, local.body);
+    const payload = {
+      key: key ?? null,
+      removed,
+      path: writtenPath,
+      requires_restart: true,
+    };
+    const what = key ? `key '${key}'` : "all keys";
+    const rendered = [
+      `Reset ${what} in ${writtenPath}.`,
+      `NOTE: Hooks load at session start — restart Claude Code to apply this change.`,
+    ].join("\n") + "\n";
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
 }
 
 // Check for updates and print a human-readable verdict plus the one-command
@@ -6995,7 +7237,7 @@ const SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
   update: handleUpdate,
-  config: handleConfigShow,
+  config: handleConfig,
   "auth-status": handleAuthStatus,
   review: handleReview,
   "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),

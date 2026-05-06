@@ -1,8 +1,8 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
-import fs17 from "node:fs";
+import fs18 from "node:fs";
 import os8 from "node:os";
-import path15 from "node:path";
+import path16 from "node:path";
 import process10 from "node:process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -5571,7 +5571,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -8388,6 +8388,58 @@ var CONFIG_SCHEMA = {
 function isConfigValueValid(schema2, value) {
   return schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
 }
+function parseConfigValue(key, rawValue) {
+  const schema2 = CONFIG_SCHEMA[key];
+  if (!schema2) {
+    return { ok: false, error: `Unknown config key '${key}'.` };
+  }
+  if (schema2.type === "boolean") {
+    if (rawValue === "true" || rawValue === "1") return { ok: true, value: true };
+    if (rawValue === "false" || rawValue === "0") return { ok: true, value: false };
+    return { ok: false, error: `Invalid value for '${key}'; expected boolean (true/false).` };
+  }
+  if (schema2.type === "positive-number") {
+    const n = Number(rawValue);
+    if (!Number.isFinite(n) || n <= 0) {
+      return { ok: false, error: `Invalid value for '${key}'; expected a positive number.` };
+    }
+    return { ok: true, value: n };
+  }
+  if (schema2.type === "enum") {
+    if (!schema2.values.includes(rawValue)) {
+      return { ok: false, error: `Invalid value for '${key}'; expected one of: ${schema2.values.join(", ")}.` };
+    }
+    return { ok: true, value: rawValue };
+  }
+  if (schema2.type === "string") {
+    return { ok: true, value: rawValue };
+  }
+  return { ok: false, error: `Config key '${key}' has type 'object' and cannot be set via command line.` };
+}
+var CONFIG_KEY_DOCS = {
+  mode: "Execution mode: 'plan' (default) sends a planning turn first, then an execute turn. 'default' skips the plan turn and executes directly. Valid values: plan | default.",
+  model: "Codex model to use. Example: 'gpt-5.4'. Can be overridden per-invocation with --model.",
+  effort: "Reasoning effort for execute turns. Plan turns are always forced to 'xhigh'. Valid values: none | minimal | low | medium | high | xhigh.",
+  auto_review: "When true, runs a native code review after every successful execute turn (the auto-pipeline). Set to false to skip review and finish immediately. Boolean.",
+  post_task_prompt: "Prompt appended after the task prompt asking Codex to self-review its own work. Set to empty string to disable.",
+  allow_questions: "When true, Codex may ask clarifying questions mid-task (via item/tool/requestUserInput). Use 'respond <task-id>' to answer. Boolean.",
+  session_dir: "Directory where session artifacts (.events, .ndjson, .diff, .plan.md, .review.json) are stored. Defaults to ~/.codex-bridge/sessions.",
+  sandbox_policy: "Filesystem sandbox applied to Codex. 'danger-full-access' = no sandbox (default). 'workspace-write' = writes restricted to cwd. 'read-only' = no writes. Valid values: danger-full-access | workspace-write | read-only.",
+  skip_meta_skills: "When true, prepends a directive telling Codex to skip internal meta-skill planning scaffolding (docs/, plans/ etc). Reduces overhead for orchestrator-driven flows. Boolean.",
+  command_failure_circuit_breaker: "When true, monitors repeated same-family command failures (osascript, open -a, AppleScript, computer-use/*) and emits a [WARNING] event after 3 consecutive failures. Boolean.",
+  idle_timeout_ms: "Max milliseconds between app-server notifications before the turn is declared stuck (ClientTimeout). Default: 300000 (5 min). Positive number.",
+  turn_plan_ms: "Wall-clock ceiling per plan turn in milliseconds. Default: 1800000 (30 min). Positive number.",
+  turn_default_ms: "Wall-clock ceiling per execute turn in milliseconds. Default: 1800000 (30 min). Positive number.",
+  pipeline_stage_ms: "Per-stage timeout for the auto-pipeline (review, fix, check) in milliseconds. Default: 300000 (5 min). Positive number.",
+  pipeline_total_ms: "Total wall-clock budget for the entire auto-pipeline in milliseconds. Default: 900000 (15 min). Positive number.",
+  question_answer_ms: "How long to wait for a 'respond' answer to a Codex question before timing out. Default: 300000 (5 min). Positive number.",
+  artifact_retention_jobs: "Max number of terminal jobs to keep when running 'status --cleanup'. Positive number.",
+  artifact_retention_days: "Max age in days of terminal job artifacts to keep when running 'status --cleanup'. Positive number.",
+  redact_secrets: "When true, scrub likely-secret strings from persisted event and NDJSON text. Boolean.",
+  prompt_footer: "Text appended to every task prompt. Useful for project-wide instructions. String.",
+  default_backend: "Override the backend adapter. Normally auto-detected. String.",
+  adapter_routing: "Advanced: per-adapter routing rules. Object (cannot be set via config set; edit the file directly)."
+};
 function parseConfigFile(filePath, source) {
   if (!filePath || !fs10.existsSync(filePath)) {
     return { config: {}, diagnostics: [] };
@@ -8413,6 +8465,9 @@ function parseConfigFile(filePath, source) {
       }]
     };
   }
+}
+function readConfigFile(filePath) {
+  return parseConfigFile(filePath, "config").config;
 }
 function validateConfigLayer(layer, source, pathValue) {
   const diagnostics = [];
@@ -8504,6 +8559,14 @@ function loadConfig(skillDir, overrideDir = null, workspaceRoot = null) {
 }
 function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).sources;
+}
+function resolveConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
+  const sources = resolveConfigSources(skillDir, overrideDir, workspaceRoot);
+  return {
+    skillConfig: sources.skillConfigExists ? readConfigFile(sources.skillConfigPath) : {},
+    workspaceConfig: sources.workspaceConfigExists ? readConfigFile(sources.workspaceConfigPath) : {},
+    cwdConfig: sources.overrideConfigExists ? readConfigFile(sources.overrideConfigPath) : {}
+  };
 }
 function validateConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).diagnostics;
@@ -9355,6 +9418,91 @@ function buildAdversarialReviewPrompt(rootDir, context, focusText, opusConcerns 
   );
 }
 
+// src/lib/local-config.mjs
+import fs14 from "node:fs";
+import path12 from "node:path";
+var LOCAL_CONFIG_RELATIVE_PATH = path12.join(".claude", "codex-bridge.local.md");
+var FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+var DEFAULT_BODY = [
+  "",
+  "# Codex Bridge \u2014 project-local configuration",
+  "",
+  "This file holds project-local overrides for the codex-bridge plugin.",
+  "Settings live in the YAML frontmatter at the top of the file. Edit the",
+  "frontmatter or use the `/codex-bridge:config` slash command. Markdown",
+  "below the closing `---` is preserved across edits and is yours to use",
+  "for notes.",
+  ""
+].join("\n");
+function resolveLocalConfigPath(workspaceRoot) {
+  if (!workspaceRoot || typeof workspaceRoot !== "string") {
+    throw new TypeError("resolveLocalConfigPath requires a workspaceRoot string");
+  }
+  return path12.join(workspaceRoot, LOCAL_CONFIG_RELATIVE_PATH);
+}
+function readLocalConfig(workspaceRoot) {
+  const filePath = resolveLocalConfigPath(workspaceRoot);
+  if (!fs14.existsSync(filePath)) {
+    return {
+      filePath,
+      exists: false,
+      frontmatter: {},
+      body: "",
+      parseError: null
+    };
+  }
+  const raw = fs14.readFileSync(filePath, "utf8");
+  const match = FRONTMATTER_REGEX.exec(raw);
+  if (!match) {
+    return {
+      filePath,
+      exists: true,
+      frontmatter: {},
+      body: raw,
+      parseError: null
+    };
+  }
+  const [, frontmatterRaw, body] = match;
+  let frontmatter = {};
+  let parseError = null;
+  try {
+    const parsed = jsYaml.load(frontmatterRaw) ?? {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      frontmatter = parsed;
+    } else {
+      parseError = "frontmatter must be a YAML mapping (key: value pairs)";
+    }
+  } catch (error) {
+    parseError = error?.message ?? String(error);
+  }
+  return {
+    filePath,
+    exists: true,
+    frontmatter,
+    body: body ?? "",
+    parseError
+  };
+}
+function writeLocalConfig(workspaceRoot, frontmatter, body) {
+  const filePath = resolveLocalConfigPath(workspaceRoot);
+  fs14.mkdirSync(path12.dirname(filePath), { recursive: true });
+  const serialized = serializeLocalConfig(frontmatter, body);
+  fs14.writeFileSync(filePath, serialized, "utf8");
+  return filePath;
+}
+function serializeLocalConfig(frontmatter, body) {
+  const safeFrontmatter = frontmatter && typeof frontmatter === "object" && !Array.isArray(frontmatter) ? frontmatter : {};
+  const yamlText = Object.keys(safeFrontmatter).length === 0 ? "" : jsYaml.dump(safeFrontmatter, { lineWidth: 100, noRefs: true, sortKeys: false });
+  const normalizedBody = typeof body === "string" && body.length > 0 ? body : DEFAULT_BODY;
+  const bodyWithLeadingNewline = normalizedBody.startsWith("\n") ? normalizedBody : `
+${normalizedBody}`;
+  return `---
+${yamlText}---${bodyWithLeadingNewline}`;
+}
+function getDefaultLocalConfigBody() {
+  return DEFAULT_BODY;
+}
+
 // src/lib/render.mjs
 function severityRank(severity) {
   switch (severity) {
@@ -9841,8 +9989,8 @@ function renderCancelReport(job) {
 }
 
 // src/adapters/codex/pipeline.mjs
-import fs14 from "node:fs";
-import path12 from "node:path";
+import fs15 from "node:fs";
+import path13 from "node:path";
 
 // src/lib/review-result.mjs
 var REVIEW_RESULT_SCHEMA_VERSION = "1.0";
@@ -10125,9 +10273,9 @@ function reviewResultTypeError(message, field) {
 var PIPELINE_TIMEOUT_MS_DEFAULT = 18e5;
 var STAGE_TIMEOUT_MS_DEFAULT = 72e4;
 function loadExecuteInstructions(rootDir) {
-  const p = path12.join(rootDir, "templates", "execute-instructions.md");
+  const p = path13.join(rootDir, "templates", "execute-instructions.md");
   try {
-    return fs14.readFileSync(p, "utf8");
+    return fs15.readFileSync(p, "utf8");
   } catch {
     return "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed.";
   }
@@ -10581,7 +10729,7 @@ function readCapturedDiffContent(diff) {
     return "";
   }
   try {
-    return fs14.readFileSync(diff.diffPath, "utf8");
+    return fs15.readFileSync(diff.diffPath, "utf8");
   } catch {
     return "";
   }
@@ -10716,8 +10864,8 @@ function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
 }
 
 // src/lib/update-check.mjs
-import fs15 from "node:fs";
-import path13 from "node:path";
+import fs16 from "node:fs";
+import path14 from "node:path";
 import os6 from "node:os";
 var DEFAULT_CACHE_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_FETCH_TIMEOUT_MS = 2500;
@@ -10726,12 +10874,12 @@ var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/relea
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
-  const root = pluginDataDir ? path13.join(pluginDataDir, "codex-bridge-update.json") : path13.join(os6.homedir(), ".codex-bridge", "update-cache.json");
+  const root = pluginDataDir ? path14.join(pluginDataDir, "codex-bridge-update.json") : path14.join(os6.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
   try {
-    const raw = fs15.readFileSync(cachePath(), "utf8");
+    const raw = fs16.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
     return parsed;
@@ -10742,8 +10890,8 @@ function readCache() {
 function writeCache(entry) {
   try {
     const p = cachePath();
-    fs15.mkdirSync(path13.dirname(p), { recursive: true });
-    fs15.writeFileSync(p, JSON.stringify(entry, null, 2));
+    fs16.mkdirSync(path14.dirname(p), { recursive: true });
+    fs16.writeFileSync(p, JSON.stringify(entry, null, 2));
     return true;
   } catch {
     return false;
@@ -10757,9 +10905,9 @@ function cacheLockPath() {
 }
 function removeStaleLock(lockPath, staleMs) {
   try {
-    const stat = fs15.statSync(lockPath);
+    const stat = fs16.statSync(lockPath);
     if (Date.now() - stat.mtimeMs <= staleMs) return false;
-    fs15.unlinkSync(lockPath);
+    fs16.unlinkSync(lockPath);
     return true;
   } catch (err) {
     return err?.code === "ENOENT";
@@ -10768,15 +10916,15 @@ function removeStaleLock(lockPath, staleMs) {
 function acquireCacheLock(staleMs) {
   const lockPath = cacheLockPath();
   try {
-    fs15.mkdirSync(path13.dirname(lockPath), { recursive: true });
+    fs16.mkdirSync(path14.dirname(lockPath), { recursive: true });
   } catch {
     return null;
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = fs15.openSync(lockPath, "wx");
+      const fd = fs16.openSync(lockPath, "wx");
       try {
-        fs15.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+        fs16.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
       } catch {
       }
       return { fd, lockPath };
@@ -10789,11 +10937,11 @@ function acquireCacheLock(staleMs) {
 }
 function releaseCacheLock(lock) {
   try {
-    fs15.closeSync(lock.fd);
+    fs16.closeSync(lock.fd);
   } catch {
   }
   try {
-    fs15.unlinkSync(lock.lockPath);
+    fs16.unlinkSync(lock.lockPath);
   } catch {
   }
 }
@@ -11255,9 +11403,9 @@ async function runIterateLoop(options = {}) {
 }
 
 // src/lib/sandbox-enforcement.mjs
-import fs16 from "node:fs";
+import fs17 from "node:fs";
 import os7 from "node:os";
-import path14 from "node:path";
+import path15 from "node:path";
 var SANDBOX_ENFORCEMENT_MARKER_KEY = "_codex_bridge_sandbox_enforce";
 var SANDBOX_ENFORCEMENT_MARKER_VALUE = "codex-bridge";
 var SANDBOX_ENFORCEMENT_DENY_RULES = Object.freeze([
@@ -11277,14 +11425,14 @@ var SANDBOX_ENFORCEMENT_DENY_RULES = Object.freeze([
   }
 ]);
 function resolveClaudeSettingsPath() {
-  return path14.join(os7.homedir(), ".claude", "settings.json");
+  return path15.join(os7.homedir(), ".claude", "settings.json");
 }
 function readClaudeSettings(settingsPath = resolveClaudeSettingsPath()) {
-  if (!fs16.existsSync(settingsPath)) {
+  if (!fs17.existsSync(settingsPath)) {
     return { exists: false, settings: {}, parseError: null };
   }
   try {
-    const raw = fs16.readFileSync(settingsPath, "utf8");
+    const raw = fs17.readFileSync(settingsPath, "utf8");
     const parsed = raw.trim() ? JSON.parse(raw) : {};
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {
@@ -11303,11 +11451,11 @@ function readClaudeSettings(settingsPath = resolveClaudeSettingsPath()) {
   }
 }
 function writeClaudeSettings(settingsPath, settings) {
-  fs16.mkdirSync(path14.dirname(settingsPath), { recursive: true });
+  fs17.mkdirSync(path15.dirname(settingsPath), { recursive: true });
   const tmpPath = `${settingsPath}.tmp-${process.pid}-${Date.now()}`;
-  fs16.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
+  fs17.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
 `, "utf8");
-  fs16.renameSync(tmpPath, settingsPath);
+  fs17.renameSync(tmpPath, settingsPath);
 }
 function hasSandboxEnforcement(settings) {
   const deny = settings?.permissions?.deny;
@@ -11387,8 +11535,8 @@ function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, de
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
   try {
-    if (!fs17.existsSync(diffPath)) return null;
-    return writeDiffArtifact(taskId, fs17.readFileSync(diffPath, "utf8"));
+    if (!fs18.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs18.readFileSync(diffPath, "utf8"));
   } catch {
     return null;
   }
@@ -11412,20 +11560,20 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path15.join(os8.homedir(), ".codex-bridge");
-    fs17.mkdirSync(logDir, { recursive: true });
-    const logFile = path15.join(logDir, "auto-update.log");
+    const logDir = path16.join(os8.homedir(), ".codex-bridge");
+    fs18.mkdirSync(logDir, { recursive: true });
+    const logFile = path16.join(logDir, "auto-update.log");
     try {
-      const stat = fs17.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs17.truncateSync(logFile, 0);
+      const stat = fs18.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs18.truncateSync(logFile, 0);
     } catch {
     }
-    const fd = fs17.openSync(logFile, "a");
+    const fd = fs18.openSync(logFile, "a");
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-      fs17.writeSync(fd, banner);
+      fs18.writeSync(fd, banner);
       const child = spawn3(
         "npx",
         ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
@@ -11437,7 +11585,7 @@ function spawnDetachedAutoApply(targetVersion) {
       );
       child.on("error", () => {
         try {
-          fs17.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+          fs18.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
 `, "utf8");
         } catch {
         }
@@ -11445,19 +11593,19 @@ function spawnDetachedAutoApply(targetVersion) {
       child.unref();
     } finally {
       try {
-        fs17.closeSync(fd);
+        fs18.closeSync(fd);
       } catch {
       }
     }
   } catch {
   }
 }
-var SCRIPT_DIR = path15.dirname(fileURLToPath2(import.meta.url));
-var SCRIPT_PATH = path15.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs17.existsSync(path15.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path15.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path15.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path15.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path15.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var SCRIPT_DIR = path16.dirname(fileURLToPath2(import.meta.url));
+var SCRIPT_PATH = path16.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs18.existsSync(path16.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path16.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path16.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path16.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path16.join(ROOT_DIR, "templates", "plan-enforcement.md");
 function shellQuote2(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -11522,7 +11670,7 @@ var DEVELOPER_INSTRUCTIONS_FALLBACK = {
 function loadDeveloperInstructions(mode) {
   const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
   try {
-    return fs17.readFileSync(templatePath, "utf8");
+    return fs18.readFileSync(templatePath, "utf8");
   } catch {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
@@ -11711,8 +11859,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path16 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path16}`.trim();
+      const path17 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path17}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -11892,9 +12040,20 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge update --json", "codex-bridge update --force"]
   },
   config: {
-    synopsis: "config show [--json]",
-    summary: "Show effective merged config + which files the values came from (defaults < skill-dir < workspace-root < cwd). Use when a config knob seems to have no effect.",
-    examples: ["codex-bridge config show", "codex-bridge config show --json"]
+    synopsis: "config <show|set|reset|explain|path|validate|template> [args] [--json]",
+    summary: "Conversational config editor. 'show' prints effective config with provenance; 'set key=value' writes to .claude/codex-bridge.local.md; 'reset [key]' restores defaults; 'explain key' describes a knob; 'path' prints the config file path; 'validate' schema-checks the workspace config; 'template' prints a blank config template. After set/reset: restart Claude Code (hooks load at session start).",
+    examples: [
+      "codex-bridge config show",
+      "codex-bridge config show --json",
+      "codex-bridge config set mode=default",
+      "codex-bridge config set idle_timeout_ms=600000",
+      "codex-bridge config reset mode",
+      "codex-bridge config reset",
+      "codex-bridge config explain mode",
+      "codex-bridge config path",
+      "codex-bridge config validate",
+      "codex-bridge config template"
+    ]
   },
   "auth-status": {
     synopsis: "auth-status [--json]",
@@ -12026,17 +12185,17 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path15.resolve(process10.cwd(), options.cwd) : process10.cwd();
+  return options.cwd ? path16.resolve(process10.cwd(), options.cwd) : process10.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path15.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path16.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs17.existsSync(lockPath);
+  let lockExists = fs18.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -12047,7 +12206,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs17.writeFileSync(
+        fs18.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -12083,7 +12242,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs17.writeFileSync(
+      fs18.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -12096,7 +12255,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs17.rmSync(lockPath, { force: true });
+      fs18.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -12349,78 +12508,276 @@ async function handleVersion(argv) {
   ].join("\n") + "\n";
   emitSuccess("version", payload, rendered, { json: options.json, startedAt });
 }
-async function handleConfigShow(argv) {
+async function handleConfig(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "lenient"]
   });
   const action = positionals[0] ?? "show";
-  if (action !== "show") {
+  const SUPPORTED_ACTIONS = ["show", "set", "reset", "explain", "path", "validate", "template"];
+  if (!SUPPORTED_ACTIONS.includes(action)) {
     throw usageError(
-      `config: unknown action '${action}'. Supported: show.`
+      `config: unknown action '${action}'. Supported: ${SUPPORTED_ACTIONS.join(", ")}.`
     );
   }
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
-  const effective = getBridgeConfig(cwd, workspaceRoot);
-  const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
-  const overrides = {};
-  for (const [k, v] of Object.entries(effective)) {
-    if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
-      overrides[k] = v;
+  if (action === "show") {
+    const sources = resolveConfigSources(ROOT_DIR, cwd, workspaceRoot);
+    const effective = getBridgeConfig(cwd, workspaceRoot);
+    const diagnostics = validateConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+    const layers = resolveConfigLayers(ROOT_DIR, cwd, workspaceRoot);
+    const provenance = {};
+    for (const k of Object.keys(effective)) {
+      if (Object.prototype.hasOwnProperty.call(layers.cwdConfig, k)) {
+        provenance[k] = "cwd config.yaml";
+      } else if (Object.prototype.hasOwnProperty.call(layers.workspaceConfig, k)) {
+        provenance[k] = "workspace-root config.yaml";
+      } else if (Object.prototype.hasOwnProperty.call(layers.skillConfig, k)) {
+        provenance[k] = "skill-dir config.yaml";
+      } else {
+        provenance[k] = "plugin defaults";
+      }
     }
-  }
-  const payload = {
-    sources: {
-      defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
-      skill_config_path: sources.skillConfigPath,
-      skill_config_exists: sources.skillConfigExists,
-      workspace_config_path: sources.workspaceConfigPath,
-      workspace_config_exists: sources.workspaceConfigExists,
-      override_config_path: sources.overrideConfigPath,
-      override_config_exists: sources.overrideConfigExists
-    },
-    effective_config: effective,
-    overrides_vs_defaults: overrides,
-    diagnostics,
-    warnings: diagnostics.filter((d) => d.severity === "warning"),
-    errors: diagnostics.filter((d) => d.severity === "error"),
-    precedence_order_low_to_high: [
-      "DEFAULT_CONFIG",
-      "skill-dir config.yaml",
-      "workspace-root config.yaml",
-      "cwd config.yaml"
-    ]
-  };
-  const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
-  const lines = [
-    "Config resolution (lowest \u2192 highest precedence):",
-    `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
-    `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
-    `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
-    `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
-    "",
-    "Effective config:"
-  ];
-  for (const [k, v] of Object.entries(effective)) {
-    const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
-    const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
-    lines.push(`  ${marker} ${k}: ${preview}`);
-  }
-  if (Object.keys(overrides).length > 0) {
-    lines.push("", "* = differs from DEFAULT_CONFIG");
-  }
-  if (diagnostics.length > 0) {
-    lines.push("", "Diagnostics:");
-    for (const diagnostic of diagnostics) {
-      lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
+    const overrides = {};
+    for (const [k, v] of Object.entries(effective)) {
+      if (JSON.stringify(DEFAULT_CONFIG[k]) !== JSON.stringify(v)) {
+        overrides[k] = v;
+      }
     }
-  }
-  const rendered = `${lines.join("\n")}
+    const payload = {
+      sources: {
+        defaults: "(built into src/lib/config.mjs::DEFAULT_CONFIG)",
+        skill_config_path: sources.skillConfigPath,
+        skill_config_exists: sources.skillConfigExists,
+        workspace_config_path: sources.workspaceConfigPath,
+        workspace_config_exists: sources.workspaceConfigExists,
+        override_config_path: sources.overrideConfigPath,
+        override_config_exists: sources.overrideConfigExists
+      },
+      effective_config: effective,
+      overrides_vs_defaults: overrides,
+      provenance,
+      diagnostics,
+      warnings: diagnostics.filter((d) => d.severity === "warning"),
+      errors: diagnostics.filter((d) => d.severity === "error"),
+      precedence_order_low_to_high: [
+        "DEFAULT_CONFIG",
+        "skill-dir config.yaml",
+        "workspace-root config.yaml",
+        "cwd config.yaml"
+      ]
+    };
+    const linePresence = (p, ok) => p ? `${p} (${ok ? "present" : "not found"})` : "(n/a \u2014 cwd == workspace root)";
+    const lines = [
+      "Config resolution (lowest \u2192 highest precedence):",
+      `  1. built-in defaults \u2014 src/lib/config.mjs::DEFAULT_CONFIG`,
+      `  2. skill-dir         \u2014 ${linePresence(sources.skillConfigPath, sources.skillConfigExists)}`,
+      `  3. workspace-root    \u2014 ${linePresence(sources.workspaceConfigPath, sources.workspaceConfigExists)}`,
+      `  4. cwd               \u2014 ${linePresence(sources.overrideConfigPath, sources.overrideConfigExists)}`,
+      "",
+      "Effective config:"
+    ];
+    const globPattern = positionals[1];
+    for (const [k, v] of Object.entries(effective)) {
+      if (globPattern && !k.includes(globPattern.replace(/\*/g, ""))) continue;
+      const marker = Object.prototype.hasOwnProperty.call(overrides, k) ? "*" : " ";
+      const preview = typeof v === "string" && v.length > 70 ? `${v.slice(0, 67)}...` : JSON.stringify(v);
+      const src = provenance[k] ? `  # \u2190 ${provenance[k]}` : "";
+      lines.push(`  ${marker} ${k}: ${preview}${src}`);
+    }
+    if (Object.keys(overrides).length > 0) {
+      lines.push("", "* = differs from DEFAULT_CONFIG");
+    }
+    if (diagnostics.length > 0) {
+      lines.push("", "Diagnostics:");
+      for (const diagnostic of diagnostics) {
+        lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source}:${diagnostic.key ?? "(file)"} \u2014 ${diagnostic.message}`);
+      }
+    }
+    const rendered = `${lines.join("\n")}
 `;
-  emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "path") {
+    const filePath = resolveLocalConfigPath(workspaceRoot);
+    const exists = fs18.existsSync(filePath);
+    const payload = { path: filePath, exists };
+    const rendered = `${filePath}${exists ? "" : " (does not exist yet)"}
+`;
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "template") {
+    const template = serializeLocalConfig({}, getDefaultLocalConfigBody());
+    const payload = { template };
+    emitSuccess("config", payload, template, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "explain") {
+    const key = positionals[1];
+    if (!key) {
+      throw usageError("config explain: missing key. Usage: config explain <key>");
+    }
+    const doc = CONFIG_KEY_DOCS[key];
+    if (!doc) {
+      throw usageError(
+        `config explain: unknown key '${key}'. Known keys: ${Object.keys(CONFIG_SCHEMA).join(", ")}.`
+      );
+    }
+    const payload = { key, doc, valid_values: CONFIG_SCHEMA[key] };
+    const rendered = `${key}:
+  ${doc}
+`;
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "validate") {
+    const local = readLocalConfig(workspaceRoot);
+    if (!local.exists) {
+      const payload2 = { valid: true, path: local.filePath, exists: false, diagnostics: [] };
+      const rendered2 = `No local config found at ${local.filePath} \u2014 nothing to validate.
+`;
+      emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
+      return;
+    }
+    if (local.parseError) {
+      const payload2 = {
+        valid: false,
+        path: local.filePath,
+        exists: true,
+        diagnostics: [{ severity: "error", code: "CONFIG_PARSE_ERROR", message: local.parseError }]
+      };
+      const rendered2 = `ERROR: Could not parse ${local.filePath}: ${local.parseError}
+`;
+      emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
+      return;
+    }
+    const diagnostics = [];
+    for (const [k, v] of Object.entries(local.frontmatter)) {
+      const schema2 = CONFIG_SCHEMA[k];
+      if (!schema2) {
+        diagnostics.push({
+          severity: "warning",
+          code: "CONFIG_UNKNOWN_KEY",
+          key: k,
+          message: `Unknown config key '${k}' \u2014 will be ignored by the bridge runtime.`
+        });
+        continue;
+      }
+      const valid2 = schema2.type === "boolean" ? typeof v === "boolean" : schema2.type === "positive-number" ? typeof v === "number" && v > 0 : schema2.type === "enum" ? typeof v === "string" && schema2.values.includes(v) : schema2.type === "string" ? typeof v === "string" : schema2.type === "object" ? v && typeof v === "object" && !Array.isArray(v) : true;
+      if (!valid2) {
+        const hint = schema2.type === "enum" ? `expected one of: ${schema2.values.join(", ")}` : `expected ${schema2.type}`;
+        diagnostics.push({
+          severity: "error",
+          code: "CONFIG_INVALID_VALUE",
+          key: k,
+          message: `Invalid value for '${k}' (${JSON.stringify(v)}); ${hint}.`
+        });
+      }
+    }
+    const valid = !diagnostics.some((d) => d.severity === "error");
+    const payload = { valid, path: local.filePath, exists: true, diagnostics };
+    let rendered;
+    if (diagnostics.length === 0) {
+      rendered = `OK \u2014 ${local.filePath} is valid.
+`;
+    } else {
+      const lines = [`${valid ? "WARNINGS" : "ERRORS"} in ${local.filePath}:`];
+      for (const d of diagnostics) {
+        lines.push(`  ${d.severity.toUpperCase()} ${d.code} ${d.key ?? ""} \u2014 ${d.message}`);
+      }
+      rendered = `${lines.join("\n")}
+`;
+    }
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "set") {
+    const assignment = positionals[1];
+    if (!assignment || !assignment.includes("=")) {
+      throw usageError(
+        "config set: expected <key>=<value>. Example: config set mode=default"
+      );
+    }
+    const eqIdx = assignment.indexOf("=");
+    const key = assignment.slice(0, eqIdx);
+    const rawValue = assignment.slice(eqIdx + 1);
+    if (!CONFIG_SCHEMA[key]) {
+      throw usageError(
+        `config set: unknown key '${key}'. Known keys: ${Object.keys(CONFIG_SCHEMA).join(", ")}.`
+      );
+    }
+    const parsed = parseConfigValue(key, rawValue);
+    if (!parsed.ok && !options.lenient) {
+      throw usageError(`config set: ${parsed.error}`);
+    }
+    const value = parsed.ok ? parsed.value : rawValue;
+    const local = readLocalConfig(workspaceRoot);
+    if (local.parseError) {
+      throw usageError(
+        `config set: cannot write \u2014 ${local.filePath} has a YAML parse error: ${local.parseError}`
+      );
+    }
+    const previousValue = local.frontmatter[key];
+    local.frontmatter[key] = value;
+    const writtenPath = writeLocalConfig(workspaceRoot, local.frontmatter, local.body);
+    const payload = {
+      key,
+      value,
+      previous_value: previousValue ?? null,
+      path: writtenPath,
+      requires_restart: true
+    };
+    const prevStr = previousValue !== void 0 ? JSON.stringify(previousValue) : "(unset)";
+    const rendered = [
+      `Set ${key} = ${JSON.stringify(value)} (was ${prevStr}).`,
+      `Wrote to: ${writtenPath}`,
+      `NOTE: Hooks load at session start \u2014 restart Claude Code to apply this change.`
+    ].join("\n") + "\n";
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
+  if (action === "reset") {
+    const key = positionals[1];
+    const local = readLocalConfig(workspaceRoot);
+    if (local.parseError) {
+      throw usageError(
+        `config reset: cannot write \u2014 ${local.filePath} has a YAML parse error: ${local.parseError}`
+      );
+    }
+    let removed;
+    if (key) {
+      if (!Object.prototype.hasOwnProperty.call(local.frontmatter, key)) {
+        const payload2 = { key, removed: false, path: local.filePath };
+        const rendered2 = `Key '${key}' was not set in ${local.filePath} \u2014 nothing to reset.
+`;
+        emitSuccess("config", payload2, rendered2, { json: options.json, startedAt });
+        return;
+      }
+      removed = { [key]: local.frontmatter[key] };
+      delete local.frontmatter[key];
+    } else {
+      removed = { ...local.frontmatter };
+      local.frontmatter = {};
+    }
+    const writtenPath = writeLocalConfig(workspaceRoot, local.frontmatter, local.body);
+    const payload = {
+      key: key ?? null,
+      removed,
+      path: writtenPath,
+      requires_restart: true
+    };
+    const what = key ? `key '${key}'` : "all keys";
+    const rendered = [
+      `Reset ${what} in ${writtenPath}.`,
+      `NOTE: Hooks load at session start \u2014 restart Claude Code to apply this change.`
+    ].join("\n") + "\n";
+    emitSuccess("config", payload, rendered, { json: options.json, startedAt });
+    return;
+  }
 }
 async function handleUpdate(argv) {
   const startedAt = Date.now();
@@ -13072,9 +13429,9 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 function safeRealPath(filePath) {
   try {
-    return fs17.realpathSync.native ? fs17.realpathSync.native(filePath) : fs17.realpathSync(filePath);
+    return fs18.realpathSync.native ? fs18.realpathSync.native(filePath) : fs18.realpathSync(filePath);
   } catch {
-    return path15.resolve(filePath);
+    return path16.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -13112,10 +13469,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path15.resolve(worktreePath);
-  if (options.cwd && !samePath(path15.resolve(process10.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path16.resolve(worktreePath);
+  if (options.cwd && !samePath(path16.resolve(process10.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path15.resolve(process10.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path16.resolve(process10.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -13276,14 +13633,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs17.readFileSync(absPath, "utf8");
+    return fs18.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -13393,7 +13750,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs17.openSync(stderrPath, "a");
+      const stderrFd = fs18.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
@@ -13417,7 +13774,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs17.closeSync(stdioConfig[2]);
+      fs18.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -14142,7 +14499,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path15.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path16.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -14216,10 +14573,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path15.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path15.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path15.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path15.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path16.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path16.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path16.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path16.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -14703,7 +15060,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path15.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path16.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -14893,7 +15250,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path15.isAbsolute(artifactPath) ? artifactPath : path15.resolve(cwd, artifactPath);
+  const resolvedPath = path16.isAbsolute(artifactPath) ? artifactPath : path16.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -14910,7 +15267,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs17.statSync(resolvedPath);
+      statInfo = fs18.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -15119,7 +15476,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
       for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
         if (!filePath) continue;
         try {
-          fs17.rmSync(filePath, { force: true });
+          fs18.rmSync(filePath, { force: true });
         } catch {
         }
       }
@@ -15203,7 +15560,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs17.readFileSync(eventsPath, "utf8");
+        const data = fs18.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -15220,13 +15577,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs17.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs18.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs17.existsSync(eventsPath)) {
+              if (fs18.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15238,12 +15595,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs17.existsSync(eventsPath)) {
+    if (fs18.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs17.existsSync(eventsPath)) {
+        if (fs18.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15286,7 +15643,7 @@ async function handleWait(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = TERMINAL_TAG_REGEX;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -15343,7 +15700,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     return {
       reference,
       job,
-      eventsPath: path15.join(sessionDir, `${job.threadId}.events`)
+      eventsPath: path16.join(sessionDir, `${job.threadId}.events`)
     };
   });
   const deadline = Date.now() + timeoutMs;
@@ -15396,7 +15753,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
 }
 function scanTerminalEvent(eventsPath, pattern) {
   try {
-    const data = fs17.readFileSync(eventsPath, "utf8");
+    const data = fs18.readFileSync(eventsPath, "utf8");
     for (const line of data.split("\n")) {
       const m = pattern.exec(line);
       if (m) return { timedOut: false, tag: m[1], line };
@@ -15440,7 +15797,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -15471,8 +15828,8 @@ async function handleEvents(argv) {
   const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs17.existsSync(eventsPath)) {
-    initial = fs17.readFileSync(eventsPath, "utf8");
+  if (fs18.existsSync(eventsPath)) {
+    initial = fs18.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -15518,7 +15875,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs17.readFileSync(eventsPath, "utf8");
+        data = fs18.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -15540,13 +15897,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs17.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs18.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs17.existsSync(eventsPath)) {
+              if (fs18.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15557,11 +15914,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs17.existsSync(eventsPath)) {
+    if (fs18.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs17.existsSync(eventsPath)) {
+        if (fs18.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15742,13 +16099,13 @@ async function handleCancel(argv) {
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path15.resolve(cwd, positionals[0]);
+    const candidate = path16.resolve(cwd, positionals[0]);
     try {
-      if (fs17.existsSync(candidate) && fs17.statSync(candidate).isFile()) {
-        return fs17.readFileSync(candidate, "utf8");
+      if (fs18.existsSync(candidate) && fs18.statSync(candidate).isFile()) {
+        return fs18.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -15779,7 +16136,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs17.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs18.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -15860,9 +16217,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path15.join(dir, "meta.json"),
-    review_path: path15.join(dir, "review.json"),
-    verdict_path: path15.join(dir, "verdict.json"),
+    meta_path: path16.join(dir, "meta.json"),
+    review_path: path16.join(dir, "review.json"),
+    verdict_path: path16.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -16263,10 +16620,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path15.join(jobDir(taskId), "verdict.json");
+    const target = path16.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs17.existsSync(target)) {
-      fs17.rmSync(target, { force: true });
+    if (fs18.existsSync(target)) {
+      fs18.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -16844,7 +17201,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs17.readFileSync(session.ndjsonPath, "utf8");
+    content = fs18.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -16909,7 +17266,7 @@ var SUBCOMMAND_DISPATCH = Object.freeze({
   setup: handleSetup,
   version: handleVersion,
   update: handleUpdate,
-  config: handleConfigShow,
+  config: handleConfig,
   "auth-status": handleAuthStatus,
   review: handleReview,
   "adversarial-review": (argv) => handleReviewCommand(argv, { reviewName: "Adversarial Review" }),
@@ -16943,10 +17300,10 @@ process10.stderr.on("error", (err) => {
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path15.join(os8.homedir(), ".codex-bridge", "crashes");
-    fs17.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path16.join(os8.homedir(), ".codex-bridge", "crashes");
+    fs18.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path15.join(crashDir, `${ts}-${process10.pid}.log`);
+    const file = path16.join(crashDir, `${ts}-${process10.pid}.log`);
     const payload = {
       kind,
       ts,
@@ -16957,7 +17314,7 @@ function writeCrashLog(kind, error) {
       bridgeVersion: package_default.version,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs17.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs18.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
       process10.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}

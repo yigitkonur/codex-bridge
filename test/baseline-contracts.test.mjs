@@ -84,7 +84,7 @@ function runBridge(args, { workspace, pluginData, fakeBin }) {
       CODEX_BRIDGE_PLUGIN_DATA: pluginData,
       CODEX_BRIDGE_NO_UPDATE_CHECK: "1",
       CODEX_BRIDGE_BACKEND: "",
-      CODEX_COMPANION_SESSION_ID: "",
+      CODEX_COMPANION_SESSION_ID: "baseline-session",
       PATH: fakeBin,
     },
   });
