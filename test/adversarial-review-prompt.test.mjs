@@ -38,6 +38,10 @@ const TASK_RUNTIME_SRC = fs.readFileSync(
   new URL("../src/lib/task-runtime.mjs", import.meta.url),
   "utf8",
 );
+const REVIEW_HANDLER_SRC = fs.readFileSync(
+  new URL("../src/handlers/review.mjs", import.meta.url),
+  "utf8",
+);
 const PROMPT_HELPER_SRC = fs.readFileSync(
   new URL("../src/lib/adversarial-review-prompt.mjs", import.meta.url),
   "utf8",
@@ -187,7 +191,7 @@ test("parseArgs non-repeatable valueOptions still last-write-wins (regression: e
 
 test("handleReviewCommand declares brief + repeatable concern in its parseCommandInput config", () => {
   const block =
-    BRIDGE_SRC.match(/async function handleReviewCommand[\s\S]*?\n\}\n/)?.[0] ?? "";
+    REVIEW_HANDLER_SRC.match(/async function handleReviewCommand[\s\S]*?\n\}\n/)?.[0] ?? "";
   assert.ok(block.length > 0);
   assert.match(block, /valueOptions:\s*\[[^\]]*"brief"[\s\S]*"task"/);
   assert.match(block, /repeatableValueOptions:\s*\["concern"\]/);

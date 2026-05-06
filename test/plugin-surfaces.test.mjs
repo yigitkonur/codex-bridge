@@ -1447,17 +1447,19 @@ test("plugin/hooks/hooks.json wires Stop with the bundled stop.mjs and a 30s tim
 
 test("setup owns project-scoped review gate lock creation", () => {
   const bridge = readText("src/codex-bridge.mjs");
+  const metaHandlers = readText("src/handlers/meta.mjs");
   const runtimePaths = readText("src/lib/runtime-paths.mjs");
   const setupCommand = readText("plugin/commands/setup.md");
 
   // STOP_REVIEW_GATE_LOCK_FILE moved to runtime-paths.mjs in the Phase 0
   // dispatcher split; the dispatcher imports the constant by name.
   assert.match(runtimePaths, /\.codex-bridge-stop-review-gate\.lock/);
-  assert.match(bridge, /STOP_REVIEW_GATE_LOCK_FILE/);
-  assert.match(bridge, /detectOfficialOpenAICodexPlugin/);
-  assert.match(bridge, /OFFICIAL_PLUGIN_STATUS\.ABSENT/);
-  assert.match(bridge, /setStopReviewGate\(workspaceRoot, true, officialPlugin\)/);
-  assert.match(bridge, /setStopReviewGate\(workspaceRoot, false, officialPlugin\)/);
+  assert.match(metaHandlers, /STOP_REVIEW_GATE_LOCK_FILE/);
+  assert.match(metaHandlers, /detectOfficialOpenAICodexPlugin/);
+  assert.match(metaHandlers, /OFFICIAL_PLUGIN_STATUS\.ABSENT/);
+  assert.match(metaHandlers, /setStopReviewGate\(workspaceRoot, true, officialPlugin\)/);
+  assert.match(metaHandlers, /setStopReviewGate\(workspaceRoot, false, officialPlugin\)/);
+  assert.match(bridge, /handleSetup/);
   assert.doesNotMatch(setupCommand, /CODEX_BRIDGE_STOP_REVIEW_GATE/);
   assert.match(setupCommand, /project-specific/);
   assert.match(setupCommand, /official OpenAI Codex plugin/);
@@ -1553,7 +1555,7 @@ test("verdict stdin payload preserves untrusted review text as data", () => {
   assert.equal(payload.result.verdict.raw_output, "raw $(echo unsafe)\nreview text");
   assert.deepEqual(payload.result.verdict.findings, ["line one\n$(echo unsafe)"]);
 
-  const source = readText("src/codex-bridge.mjs");
+  const source = readText("src/handlers/registry.mjs");
   const verdictBlock = source.match(/async function handleVerdict[\s\S]*?async function handleVerdictsPending/)?.[0] ?? "";
   assert.match(verdictBlock, /"payload-stdin"/);
   assert.match(verdictBlock, /readVerdictPayloadFromStdin\(\)/);
