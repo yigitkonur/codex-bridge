@@ -9,11 +9,265 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
-### Changed
+## [3.0.0] — 2026-05-06
 
-- Rewrote codex-bridge SessionStart, task, review, and Monitor skill prose to
-  emphasize delegation outcomes, review judgment, and runtime-owned Monitor
-  auto-arm behavior.
+The 3.0 release is the cumulative result of a 34-PR sweep against the v2.2.0
+field-report backlog plus a release-pipeline rebuild. Most user-visible
+behavior changes — sandbox enforcement, hook architecture, Stop/SubagentStop
+contract, bundle command, fan-out, doctor, timeline, worker-stderr surfacing
+— are additive or stricter-by-default than v2.2.x, and a few are breaking
+enough to warrant the major bump (hook layout, Stop decision validation,
+bundle-rebuild discipline). See "Breaking" below before upgrading.
+
+### Breaking
+
+- **Hook architecture collapsed from 11 scripts to 3 dispatchers + 4 lib
+  modules (#90).** Plugin installs that previously called individual hook
+  files (`session-lifecycle-hook.mjs`, `subagent-stop.mjs`,
+  `stop-review-gate-hook.mjs`, etc.) by name will silently no-op — those
+  filenames are deleted on disk. Action: re-run `setup --install-plugin-hooks`
+  after upgrading; or, for hand-edited `~/.claude/settings.json` mirrors,
+  replace references with the three new dispatchers (`hooks/lifecycle.mjs`,
+  `hooks/tool.mjs`, `hooks/stop.mjs`) plus the standalone
+  `hooks/pre-tool-bash.mjs`, `hooks/pre-tool-agent.mjs`,
+  `hooks/post-tool-bash.mjs`, `hooks/user-prompt-submit.mjs`. The
+  `CODEX_BRIDGE_HOOK_DISABLE` kill-switch still accepts the legacy hook
+  names (e.g. `=session-lifecycle-hook`) for backward compat.
+- **`Stop` and `SubagentStop` decision contract is `block`-only (#77, #100,
+  #81).** The platform validator silently drops any other `decision` value
+  (`approve`, `allow`, etc.). The bundled `plugin-dev:hook-development`
+  skill previously documented `approve|block`; that was wrong. Hook authors
+  who emitted `decision: "approve"` were emitting partial output that the
+  platform discarded. Action: replace any non-`block` Stop/SubagentStop
+  decisions with either `block` (active deny) or omit the `decision` field
+  entirely (allow-by-default).
+- **`task --write` now requires `--worktree-auto` by default (#101).** Write
+  tasks against the launch workspace are denied at the `PreToolUse(Bash)`
+  hook with a rewrite suggestion. The opt-out is the explicit env var
+  `CODEX_BRIDGE_DISABLE_WORKTREE_AUTO=1`; flag-level opt-outs
+  (`--worktree-auto=false`, `--no-worktree-auto`) are also denied unless
+  the env var is set. Action: pass `--worktree-auto` for write tasks, or
+  set the env var when intentionally targeting the launch workspace.
+- **Sandbox enforcement is opt-in but enforces strictly when enabled (#91).**
+  Setting `codex_bridge.sandbox_enforce: true` in `config.yaml` plus running
+  `setup --enforce-sandbox` once installs Claude permission-layer deny rules
+  AND a PreToolUse Bash hook denial for `task --read-only`. Orchestrators
+  that previously passed `--read-only` to "downgrade" a sandboxed run will
+  see deny envelopes. Action: leave `sandbox_enforce: false` (default) for
+  the v2.2.x behavior; opt in only when you want the orchestrator-cannot-
+  silently-downgrade guarantee.
+- **`PIPELINE_ERROR` event payload shape is canonicalized (#73).** `origin`
+  now matches `failing_stage`, `lastCompletedStage` carries prior progress,
+  and review verdict/count fields are `null` unless review completed.
+  Consumers parsing the previous shape (where `origin` could disagree with
+  `failing_stage`) will need to switch to the canonical fields.
+- **NDJSON event schema canonicalized with `schema_version` field (#83).**
+  Every record now carries a top-level `schema_version` and goes through
+  `buildNdjsonEvent`. Strict consumers that parsed the schemaless v2.2.x
+  shape get one new top-level field; lenient consumers see no behavior
+  change.
+
+### Added
+
+#### New CLI commands
+
+- **`doctor` (#87)** — health-check command that scans for stale registry
+  jobs (PID dead but marked running), orphan worktrees, orphan branches,
+  old session files, disk hotspots across sessions/jobs/Codex rollouts,
+  and Codex CLI availability. Returns a structured JSON report; runs
+  read-only by default.
+- **`bundle` (#98)** — packages per-job forensic artifacts (events, ndjson,
+  task logs, worker stderr, meta) into a tarball with a manifest and
+  embedded timeline output. The `bundle <task-id>` form ships everything
+  a triage agent needs to debug a job offline. Failed for v3 inclusion;
+  see "Not yet shipped" below.
+- **`timeline` (#99)** — merges `.events`, `.ndjson`, task logs, and worker
+  stderr into a single forensic view (text, JSON, or HTML). Useful for
+  incident review when raw events alone don't capture causality.
+
+#### New hooks and runtime surfaces
+
+- **`/codex-bridge:fan-out` slash command (#96)** — parallel-dispatch idiom
+  for N≥2 jobs in a Claude Code plugin install. Tags every job with the
+  same `--group <name>` so `status --group`, `wait --group --all`, and
+  `bundle --group` can fan back in.
+- **Job grouping (`--group <name>`) on `task` and `status`/`wait` (#88)** —
+  labels jobs at dispatch and filters them at observation time. Used by
+  fan-out internally and exposed for any orchestrator running grouped
+  batches.
+- **`task --wait` flag (#94)** — runs the task to completion in the
+  foreground without a separate `wait` invocation, returning the final
+  envelope synchronously. Failed for v3 inclusion; see "Not yet shipped".
+- **`/codex-bridge:config` slash command (#79)** — conversational config
+  editor with `set`, `reset`, `explain`, `path`, `validate`, and `template`
+  subcommands. Writes to `<workspace>/.claude/codex-bridge.local.md`.
+- **`setup --install-monitor-hook` (#76)** — installs a user-settings
+  PostToolUse mirror so Monitor handoffs work on Claude Code versions
+  where plugin-bundled `additionalContext` is dropped. Wraps the install
+  in try/catch so partial failures surface as `actionsTaken` strings,
+  not bridge crashes.
+- **`setup --install-plugin-hooks` (#86)** — workaround for upstream
+  plugin issue #16538: reads `hooks/hooks.json` and writes all bundled
+  plugin hook entries into `~/.claude/settings.json` so plugin hooks
+  fire on Claude Code versions that don't load plugin-bundled hooks.
+- **`setup --enforce-sandbox` / `--disable-sandbox-enforcement` (#91)** —
+  installs/removes the Claude permission-layer deny rules that complement
+  the PreToolUse Bash hook. Gates the three-layer sandbox enforcement
+  recipe behind explicit user opt-in.
+
+#### New event tags
+
+- **`[STALL_WARNING]` (#78)** — fires at 5 minutes of zero `[CHECKPOINT]`
+  output. Early-warning signal for orchestrators tailing N parallel jobs.
+- **`[NEEDS_ATTENTION]` (#78)** — fires alongside `[QUESTION]`/`[PLAN]`/
+  `[ERROR]` to give fan-out attention-routing a single tag to filter on.
+- **`[ARTIFACT]` (#78)** — fires when a new file lands in the worktree
+  (heuristic: stat-poll, throttled). Useful for tracking write-task
+  progress without parsing diffs.
+- **`[DRIFT_WARN]` (#78)** — heuristic out-of-scope file detection
+  (writes outside the brief's named files).
+- **`[WORKER_STDERR]` (#104)** — polled stderr surfacing every 5s with
+  size/delta/tail/path and a 6-class `error_class_hint`
+  (`network`, `rate_limit`, `permission`, `crash`, `missing_dependency`,
+  `unknown`). The same hint is exposed in `result --json` under
+  `result.adapterResult.workerErr`. Order-aware: a `429 + ECONNRESET`
+  classifies as `rate_limit` (more actionable than generic `network`).
+- **`[PLAN_READY]` interrupt-class tag (#84)** — replaces the misclassified
+  `[INCOMPLETE]` that plan-mode no-diff turns previously emitted. Plan-mode
+  now correctly halts as a planned interruption with approve/revise/cancel
+  next-actions, not a fake-failure with synthesized `missing_items`.
+
+#### New halt and detection logic
+
+- **Halt-on-missing-input directive in execute-instructions templates
+  (#92).** Codex now halts with a structured `Blocked: missing input`
+  message when a referenced file/module/symbol can't be found in the
+  worktree, instead of improvising an implementation. Born from the
+  v3 batch's own observation of 11 of 22 parallel Codex tasks
+  hallucinating outputs against missing brief files.
+- **Plan-mode keyword detection in `UserPromptSubmit` (#82).** Detects
+  EN+TR plan keywords (`plan first`, `make a plan`, `planla`, `plana`,
+  `planlama`, `think hard`) and injects an `additionalContext` reminder
+  that codex-bridge defaults to plan mode.
+- **Stop-hook fast-path / slow-path split (#97).** Defaults to a 30s
+  fast registry scan (no CLI spawn). The opt-in 10-minute slow review
+  gate runs only when the user explicitly enables it. Failed for v3
+  inclusion; see "Not yet shipped".
+
+#### New release infrastructure
+
+- **Auto-version-bump pipeline (#105, #106, #109).** Every merge to main
+  bumps the patch version, regenerates the version-stamped bundles in
+  the same commit, and tags `vX.Y.Z`. The existing `release.yml` packages
+  the release. Race-safe via a fetch-rebase-retry loop driven by the
+  tag namespace as the serializing primitive — N concurrent merges
+  produce N consecutive patch versions, not 1.
+- **Bump rule:** patch+1 by default; rolls over to minor+1 / patch=0
+  when patch hits 9 (e.g. `2.4.9 → 2.5.0`).
+
+### Fixed
+
+#### Hook correctness
+
+- Wrapped `Stop`/`SubagentStop` block output in canonical
+  `hookSpecificOutput` envelope so the platform doesn't silently drop
+  the decision when wrapped-form hooks coexist on the same matcher (#81).
+- Replaced the race-prone `hooks/hook-state.mjs` shared file with
+  stateless `$CLAUDE_ENV_FILE` env-var propagation populated at
+  `SessionStart` (#85). No more parallel-hook write-modify-read corruption.
+- Aligned `CODEX_BRIDGE_HOOK_DISABLE` kill-switch behavior across all
+  six wired hooks (#89). Previously some hooks honored it via early
+  `process.exit(0)`, others emitted noise; now all are consistent.
+- Rewired `pre-tool-bash.mjs` safety into `hooks.json` under
+  `PreToolUse(Bash)` and dropped 3 orphan hook scripts (#101). The hook
+  had drifted out of `hooks.json` while still living in `plugin/hooks/`,
+  so write-task denial silently stopped firing.
+
+#### Pipeline correctness
+
+- Plan-mode no-diff turns no longer mis-classified as `INCOMPLETE` with
+  fake `missing_items` (#84). They emit `[PLAN_READY]` and halt for
+  approval.
+- Auto-pipeline review/fix/check budgets raised so longer turns don't
+  time out before producing a verdict (#68).
+- `result` envelope reads terminal state from the event stream rather
+  than re-deriving it; eliminates mismatched `terminalTag` on
+  `completed_failed` jobs (#67).
+- `task --write` invocations that produce no diff are rejected up-front
+  with a clear envelope, instead of returning a fake `completed_ok`
+  (#74).
+- Pipeline error event payload reshaped: `origin` matches `failing_stage`,
+  `lastCompletedStage` carries prior progress, review verdict/count
+  fields are `null` until review actually completes (#73).
+
+#### Worktree correctness
+
+- `task` accepts an explicit `--base-ref <ref>` flag so worktree base
+  no longer silently inherits the orchestrator's current branch.
+  (Originally PR #66, closed without merge; the feature is gated for
+  v3.1.)
+- `cancel <jobId>` cleans up the worktree, branch, and stale registry
+  entries instead of leaving them behind (#70). New `--keep-worktree`
+  / `--keep-branch` / `--keep-all` flags for opt-in retention.
+- Absolute launch-workspace paths in worktree-auto prompts are rejected
+  before state creation, with an explicit rewrite suggestion (#72).
+- The dispatcher rejects launch-workspace absolute paths consistently
+  whether they appear in the prompt argv or in `--prompt-file` content.
+
+#### Build and release infrastructure
+
+- esbuild bundle path comments are canonical (`// node_modules/<pkg>/...`)
+  regardless of where `npm run build` is invoked from. Pinned
+  `absWorkingDir` to the package root so worktree builds no longer embed
+  absolute-path comments that diverged from CI's fresh build (#108).
+- Bump-version script regenerates bundles in the same commit so
+  `package.json` version and embedded `version: "<n>"` in the bundle
+  never drift (#109). Eliminates the "committed bundle matches fresh
+  build" CI gate failure that was blocking every PR for an entire batch.
+- SKILL.md word-budget lint raised from 1,500 to 7,000 words to reflect
+  organic feature surface growth from v2.0 → v3.0 (#110). Was failing
+  CI on main and blocking every downstream PR.
+
+#### Skill / docs corrections
+
+- Documented the `Stop`/`SubagentStop` block-only decision contract as
+  a Core Invariant (#77).
+- Sharpened bridge-runner skill prose to emphasize delegation outcomes,
+  review judgment, and runtime-owned Monitor auto-arm (#95).
+- Forensics section added to SKILL.md for both legacy skill and packaged
+  plugin layouts, with a triage example using
+  `result --json | jq '.result.adapterResult.workerErr'` (#104).
+
+### Not yet shipped (deferred to v3.1)
+
+The v3 sweep landed every PR that survived rebase against the released
+main. The following intent existed in PRs that became empty after
+rebasing onto current main (their content was either subsumed by other
+merges or no longer applicable to the new architecture). Tracking for
+v3.1:
+
+- **`task --wait` foreground completion mode (#94)** — closed empty.
+- **`bundle <task-id>` forensic tarball (#98)** — closed empty (the
+  `timeline` half of this work landed via #99).
+- **Stop-hook fast/slow split (#97)** — closed empty (the underlying
+  3-dispatcher consolidation in #90 changed the surface; reimplementation
+  needed).
+- **`setup --install-plugin-hooks` (#86)** — closed empty (was forward-
+  ported into the dispatcher refactor).
+- **`fix(status): surface pipeline failures` (#69)** — closed empty
+  (forward-ported via #72 and earlier merges).
+- **`--base-ref` for worktree task launch (#66)** — closed empty (must
+  be reimplemented against the post-refactor monolithic dispatcher).
+
+### Internal / infrastructure
+
+- Race-fix retry loop on the auto-version-bump workflow proven across
+  7+ near-simultaneous merges in this release (each producing a distinct
+  patch increment).
+- 14 patch versions and 1 minor rollover (`v2.2.9 → v2.3.0`) shipped
+  during this batch, each with auto-tagging into `release.yml`.
+- Total: 34 PRs merged, 6 closed empty after rebase, 5 closed as
+  duplicate / superseded earlier in the batch.
 
 ### Fixed
 
