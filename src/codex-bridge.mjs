@@ -820,9 +820,9 @@ const COMMANDS = Object.freeze({
     ]
   },
   setup: {
-    synopsis: "setup [--json] [--enable-review-gate | --disable-review-gate]",
-    summary: "Health check: Node/npm/Codex install, auth, broker runtime; toggle stop-gate review.",
-    examples: ["codex-bridge setup --json"]
+    synopsis: "setup [--json] [--install-plugin-hooks] [--install-monitor-hook] [--enable-review-gate | --disable-review-gate]",
+    summary: "Health check: Node/npm/Codex install, auth, broker runtime; mirror bundled plugin hooks into Claude user settings; toggle stop-gate review.",
+    examples: ["codex-bridge setup --json", "codex-bridge setup --install-plugin-hooks --json"]
   },
   version: {
     synopsis: "version [--backend <name>] [--check-update] [--json]",
@@ -1154,6 +1154,220 @@ function applyStopReviewGateSnapshot(snapshot) {
   };
 }
 
+// ── Plugin hook mirror helpers ──────────────────────────────────────────────
+
+const PLUGIN_HOOKS_FILE = "hooks.json";
+
+function resolveClaudeSettingsPath() {
+  return path.join(os.homedir(), ".claude", "settings.json");
+}
+
+function resolveBundledHooksPath() {
+  const candidates = [
+    path.join(ROOT_DIR, "hooks", PLUGIN_HOOKS_FILE),
+    path.resolve(ROOT_DIR, "..", "hooks", PLUGIN_HOOKS_FILE),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
+function resolvePluginRootFromHooksPath(hooksPath) {
+  return path.dirname(path.dirname(hooksPath));
+}
+
+function resolveHookCommand(command, pluginRoot) {
+  if (typeof command !== "string") return command;
+  const resolved = command.replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginRoot);
+  return `CLAUDE_PLUGIN_ROOT=${JSON.stringify(pluginRoot)} ${resolved}`;
+}
+
+function readClaudeSettings(settingsPath) {
+  if (!fs.existsSync(settingsPath)) {
+    return { exists: false, settings: {}, parseError: null };
+  }
+  try {
+    const raw = fs.readFileSync(settingsPath, "utf8");
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        exists: true,
+        settings: null,
+        parseError: "settings file must contain a JSON object",
+      };
+    }
+    return { exists: true, settings: parsed, parseError: null };
+  } catch (err) {
+    return { exists: true, settings: null, parseError: err.message };
+  }
+}
+
+function readBundledHooks(hooksPath) {
+  const raw = fs.readFileSync(hooksPath, "utf8");
+  const parsed = JSON.parse(raw);
+  const hooks = parsed?.hooks;
+  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) {
+    throw validationError(
+      `Cannot install bundled hook mirror because ${hooksPath} does not contain a hooks object.`,
+      "PLUGIN_HOOKS_INVALID",
+      "Reinstall codex-bridge, then rerun setup --install-plugin-hooks.",
+    );
+  }
+  return hooks;
+}
+
+function normalizeBundledHookEntry(entry, pluginRoot) {
+  return {
+    ...entry,
+    hooks: entry.hooks.map((hook) => ({
+      ...hook,
+      command: resolveHookCommand(hook.command, pluginRoot),
+    })),
+  };
+}
+
+function collectBundledHookEntries(hooksPath) {
+  const pluginRoot = resolvePluginRootFromHooksPath(hooksPath);
+  const hooks = readBundledHooks(hooksPath);
+  const entries = [];
+  for (const [event, eventEntries] of Object.entries(hooks)) {
+    if (!Array.isArray(eventEntries)) {
+      throw validationError(
+        `Cannot install bundled hook mirror because hooks.${event} in ${hooksPath} must be an array.`,
+        "PLUGIN_HOOKS_EVENT_INVALID",
+        "Reinstall codex-bridge, then rerun setup --install-plugin-hooks.",
+      );
+    }
+    for (const entry of eventEntries) {
+      if (!entry || typeof entry !== "object" || !Array.isArray(entry.hooks)) {
+        throw validationError(
+          `Cannot install bundled hook mirror because hooks.${event} contains an invalid entry.`,
+          "PLUGIN_HOOKS_ENTRY_INVALID",
+          "Reinstall codex-bridge, then rerun setup --install-plugin-hooks.",
+        );
+      }
+      entries.push({ event, entry: normalizeBundledHookEntry(entry, pluginRoot) });
+    }
+  }
+  return entries;
+}
+
+function hookEntryHasCommand(settingsEntry, wantedEntry) {
+  if ((settingsEntry?.matcher ?? undefined) !== (wantedEntry?.matcher ?? undefined)) return false;
+  if (!Array.isArray(settingsEntry?.hooks)) return false;
+  return wantedEntry.hooks.every((wantedHook) =>
+    settingsEntry.hooks.some((hook) =>
+      hook?.type === wantedHook.type &&
+      hook?.command === wantedHook.command
+    )
+  );
+}
+
+function countInstalledBundledHookEntries(settings, entries) {
+  let installed = 0;
+  const missing = [];
+  for (const { event, entry } of entries) {
+    const settingsEntries = settings?.hooks?.[event];
+    const found = Array.isArray(settingsEntries) && settingsEntries.some((settingsEntry) =>
+      hookEntryHasCommand(settingsEntry, entry)
+    );
+    if (found) {
+      installed += 1;
+    } else {
+      missing.push({ event, entry });
+    }
+  }
+  return { installed, missing };
+}
+
+function getMonitorHookMirrorStatus() {
+  const settingsPath = resolveClaudeSettingsPath();
+  const hooksPath = resolveBundledHooksPath();
+  const read = readClaudeSettings(settingsPath);
+  const hooksExists = fs.existsSync(hooksPath);
+  const entries = hooksExists ? collectBundledHookEntries(hooksPath) : [];
+  const counts = read.settings ? countInstalledBundledHookEntries(read.settings, entries) : { installed: 0, missing: entries };
+  return {
+    installed: hooksExists && entries.length > 0 && counts.missing.length === 0,
+    settingsPath,
+    settingsExists: read.exists,
+    settingsParseError: read.parseError,
+    hookScriptPath: hooksPath,
+    hookScriptExists: hooksExists,
+    installedCount: counts.installed,
+    totalCount: entries.length,
+    missingCount: counts.missing.length,
+    installCommand: "codex-bridge setup --install-plugin-hooks",
+  };
+}
+
+function writeClaudeSettings(settingsPath, settings) {
+  const dir = path.dirname(settingsPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+}
+
+function installMonitorHookMirror() {
+  const settingsPath = resolveClaudeSettingsPath();
+  const hooksPath = resolveBundledHooksPath();
+  if (!fs.existsSync(hooksPath)) {
+    throw validationError(
+      `Cannot install bundled hook mirror because ${PLUGIN_HOOKS_FILE} was not found at ${hooksPath}.`,
+      "MONITOR_HOOK_SCRIPT_MISSING",
+      "Run this from a packaged codex-bridge plugin install, or arm Monitor manually from result.monitor.tool_hint.",
+    );
+  }
+  const bundledEntries = collectBundledHookEntries(hooksPath);
+
+  const read = readClaudeSettings(settingsPath);
+  if (read.parseError) {
+    throw validationError(
+      `Cannot update ${settingsPath}: ${read.parseError}.`,
+      "CLAUDE_SETTINGS_PARSE_ERROR",
+      "Fix ~/.claude/settings.json so it is valid JSON, then rerun setup --install-plugin-hooks.",
+    );
+  }
+
+  const settings = read.settings ?? {};
+  settings.hooks ??= {};
+  if (typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks must be a JSON object.`,
+      "CLAUDE_SETTINGS_HOOKS_INVALID",
+      "Fix ~/.claude/settings.json hooks shape, then rerun setup --install-plugin-hooks.",
+    );
+  }
+
+  for (const { event } of bundledEntries) {
+    const existing = settings.hooks[event];
+    if (existing == null) {
+      settings.hooks[event] = [];
+    } else if (!Array.isArray(existing)) {
+      throw validationError(
+        `Cannot update ${settingsPath}: hooks.${event} must be an array.`,
+        "CLAUDE_SETTINGS_HOOK_EVENT_INVALID",
+        `Fix ~/.claude/settings.json hooks.${event} shape, then rerun setup --install-plugin-hooks.`,
+      );
+    }
+  }
+
+  const before = countInstalledBundledHookEntries(settings, bundledEntries);
+  for (const { event, entry } of before.missing) {
+    settings.hooks[event].push(entry);
+  }
+  if (before.missing.length > 0) {
+    writeClaudeSettings(settingsPath, settings);
+  }
+
+  return {
+    alreadyInstalled: before.missing.length === 0,
+    installedCount: before.missing.length,
+    status: getMonitorHookMirrorStatus(),
+  };
+}
+
+// ── End plugin hook mirror helpers ──────────────────────────────────────────
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1212,6 +1426,8 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const adapter = await resolveCommandAdapter({ cwd, workspaceRoot });
   const sandboxEnforcement = getSandboxEnforcementStatus();
 
+  const monitorHook = getMonitorHookMirrorStatus();
+
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -1231,6 +1447,13 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     nextSteps.push(`Sandbox enforcement status could not read ${sandboxEnforcement.settingsPath}: ${sandboxEnforcement.settingsParseError}.`);
   } else if (!sandboxEnforcement.installed) {
     nextSteps.push("Optional: run `codex-bridge setup --enforce-sandbox` to deny sandbox downgrades at the Claude permission layer.");
+  }
+  if (monitorHook.settingsParseError) {
+    nextSteps.push(`Plugin hook mirror status could not read ${monitorHook.settingsPath}: ${monitorHook.settingsParseError}.`);
+  } else if (!monitorHook.installed && monitorHook.hookScriptExists) {
+    nextSteps.push("Optional: run `codex-bridge setup --install-plugin-hooks` to mirror bundled plugin hooks into Claude user settings.");
+  } else if (!monitorHook.installed && !monitorHook.hookScriptExists) {
+    nextSteps.push("Plugin hook mirror unavailable in this install; arm Monitor manually from `result.monitor.tool_hint` after background dispatch.");
   }
 
   return {
@@ -1255,6 +1478,16 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     sandboxEnforcementSettingsPath: sandboxEnforcement.settingsPath,
     sandboxEnforcementSettingsExists: sandboxEnforcement.settingsExists,
     sandboxEnforcementSettingsParseError: sandboxEnforcement.settingsParseError,
+    monitorHookInstalled: monitorHook.installed,
+    monitorHookSettingsPath: monitorHook.settingsPath,
+    monitorHookSettingsExists: monitorHook.settingsExists,
+    monitorHookSettingsParseError: monitorHook.settingsParseError,
+    monitorHookScriptPath: monitorHook.hookScriptPath,
+    monitorHookScriptExists: monitorHook.hookScriptExists,
+    monitorHookInstalledCount: monitorHook.installedCount,
+    monitorHookTotalCount: monitorHook.totalCount,
+    monitorHookMissingCount: monitorHook.missingCount,
+    monitorHookInstallCommand: monitorHook.installCommand,
     actionsTaken,
     nextSteps
   };
@@ -1264,7 +1497,7 @@ async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "enforce-sandbox", "disable-sandbox-enforcement"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "enforce-sandbox", "disable-sandbox-enforcement", "install-monitor-hook", "install-plugin-hooks"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -1284,6 +1517,15 @@ async function handleSetup(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
   const officialPlugin = detectOfficialOpenAICodexPlugin({ cwd, maxAgeMs: 0 });
+
+  if (options["install-monitor-hook"] || options["install-plugin-hooks"]) {
+    const result = installMonitorHookMirror();
+    actionsTaken.push(
+      result.alreadyInstalled
+        ? `Bundled plugin hook mirror already present in ${result.status.settingsPath}.`
+        : `Installed ${result.installedCount} bundled plugin hook mirror entr${result.installedCount === 1 ? "y" : "ies"} in ${result.status.settingsPath}.`
+    );
+  }
 
   if (options["enable-review-gate"]) {
     if (officialPlugin.status === OFFICIAL_PLUGIN_STATUS.ABSENT) {

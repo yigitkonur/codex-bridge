@@ -239,7 +239,7 @@ export function renderSetupReport(report) {
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
-    `- monitor hook mirror: ${report.monitorHookInstalled ? "installed" : "not installed"} (${report.monitorHookSettingsPath ?? "n/a"})`,
+    `- plugin hook mirror: ${report.monitorHookInstalled ? "installed" : "not installed"} (${report.monitorHookInstalledCount ?? 0}/${report.monitorHookTotalCount ?? 0}; ${report.monitorHookSettingsPath ?? "n/a"})`,
     `- sandbox enforcement: ${report.sandboxEnforcementInstalled ? "installed" : "not installed"} (${report.sandboxEnforcementSettingsPath ?? "n/a"})`,
     ""
   ];
@@ -249,7 +249,7 @@ export function renderSetupReport(report) {
   }
 
   if (report.monitorHookSettingsParseError) {
-    lines.push(`Monitor hook settings warning: ${report.monitorHookSettingsParseError}`, "");
+    lines.push(`Plugin hook settings warning: ${report.monitorHookSettingsParseError}`, "");
   }
 
   if (report.sandboxEnforcementSettingsParseError) {

@@ -1,12 +1,13 @@
 ---
 description: Check whether local Codex Bridge requirements are ready
-argument-hint: "[--install-monitor-hook] [--enforce-sandbox|--disable-sandbox-enforcement] [--enable-review-gate|--disable-review-gate] [--json]"
+argument-hint: "[--install-plugin-hooks] [--install-monitor-hook] [--enforce-sandbox|--disable-sandbox-enforcement] [--enable-review-gate|--disable-review-gate] [--json]"
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
 Plugin stop-review gate activation is visible and project-scoped:
 
-- `--install-monitor-hook` mirrors the PostToolUse Monitor handoff hook into `~/.claude/settings.json`. Use it when plugin-bundled hook context is not reaching the parent thread.
+- `--install-plugin-hooks` mirrors all bundled plugin hooks into `~/.claude/settings.json`. Use it when Claude Code is not loading plugin-bundled hooks or hook context is not reaching the parent thread.
+- `--install-monitor-hook` is retained as a compatibility alias for `--install-plugin-hooks`.
 - `--enforce-sandbox` installs Claude permission-layer deny rules in `~/.claude/settings.json` that block `codex-bridge task --read-only` and direct `codex --sandbox read-only|workspace-write` downgrades. Pair it with `sandbox_enforce: true` in `config.yaml` so the PreToolUse Bash hook also denies `--read-only`.
 - `--disable-sandbox-enforcement` removes only Codex Bridge sandbox deny rules from `~/.claude/settings.json`.
 - `--enable-review-gate` creates `.codex-bridge-stop-review-gate.lock` in the git project root.

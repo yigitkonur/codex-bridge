@@ -1831,3 +1831,86 @@ test("plugin PostToolUse honors envelope status field (not phase) for queued gat
   });
   assert.deepEqual(result, { continue: true });
 });
+
+test("setup installs the bundled plugin hook mirror idempotently", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-monitor-hook-"));
+  try {
+    const home = path.join(tempRoot, "home");
+    const pluginData = path.join(tempRoot, "plugin-data");
+    fs.mkdirSync(home, { recursive: true });
+    const env = {
+      HOME: home,
+      CODEX_BRIDGE_NO_UPDATE_CHECK: "1",
+      CODEX_BRIDGE_PLUGIN_DATA: pluginData,
+    };
+
+    const first = runBridge("src/codex-bridge.mjs", ["setup", "--install-plugin-hooks", "--json"], { env });
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const firstPayload = JSON.parse(first.stdout);
+    assert.equal(firstPayload.result.monitorHookInstalled, true);
+    assert.equal(firstPayload.result.monitorHookSettingsExists, true);
+    assert.equal(firstPayload.result.monitorHookScriptExists, true);
+    // Total count matches actual hooks.json entries (7 entries in main branch)
+    const totalEntries = firstPayload.result.monitorHookTotalCount;
+    assert.ok(totalEntries > 0, "expected at least one bundled hook entry");
+    assert.equal(firstPayload.result.monitorHookInstalledCount, totalEntries);
+    assert.equal(firstPayload.result.monitorHookMissingCount, 0);
+
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(Object.keys(settings.hooks).sort(), [
+      "PostToolUse",
+      "PreToolUse",
+      "SessionEnd",
+      "SessionStart",
+      "Stop",
+      "SubagentStop",
+      "UserPromptSubmit",
+    ].sort());
+
+    assert.equal(settings.hooks.SessionStart.length, 1);
+    assert.match(settings.hooks.SessionStart[0].hooks[0].command, /^CLAUDE_PLUGIN_ROOT=/);
+    assert.match(settings.hooks.SessionStart[0].hooks[0].command, /hooks\/session-lifecycle-hook\.mjs" SessionStart/);
+    assert.equal(settings.hooks.SessionEnd.length, 1);
+    assert.match(settings.hooks.SessionEnd[0].hooks[0].command, /hooks\/session-lifecycle-hook\.mjs" SessionEnd/);
+    assert.ok(settings.hooks.PreToolUse.length >= 1);
+    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /^CLAUDE_PLUGIN_ROOT=/);
+    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /hooks\/pre-tool-agent\.mjs"/);
+    const postToolUse = settings.hooks.PostToolUse;
+    assert.equal(postToolUse.length, 1);
+    assert.equal(postToolUse[0].matcher, "Bash|Agent");
+    assert.equal(postToolUse[0].hooks.length, 1);
+    assert.equal(postToolUse[0].hooks[0].type, "command");
+    assert.equal(postToolUse[0].hooks[0].timeout, 5);
+    assert.match(postToolUse[0].hooks[0].command, /hooks\/post-tool-bash\.mjs"/);
+    assert.equal(settings.hooks.UserPromptSubmit.length, 1);
+    assert.match(settings.hooks.UserPromptSubmit[0].hooks[0].command, /hooks\/user-prompt-submit\.mjs"/);
+    assert.equal(settings.hooks.SubagentStop.length, 1);
+    assert.match(settings.hooks.SubagentStop[0].hooks[0].command, /hooks\/subagent-stop\.mjs"/);
+    assert.equal(settings.hooks.Stop.length, 1);
+    assert.match(settings.hooks.Stop[0].hooks[0].command, /hooks\/stop-gate\.mjs"/);
+
+    const second = runBridge("src/codex-bridge.mjs", ["setup", "--install-plugin-hooks", "--json"], { env });
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    const settingsAfterSecondRun = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.equal(settingsAfterSecondRun.hooks.SessionStart.length, 1);
+    assert.equal(settingsAfterSecondRun.hooks.SessionEnd.length, 1);
+    assert.equal(settingsAfterSecondRun.hooks.PreToolUse.length, settings.hooks.PreToolUse.length);
+    assert.equal(settingsAfterSecondRun.hooks.PostToolUse.length, 1);
+    assert.equal(settingsAfterSecondRun.hooks.UserPromptSubmit.length, 1);
+    assert.equal(settingsAfterSecondRun.hooks.SubagentStop.length, 1);
+    assert.equal(settingsAfterSecondRun.hooks.Stop.length, 1);
+    assert.match(JSON.parse(second.stdout).result.actionsTaken[0], /already present/);
+
+    const legacy = runBridge("src/codex-bridge.mjs", ["setup", "--install-monitor-hook", "--json"], { env });
+    assert.equal(legacy.status, 0, legacy.stderr || legacy.stdout);
+    assert.match(JSON.parse(legacy.stdout).result.actionsTaken[0], /already present/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("packaged Monitor docs require verification instead of promising hidden auto-arm", () => {
+  const packagedSkill = readText("plugin/skills/codex-bridge/SKILL.md");
+  assert.match(packagedSkill, /setup --install-plugin-hooks/);
+});

@@ -85,7 +85,7 @@ After dispatch, track the group:
 You almost never have to remember the wiring — the hooks do it:
 
 - **PreToolUse(Agent)** intercepts Explore-class subagents and reroutes them through codex-bridge. Pass-through for Plan, general-purpose, and codex-bridge:* types.
-- **PostToolUse(Bash|Agent)** parses accepted bridge envelopes and emits an `additionalContext` block with the literal Monitor invocation. You arm it on the next turn — no manual derivation.
+- **PostToolUse(Bash|Agent)** attempts to parse accepted bridge envelopes and emit an `additionalContext` block with the literal Monitor invocation. If you see that block, arm Monitor with it. If not, use `result.monitor.tool_hint` from the dispatch envelope. `setup --install-plugin-hooks` installs the user-settings mirror for all bundled hooks on Claude Code versions where plugin-bundled hooks or hook context are dropped. `setup --install-monitor-hook` remains a compatibility alias.
 - **SessionStart** injects running-job status into context, so you start every session oriented.
 - **Stop** can run the opt-in stop-time review gate. Pending verdicts are surfaced through `verdicts --pending`; check and resolve them before exiting.
 
