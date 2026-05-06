@@ -52,6 +52,10 @@ const TASK_VALUE_FLAGS = new Set([
   "--question-timeout-ms",
   "--intercepted-from",
   "--cwd",
+  "--brief",
+  "--backend",
+  "--base-ref",
+  "--on-branch",
 ]);
 // Allowed flags / value-consuming flags inside the Monitor command after
 // `events <jobId>`. Anything else means the hint was tampered with.
