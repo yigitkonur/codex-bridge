@@ -1,8 +1,8 @@
 // src/codex-bridge.mjs
 import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
-import fs17 from "node:fs";
-import os7 from "node:os";
-import path15 from "node:path";
+import fs18 from "node:fs";
+import os8 from "node:os";
+import path16 from "node:path";
 import process10 from "node:process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -4274,6 +4274,15 @@ import path7 from "node:path";
 import os3 from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
+var NDJSON_EVENT_SCHEMA_VERSION = "1.0";
+var NDJSON_EVENT_FIELDS = Object.freeze([
+  "schema_version",
+  "ts",
+  "tag",
+  "method",
+  "threadId",
+  "data"
+]);
 function resolveSessionDir(configDir, baseDir = process.cwd()) {
   const configured = configDir ?? "~/.codex-bridge/sessions";
   const expanded = configured.replace(/^~/, os3.homedir());
@@ -4326,17 +4335,27 @@ function findSession(sessionDir, threadId) {
   return { ndjsonPath, eventsPath, sessionDir, threadId };
 }
 function logNdjson(session, tag, method, data) {
-  const entry = {
+  const entry = buildNdjsonEvent({
     ts: (/* @__PURE__ */ new Date()).toISOString(),
     tag,
-    method: method ?? null,
+    method,
     threadId: session.threadId,
-    data: data ?? {}
-  };
+    data
+  });
   try {
     fs7.appendFileSync(session.ndjsonPath, redactText(JSON.stringify(entry), session) + "\n");
   } catch {
   }
+}
+function buildNdjsonEvent({ ts, tag, method = null, threadId = null, data = {} }) {
+  return {
+    schema_version: NDJSON_EVENT_SCHEMA_VERSION,
+    ts,
+    tag,
+    method: method ?? null,
+    threadId,
+    data: data ?? {}
+  };
 }
 function logEvent(session, formattedBlock) {
   try {
@@ -4648,6 +4667,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
       `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
+      `    extend-timeout: ${commandPrefix(scriptPath, "task", cwd)} --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 3600000 "<same prompt>"`,
       see("pipeline-stage-timeout")
     );
     return lines;
@@ -4972,6 +4992,47 @@ function formatWarningEvent(session, { reason, family, threshold, sampleCommand,
   ];
   if (sampleCommand) lines.push(`  sample: ${sampleCommand.slice(0, 120)}`);
   lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
+  return lines.join("\n");
+}
+function formatStallWarningEvent(session, { durationMs, thresholdMs, remainingMs, lastMeaningfulAction = null }) {
+  const lines = [
+    `[STALL_WARNING] ${session.threadId} no progress for ${fmtSeconds(durationMs)} | terminal in ${fmtSeconds(remainingMs)}`,
+    `  threshold: ${fmtSeconds(thresholdMs)}`
+  ];
+  if (lastMeaningfulAction) lines.push(`  last_action: ${lastMeaningfulAction}`);
+  lines.push("  note: Codex is alive (heartbeats present) but no commands/file-changes/plans in this window.");
+  return lines.join("\n");
+}
+function formatNeedsAttentionEvent(session, { underlyingTag, threadId, summary = null, nextAction = null }) {
+  const lines = [
+    `[NEEDS_ATTENTION] ${threadId ?? session.threadId} | underlying=${underlyingTag}`
+  ];
+  if (summary) lines.push(`  summary: ${String(summary).slice(0, 200)}`);
+  if (nextAction) lines.push(`  next_action: ${String(nextAction).slice(0, 200)}`);
+  return lines.join("\n");
+}
+function formatArtifactEvent(session, { filePath, sizeBytes = null, threadId }) {
+  const lines = [
+    `[ARTIFACT] ${threadId ?? session.threadId} created ${filePath}`
+  ];
+  if (sizeBytes != null && Number.isFinite(sizeBytes)) lines.push(`  size_bytes: ${sizeBytes}`);
+  return lines.join("\n");
+}
+function formatDriftWarnEvent(session, { driftedFiles, driftRatio, promptScope, threadId }) {
+  const lines = [
+    `[DRIFT_WARN] ${threadId ?? session.threadId} | ${driftedFiles.length} out-of-scope files | ratio=${Math.round(driftRatio * 100)}%`
+  ];
+  if (promptScope && promptScope.length > 0) {
+    lines.push(`  prompt_scope: ${promptScope.slice(0, 5).join(", ")}${promptScope.length > 5 ? ` (+${promptScope.length - 5} more)` : ""}`);
+  }
+  if (driftedFiles.length > 0) {
+    lines.push("  drifted:");
+    for (const f of driftedFiles.slice(0, 10)) {
+      lines.push(`    - ${f}`);
+    }
+    if (driftedFiles.length > 10) lines.push(`    ... and ${driftedFiles.length - 10} more`);
+  }
+  lines.push("  note: Codex is touching files outside the inferred prompt scope. Review or cancel to contain scope.");
   return lines.join("\n");
 }
 
@@ -5510,7 +5571,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// ../../../node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -8165,6 +8226,8 @@ var DEFAULT_CONFIG = {
   // their config.yaml. Matches `codex --dangerously-bypass-approvals-and-
   // sandbox`. See skill/references/config-reference.md for the full matrix.
   sandbox_policy: "danger-full-access",
+  sandbox_enforce: false,
+  forbid_codex_direct: true,
   // When true, prepend a strong orchestrator directive telling Codex to skip
   // any internal planning / ceremony / meta-skill chains it would normally
   // walk before execution (framework-agnostic — covers any skill that
@@ -8217,8 +8280,12 @@ var DEFAULT_CONFIG = {
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
   // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
-  pipeline_stage_ms: 3e5,
-  pipeline_total_ms: 9e5,
+  // Raise the default stage budget from the old 5-minute floor to a
+  // 12-minute median-task budget; pipeline total follows at 30 minutes so
+  // review + fix + check can all complete without making runaway calls
+  // unbounded. Small tasks still finish as soon as their model calls return.
+  pipeline_stage_ms: 72e4,
+  pipeline_total_ms: 18e5,
   // How long `requestUserInput` waits for a human/orchestrator to answer
   // before rejecting the server request. Five minutes is tight for thoughtful
   // decisions; make it configurable so a slow loop can widen the window
@@ -8227,6 +8294,13 @@ var DEFAULT_CONFIG = {
   artifact_retention_jobs: 50,
   artifact_retention_days: 30,
   redact_secrets: false,
+  // v2.2.0 — [STALL_WARNING] fires at this wall-clock gap of zero actionable
+  // progress. Default 5 min (one checkpoint interval). The terminal StallDetected
+  // fires after the full STALL_CHECKPOINT_THRESHOLD × checkpoint interval (15 min
+  // by default). Configurable so short-budget automation can widen or narrow the
+  // early-warning window. Set to 0 to disable [STALL_WARNING] (does not affect
+  // the terminal stall detector).
+  stall_warning_threshold_ms: 5 * 60 * 1e3,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function resolveEffort(config, options = {}) {
@@ -8293,6 +8367,8 @@ var CONFIG_SCHEMA = {
   allow_questions: { type: "boolean" },
   session_dir: { type: "string" },
   sandbox_policy: { type: "enum", values: ["danger-full-access", "workspace-write", "read-only"] },
+  sandbox_enforce: { type: "boolean" },
+  forbid_codex_direct: { type: "boolean" },
   skip_meta_skills: { type: "boolean" },
   command_failure_circuit_breaker: { type: "boolean" },
   idle_timeout_ms: { type: "positive-number" },
@@ -8306,7 +8382,8 @@ var CONFIG_SCHEMA = {
   redact_secrets: { type: "boolean" },
   prompt_footer: { type: "string" },
   default_backend: { type: "string" },
-  adapter_routing: { type: "object" }
+  adapter_routing: { type: "object" },
+  stall_warning_threshold_ms: { type: "positive-number" }
 };
 function isConfigValueValid(schema2, value) {
   return schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
@@ -9635,10 +9712,18 @@ function renderSetupReport(report) {
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
+    `- monitor hook mirror: ${report.monitorHookInstalled ? "installed" : "not installed"} (${report.monitorHookSettingsPath ?? "n/a"})`,
+    `- sandbox enforcement: ${report.sandboxEnforcementInstalled ? "installed" : "not installed"} (${report.sandboxEnforcementSettingsPath ?? "n/a"})`,
     ""
   ];
   if (report.reviewGateSuppressionReason) {
     lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
+  }
+  if (report.monitorHookSettingsParseError) {
+    lines.push(`Monitor hook settings warning: ${report.monitorHookSettingsParseError}`, "");
+  }
+  if (report.sandboxEnforcementSettingsParseError) {
+    lines.push(`Sandbox enforcement settings warning: ${report.sandboxEnforcementSettingsParseError}`, "");
   }
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");
@@ -10185,8 +10270,8 @@ function reviewResultTypeError(message, field) {
 }
 
 // src/adapters/codex/pipeline.mjs
-var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;
-var STAGE_TIMEOUT_MS_DEFAULT = 3e5;
+var PIPELINE_TIMEOUT_MS_DEFAULT = 18e5;
+var STAGE_TIMEOUT_MS_DEFAULT = 72e4;
 function loadExecuteInstructions(rootDir) {
   const p = path13.join(rootDir, "templates", "execute-instructions.md");
   try {
@@ -11317,6 +11402,125 @@ async function runIterateLoop(options = {}) {
   };
 }
 
+// src/lib/sandbox-enforcement.mjs
+import fs17 from "node:fs";
+import os7 from "node:os";
+import path15 from "node:path";
+var SANDBOX_ENFORCEMENT_MARKER_KEY = "_codex_bridge_sandbox_enforce";
+var SANDBOX_ENFORCEMENT_MARKER_VALUE = "codex-bridge";
+var SANDBOX_ENFORCEMENT_DENY_RULES = Object.freeze([
+  {
+    tool: "Bash",
+    matcher: { command: ".*codex-bridge(?:\\.mjs)?\\s+task\\b.*--read-only" },
+    reason: "sandbox.enforce: true (workspace policy) - --read-only forbidden",
+    [SANDBOX_ENFORCEMENT_MARKER_KEY]: SANDBOX_ENFORCEMENT_MARKER_VALUE
+  },
+  {
+    tool: "Bash",
+    matcher: {
+      command: ".*codex\\s+(?:exec\\s+)?.*(?:--sandbox(?:\\s+|=)|-s(?:\\s+|=))(?:read-only|workspace-write)"
+    },
+    reason: "Direct codex CLI sandbox downgrade forbidden",
+    [SANDBOX_ENFORCEMENT_MARKER_KEY]: SANDBOX_ENFORCEMENT_MARKER_VALUE
+  }
+]);
+function resolveClaudeSettingsPath() {
+  return path15.join(os7.homedir(), ".claude", "settings.json");
+}
+function readClaudeSettings(settingsPath = resolveClaudeSettingsPath()) {
+  if (!fs17.existsSync(settingsPath)) {
+    return { exists: false, settings: {}, parseError: null };
+  }
+  try {
+    const raw = fs17.readFileSync(settingsPath, "utf8");
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        exists: true,
+        settings: null,
+        parseError: "settings file must contain a JSON object"
+      };
+    }
+    return { exists: true, settings: parsed, parseError: null };
+  } catch (err) {
+    return {
+      exists: true,
+      settings: null,
+      parseError: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+function writeClaudeSettings(settingsPath, settings) {
+  fs17.mkdirSync(path15.dirname(settingsPath), { recursive: true });
+  const tmpPath = `${settingsPath}.tmp-${process.pid}-${Date.now()}`;
+  fs17.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
+`, "utf8");
+  fs17.renameSync(tmpPath, settingsPath);
+}
+function hasSandboxEnforcement(settings) {
+  const deny = settings?.permissions?.deny;
+  return Array.isArray(deny) && deny.filter(
+    (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] === SANDBOX_ENFORCEMENT_MARKER_VALUE
+  ).length === SANDBOX_ENFORCEMENT_DENY_RULES.length;
+}
+function getSandboxEnforcementStatus(settingsPath = resolveClaudeSettingsPath()) {
+  const read = readClaudeSettings(settingsPath);
+  return {
+    installed: read.settings ? hasSandboxEnforcement(read.settings) : false,
+    settingsPath,
+    settingsExists: read.exists,
+    settingsParseError: read.parseError,
+    markerKey: SANDBOX_ENFORCEMENT_MARKER_KEY
+  };
+}
+function assertSettingsShape(settingsPath, read, action) {
+  if (read.parseError) {
+    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: ${read.parseError}.`);
+  }
+  const settings = read.settings ?? {};
+  if (settings.permissions == null) settings.permissions = {};
+  if (!settings.permissions || typeof settings.permissions !== "object" || Array.isArray(settings.permissions)) {
+    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: permissions must be a JSON object.`);
+  }
+  if (settings.permissions.deny == null) settings.permissions.deny = [];
+  if (!Array.isArray(settings.permissions.deny)) {
+    throw new Error(`Cannot ${action} sandbox enforcement in ${settingsPath}: permissions.deny must be an array.`);
+  }
+  return settings;
+}
+function installSandboxEnforcement(settingsPath = resolveClaudeSettingsPath()) {
+  const read = readClaudeSettings(settingsPath);
+  const settings = assertSettingsShape(settingsPath, read, "install");
+  const alreadyInstalled = hasSandboxEnforcement(settings);
+  if (!alreadyInstalled) {
+    settings.permissions.deny = settings.permissions.deny.filter(
+      (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] !== SANDBOX_ENFORCEMENT_MARKER_VALUE
+    );
+    settings.permissions.deny.push(...SANDBOX_ENFORCEMENT_DENY_RULES);
+    writeClaudeSettings(settingsPath, settings);
+  }
+  return {
+    alreadyInstalled,
+    status: getSandboxEnforcementStatus(settingsPath)
+  };
+}
+function uninstallSandboxEnforcement(settingsPath = resolveClaudeSettingsPath()) {
+  const read = readClaudeSettings(settingsPath);
+  const settings = assertSettingsShape(settingsPath, read, "uninstall");
+  const before = settings.permissions.deny.length;
+  settings.permissions.deny = settings.permissions.deny.filter(
+    (rule) => rule?.[SANDBOX_ENFORCEMENT_MARKER_KEY] !== SANDBOX_ENFORCEMENT_MARKER_VALUE
+  );
+  const removed = before - settings.permissions.deny.length;
+  if (removed > 0 || !read.exists) {
+    writeClaudeSettings(settingsPath, settings);
+  }
+  return {
+    removed,
+    status: getSandboxEnforcementStatus(settingsPath)
+  };
+}
+
 // src/codex-bridge.mjs
 function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
   return {
@@ -11331,8 +11535,8 @@ function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, de
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
   try {
-    if (!fs17.existsSync(diffPath)) return null;
-    return writeDiffArtifact(taskId, fs17.readFileSync(diffPath, "utf8"));
+    if (!fs18.existsSync(diffPath)) return null;
+    return writeDiffArtifact(taskId, fs18.readFileSync(diffPath, "utf8"));
   } catch {
     return null;
   }
@@ -11356,20 +11560,20 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path15.join(os7.homedir(), ".codex-bridge");
-    fs17.mkdirSync(logDir, { recursive: true });
-    const logFile = path15.join(logDir, "auto-update.log");
+    const logDir = path16.join(os8.homedir(), ".codex-bridge");
+    fs18.mkdirSync(logDir, { recursive: true });
+    const logFile = path16.join(logDir, "auto-update.log");
     try {
-      const stat = fs17.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs17.truncateSync(logFile, 0);
+      const stat = fs18.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs18.truncateSync(logFile, 0);
     } catch {
     }
-    const fd = fs17.openSync(logFile, "a");
+    const fd = fs18.openSync(logFile, "a");
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-      fs17.writeSync(fd, banner);
+      fs18.writeSync(fd, banner);
       const child = spawn3(
         "npx",
         ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
@@ -11381,7 +11585,7 @@ function spawnDetachedAutoApply(targetVersion) {
       );
       child.on("error", () => {
         try {
-          fs17.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+          fs18.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
 `, "utf8");
         } catch {
         }
@@ -11389,19 +11593,19 @@ function spawnDetachedAutoApply(targetVersion) {
       child.unref();
     } finally {
       try {
-        fs17.closeSync(fd);
+        fs18.closeSync(fd);
       } catch {
       }
     }
   } catch {
   }
 }
-var SCRIPT_DIR = path15.dirname(fileURLToPath2(import.meta.url));
-var SCRIPT_PATH = path15.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs17.existsSync(path15.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path15.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path15.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path15.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path15.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var SCRIPT_DIR = path16.dirname(fileURLToPath2(import.meta.url));
+var SCRIPT_PATH = path16.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs18.existsSync(path16.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path16.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path16.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path16.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path16.join(ROOT_DIR, "templates", "plan-enforcement.md");
 function shellQuote2(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -11466,7 +11670,7 @@ var DEVELOPER_INSTRUCTIONS_FALLBACK = {
 function loadDeveloperInstructions(mode) {
   const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
   try {
-    return fs17.readFileSync(templatePath, "utf8");
+    return fs18.readFileSync(templatePath, "utf8");
   } catch {
     return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
   }
@@ -11572,6 +11776,17 @@ function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs
       cwd
     }));
     logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
+    try {
+      const firstQ = (params.questions ?? [])[0];
+      logEvent(session, formatNeedsAttentionEvent(session, {
+        underlyingTag: "QUESTION",
+        threadId,
+        summary: firstQ?.question ?? "Codex asked a question",
+        nextAction: `respond ${internalId} --question-id ${firstQ?.id ?? "q1"} --answer "<answer>"`
+      }));
+      logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "QUESTION", requestId: internalId });
+    } catch {
+    }
     const timeoutMs = questionAnswerMs ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : DEFAULT_CONFIG.question_answer_ms);
     return waitForResponse(sessionDir, threadId, timeoutMs, internalId).then((response) => {
       clearPendingRequest(sessionDir, threadId);
@@ -11644,8 +11859,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path16 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path16}`.trim();
+      const path17 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path17}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -11970,17 +12185,17 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path15.resolve(process10.cwd(), options.cwd) : process10.cwd();
+  return options.cwd ? path16.resolve(process10.cwd(), options.cwd) : process10.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path15.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path16.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
-  let lockExists = fs17.existsSync(lockPath);
+  let lockExists = fs18.existsSync(lockPath);
   let migratedFromLegacyConfig = false;
   if (!lockExists) {
     let legacyEnabled = false;
@@ -11991,7 +12206,7 @@ function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAI
     }
     if (legacyEnabled) {
       try {
-        fs17.writeFileSync(
+        fs18.writeFileSync(
           lockPath,
           [
             "# Codex Bridge stop-time review gate",
@@ -12027,7 +12242,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
   if (enabled) {
     try {
-      fs17.writeFileSync(
+      fs18.writeFileSync(
         lockPath,
         [
           "# Codex Bridge stop-time review gate",
@@ -12040,7 +12255,7 @@ function setStopReviewGate(workspaceRoot, enabled, officialPlugin = detectOffici
     }
   } else {
     try {
-      fs17.rmSync(lockPath, { force: true });
+      fs18.rmSync(lockPath, { force: true });
     } catch {
     }
     try {
@@ -12090,6 +12305,28 @@ function firstMeaningfulLine2(text, fallback) {
   const line = String(text ?? "").split(/\r?\n/).map((value) => value.trim()).find(Boolean);
   return line ?? fallback;
 }
+function installSandboxEnforcementForSetup() {
+  try {
+    return installSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_INSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --enforce-sandbox."
+    );
+  }
+}
+function uninstallSandboxEnforcementForSetup() {
+  try {
+    return uninstallSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_UNINSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --disable-sandbox-enforcement."
+    );
+  }
+}
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -12099,6 +12336,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
+  const sandboxEnforcement = getSandboxEnforcementStatus();
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -12113,6 +12351,11 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
   } else if (!reviewGate.enabled) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
+  }
+  if (sandboxEnforcement.settingsParseError) {
+    nextSteps.push(`Sandbox enforcement status could not read ${sandboxEnforcement.settingsPath}: ${sandboxEnforcement.settingsParseError}.`);
+  } else if (!sandboxEnforcement.installed) {
+    nextSteps.push("Optional: run `codex-bridge setup --enforce-sandbox` to deny sandbox downgrades at the Claude permission layer.");
   }
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
@@ -12132,6 +12375,10 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
     reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
     reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
+    sandboxEnforcementInstalled: sandboxEnforcement.installed,
+    sandboxEnforcementSettingsPath: sandboxEnforcement.settingsPath,
+    sandboxEnforcementSettingsExists: sandboxEnforcement.settingsExists,
+    sandboxEnforcementSettingsParseError: sandboxEnforcement.settingsParseError,
     actionsTaken,
     nextSteps
   };
@@ -12140,12 +12387,18 @@ async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "enforce-sandbox", "disable-sandbox-enforcement"]
   });
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw conflictError(
       "Choose either --enable-review-gate or --disable-review-gate.",
       "REVIEW_GATE_CONFLICT"
+    );
+  }
+  if (options["enforce-sandbox"] && options["disable-sandbox-enforcement"]) {
+    throw conflictError(
+      "Choose either --enforce-sandbox or --disable-sandbox-enforcement.",
+      "SANDBOX_ENFORCEMENT_CONFLICT"
     );
   }
   const cwd = resolveCommandCwd(options);
@@ -12178,6 +12431,17 @@ async function handleSetup(argv) {
         `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
       );
     }
+  }
+  if (options["enforce-sandbox"]) {
+    const result = installSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.alreadyInstalled ? `Sandbox enforcement deny rules already present in ${result.status.settingsPath}.` : `Installed sandbox enforcement deny rules in ${result.status.settingsPath}.`
+    );
+  } else if (options["disable-sandbox-enforcement"]) {
+    const result = uninstallSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.removed > 0 ? `Removed ${result.removed} sandbox enforcement deny rule${result.removed === 1 ? "" : "s"} from ${result.status.settingsPath}.` : `Sandbox enforcement deny rules were not present in ${result.status.settingsPath}.`
+    );
   }
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
@@ -12339,7 +12603,7 @@ async function handleConfig(argv) {
   }
   if (action === "path") {
     const filePath = resolveLocalConfigPath(workspaceRoot);
-    const exists = fs17.existsSync(filePath);
+    const exists = fs18.existsSync(filePath);
     const payload = { path: filePath, exists };
     const rendered = `${filePath}${exists ? "" : " (does not exist yet)"}
 `;
@@ -13165,9 +13429,9 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 function safeRealPath(filePath) {
   try {
-    return fs17.realpathSync.native ? fs17.realpathSync.native(filePath) : fs17.realpathSync(filePath);
+    return fs18.realpathSync.native ? fs18.realpathSync.native(filePath) : fs18.realpathSync(filePath);
   } catch {
-    return path15.resolve(filePath);
+    return path16.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -13205,10 +13469,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path15.resolve(worktreePath);
-  if (options.cwd && !samePath(path15.resolve(process10.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path16.resolve(worktreePath);
+  if (options.cwd && !samePath(path16.resolve(process10.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path15.resolve(process10.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path16.resolve(process10.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -13369,14 +13633,14 @@ function buildTaskRequest({
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
 }
 function readPromptFileOrThrow(absPath) {
   try {
-    return fs17.readFileSync(absPath, "utf8");
+    return fs18.readFileSync(absPath, "utf8");
   } catch (err) {
     if (err?.code === "ENOENT") {
       throw notFoundError(`Prompt file not found: ${absPath}`, "PROMPT_FILE_NOT_FOUND");
@@ -13486,7 +13750,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   if (logFile) {
     try {
       const stderrPath = `${logFile}.worker.err`;
-      const stderrFd = fs17.openSync(stderrPath, "a");
+      const stderrFd = fs18.openSync(stderrPath, "a");
       stdioConfig = ["ignore", "ignore", stderrFd];
     } catch {
     }
@@ -13510,7 +13774,7 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   child.unref();
   if (Array.isArray(stdioConfig) && typeof stdioConfig[2] === "number") {
     try {
-      fs17.closeSync(stdioConfig[2]);
+      fs18.closeSync(stdioConfig[2]);
     } catch {
     }
   }
@@ -13829,6 +14093,32 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          try {
+            const changes = Array.isArray(item.changes) ? item.changes : [];
+            for (const change of changes) {
+              const kind = change?.kind ?? change?.change ?? change?.op ?? "";
+              if (kind === "create" || kind === "add" || kind === "added" || kind === "created") {
+                const filePath = change?.path ?? "";
+                if (filePath) {
+                  logEvent(s, formatArtifactEvent(s, {
+                    filePath,
+                    sizeBytes: null,
+                    threadId: effectiveThreadId
+                  }));
+                  logNdjson(s, "ARTIFACT", null, { filePath, kind, threadId: effectiveThreadId });
+                }
+              }
+            }
+          } catch {
+          }
+          try {
+            const changes = Array.isArray(item.changes) ? item.changes : [];
+            for (const change of changes) {
+              const touchedPath = change?.path ?? "";
+              if (touchedPath) driftState.touchedFiles.add(touchedPath);
+            }
+          } catch {
+          }
         } else if (itemType === "plan") {
           checkpointState.tools.push({
             type: "plan",
@@ -13889,6 +14179,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const HEARTBEAT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
   const CHECKPOINT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
   const STALL_CHECKPOINT_THRESHOLD = Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
+  const STALL_WARNING_THRESHOLD_MS = Number(process10.env.CODEX_BRIDGE_STALL_WARNING_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_WARNING_MS) : Number(config.stall_warning_threshold_ms) > 0 ? Number(config.stall_warning_threshold_ms) : DEFAULT_CONFIG.stall_warning_threshold_ms;
+  let stallWarnEmitted = false;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
@@ -13912,6 +14204,15 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     // consecutive checkpoints with actionableCount == 0
     seenFirstActionable: false
     // gate for barren-counter start (prevents false stall on slow-to-start turns)
+  };
+  const DRIFT_WARN_RATIO_THRESHOLD = 0.3;
+  const DRIFT_WARN_MIN_DRIFTED = 3;
+  const promptScopePaths = extractPathsFromPrompt(request.prompt ?? "");
+  const driftState = {
+    touchedFiles: /* @__PURE__ */ new Set(),
+    // all unique file paths Codex has touched
+    warnEmitted: false
+    // only emit once per turn
   };
   const gitCwd = request.cwd && typeof request.cwd === "string" ? request.cwd : null;
   const readGitHead = () => {
@@ -14041,6 +14342,29 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           checkpointState.barrenCheckpoints += 1;
         } else {
           checkpointState.barrenCheckpoints = 0;
+          stallWarnEmitted = false;
+        }
+      }
+      if (checkpointState.seenFirstActionable && checkpointState.barrenCheckpoints === 1 && !stallWarnEmitted && !terminalEmitted && STALL_WARNING_THRESHOLD_MS > 0) {
+        try {
+          const barrenDurationMs = CHECKPOINT_INTERVAL_MS;
+          const terminalWindowMs = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
+          logEvent(
+            heartbeatState.session,
+            formatStallWarningEvent(heartbeatState.session, {
+              durationMs: barrenDurationMs,
+              thresholdMs: STALL_WARNING_THRESHOLD_MS,
+              remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs),
+              lastMeaningfulAction: heartbeatState.lastItem
+            })
+          );
+          logNdjson(heartbeatState.session, "STALL_WARNING", null, {
+            durationMs: barrenDurationMs,
+            thresholdMs: STALL_WARNING_THRESHOLD_MS,
+            remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs)
+          });
+          stallWarnEmitted = true;
+        } catch {
         }
       }
       if (checkpointState.barrenCheckpoints >= STALL_CHECKPOINT_THRESHOLD && !terminalEmitted) {
@@ -14068,6 +14392,34 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           terminalEmitted = true;
           stopCheckpoint();
           stopHeartbeat();
+        } catch {
+        }
+      }
+      if (!driftState.warnEmitted && !terminalEmitted && promptScopePaths.length > 0 && driftState.touchedFiles.size > 0 && heartbeatState.session) {
+        try {
+          const allTouched = Array.from(driftState.touchedFiles);
+          const driftedFiles = allTouched.filter(
+            (f) => !promptScopePaths.some((scope) => f.includes(scope) || scope.includes(f))
+          );
+          const driftRatio = driftedFiles.length / allTouched.length;
+          if (driftedFiles.length > DRIFT_WARN_MIN_DRIFTED && driftRatio > DRIFT_WARN_RATIO_THRESHOLD) {
+            logEvent(
+              heartbeatState.session,
+              formatDriftWarnEvent(heartbeatState.session, {
+                driftedFiles,
+                driftRatio,
+                promptScope: promptScopePaths,
+                threadId: heartbeatState.session.threadId
+              })
+            );
+            logNdjson(heartbeatState.session, "DRIFT_WARN", null, {
+              driftedFiles: driftedFiles.slice(0, 20),
+              driftRatio,
+              totalTouched: allTouched.length,
+              promptScopeCount: promptScopePaths.length
+            });
+            driftState.warnEmitted = true;
+          }
         } catch {
         }
       }
@@ -14147,7 +14499,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path15.join(sessionDir, `${result.threadId}.events`) : null;
+    const computedEventsPath = result.threadId ? path16.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -14221,10 +14573,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path15.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path15.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path15.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path15.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path16.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path16.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path16.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path16.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -14314,6 +14666,16 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         cwd: request.cwd
       }));
       logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
+      try {
+        logEvent(session, formatNeedsAttentionEvent(session, {
+          underlyingTag: "ERROR",
+          threadId: result.threadId,
+          summary: `${errorCode}: ${errorMessage.slice(0, 120)}`,
+          nextAction: request.jobId ? `result ${request.jobId}` : null
+        }));
+        logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "ERROR", errorCode });
+      } catch {
+      }
       markTerminalEmitted();
       const nextAction = buildTurnErrorNextAction({
         origin,
@@ -14341,6 +14703,16 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         scriptPath: SCRIPT_PATH,
         cwd: request.cwd
       }));
+      try {
+        logEvent(session, formatNeedsAttentionEvent(session, {
+          underlyingTag: "PLAN",
+          threadId: result.threadId,
+          summary: result.planText.split("\n")[0]?.slice(0, 120) ?? "Plan ready",
+          nextAction: `send ${result.threadId} --mode default "Implement the plan."`
+        }));
+        logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "PLAN", threadId: result.threadId });
+      } catch {
+      }
       markTerminalEmitted();
       setPhase("plan-pending", {
         command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
@@ -14375,7 +14747,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         const failedStage = pipelineResult.failing_stage ?? (pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff");
         const nextAction = pipelineErrored ? {
           command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
-          description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`
+          description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, rerun with a larger --pipeline-stage-timeout-ms / --pipeline-total-timeout-ms budget.`
         } : {
           command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
           description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."
@@ -14447,6 +14819,13 @@ function extractPlanSteps(planText) {
     }
   }
   return steps.length > 0 ? steps : [{ number: 1, text: planText?.split("\n")[0] ?? "Plan", status: "pending" }];
+}
+function extractPathsFromPrompt(promptText) {
+  if (typeof promptText !== "string" || !promptText) return [];
+  const matches = promptText.match(/(?:^|[\s"'`(])(\.[./][^\s"'`()\n]+|[a-zA-Z][\w./\\-]+\.[a-zA-Z]{1,10})/g) ?? [];
+  return [...new Set(
+    matches.map((m) => m.trim().replace(/^["'`(]/, "")).filter((p) => p.length > 3 && p.includes("/") || p.match(/\.\w{1,10}$/))
+  )];
 }
 async function handleTask(argv) {
   const startedAt = Date.now();
@@ -14681,7 +15060,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path15.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path16.resolve(process10.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -14871,7 +15250,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path15.isAbsolute(artifactPath) ? artifactPath : path15.resolve(cwd, artifactPath);
+  const resolvedPath = path16.isAbsolute(artifactPath) ? artifactPath : path16.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -14888,7 +15267,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs17.statSync(resolvedPath);
+      statInfo = fs18.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -15097,7 +15476,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
       for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
         if (!filePath) continue;
         try {
-          fs17.rmSync(filePath, { force: true });
+          fs18.rmSync(filePath, { force: true });
         } catch {
         }
       }
@@ -15181,7 +15560,7 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const scan = () => {
       try {
-        const data = fs17.readFileSync(eventsPath, "utf8");
+        const data = fs18.readFileSync(eventsPath, "utf8");
         if (data.length < offset) offset = 0;
         const tail = data.slice(offset);
         offset = data.length;
@@ -15198,13 +15577,13 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs17.watch(eventsPath, { persistent: false }, scan);
+        watcher = fs18.watch(eventsPath, { persistent: false }, scan);
         scan();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer) {
             pollTimer = setInterval(() => {
-              if (fs17.existsSync(eventsPath)) {
+              if (fs18.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15216,12 +15595,12 @@ function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
         }
       }
     };
-    if (fs17.existsSync(eventsPath)) {
+    if (fs18.existsSync(eventsPath)) {
       scan();
       if (!resolved) attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs17.existsSync(eventsPath)) {
+        if (fs18.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15264,7 +15643,7 @@ async function handleWait(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   const TERMINAL = TERMINAL_TAG_REGEX;
   const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
@@ -15321,7 +15700,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     return {
       reference,
       job,
-      eventsPath: path15.join(sessionDir, `${job.threadId}.events`)
+      eventsPath: path16.join(sessionDir, `${job.threadId}.events`)
     };
   });
   const deadline = Date.now() + timeoutMs;
@@ -15374,7 +15753,7 @@ async function handleWaitAny(cwd, references, options, startedAt) {
 }
 function scanTerminalEvent(eventsPath, pattern) {
   try {
-    const data = fs17.readFileSync(eventsPath, "utf8");
+    const data = fs18.readFileSync(eventsPath, "utf8");
     for (const line of data.split("\n")) {
       const m = pattern.exec(line);
       if (m) return { timedOut: false, tag: m[1], line };
@@ -15418,7 +15797,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path15.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path16.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -15449,8 +15828,8 @@ async function handleEvents(argv) {
   const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs17.existsSync(eventsPath)) {
-    initial = fs17.readFileSync(eventsPath, "utf8");
+  if (fs18.existsSync(eventsPath)) {
+    initial = fs18.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
@@ -15496,7 +15875,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs17.readFileSync(eventsPath, "utf8");
+        data = fs18.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -15518,13 +15897,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs17.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs18.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs17.existsSync(eventsPath)) {
+              if (fs18.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15535,11 +15914,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs17.existsSync(eventsPath)) {
+    if (fs18.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs17.existsSync(eventsPath)) {
+        if (fs18.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15720,13 +16099,13 @@ async function handleCancel(argv) {
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path15.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path15.resolve(cwd, positionals[0]);
+    const candidate = path16.resolve(cwd, positionals[0]);
     try {
-      if (fs17.existsSync(candidate) && fs17.statSync(candidate).isFile()) {
-        return fs17.readFileSync(candidate, "utf8");
+      if (fs18.existsSync(candidate) && fs18.statSync(candidate).isFile()) {
+        return fs18.readFileSync(candidate, "utf8");
       }
     } catch {
     }
@@ -15757,7 +16136,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs17.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs18.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -15838,9 +16217,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path15.join(dir, "meta.json"),
-    review_path: path15.join(dir, "review.json"),
-    verdict_path: path15.join(dir, "verdict.json"),
+    meta_path: path16.join(dir, "meta.json"),
+    review_path: path16.join(dir, "review.json"),
+    verdict_path: path16.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -16241,10 +16620,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path15.join(jobDir(taskId), "verdict.json");
+    const target = path16.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs17.existsSync(target)) {
-      fs17.rmSync(target, { force: true });
+    if (fs18.existsSync(target)) {
+      fs18.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -16822,7 +17201,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs17.readFileSync(session.ndjsonPath, "utf8");
+    content = fs18.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -16921,10 +17300,10 @@ process10.stderr.on("error", (err) => {
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path15.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs17.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path16.join(os8.homedir(), ".codex-bridge", "crashes");
+    fs18.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path15.join(crashDir, `${ts}-${process10.pid}.log`);
+    const file = path16.join(crashDir, `${ts}-${process10.pid}.log`);
     const payload = {
       kind,
       ts,
@@ -16935,7 +17314,7 @@ function writeCrashLog(kind, error) {
       bridgeVersion: package_default.version,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs17.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs18.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
       process10.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}
