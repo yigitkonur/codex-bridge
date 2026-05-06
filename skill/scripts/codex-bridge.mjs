@@ -12837,7 +12837,7 @@ var COMMANDS = Object.freeze({
     synopsis: "events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclude <tags>] [--timeout-ms <ms>] [--json]",
     summary: "Stream the target's events file. `--filter` keeps only listed tags (inclusion); `--exclude` drops listed tags and shows everything else (exclusion \u2014 forward-compatible default for Monitor). Flags are mutually exclusive.",
     examples: [
-      "codex-bridge events task-abc --follow --exclude HEARTBEAT,CHECKPOINT  # default Monitor shape",
+      "codex-bridge events task-abc --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT  # default Monitor shape",
       "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED  # narrow inclusion view",
       "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT --timeout-ms 600000  # include verbose checkpoints"
     ]
