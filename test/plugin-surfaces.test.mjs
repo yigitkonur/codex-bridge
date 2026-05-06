@@ -1864,18 +1864,19 @@ test("setup installs the bundled plugin hook mirror idempotently", () => {
       "SessionEnd",
       "SessionStart",
       "Stop",
+      "SubagentStart",
       "SubagentStop",
       "UserPromptSubmit",
     ].sort());
 
     assert.equal(settings.hooks.SessionStart.length, 1);
     assert.match(settings.hooks.SessionStart[0].hooks[0].command, /^CLAUDE_PLUGIN_ROOT=/);
-    assert.match(settings.hooks.SessionStart[0].hooks[0].command, /hooks\/session-lifecycle-hook\.mjs" SessionStart/);
+    assert.match(settings.hooks.SessionStart[0].hooks[0].command, /hooks\/lifecycle\.mjs" SessionStart/);
     assert.equal(settings.hooks.SessionEnd.length, 1);
-    assert.match(settings.hooks.SessionEnd[0].hooks[0].command, /hooks\/session-lifecycle-hook\.mjs" SessionEnd/);
+    assert.match(settings.hooks.SessionEnd[0].hooks[0].command, /hooks\/lifecycle\.mjs" SessionEnd/);
     assert.ok(settings.hooks.PreToolUse.length >= 1);
     assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /^CLAUDE_PLUGIN_ROOT=/);
-    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /hooks\/pre-tool-agent\.mjs"/);
+    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /hooks\/pre-tool-bash\.mjs"/);
     const postToolUse = settings.hooks.PostToolUse;
     assert.equal(postToolUse.length, 1);
     assert.equal(postToolUse[0].matcher, "Bash|Agent");
@@ -1886,9 +1887,9 @@ test("setup installs the bundled plugin hook mirror idempotently", () => {
     assert.equal(settings.hooks.UserPromptSubmit.length, 1);
     assert.match(settings.hooks.UserPromptSubmit[0].hooks[0].command, /hooks\/user-prompt-submit\.mjs"/);
     assert.equal(settings.hooks.SubagentStop.length, 1);
-    assert.match(settings.hooks.SubagentStop[0].hooks[0].command, /hooks\/subagent-stop\.mjs"/);
+    assert.match(settings.hooks.SubagentStop[0].hooks[0].command, /hooks\/stop\.mjs" SubagentStop/);
     assert.equal(settings.hooks.Stop.length, 1);
-    assert.match(settings.hooks.Stop[0].hooks[0].command, /hooks\/stop-gate\.mjs"/);
+    assert.match(settings.hooks.Stop[0].hooks[0].command, /hooks\/stop\.mjs" Stop/);
 
     const second = runBridge("src/codex-bridge.mjs", ["setup", "--install-plugin-hooks", "--json"], { env });
     assert.equal(second.status, 0, second.stderr || second.stdout);
