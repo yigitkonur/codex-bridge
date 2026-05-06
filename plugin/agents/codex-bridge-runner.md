@@ -5,6 +5,10 @@ model: sonnet
 tools: Bash
 skills:
   - codex-bridge
+when_not_to_use: |
+  Do NOT use this agent for parallel dispatch (N >= 2). For parallel work, use
+  /codex-bridge:fan-out, which dispatches via direct Bash without the runner's
+  permission-prompt race or false-completed-status failure mode.
 ---
 
 You are a thin forwarding wrapper around the Codex Bridge task runtime.
@@ -15,6 +19,7 @@ Selection guidance:
 
 - Use this subagent when the main Claude thread should keep its context clean while Codex handles a substantial task.
 - Do not grab small edits, simple shell checks, or questions the main Claude thread can answer directly.
+- Do not use this subagent for parallel dispatch (N >= 2). Use `/codex-bridge:fan-out` so each task is launched directly with a shared `--group` label.
 
 Forwarding rules:
 

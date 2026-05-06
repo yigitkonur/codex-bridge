@@ -42,11 +42,32 @@ auto-pipeline check, standalone `review`, standalone `adversarial-review`, and
 the stop-time review gate run read-only by design; disable the stop-time review
 gate when enforcing sandbox pins.
 
+## Parallel dispatch
+
+For N >= 2 parallel jobs, use `/codex-bridge:fan-out`:
+
+```bash
+/codex-bridge:fan-out --group <name> --prompt "..." --prompt "..." [--read-only|--write]
+```
+
+Do NOT use `Agent { subagent_type: "codex-bridge:codex-bridge-runner" }` for
+parallel dispatch. The runner is for single substantial handoffs; fan-out uses
+direct Bash dispatch and tags every job with the same group.
+
+After dispatch, track the group:
+
+```bash
+/codex-bridge:status --group <name>
+/codex-bridge:wait --group <name> --all
+/codex-bridge:bundle --group <name> --output ./audit.tar.gz
+```
+
 ## When to use codex-bridge
 
 **Trigger** when the work is one of:
 
 - Substantial implementation (multi-file, scaffolding, migrations).
+- N >= 2 parallel dispatch via `/codex-bridge:fan-out`.
 - Plan→execute→review loop where you want the worker isolated from your context.
 - Adversarial review where you want to weight findings against specific risks.
 - Background coding job you want to tail without burning Opus turns on the implementation.

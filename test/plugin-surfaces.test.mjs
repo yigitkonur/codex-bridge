@@ -292,6 +292,7 @@ const expectedCommands = [
   "cancel.md",
   "config.md",
   "events.md",
+  "fan-out.md",
   "iterate.md",
   "merge.md",
   "respond.md",
