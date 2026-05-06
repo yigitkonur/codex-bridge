@@ -9,7 +9,9 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+
+- Made `PIPELINE_ERROR` payloads internally consistent: `origin` now matches `failing_stage`, `lastCompletedStage` carries prior progress, and review verdict/count fields are `null` unless review actually completed.
 
 ## [2.2.0] — 2026-05-05
 
