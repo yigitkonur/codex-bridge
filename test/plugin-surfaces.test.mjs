@@ -1322,6 +1322,46 @@ if (command === "status") {
   }
 });
 
+test("plugin Stop hook accepts JSON stop decision from review output", () => {
+  const harness = makeStopGateHarness(`
+import process from "node:process";
+
+const [command] = process.argv.slice(2);
+if (command === "status") {
+  process.stdout.write(JSON.stringify({ ok: true, result: { running: [] } }));
+} else if (command === "setup") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      reviewGateEnabled: true,
+      reviewGateLockExists: true,
+      ready: true
+    }
+  }));
+} else if (command === "verdicts") {
+  process.stdout.write(JSON.stringify({ ok: true, result: { count: 0, pending: [] } }));
+} else if (command === "task") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    result: {
+      rawOutput: JSON.stringify({ decision: "block", reason: "missing verification" })
+    }
+  }));
+} else {
+  process.exit(2);
+}
+`);
+
+  try {
+    const result = runStopGateHarness(harness);
+    assert.equal(result.status, 0);
+    const reason = assertStopBlockEnvelope(result.stdout);
+    assert.equal(reason, "missing verification");
+  } finally {
+    fs.rmSync(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("plugin Stop hook leaves timeout margin for its blocking timeout result", () => {
   const hooksConfig = readJson("plugin/hooks/hooks.json");
   const stopHook = readText("plugin/hooks/stop.mjs");

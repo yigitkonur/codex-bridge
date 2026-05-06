@@ -467,6 +467,17 @@ function parseStopReview(rawOutput) {
   }
 
   const firstLine = text.split(/\r?\n/, 1)[0].trim();
+  const jsonDecision = parseJson(firstLine);
+  if (jsonDecision && typeof jsonDecision === "object") {
+    const decision = String(jsonDecision.decision ?? "").toLowerCase();
+    if (decision === "allow") return { ok: true, reason: null };
+    if (decision === "block") {
+      return {
+        ok: false,
+        reason: String(jsonDecision.reason ?? "").trim() || text
+      };
+    }
+  }
   if (firstLine.startsWith("ALLOW:")) return { ok: true, reason: null };
   if (firstLine.startsWith("BLOCK:")) {
     return {
