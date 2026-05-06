@@ -5121,7 +5121,7 @@ function fmtSeconds(ms) {
 }
 var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE", "PLAN", "CANCELLED"]);
 var TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN|CANCELLED)\]/m;
-var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "DIRECTIVES", "CHECKPOINT"]);
+var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "CHECKPOINT"]);
 function formatTailCommand({ scriptPath, jobId, timeoutMs = 18e5, exclude = DEFAULT_MONITOR_EXCLUDE, cwd = null }) {
   const excludeClause = exclude && exclude.length > 0 ? ` --exclude ${Array.from(exclude).join(",")}` : "";
   return `${commandPrefix(scriptPath, "events", cwd)} ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
