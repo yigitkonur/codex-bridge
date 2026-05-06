@@ -12,6 +12,7 @@ import {
   formatPlanEvent,
   formatQuestionEvent,
   formatTailCommand,
+  formatWorkerStderrEvent,
   initSession,
   logEvent,
   logNdjson,
@@ -83,6 +84,23 @@ test("event action commands preserve originating cwd", () => {
     }),
     /events --cwd '\/tmp\/project with spaces' job-1 --follow/
   );
+});
+
+test("worker stderr event includes forensic fields", () => {
+  const rendered = formatWorkerStderrEvent(session, {
+    jobId: "task-moabc123",
+    path: "/tmp/task-moabc123.log.worker.err",
+    sizeBytes: 2451,
+    deltaBytes: 120,
+    tail: "Error: ETIMEDOUT\n    at request",
+    errorClassHint: "network"
+  });
+
+  assert.match(rendered, /^\[WORKER_STDERR\] task-moabc123 \| size=2451 bytes/);
+  assert.match(rendered, /delta_bytes: 120/);
+  assert.match(rendered, /error_class_hint: network/);
+  assert.match(rendered, /tail: Error: ETIMEDOUT\\n    at request/);
+  assert.match(rendered, /path: \/tmp\/task-moabc123\.log\.worker\.err/);
 });
 
 test("session aliases map task ids to thread artifact paths", () => {

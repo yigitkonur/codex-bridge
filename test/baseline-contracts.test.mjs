@@ -10,7 +10,7 @@ import {
   buildBaselineContracts,
   verifyBaselineContracts
 } from "../scripts/baseline-contracts.mjs";
-import { upsertJob, writeJobFile } from "../src/lib/state.mjs";
+import { resolveJobLogFile, upsertJob, writeJobFile } from "../src/lib/state.mjs";
 
 const rootUrl = new URL("../", import.meta.url);
 const rootPath = fileURLToPath(rootUrl);
@@ -43,9 +43,10 @@ function withCliFixture(run) {
 
   try {
     const threadId = "11111111-1111-4111-8111-111111111111";
+    const logFile = resolveJobLogFile(workspace, "task-baseline-json");
     const job = {
       id: "task-baseline-json",
-      sessionId: "baseline-session",
+      sessionId: process.env.CODEX_COMPANION_SESSION_ID ?? "baseline-session",
       jobClass: "task",
       status: "completed",
       phase: "done",
@@ -53,10 +54,13 @@ function withCliFixture(run) {
       createdAt: "2026-04-30T00:00:00.000Z",
       updatedAt: "2026-04-30T00:00:01.000Z",
       completedAt: "2026-04-30T00:00:01.000Z",
+      logFile,
       result: { rawOutput: "baseline task output\n" }
     };
     upsertJob(workspace, job);
     writeJobFile(workspace, job.id, job);
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.writeFileSync(`${logFile}.worker.err`, "Error: ETIMEDOUT while calling upstream\n", "utf8");
     fs.writeFileSync(path.join(sessionDir, `${threadId}.events`), `[DONE] ${threadId} | duration=1s\n`, "utf8");
 
     return run({ workspace, pluginData, sessionDir, fakeBin, job });
@@ -272,6 +276,9 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.equal(result.command, "result");
     assert.equal(result.result.job.id, fixture.job.id);
     assert.equal(result.result.storedJob.result.rawOutput, "baseline task output\n");
+    assert.equal(result.result.adapterResult.workerErr.size_bytes, 40);
+    assert.equal(result.result.adapterResult.workerErr.error_class_hint, "network");
+    assert.match(result.result.adapterResult.workerErr.tail, /ETIMEDOUT/);
 
     const wait = parseEnvelope(
       runBridge(["wait", fixture.job.id, "--json", "--timeout-ms", "1000", "--cwd", fixture.workspace], fixture)

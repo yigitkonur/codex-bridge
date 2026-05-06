@@ -346,6 +346,24 @@ test("result command asks the selected adapter for normalized result", () => {
   assert.match(result, /const adapter = await resolveCommandAdapter/);
   assert.match(result, /adapter\.getResult\(job\.id, \{ cwd \}\)/);
   assert.match(result, /adapterResult/);
+  assert.match(result, /workerErr/);
+  assert.match(result, /readWorkerErrMetadata/);
+});
+
+test("worker stderr watcher surfaces stderr growth", () => {
+  assert.match(bridge, /const WORKER_STDERR_POLL_MS = 5_000/);
+  assert.match(bridge, /const WORKER_STDERR_THROTTLE_MS = 30_000/);
+  assert.match(bridge, /formatWorkerStderrEvent/);
+  assert.match(bridge, /logNdjson\(sessionForEvent, "WORKER_STDERR"/);
+  assert.match(bridge, /workerErrPath: request\.logFile \? `\$\{request\.logFile\}\.worker\.err` : null/);
+  assert.match(bridge, /logFile,\n\s+onProgress: progress/);
+});
+
+test("worker stderr classifier covers known hints", () => {
+  const classifier = bridge.match(/function classifyWorkerStderr[\s\S]*?return "unknown";\n}/)?.[0] ?? "";
+  for (const hint of ["network", "rate_limit", "permission", "crash", "missing_dependency", "unknown"]) {
+    assert.match(classifier, new RegExp(JSON.stringify(hint).slice(1, -1)));
+  }
 });
 
 test("background task writes job record before spawning worker", () => {

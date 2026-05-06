@@ -589,6 +589,20 @@ export function formatErrorEvent(session, { errorCode, message, phase, origin = 
   return lines.join("\n");
 }
 
+export function formatWorkerStderrEvent(session, { jobId = null, path: workerErrPath, sizeBytes, deltaBytes, tail, errorClassHint }) {
+  const headerId = jobId ?? session.threadId;
+  const lines = [
+    `[WORKER_STDERR] ${headerId} | size=${sizeBytes} bytes`,
+    `  delta_bytes: ${deltaBytes}`,
+    `  error_class_hint: ${errorClassHint ?? "unknown"}`,
+  ];
+  if (tail) {
+    lines.push(`  tail: ${String(tail).replace(/\r?\n/g, "\\n")}`);
+  }
+  lines.push(`  path: ${workerErrPath}`);
+  return lines.join("\n");
+}
+
 // v1.5.0 — emitted before an `[ERROR]` on any terminal failure where one or
 // more commits landed during the turn (detected via git snapshot taken at
 // `turn/started`). The `[PARTIAL]` block tells a reader "real work survived,

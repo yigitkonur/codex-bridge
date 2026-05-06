@@ -387,6 +387,14 @@ Each task writes artifacts to `~/.codex-bridge/sessions/` (or `config.session_di
 - `{threadId}.diff` — `git diff HEAD` snapshot captured by the pipeline.
 - `{threadId}.plan.md` — Written when Codex emits a structured `item/completed` with `type: "plan"`.
 
+Background workers also write process stderr to the job log sibling
+`<task_id>.log.worker.err` under the state `jobs/` directory. When that file
+receives non-empty output, the bridge emits `[WORKER_STDERR]` with the size,
+delta, 500-character tail, error class hint, and full path. `result --json`
+surfaces the same forensic hint at
+`result.adapterResult.workerErr.{path,size_bytes,tail,error_class_hint}`; read
+the file directly when the tail is not enough.
+
 A `{threadId}.pending.json` / `.response.json` pair appears transiently while a `requestUserInput` is in flight (consumed-on-read). `{threadId}.review.json` is written by adversarial review; `[REVIEW]` and `[PHASE]` remain reserved helper formats.
 
 ## Troubleshooting

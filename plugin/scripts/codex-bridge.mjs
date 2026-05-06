@@ -4716,6 +4716,19 @@ function formatErrorEvent(session, { errorCode, message, phase, origin = "turn",
   }));
   return lines.join("\n");
 }
+function formatWorkerStderrEvent(session, { jobId = null, path: workerErrPath, sizeBytes, deltaBytes, tail, errorClassHint }) {
+  const headerId = jobId ?? session.threadId;
+  const lines = [
+    `[WORKER_STDERR] ${headerId} | size=${sizeBytes} bytes`,
+    `  delta_bytes: ${deltaBytes}`,
+    `  error_class_hint: ${errorClassHint ?? "unknown"}`
+  ];
+  if (tail) {
+    lines.push(`  tail: ${String(tail).replace(/\r?\n/g, "\\n")}`);
+  }
+  lines.push(`  path: ${workerErrPath}`);
+  return lines.join("\n");
+}
 function formatPartialEvent(session, { commits = [], currentHeadSha = null, lastOkHeadSha = null, launchedAtIso = null, dirtyFiles = [], scriptPath = null, jobId = null, cwd = null, stateCwd = null }) {
   const jobCwd = jobCommandCwd(cwd, stateCwd);
   const lines = [`[PARTIAL] ${session.threadId} commits=[${commits.join(",")}]`];
@@ -13159,6 +13172,115 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   }
   return child;
 }
+var WORKER_STDERR_POLL_MS = 5e3;
+var WORKER_STDERR_THROTTLE_MS = 3e4;
+var WORKER_STDERR_TAIL_BYTES = 500;
+function readFileSlice(filePath, start, end) {
+  const length = Math.max(0, end - start);
+  if (length === 0) return "";
+  const fd = fs16.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs16.readSync(fd, buffer, 0, length, start);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    fs16.closeSync(fd);
+  }
+}
+function tailText(text, maxChars = WORKER_STDERR_TAIL_BYTES) {
+  const value = String(text ?? "");
+  return value.length > maxChars ? value.slice(-maxChars) : value;
+}
+function classifyWorkerStderr(content) {
+  const text = String(content ?? "");
+  if (/ENETUNREACH|ETIMEDOUT|ECONNRESET/.test(text)) return "network";
+  if (/RateLimit|429/.test(text)) return "rate_limit";
+  if (/EACCES|permission denied/i.test(text)) return "permission";
+  if (/segmentation fault|SIGSEGV/i.test(text)) return "crash";
+  if (/Unable to find/i.test(text) || /No such file/.test(text)) return "missing_dependency";
+  return "unknown";
+}
+function readWorkerErrMetadata(workerErrPath) {
+  if (!workerErrPath || !fs16.existsSync(workerErrPath)) return null;
+  let stats;
+  try {
+    stats = fs16.statSync(workerErrPath);
+  } catch {
+    return null;
+  }
+  if (!stats.isFile() || stats.size <= 0) return null;
+  const start = Math.max(0, stats.size - WORKER_STDERR_TAIL_BYTES);
+  let tail = "";
+  try {
+    tail = readFileSlice(workerErrPath, start, stats.size);
+  } catch {
+    tail = "";
+  }
+  return {
+    path: workerErrPath,
+    size_bytes: stats.size,
+    tail,
+    error_class_hint: classifyWorkerStderr(tail)
+  };
+}
+function startWorkerStderrWatcher({ workerErrPath, getSession, jobId }) {
+  if (!workerErrPath) return () => {
+  };
+  let lastSize = 0;
+  let pendingDelta = 0;
+  let lastEmitAt = 0;
+  const poll = () => {
+    let stats;
+    try {
+      if (!fs16.existsSync(workerErrPath)) return;
+      stats = fs16.statSync(workerErrPath);
+    } catch {
+      return;
+    }
+    if (!stats.isFile()) return;
+    if (stats.size < lastSize) {
+      lastSize = 0;
+      pendingDelta = 0;
+    }
+    if (stats.size <= lastSize) return;
+    const sessionForEvent = getSession?.();
+    if (!sessionForEvent?.eventsPath) return;
+    const previousSize = lastSize;
+    const currentSize = stats.size;
+    lastSize = currentSize;
+    pendingDelta += currentSize - previousSize;
+    const now = Date.now();
+    if (lastEmitAt && now - lastEmitAt < WORKER_STDERR_THROTTLE_MS) return;
+    let newContent = "";
+    try {
+      newContent = readFileSlice(workerErrPath, previousSize, currentSize);
+    } catch {
+      newContent = "";
+    }
+    const tail = tailText(newContent || readWorkerErrMetadata(workerErrPath)?.tail || "");
+    logEvent(sessionForEvent, formatWorkerStderrEvent(sessionForEvent, {
+      jobId,
+      path: workerErrPath,
+      sizeBytes: currentSize,
+      deltaBytes: pendingDelta,
+      tail,
+      errorClassHint: classifyWorkerStderr(newContent || tail)
+    }));
+    logNdjson(sessionForEvent, "WORKER_STDERR", null, {
+      path: workerErrPath,
+      size_bytes: currentSize,
+      delta_bytes: pendingDelta,
+      tail,
+      error_class_hint: classifyWorkerStderr(newContent || tail)
+    });
+    pendingDelta = 0;
+    lastEmitAt = now;
+  };
+  const interval = setInterval(poll, WORKER_STDERR_POLL_MS);
+  interval.unref?.();
+  poll();
+  return () => clearInterval(interval);
+}
 function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
@@ -13556,6 +13678,11 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     seenFirstActionable: false
     // gate for barren-counter start (prevents false stall on slow-to-start turns)
   };
+  const stopWorkerStderrWatcher = startWorkerStderrWatcher({
+    workerErrPath: request.logFile ? `${request.logFile}.worker.err` : null,
+    getSession: () => heartbeatState.session ?? session ?? null,
+    jobId: request.jobId ?? null
+  });
   const gitCwd = request.cwd && typeof request.cwd === "string" ? request.cwd : null;
   const readGitHead = () => {
     if (!gitCwd) return null;
@@ -14055,6 +14182,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   } finally {
     stopHeartbeat();
     stopCheckpoint();
+    stopWorkerStderrWatcher();
     const backstopSession = heartbeatState.session ?? session ?? null;
     if (!terminalEmitted && backstopSession && backstopSession.eventsPath) {
       try {
@@ -14367,6 +14495,7 @@ async function handleTaskWorker(argv) {
       persistFailureErrorInPayload(
         await runBridgeTask({
           ...request,
+          logFile,
           onProgress: progress
         }),
         "task"
@@ -14792,10 +14921,14 @@ async function handleResult(argv) {
   });
   ensureCodexRuntimeAdapter(adapter2);
   const adapterResult = await adapter2.getResult(job.id, { cwd });
+  const workerErr = readWorkerErrMetadata(storedJob?.logFile ?? job.logFile ? `${storedJob?.logFile ?? job.logFile}.worker.err` : null);
   const payload = {
     job,
     storedJob,
-    adapterResult
+    adapterResult: {
+      ...adapterResult,
+      workerErr
+    }
   };
   emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
     json: options.json,

@@ -146,6 +146,7 @@ import {
   formatPartialEvent,
   formatRetryingEvent,
   formatHandoffEvent,
+  formatWorkerStderrEvent,
   TERMINAL_TAGS,
   TERMINAL_TAG_REGEX,
   DEFAULT_MONITOR_EXCLUDE,
@@ -2573,6 +2574,125 @@ function spawnDetachedTaskWorker(cwd, workspaceRoot, jobId, logFile = null) {
   return child;
 }
 
+const WORKER_STDERR_POLL_MS = 5_000;
+const WORKER_STDERR_THROTTLE_MS = 30_000;
+const WORKER_STDERR_TAIL_BYTES = 500;
+
+function readFileSlice(filePath, start, end) {
+  const length = Math.max(0, end - start);
+  if (length === 0) return "";
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function tailText(text, maxChars = WORKER_STDERR_TAIL_BYTES) {
+  const value = String(text ?? "");
+  return value.length > maxChars ? value.slice(-maxChars) : value;
+}
+
+function classifyWorkerStderr(content) {
+  const text = String(content ?? "");
+  if (/ENETUNREACH|ETIMEDOUT|ECONNRESET/.test(text)) return "network";
+  if (/RateLimit|429/.test(text)) return "rate_limit";
+  if (/EACCES|permission denied/i.test(text)) return "permission";
+  if (/segmentation fault|SIGSEGV/i.test(text)) return "crash";
+  if (/Unable to find/i.test(text) || /No such file/.test(text)) return "missing_dependency";
+  return "unknown";
+}
+
+function readWorkerErrMetadata(workerErrPath) {
+  if (!workerErrPath || !fs.existsSync(workerErrPath)) return null;
+  let stats;
+  try {
+    stats = fs.statSync(workerErrPath);
+  } catch {
+    return null;
+  }
+  if (!stats.isFile() || stats.size <= 0) return null;
+  const start = Math.max(0, stats.size - WORKER_STDERR_TAIL_BYTES);
+  let tail = "";
+  try {
+    tail = readFileSlice(workerErrPath, start, stats.size);
+  } catch {
+    tail = "";
+  }
+  return {
+    path: workerErrPath,
+    size_bytes: stats.size,
+    tail,
+    error_class_hint: classifyWorkerStderr(tail),
+  };
+}
+
+function startWorkerStderrWatcher({ workerErrPath, getSession, jobId }) {
+  if (!workerErrPath) return () => {};
+  let lastSize = 0;
+  let pendingDelta = 0;
+  let lastEmitAt = 0;
+
+  const poll = () => {
+    let stats;
+    try {
+      if (!fs.existsSync(workerErrPath)) return;
+      stats = fs.statSync(workerErrPath);
+    } catch {
+      return;
+    }
+    if (!stats.isFile()) return;
+    if (stats.size < lastSize) {
+      lastSize = 0;
+      pendingDelta = 0;
+    }
+    if (stats.size <= lastSize) return;
+    const sessionForEvent = getSession?.();
+    if (!sessionForEvent?.eventsPath) return;
+
+    const previousSize = lastSize;
+    const currentSize = stats.size;
+    lastSize = currentSize;
+    pendingDelta += currentSize - previousSize;
+
+    const now = Date.now();
+    if (lastEmitAt && now - lastEmitAt < WORKER_STDERR_THROTTLE_MS) return;
+
+    let newContent = "";
+    try {
+      newContent = readFileSlice(workerErrPath, previousSize, currentSize);
+    } catch {
+      newContent = "";
+    }
+    const tail = tailText(newContent || readWorkerErrMetadata(workerErrPath)?.tail || "");
+    logEvent(sessionForEvent, formatWorkerStderrEvent(sessionForEvent, {
+      jobId,
+      path: workerErrPath,
+      sizeBytes: currentSize,
+      deltaBytes: pendingDelta,
+      tail,
+      errorClassHint: classifyWorkerStderr(newContent || tail),
+    }));
+    logNdjson(sessionForEvent, "WORKER_STDERR", null, {
+      path: workerErrPath,
+      size_bytes: currentSize,
+      delta_bytes: pendingDelta,
+      tail,
+      error_class_hint: classifyWorkerStderr(newContent || tail),
+    });
+    pendingDelta = 0;
+    lastEmitAt = now;
+  };
+
+  const interval = setInterval(poll, WORKER_STDERR_POLL_MS);
+  interval.unref?.();
+  poll();
+  return () => clearInterval(interval);
+}
+
 function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
@@ -3167,6 +3287,11 @@ async function runBridgeTask(request) {
     barrenCheckpoints: 0,     // consecutive checkpoints with actionableCount == 0
     seenFirstActionable: false, // gate for barren-counter start (prevents false stall on slow-to-start turns)
   };
+  const stopWorkerStderrWatcher = startWorkerStderrWatcher({
+    workerErrPath: request.logFile ? `${request.logFile}.worker.err` : null,
+    getSession: () => heartbeatState.session ?? session ?? null,
+    jobId: request.jobId ?? null,
+  });
   // Checkpoint git helpers. Always run in the task's cwd; refuse to run if
   // no cwd was passed (otherwise spawnSync falls back to the bridge's own
   // cwd and reports git info for the wrong repo — silent miscoloring of
@@ -3870,6 +3995,7 @@ async function runBridgeTask(request) {
     //      lands on the missing branch instead of another patch round.
     stopHeartbeat();
     stopCheckpoint();
+    stopWorkerStderrWatcher();
     // Backstop uses the in-process `terminalEmitted` flag instead of
     // reading the events file — O(1) vs potentially several MB of heartbeat
     // + checkpoint history on long runs. Every terminal-tag write site
@@ -4254,6 +4380,7 @@ async function handleTaskWorker(argv) {
       persistFailureErrorInPayload(
         await runBridgeTask({
           ...request,
+          logFile,
           onProgress: progress
         }),
         "task"
@@ -4748,10 +4875,14 @@ async function handleResult(argv) {
   });
   ensureCodexRuntimeAdapter(adapter);
   const adapterResult = await adapter.getResult(job.id, { cwd });
+  const workerErr = readWorkerErrMetadata((storedJob?.logFile ?? job.logFile) ? `${storedJob?.logFile ?? job.logFile}.worker.err` : null);
   const payload = {
     job,
     storedJob,
-    adapterResult
+    adapterResult: {
+      ...adapterResult,
+      workerErr
+    }
   };
 
   emitSuccess("result", payload, renderStoredJobResult(job, storedJob), {
