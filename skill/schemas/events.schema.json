@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/yigitkonur/codex-bridge/skill/schemas/events.schema.json",
+  "title": "codex-bridge .ndjson event",
+  "description": "One line of a codex-bridge session .ndjson file. Every line is a JSON object conforming to this schema.",
+  "type": "object",
+  "required": ["schema_version", "ts", "tag"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0"],
+      "description": "Schema version. Breaking changes bump the major version."
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the event was emitted."
+    },
+    "tag": {
+      "type": "string",
+      "enum": [
+        "TURN_PARAMS",
+        "TURN_COMPLETED",
+        "ITEM_COMPLETED",
+        "QUESTION",
+        "CONFIRMED",
+        "QUESTION_TIMEOUT",
+        "SERVER_RESPONSE",
+        "STEER",
+        "ERROR",
+        "PIPELINE_STAGE",
+        "PIPELINE_COMPLETE",
+        "PIPELINE_ERROR",
+        "PIPELINE_SKIPPED",
+        "CIRCUIT_BREAKER",
+        "CORRUPT_NDJSON_LINE"
+      ],
+      "description": "Event type discriminator."
+    },
+    "method": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "null" }
+      ],
+      "description": "App-server method name (e.g. 'turn/completed'). null for locally-generated events."
+    },
+    "threadId": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+        { "type": "null" }
+      ],
+      "description": "The Codex thread UUID."
+    },
+    "data": {
+      "type": "object",
+      "description": "Tag-specific payload. Forward-compatible — unknown keys are ignored."
+    }
+  },
+  "if": { "properties": { "tag": { "const": "TURN_PARAMS" } }, "required": ["tag"] },
+  "then": {
+    "properties": {
+      "data": {
+        "type": "object",
+        "properties": {
+          "model": { "type": "string" },
+          "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
+          "collaborationMode": { "type": "object" },
+          "sandboxPolicy": { "type": "object" },
+          "hasOutputSchema": { "type": "boolean" },
+          "promptLength": { "type": "number" },
+          "promptPreview": { "type": "string" }
+        }
+      }
+    }
+  },
+  "else": {
+    "if": { "properties": { "tag": { "const": "TURN_COMPLETED" } }, "required": ["tag"] },
+    "then": {
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "turnId": { "type": "string" },
+            "status": { "type": "number" },
+            "planDetected": { "type": "boolean" },
+            "touchedFiles": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "else": {
+      "if": { "properties": { "tag": { "const": "ITEM_COMPLETED" } }, "required": ["tag"] },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "itemId": { "type": "string" },
+              "itemType": { "type": "string", "enum": ["agentMessage", "commandExecution", "fileChange", "plan", "reasoning"] },
+              "text": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+            }
+          }
+        }
+      },
+      "else": {
+        "if": { "properties": { "tag": { "const": "PIPELINE_STAGE" } }, "required": ["tag"] },
+        "then": {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "stage": { "type": "string", "enum": ["diff", "review", "fix", "check"] },
+                "findingCount": { "type": "number" }
+              },
+              "required": ["stage"]
+            }
+          }
+        }
+      }
+    }
+  }
+}
