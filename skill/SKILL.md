@@ -1,17 +1,11 @@
 ---
 name: codex-bridge
 description: >
-  Delegate coding, refactoring, review, and multi-step implementation tasks to
-  OpenAI Codex. Use this skill when the user asks Claude to "run this by Codex",
-  "have Codex fix it", offload a plan→execute→review loop, spawn a background
-  coding job that Claude can tail via the Monitor tool, run an adversarial code
-  review, answer a [QUESTION] Codex raised mid-turn, follow up on a Codex
-  [PLAN], or watch terminal events via the built-in `events --follow` / `wait`
-  subcommands instead of raw `tail -f`. Also use for heavy-lift implementation
-  jobs Claude would rather hand off. Every `--json` call returns a uniform
-  envelope (`{ok, schema_version, command, result.phase, result.next_action,
-  meta}`) with a ready-to-paste `result.monitor` hint pre-formatted for the
-  Monitor tool.
+  Delegate substantial implementation, refactor, debug, and review work to
+  OpenAI Codex through a hook-driven runtime. Use when the user says "have
+  Codex…", "run this by Codex", asks for an adversarial review, or wants a
+  plan→execute→review→merge loop. The bridge returns Monitor-ready event
+  envelopes and keeps Codex execution separate from the orchestrator context.
 compatibility: Requires Node.js 22+ and the Codex CLI on $PATH (npm i -g @openai/codex && codex login). macOS or Linux — the JSON-RPC broker uses unix sockets.
 license: MIT
 allowed-tools: Bash Monitor
@@ -22,15 +16,13 @@ metadata:
 
 # Codex Bridge
 
-Delegate coding tasks to Codex and manage the workflow via Monitor notifications. Codex is the executor; you are the orchestrator.
+Codex is the executor; you are the orchestrator. Your job is judgment: when to delegate, what risks to name, when to review, when to iterate.
 
-**Path note:** every example uses `${CLAUDE_SKILL_DIR}`. If that environment variable isn't set in your harness, substitute the install path directly (`~/.claude/skills/codex-bridge` for the default user-scope install, or wherever your skill installer placed this skill). Never rely on a bare `codex-bridge` binary — it doesn't exist; you always invoke `node <scriptPath>`.
+**Path note:** examples use `${CLAUDE_SKILL_DIR}`. If it is unset, substitute the install path directly. There is no bare `codex-bridge` binary.
 
-**Claude Code plugin install:** when installed as a Claude Code plugin instead of a standalone skill, prefer the native slash commands: `/codex-bridge:task`, `/codex-bridge:review`, `/codex-bridge:adversarial-review`, `/codex-bridge:status`, `/codex-bridge:result`, `/codex-bridge:events`, `/codex-bridge:timeline`, `/codex-bridge:wait`, `/codex-bridge:send`, `/codex-bridge:respond`, and `/codex-bridge:cancel`. The command files invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs"` and use the `codex-bridge:codex-bridge-runner` subagent for substantial task delegation, so Claude Code gets a fresh worker context while the bridge remains the source of truth for job IDs and Monitor hints. Plugin hooks export the Claude session id for job scoping. If the official OpenAI Codex plugin/skill is enabled, prefer it for standard `/codex:*` review-gate behavior; use `codex-bridge` when the official plugin is unavailable or when the user explicitly wants `codex-bridge` orchestration, Monitor-ready event files, or `/codex-bridge:*` commands. The `codex-bridge` stop-time review gate is project-specific and opt-in only: `/codex-bridge:setup --enable-review-gate` creates `.codex-bridge-stop-review-gate.lock` in the git root, but that mode is suppressed while the official OpenAI Codex plugin is enabled; without the lock file, the Stop hook exits without running Codex.
+**Claude Code plugin install:** when installed as a plugin, prefer `/codex-bridge:task`, `/codex-bridge:review`, `/codex-bridge:status`, `/codex-bridge:result`, `/codex-bridge:events`, `/codex-bridge:timeline`, `/codex-bridge:wait`, `/codex-bridge:send`, `/codex-bridge:respond`, and `/codex-bridge:cancel`.
 
-**Write-mode default:** tasks are read-only unless the command explicitly opts
-into writes or the project config sets a wider sandbox. For file-changing work,
-use `--write`; for bridge-managed isolation, pair it with `--worktree-auto`.
+Tasks are read-only unless the command opts into writes or config sets a wider sandbox. For file-changing work, use `--write`; for bridge-managed isolation, pair it with `--worktree-auto`.
 
 **Sandbox enforcement:** users who pin a sandbox policy can opt into enforcement
 that orchestrators cannot silently downgrade with `--read-only`:
@@ -70,33 +62,58 @@ After dispatch, track the group:
 /codex-bridge:bundle --group <name> --output ./audit.tar.gz
 ```
 
-## Identifiers (the single biggest source of derailment — read this first)
+## When to use codex-bridge
 
-Two kinds of IDs flow through every task. Use the right one or commands fail:
+Use it for substantial implementation, multi-file refactors, migrations, adversarial review, background coding jobs, and task→review→follow-up loops.
 
-- **`jobId`** (shape: `task-mo…` / `review-mo…`) — the canonical handle. Use for `status`, `result`, `wait`, `events`, `timeline`, `cancel`, `status --prune-orphans`. Deterministic, 1:1 with your launch.
-- **`threadId`** (shape: UUID v7 `019d…`) — required by `send` and `steer`. Also accepted by the jobId-side commands above (so you don't strictly need to remember which is which), but using `jobId` there is cheaper and avoids an extra resolver step.
+Skip it for quick lookups, single-symbol greps, tiny one-file edits, or foreign long-running commands such as `npm test` and `xcodebuild`. Monitor only understands codex-bridge `.events` files.
 
-**Derailment pattern to avoid:** the stderr progress stream prints `[codex] Thread ready (019d…)` — do **not** pattern-match that UUID and use it as your `jobId`. It's a threadId. The correct handles come from the `--json` envelope (`result.jobId`, `result.threadId`, `result.eventsPath`, `result.monitor.tool_hint`) or from the one-line footer printed at the end of non-JSON rendered output (`Job: … · Events: … · Monitor: …`).
+## How the runtime helps you
 
-## Quick Start
+The plugin enforces sandbox, plan-mode, Monitor, and event filtering automatically through hooks. You don't think about them. Specifically:
 
-Two patterns — pick by task shape.
+- **Monitor arms itself** when you dispatch a `--background` task. The exclude tags, timeout, and verbosity come from the workspace config (`.claude/codex-bridge.local.md`).
+- **Plan-mode triggers** when the user's prompt contains keywords like "plan" / "planla". You can override with `--mode default`.
+- **Sandbox is pinned** to the workspace's configured policy. `--read-only` flags are stripped if the user has set `sandbox.enforce: true`.
+- **Cadences** (checkpoint, heartbeat, idle timeout) are set from config; you cannot widen them mid-flight.
 
-**Sync (short, self-contained tasks):** one call, the envelope tells you what's next.
+To inspect or change any of these: `/codex-bridge:config show` and `/codex-bridge:config set <key>=<value>`.
+
+When a hook misbehaves: `CODEX_BRIDGE_HOOK_DISABLE=<name>` (or `=all`) bypasses it for one session. See `references/troubleshooting.md` for the full list.
+
+## Core IDs
+
+- **`jobId` / `task_id`** (`task-mo…` / `review-mo…`) — use for `status`, `result`, `wait`, `events`, `cancel`, `merge`, `verdict`, and `iterate`.
+- **`threadId`** (UUID v7 `019d…`) — use for `send` and `steer`.
+
+Do not pattern-match `[codex] Thread ready (019d…)` from stderr; that is a threadId. The `--json` envelope is canonical.
+
+## Common commands
+
 ```bash
-node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --mode default "Rename getUserProfile to fetchUserProfile across the repo" \
-  | jq '.result.phase, .result.jobId'
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --mode default "Inspect this bug and propose the smallest fix"
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --write --worktree-auto --background --effort high "Implement the requested change"
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs review --json --scope branch
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs status --json
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs events <jobId> --follow --exclude HEARTBEAT
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs respond <req-id> --answer "Use the existing API shape."
 ```
 
-Sync `task --json` **blocks through the entire auto-pipeline** (review + completion check). With the default `auto_review: true`, a prompt with no code work still waits through the reviewer's stage timeout before returning. For interactive or low-latency work: pass `--no-pipeline` to keep diff capture while skipping review/fix/check, set `auto_review: false` in `config.yaml`, or use the async pattern below.
+Every `--json` command returns `{ ok, schema_version, command, result, meta }` on success or `{ ok:false, error }` on failure. Use `result.next_action.command` and `result.monitor.tool_hint` verbatim. Sync `task --json` **blocks through the entire auto-pipeline** (review + completion check). With the default `auto_review: true`, a prompt with no code work still waits through the reviewer's stage timeout before returning. For interactive or low-latency work: pass `--no-pipeline` to keep diff capture while skipping review/fix/check, set `auto_review: false` in `config.yaml`, or use the async pattern below.
 
-**Async (long tasks, plan approval, questions via `requestUserInput`):** launch in the background and tail the events file with Monitor. Every `task --json` (background or foreground) returns `result.monitor.tool_hint` — pass it directly to Claude Code's Monitor tool. Full pattern in "Starting a Task" below.
+## Briefs
 
-Every `--json` call returns a uniform envelope:
+For non-trivial work, prefer a structured brief plus a real prompt. The brief is appended to the worker prompt and persisted with the task for review/check forensics.
+
 ```json
-{ "ok": true,  "schema_version": "1.0", "command": "task", "result": { … }, "meta": { "duration_ms": 1234 } }
-{ "ok": false, "schema_version": "1.0", "command": "task", "error": { "class": "auth", "code": "Unauthorized", "retryable": false, "suggestion": "…" } }
+{
+  "goal": "Add retry/backoff to the upstream fetcher",
+  "worker_assignment": "Implement exponential backoff with jitter, max 3 attempts; preserve the public API; cover with a unit test.",
+  "specific_concerns": [
+    "Don't swallow non-retryable 4xx upstream errors",
+    "Reuse the existing Config object"
+  ]
+}
 ```
 
 `result.next_action.command` is already a ready-to-paste invocation in full `node /absolute/path/to/codex-bridge.mjs <sub> …` form — run it verbatim, no substitution required. The `codex-bridge <sub>` shorthand only appears in `--help` text and the printed exit-code doc; it is never written into the JSON envelope. There is no `codex-bridge` binary on `$PATH`.
@@ -196,21 +213,23 @@ Tags in the stream fall into two semantic buckets. Orchestrators should handle t
 
 **Canonical pattern.** Launch with `--json`, read the envelope, hand `result.monitor.tool_hint` to Claude Code's Monitor tool. The envelope is the only place the bridge guarantees you see the correct `jobId` — *not* the thread UUID that appears in `[codex] Thread ready (…)` stderr progress.
 
+
 ```bash
-LAUNCH=$(node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --mode default --background --json "your prompt here")
-JOB_ID=$(echo "$LAUNCH" | jq -r '.result.jobId')
-EVENTS_FILE=$(echo "$LAUNCH" | jq -r '.result.eventsPath')
-TOOL_HINT=$(echo "$LAUNCH" | jq -c '.result.monitor.tool_hint')
-# Then pass $TOOL_HINT straight to the Monitor tool, or run the equivalent command.
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --write --background --worktree-auto --brief @brief.json "Implement the task described in the Codex Bridge structured brief."
 ```
 
-`--background` detaches the worker and returns the envelope immediately; drop it to keep the worker foreground. For foreground, the envelope is emitted after the turn completes (and after the auto-pipeline if configured).
+`specific_concerns` flows into adversarial review as privileged bias-correction context. Put "watch out for X" there, not in a sprawling worker prompt.
 
-The positional form takes **text**, not a path; use `--prompt-file` to load from disk.
+## Pointers
 
-For non-trivial work, prefer a structured brief plus a short positional prompt.
-The brief is appended to the worker prompt and also persisted under the task
-registry for review/check forensics:
+- **Per-command reference:** `node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs <subcommand> --help`.
+- **Config:** `config show --json` prints the merged config and layer diagnostics.
+- **Event stream:** `events --help`; unknown tags are forward-compatible.
+- **Error recovery:** `references/error-recovery.md`.
+- **Brief composition:** `references/brief-composition.md`.
+- **Monitor patterns:** `references/monitor-patterns.md`.
+- **Notification format:** `references/notification-format.md`.
+- **Troubleshooting:** `references/troubleshooting.md`.
 
 ```bash
 node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --json --write --worktree-auto --background \
@@ -559,3 +578,5 @@ When running `xcodebuild` from inside a Claude Code session on macOS, the sandbo
 | [error-recovery.md](references/error-recovery.md) | Error types and recovery strategies |
 | [config-reference.md](references/config-reference.md) | YAML configuration options |
 | [prompt-writing.md](references/prompt-writing.md) | Writing effective Codex prompts |
+
+When in doubt, ask the runtime first, then read prose. Prose ages; the runtime is canonical.

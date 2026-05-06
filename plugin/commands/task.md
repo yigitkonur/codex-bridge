@@ -4,45 +4,19 @@ argument-hint: "[--background|--wait] [--backend <name>] [--write] [--group <nam
 allowed-tools: Bash(node:*), AskUserQuestion, Agent, Monitor
 ---
 
-Invoke the `codex-bridge:codex-bridge-runner` subagent via the `Agent` tool (`subagent_type: "codex-bridge:codex-bridge-runner"`), forwarding the raw user request as the prompt.
-`codex-bridge:codex-bridge-runner` is a subagent, not a skill. Do not call `Skill(codex-bridge:codex-bridge-runner)` or re-enter this command from the subagent.
+Dispatch a codex worker for the user's task. Choose effort based on task shape (review: medium, implementation: high, audit: high; config owns the full default map). The runtime auto-arms Monitor from the envelope's `tool_hint`; read it verbatim, do not modify. Dispatch is read-only unless the prompt explicitly involves file changes. Maximum bound: one `--background` dispatch per turn. If the user wants multiple parallel codex workers, use `/codex-bridge:fan-out` instead.
 
 Raw user request:
-$ARGUMENTS
+`$ARGUMENTS`
 
-Execution mode:
+Use the `Agent` tool with `subagent_type: "codex-bridge:codex-bridge-runner"` and forward the raw request as the prompt. The runner is a subagent, not a skill; do not call `Skill(codex-bridge:codex-bridge-runner)` or re-enter this command from inside it.
 
-- If the request includes `--background`, preserve it and route to the subagent.
-- If the request includes `--wait`, route to the subagent in foreground mode and do not forward `--wait`.
-- If neither flag is present, default to foreground for a short bounded task and background for a broad or multi-step task.
-- If the request includes `--resume`, `--resume-last`, or `--fresh`, preserve that routing choice.
-- If the request includes `--group <name>`, preserve it; use `/codex-bridge:status --group <name>` for that wave.
-- Otherwise, before starting Codex, check for a resumable task thread from this Claude session by running:
+If neither `--background` nor `--wait` is present, keep short bounded tasks foreground and broad or multi-step tasks background. Preserve explicit routing flags, including `--resume`, `--resume-last`, `--fresh`, and `--group <name>` (use `/codex-bridge:status --group <name>` for that wave). When no routing flag is provided, first run:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task-resume-candidate --json
 ```
 
-- If that helper reports `available: true`, use `AskUserQuestion` exactly once to ask whether to continue the current Codex thread or start a new one.
-- The two choices must be `Continue current Codex thread` and `Start a new Codex thread`.
-- If the user is clearly giving a follow-up instruction such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", put `Continue current Codex thread (Recommended)` first.
-- Otherwise put `Start a new Codex thread (Recommended)` first.
-- If the user chooses continue, add `--resume-last` before routing to the subagent.
-- If the user chooses a new thread, add `--fresh` before routing to the subagent.
-- If the helper reports `available: false`, do not ask. Route normally.
-- If the user did not supply a request, ask what Codex should investigate or fix.
+If a resumable thread is available, ask once with `AskUserQuestion`: `Continue current Codex thread` or `Start a new Codex thread`, recommending continue only for clear follow-up prompts. Add `--resume-last` or `--fresh` from that answer before dispatch.
 
-Monitor handling:
-
-- Background task output should include a JSON envelope with `result.jobId` and `result.monitor.tool_hint`.
-- When live progress is useful, pass `result.monitor.tool_hint` directly to the Monitor tool.
-- If Monitor is not available, the equivalent command is `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" events <job-id> --follow --exclude HEARTBEAT`.
-- Do not fabricate completion while Monitor is still running. Report status only, then wait for the terminal `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, or `[PLAN]` tag.
-
-Operating rules:
-
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task ...` and return stdout as-is.
-- Return the bridge stdout verbatim to the user unless you also attach Monitor for a background run.
-- Do not paraphrase, summarize, rewrite, or add commentary before or after a foreground result.
-- Leave `--effort` and `--model` unset unless the user explicitly asks for them. If they ask for `spark`, map it to `gpt-5.3-codex-spark`.
-- If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/codex-bridge:setup`.
+Return bridge stdout verbatim for foreground work. For background work, use `result.monitor.tool_hint` exactly as provided and do not claim completion before `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, or `[PLAN]`.

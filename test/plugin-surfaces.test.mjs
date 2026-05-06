@@ -900,6 +900,8 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(JSON.stringify(hooksConfig), /stop\.mjs/);
   assert.match(sessionHook, /CODEX_COMPANION_SESSION_ID/);
   assert.match(sessionHook, /CODEX_BRIDGE_PLUGIN_DATA/);
+  assert.match(sessionHook, /formatSessionBrief/);
+  assert.match(sessionHook, /codex-bridge is configured/);
   assert.doesNotMatch(sessionHook, /appendEnvVar\(CLAUDE_PLUGIN_DATA_ENV/);
   assert.match(sessionHook, /status", "--prune-orphans", "--json"/);
   assert.match(stopHook, /setup", "--json"/);
@@ -916,6 +918,35 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(stopHook, /decision: "block"/);
   assert.match(stopHook, /"scripts", "codex-bridge\.mjs"/);
   assert.doesNotMatch(stopHook, /"skill", "scripts", "codex-bridge\.mjs"/);
+});
+
+test("SessionStart hook emits mission-shaped bridge brief", () => {
+  const envFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-env-")), "env");
+  const result = spawnSync(
+    process.execPath,
+    [path.join(rootPath, "plugin/hooks/session-lifecycle-hook.mjs"), "SessionStart"],
+    {
+      cwd: rootPath,
+      input: JSON.stringify({ session_id: "session-brief-test", cwd: rootPath }),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAUDE_ENV_FILE: envFile,
+        CLAUDE_PLUGIN_ROOT: path.join(rootPath, "plugin"),
+      },
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  const context = output.hookSpecificOutput.additionalContext;
+  assert.equal(output.continue, true);
+  assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(context, /codex-bridge is configured/);
+  assert.match(context, /Decision principles for when to use codex-bridge/);
+  assert.match(context, /Monitor arms automatically/);
+  assert.match(context, /request_user_input tool/);
+  assert.doesNotMatch(context, /MISSION_PROTOCOL|mission protocol/i);
 });
 
 test("stop review hook re-reads activation after legacy setup migration", { skip: "skipped during incremental T14 land — implementation details under refactoring" }, () => {
