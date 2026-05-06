@@ -94,6 +94,31 @@ import {
   resolveCommandWorkspace,
   resolvePromptInput,
 } from "../lib/handler-utils.mjs";
+import { getSandboxEnforcementStatus, installSandboxEnforcement, uninstallSandboxEnforcement } from "../lib/sandbox-enforcement.mjs";
+
+function installSandboxEnforcementForSetup() {
+  try {
+    return installSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_INSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --enforce-sandbox.",
+    );
+  }
+}
+
+function uninstallSandboxEnforcementForSetup() {
+  try {
+    return uninstallSandboxEnforcement();
+  } catch (err) {
+    throw validationError(
+      err instanceof Error ? err.message : String(err),
+      "SANDBOX_ENFORCEMENT_UNINSTALL_FAILED",
+      "Fix ~/.claude/settings.json so permissions.deny is a JSON array, then rerun setup --disable-sandbox-enforcement.",
+    );
+  }
+}
 
 function resolveClaudeSettingsPath() {
   return path.join(os.homedir(), ".claude", "settings.json");
@@ -248,6 +273,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter = await resolveCommandAdapter({ cwd, workspaceRoot });
   const monitorHook = getMonitorHookMirrorStatus();
+  const sandboxEnforcement = getSandboxEnforcementStatus();
 
   const nextSteps = [];
   if (!codexStatus.available) {
@@ -270,6 +296,11 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     nextSteps.push("Optional: run `codex-bridge setup --install-monitor-hook` to mirror the Monitor PostToolUse hook into Claude user settings.");
   } else if (!monitorHook.installed && !monitorHook.hookScriptExists) {
     nextSteps.push("Monitor hook mirror unavailable in this install; arm Monitor manually from `result.monitor.tool_hint` after background dispatch.");
+  }
+  if (sandboxEnforcement.settingsParseError) {
+    nextSteps.push(`Sandbox enforcement status could not read ${sandboxEnforcement.settingsPath}: ${sandboxEnforcement.settingsParseError}.`);
+  } else if (!sandboxEnforcement.installed) {
+    nextSteps.push("Optional: run `codex-bridge setup --enforce-sandbox` to deny sandbox downgrades at the Claude permission layer.");
   }
 
   return {
@@ -297,6 +328,10 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     monitorHookScriptPath: monitorHook.hookScriptPath,
     monitorHookScriptExists: monitorHook.hookScriptExists,
     monitorHookInstallCommand: monitorHook.installCommand,
+    sandboxEnforcementInstalled: sandboxEnforcement.installed,
+    sandboxEnforcementSettingsPath: sandboxEnforcement.settingsPath,
+    sandboxEnforcementSettingsExists: sandboxEnforcement.settingsExists,
+    sandboxEnforcementSettingsParseError: sandboxEnforcement.settingsParseError,
     actionsTaken,
     nextSteps
   };
@@ -306,13 +341,19 @@ export async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook", "enforce-sandbox", "disable-sandbox-enforcement"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw conflictError(
       "Choose either --enable-review-gate or --disable-review-gate.",
       "REVIEW_GATE_CONFLICT"
+    );
+  }
+  if (options["enforce-sandbox"] && options["disable-sandbox-enforcement"]) {
+    throw conflictError(
+      "Choose either --enforce-sandbox or --disable-sandbox-enforcement.",
+      "SANDBOX_ENFORCEMENT_CONFLICT"
     );
   }
 
@@ -355,6 +396,22 @@ export async function handleSetup(argv) {
       result.alreadyInstalled
         ? `Monitor PostToolUse hook mirror already present in ${result.status.settingsPath}.`
         : `Installed Monitor PostToolUse hook mirror in ${result.status.settingsPath}.`
+    );
+  }
+
+  if (options["enforce-sandbox"]) {
+    const result = installSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.alreadyInstalled
+        ? `Sandbox enforcement deny rules already present in ${result.status.settingsPath}.`
+        : `Installed sandbox enforcement deny rules in ${result.status.settingsPath}.`
+    );
+  } else if (options["disable-sandbox-enforcement"]) {
+    const result = uninstallSandboxEnforcementForSetup();
+    actionsTaken.push(
+      result.removed > 0
+        ? `Removed ${result.removed} sandbox enforcement deny rule${result.removed === 1 ? "" : "s"} from ${result.status.settingsPath}.`
+        : `Sandbox enforcement deny rules were not present in ${result.status.settingsPath}.`
     );
   }
 

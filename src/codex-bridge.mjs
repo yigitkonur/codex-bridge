@@ -230,6 +230,11 @@ import {
   validateNativeReviewRequest,
   waitForSingleJobSnapshot,
 } from "./lib/task-runtime.mjs";
+import {
+  parseCommandInput,
+  resolveCommandCwd,
+  resolveCommandWorkspace,
+} from "./lib/handler-utils.mjs";
 function installSandboxEnforcementForSetup() {
   try {
     return installSandboxEnforcement();
@@ -288,6 +293,136 @@ function printSubcommandUsage(name) {
 // Every handler captures `startedAt = Date.now()` at entry and passes it so the
 // envelope can carry `meta.duration_ms`. Raw stdout writes are only for the
 // human banners of send/steer/respond/version/auth-status.
+
+function formatDoctorBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+}
+
+function formatDoctorAge(ageMs) {
+  if (ageMs == null) return "age unknown";
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function renderDoctorReport(report, cleaned = [], options = {}) {
+  const lines = ["Codex Bridge Doctor - health report", ""];
+  const stale = report.findings.filter((entry) => entry.type === "stale_job");
+  const worktrees = report.findings.filter((entry) => entry.type === "orphan_worktree");
+  const branches = report.findings.filter((entry) => entry.type === "orphan_branch");
+  const oldSessions = report.findings.filter((entry) => entry.type === "old_session_files");
+  const disk = report.findings.filter((entry) => entry.type === "disk_usage");
+  const codex = report.findings.filter((entry) => entry.type === "codex_cli");
+
+  appendDoctorSection(lines, "Stale jobs", stale, (entry) =>
+    `${entry.jobId} (${entry.message}; stale for ${formatDoctorAge(entry.age_ms)})`);
+  appendDoctorSection(lines, "Orphan worktrees", worktrees, (entry) =>
+    `${entry.path} (${entry.message}${entry.age_ms == null ? "" : `; age ${formatDoctorAge(entry.age_ms)}`})`);
+  appendDoctorSection(lines, "Orphan branches", branches, (entry) =>
+    `${entry.branch} (${entry.message})`);
+  appendDoctorSection(lines, "Old session files", oldSessions, (entry) =>
+    `${entry.path} (${entry.message}; oldest ${formatDoctorAge(entry.age_ms)})`);
+
+  lines.push("[Disk usage]");
+  for (const entry of disk) {
+    lines.push(`  - ${entry.label}: ${entry.exists ? formatDoctorBytes(entry.bytes) : "not found"}${entry.error ? ` (${entry.error})` : ""}`);
+  }
+  lines.push("");
+
+  lines.push("[Codex CLI]");
+  for (const entry of codex) {
+    const marker = entry.available && entry.auth?.loggedIn ? "+" : "!";
+    lines.push(`  ${marker} ${entry.message}`);
+    if (entry.version) lines.push(`    ${entry.version}`);
+    if (entry.auth?.detail) lines.push(`    ${entry.auth.detail}`);
+  }
+  lines.push("");
+
+  const cleanableCount = report.findings.filter((entry) => entry.cleanable).length;
+  if (cleanableCount === 0) {
+    lines.push("All clear: no stale jobs, orphan worktrees, or orphan branches.");
+  } else if (!options.clean) {
+    lines.push("To clean up: codex-bridge doctor --clean");
+  } else {
+    const removed = cleaned.filter((entry) => entry.cleaned).length;
+    lines.push(`Cleaned ${removed} of ${cleanableCount} cleanable finding(s).`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function appendDoctorSection(lines, title, entries, formatEntry) {
+  lines.push(`[${title}]`);
+  if (entries.length === 0) {
+    lines.push("  + none");
+  } else {
+    for (const entry of entries) {
+      lines.push(`  ! ${formatEntry(entry)}`);
+    }
+  }
+  lines.push("");
+}
+
+function cleanPromptForFinding(finding) {
+  if (finding.type === "stale_job") return `Mark stale job ${finding.jobId} orphaned`;
+  if (finding.type === "orphan_worktree") return `Remove orphan worktree ${finding.path}`;
+  if (finding.type === "orphan_branch") return `Delete orphan branch ${finding.branch}`;
+  return `Apply cleanup for ${finding.type}`;
+}
+
+function promptDoctorAction(finding) {
+  if (!process.stdin.isTTY) {
+    return Promise.resolve("no");
+  }
+  const question = `${cleanPromptForFinding(finding)}? (y/N/all/quit) `;
+  process.stdout.write(question);
+  process.stdin.setEncoding("utf8");
+  process.stdin.resume();
+  return new Promise((resolve) => {
+    const onData = (chunk) => {
+      process.stdin.pause();
+      process.stdin.off("data", onData);
+      const answer = String(chunk).trim().toLowerCase();
+      if (answer === "y" || answer === "yes") resolve("yes");
+      else if (answer === "all" || answer === "a") resolve("all");
+      else if (answer === "quit" || answer === "q") resolve("quit");
+      else resolve("no");
+    };
+    process.stdin.on("data", onData);
+  });
+}
+
+async function cleanDoctorFindings(report, options = {}) {
+  const results = [];
+  let applyAll = Boolean(options.yes);
+  for (const finding of report.findings.filter((entry) => entry.cleanable)) {
+    if (!applyAll) {
+      const answer = await promptDoctorAction(finding);
+      if (answer === "quit") break;
+      if (answer === "all") applyAll = true;
+      if (answer === "no") {
+        results.push({ finding, action: finding.action, cleaned: false, skipped: true, reason: "declined" });
+        continue;
+      }
+    }
+    const result = applyDoctorAction(finding, report, { force: options.force });
+    results.push(result);
+    if (!options.json) {
+      process.stdout.write(result.cleaned ? "Removed.\n" : `Skipped: ${result.reason ?? result.detail ?? "not cleaned"}\n`);
+    }
+  }
+  return results;
+}
 
 async function handleDoctor(argv) {
   const startedAt = Date.now();
