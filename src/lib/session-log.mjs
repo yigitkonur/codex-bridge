@@ -983,3 +983,64 @@ export function formatReviewEvent(session, { verdict, findingCount, findings, re
   lines.push(`    fix: ${commandPrefix(scriptPath, "task", cwd)} --write "fix the ${findingCount} review findings"`);
   return lines.join("\n");
 }
+
+// v2.2.0 — Early stall warning (fires before the terminal StallDetected [ERROR]).
+// Emitted after `stall_warning_threshold_ms` (default 5 min) of no actionable
+// progress; the terminal StallDetected fires at the full 15-min window. An
+// orchestrator can react to [STALL_WARNING] — steer or cancel — before the
+// terminal tag forces a Monitor self-termination.
+export function formatStallWarningEvent(session, { durationMs, thresholdMs, remainingMs, lastMeaningfulAction = null }) {
+  const lines = [
+    `[STALL_WARNING] ${session.threadId} no progress for ${fmtSeconds(durationMs)} | terminal in ${fmtSeconds(remainingMs)}`,
+    `  threshold: ${fmtSeconds(thresholdMs)}`,
+  ];
+  if (lastMeaningfulAction) lines.push(`  last_action: ${lastMeaningfulAction}`);
+  lines.push("  note: Codex is alive (heartbeats present) but no commands/file-changes/plans in this window.");
+  return lines.join("\n");
+}
+
+// v2.2.0 — Composite attention-routing tag. Emitted alongside [QUESTION],
+// [PLAN], and [ERROR] so an orchestrator monitoring N parallel jobs can filter
+// a single tag to find "which jobs need me right now?" without merging three
+// separate filter streams.
+export function formatNeedsAttentionEvent(session, { underlyingTag, threadId, summary = null, nextAction = null }) {
+  const lines = [
+    `[NEEDS_ATTENTION] ${threadId ?? session.threadId} | underlying=${underlyingTag}`,
+  ];
+  if (summary) lines.push(`  summary: ${String(summary).slice(0, 200)}`);
+  if (nextAction) lines.push(`  next_action: ${String(nextAction).slice(0, 200)}`);
+  return lines.join("\n");
+}
+
+// v2.2.0 — Emitted when Codex creates a new file in the worktree (fileChange
+// item with kind "create"). Gives the orchestrator an explicit "artifact
+// landed" signal without having to diff the worktree or wait for [DONE].
+export function formatArtifactEvent(session, { filePath, sizeBytes = null, threadId }) {
+  const lines = [
+    `[ARTIFACT] ${threadId ?? session.threadId} created ${filePath}`,
+  ];
+  if (sizeBytes != null && Number.isFinite(sizeBytes)) lines.push(`  size_bytes: ${sizeBytes}`);
+  return lines.join("\n");
+}
+
+// v2.2.0 — Heuristic out-of-scope file detection. Fires when Codex touches
+// files outside the inferred prompt scope (ratio > 30% AND total drifted > 3).
+// False-positive risk is managed by the conservative ratio threshold; the
+// orchestrator can adjust by cancelling or steering the thread.
+export function formatDriftWarnEvent(session, { driftedFiles, driftRatio, promptScope, threadId }) {
+  const lines = [
+    `[DRIFT_WARN] ${threadId ?? session.threadId} | ${driftedFiles.length} out-of-scope files | ratio=${Math.round(driftRatio * 100)}%`,
+  ];
+  if (promptScope && promptScope.length > 0) {
+    lines.push(`  prompt_scope: ${promptScope.slice(0, 5).join(", ")}${promptScope.length > 5 ? ` (+${promptScope.length - 5} more)` : ""}`);
+  }
+  if (driftedFiles.length > 0) {
+    lines.push("  drifted:");
+    for (const f of driftedFiles.slice(0, 10)) {
+      lines.push(`    - ${f}`);
+    }
+    if (driftedFiles.length > 10) lines.push(`    ... and ${driftedFiles.length - 10} more`);
+  }
+  lines.push("  note: Codex is touching files outside the inferred prompt scope. Review or cancel to contain scope.");
+  return lines.join("\n");
+}

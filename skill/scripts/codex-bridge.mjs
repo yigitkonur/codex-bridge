@@ -4974,6 +4974,47 @@ function formatWarningEvent(session, { reason, family, threshold, sampleCommand,
   lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
   return lines.join("\n");
 }
+function formatStallWarningEvent(session, { durationMs, thresholdMs, remainingMs, lastMeaningfulAction = null }) {
+  const lines = [
+    `[STALL_WARNING] ${session.threadId} no progress for ${fmtSeconds(durationMs)} | terminal in ${fmtSeconds(remainingMs)}`,
+    `  threshold: ${fmtSeconds(thresholdMs)}`
+  ];
+  if (lastMeaningfulAction) lines.push(`  last_action: ${lastMeaningfulAction}`);
+  lines.push("  note: Codex is alive (heartbeats present) but no commands/file-changes/plans in this window.");
+  return lines.join("\n");
+}
+function formatNeedsAttentionEvent(session, { underlyingTag, threadId, summary = null, nextAction = null }) {
+  const lines = [
+    `[NEEDS_ATTENTION] ${threadId ?? session.threadId} | underlying=${underlyingTag}`
+  ];
+  if (summary) lines.push(`  summary: ${String(summary).slice(0, 200)}`);
+  if (nextAction) lines.push(`  next_action: ${String(nextAction).slice(0, 200)}`);
+  return lines.join("\n");
+}
+function formatArtifactEvent(session, { filePath, sizeBytes = null, threadId }) {
+  const lines = [
+    `[ARTIFACT] ${threadId ?? session.threadId} created ${filePath}`
+  ];
+  if (sizeBytes != null && Number.isFinite(sizeBytes)) lines.push(`  size_bytes: ${sizeBytes}`);
+  return lines.join("\n");
+}
+function formatDriftWarnEvent(session, { driftedFiles, driftRatio, promptScope, threadId }) {
+  const lines = [
+    `[DRIFT_WARN] ${threadId ?? session.threadId} | ${driftedFiles.length} out-of-scope files | ratio=${Math.round(driftRatio * 100)}%`
+  ];
+  if (promptScope && promptScope.length > 0) {
+    lines.push(`  prompt_scope: ${promptScope.slice(0, 5).join(", ")}${promptScope.length > 5 ? ` (+${promptScope.length - 5} more)` : ""}`);
+  }
+  if (driftedFiles.length > 0) {
+    lines.push("  drifted:");
+    for (const f of driftedFiles.slice(0, 10)) {
+      lines.push(`    - ${f}`);
+    }
+    if (driftedFiles.length > 10) lines.push(`    ... and ${driftedFiles.length - 10} more`);
+  }
+  lines.push("  note: Codex is touching files outside the inferred prompt scope. Review or cancel to contain scope.");
+  return lines.join("\n");
+}
 
 // src/lib/job-control.mjs
 import fs9 from "node:fs";
@@ -5510,7 +5551,7 @@ import fs10 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -8227,6 +8268,13 @@ var DEFAULT_CONFIG = {
   artifact_retention_jobs: 50,
   artifact_retention_days: 30,
   redact_secrets: false,
+  // v2.2.0 — [STALL_WARNING] fires at this wall-clock gap of zero actionable
+  // progress. Default 5 min (one checkpoint interval). The terminal StallDetected
+  // fires after the full STALL_CHECKPOINT_THRESHOLD × checkpoint interval (15 min
+  // by default). Configurable so short-budget automation can widen or narrow the
+  // early-warning window. Set to 0 to disable [STALL_WARNING] (does not affect
+  // the terminal stall detector).
+  stall_warning_threshold_ms: 5 * 60 * 1e3,
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function resolveEffort(config, options = {}) {
@@ -8306,7 +8354,8 @@ var CONFIG_SCHEMA = {
   redact_secrets: { type: "boolean" },
   prompt_footer: { type: "string" },
   default_backend: { type: "string" },
-  adapter_routing: { type: "object" }
+  adapter_routing: { type: "object" },
+  stall_warning_threshold_ms: { type: "positive-number" }
 };
 function isConfigValueValid(schema2, value) {
   return schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
@@ -11424,6 +11473,17 @@ function createBridgeServerRequestHandler({ sessionDir, config, questionAnswerMs
       cwd
     }));
     logNdjson(session, "QUESTION", message.method, { requestId: internalId, questions: params.questions });
+    try {
+      const firstQ = (params.questions ?? [])[0];
+      logEvent(session, formatNeedsAttentionEvent(session, {
+        underlyingTag: "QUESTION",
+        threadId,
+        summary: firstQ?.question ?? "Codex asked a question",
+        nextAction: `respond ${internalId} --question-id ${firstQ?.id ?? "q1"} --answer "<answer>"`
+      }));
+      logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "QUESTION", requestId: internalId });
+    } catch {
+    }
     const timeoutMs = questionAnswerMs ?? (Number(config.question_answer_ms) > 0 ? Number(config.question_answer_ms) : DEFAULT_CONFIG.question_answer_ms);
     return waitForResponse(sessionDir, threadId, timeoutMs, internalId).then((response) => {
       clearPendingRequest(sessionDir, threadId);
@@ -13472,6 +13532,32 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          try {
+            const changes = Array.isArray(item.changes) ? item.changes : [];
+            for (const change of changes) {
+              const kind = change?.kind ?? change?.change ?? change?.op ?? "";
+              if (kind === "create" || kind === "add" || kind === "added" || kind === "created") {
+                const filePath = change?.path ?? "";
+                if (filePath) {
+                  logEvent(s, formatArtifactEvent(s, {
+                    filePath,
+                    sizeBytes: null,
+                    threadId: effectiveThreadId
+                  }));
+                  logNdjson(s, "ARTIFACT", null, { filePath, kind, threadId: effectiveThreadId });
+                }
+              }
+            }
+          } catch {
+          }
+          try {
+            const changes = Array.isArray(item.changes) ? item.changes : [];
+            for (const change of changes) {
+              const touchedPath = change?.path ?? "";
+              if (touchedPath) driftState.touchedFiles.add(touchedPath);
+            }
+          } catch {
+          }
         } else if (itemType === "plan") {
           checkpointState.tools.push({
             type: "plan",
@@ -13532,6 +13618,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const HEARTBEAT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
   const CHECKPOINT_INTERVAL_MS = Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
   const STALL_CHECKPOINT_THRESHOLD = Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
+  const STALL_WARNING_THRESHOLD_MS = Number(process10.env.CODEX_BRIDGE_STALL_WARNING_MS) > 0 ? Number(process10.env.CODEX_BRIDGE_STALL_WARNING_MS) : Number(config.stall_warning_threshold_ms) > 0 ? Number(config.stall_warning_threshold_ms) : DEFAULT_CONFIG.stall_warning_threshold_ms;
+  let stallWarnEmitted = false;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
@@ -13555,6 +13643,15 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     // consecutive checkpoints with actionableCount == 0
     seenFirstActionable: false
     // gate for barren-counter start (prevents false stall on slow-to-start turns)
+  };
+  const DRIFT_WARN_RATIO_THRESHOLD = 0.3;
+  const DRIFT_WARN_MIN_DRIFTED = 3;
+  const promptScopePaths = extractPathsFromPrompt(request.prompt ?? "");
+  const driftState = {
+    touchedFiles: /* @__PURE__ */ new Set(),
+    // all unique file paths Codex has touched
+    warnEmitted: false
+    // only emit once per turn
   };
   const gitCwd = request.cwd && typeof request.cwd === "string" ? request.cwd : null;
   const readGitHead = () => {
@@ -13684,6 +13781,29 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           checkpointState.barrenCheckpoints += 1;
         } else {
           checkpointState.barrenCheckpoints = 0;
+          stallWarnEmitted = false;
+        }
+      }
+      if (checkpointState.seenFirstActionable && checkpointState.barrenCheckpoints === 1 && !stallWarnEmitted && !terminalEmitted && STALL_WARNING_THRESHOLD_MS > 0) {
+        try {
+          const barrenDurationMs = CHECKPOINT_INTERVAL_MS;
+          const terminalWindowMs = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
+          logEvent(
+            heartbeatState.session,
+            formatStallWarningEvent(heartbeatState.session, {
+              durationMs: barrenDurationMs,
+              thresholdMs: STALL_WARNING_THRESHOLD_MS,
+              remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs),
+              lastMeaningfulAction: heartbeatState.lastItem
+            })
+          );
+          logNdjson(heartbeatState.session, "STALL_WARNING", null, {
+            durationMs: barrenDurationMs,
+            thresholdMs: STALL_WARNING_THRESHOLD_MS,
+            remainingMs: Math.max(0, terminalWindowMs - barrenDurationMs)
+          });
+          stallWarnEmitted = true;
+        } catch {
         }
       }
       if (checkpointState.barrenCheckpoints >= STALL_CHECKPOINT_THRESHOLD && !terminalEmitted) {
@@ -13711,6 +13831,34 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           terminalEmitted = true;
           stopCheckpoint();
           stopHeartbeat();
+        } catch {
+        }
+      }
+      if (!driftState.warnEmitted && !terminalEmitted && promptScopePaths.length > 0 && driftState.touchedFiles.size > 0 && heartbeatState.session) {
+        try {
+          const allTouched = Array.from(driftState.touchedFiles);
+          const driftedFiles = allTouched.filter(
+            (f) => !promptScopePaths.some((scope) => f.includes(scope) || scope.includes(f))
+          );
+          const driftRatio = driftedFiles.length / allTouched.length;
+          if (driftedFiles.length > DRIFT_WARN_MIN_DRIFTED && driftRatio > DRIFT_WARN_RATIO_THRESHOLD) {
+            logEvent(
+              heartbeatState.session,
+              formatDriftWarnEvent(heartbeatState.session, {
+                driftedFiles,
+                driftRatio,
+                promptScope: promptScopePaths,
+                threadId: heartbeatState.session.threadId
+              })
+            );
+            logNdjson(heartbeatState.session, "DRIFT_WARN", null, {
+              driftedFiles: driftedFiles.slice(0, 20),
+              driftRatio,
+              totalTouched: allTouched.length,
+              promptScopeCount: promptScopePaths.length
+            });
+            driftState.warnEmitted = true;
+          }
         } catch {
         }
       }
@@ -13957,6 +14105,16 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         cwd: request.cwd
       }));
       logNdjson(session, "ERROR", null, { errorCode, message: errorMessage, origin, upstreamRequestId });
+      try {
+        logEvent(session, formatNeedsAttentionEvent(session, {
+          underlyingTag: "ERROR",
+          threadId: result.threadId,
+          summary: `${errorCode}: ${errorMessage.slice(0, 120)}`,
+          nextAction: request.jobId ? `result ${request.jobId}` : null
+        }));
+        logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "ERROR", errorCode });
+      } catch {
+      }
       markTerminalEmitted();
       const nextAction = buildTurnErrorNextAction({
         origin,
@@ -13984,6 +14142,16 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         scriptPath: SCRIPT_PATH,
         cwd: request.cwd
       }));
+      try {
+        logEvent(session, formatNeedsAttentionEvent(session, {
+          underlyingTag: "PLAN",
+          threadId: result.threadId,
+          summary: result.planText.split("\n")[0]?.slice(0, 120) ?? "Plan ready",
+          nextAction: `send ${result.threadId} --mode default "Implement the plan."`
+        }));
+        logNdjson(session, "NEEDS_ATTENTION", null, { underlyingTag: "PLAN", threadId: result.threadId });
+      } catch {
+      }
       markTerminalEmitted();
       setPhase("plan-pending", {
         command: `${bridgeCommand("send", request.cwd)} ${result.threadId} --mode default "Implement the plan."`,
@@ -14090,6 +14258,13 @@ function extractPlanSteps(planText) {
     }
   }
   return steps.length > 0 ? steps : [{ number: 1, text: planText?.split("\n")[0] ?? "Plan", status: "pending" }];
+}
+function extractPathsFromPrompt(promptText) {
+  if (typeof promptText !== "string" || !promptText) return [];
+  const matches = promptText.match(/(?:^|[\s"'`(])(\.[./][^\s"'`()\n]+|[a-zA-Z][\w./\\-]+\.[a-zA-Z]{1,10})/g) ?? [];
+  return [...new Set(
+    matches.map((m) => m.trim().replace(/^["'`(]/, "")).filter((p) => p.length > 3 && p.includes("/") || p.match(/\.\w{1,10}$/))
+  )];
 }
 async function handleTask(argv) {
   const startedAt = Date.now();

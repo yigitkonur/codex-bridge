@@ -37,6 +37,7 @@ const CONFIG_SCHEMA = {
   prompt_footer: { type: "string" },
   default_backend: { type: "string" },
   adapter_routing: { type: "object" },
+  stall_warning_threshold_ms: { type: "positive-number" },
 };
 
 function isConfigValueValid(schema, value) {
