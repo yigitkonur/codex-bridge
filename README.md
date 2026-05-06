@@ -94,16 +94,16 @@ hand off an implementation task:
 /codex-bridge:task fix the failing auth tests with the smallest safe patch
 ```
 
-for file-changing work you want isolated from your main checkout:
+for file-changing work, `--write` isolates changes from your main checkout by default:
 
 ```text
-/codex-bridge:task --write --worktree-auto --background fix the failing auth tests with the smallest safe patch
+/codex-bridge:task --write --background fix the failing auth tests with the smallest safe patch
 ```
 
 for non-trivial work, pair a brief with a real prompt:
 
 ```text
-/codex-bridge:task --write --worktree-auto --background --brief @brief.json implement the task described in the structured brief
+/codex-bridge:task --write --background --brief @brief.json implement the task described in the structured brief
 ```
 
 run a stricter review:
@@ -124,13 +124,13 @@ run the closed loop:
 
 starts a codex task. by default the bridge uses plan mode, the configured sandbox, and the auto review pipeline.
 
-use it for implementation, debugging, refactors, and bigger investigations. write-mode work should use worktree isolation; active plugin hooks surface Monitor/status context and may route Agent calls through the bridge, but the installed hook manifest does not currently register a Bash preflight gate.
+use it for implementation, debugging, refactors, and bigger investigations. write-mode work uses worktree isolation by default; pass `--no-worktree-auto` only when you intentionally want in-place edits. active plugin hooks surface Monitor/status context and may route Agent calls through the bridge, but the installed hook manifest does not currently register a Bash preflight gate.
 
 useful patterns:
 
 ```text
 /codex-bridge:task --background investigate why ci is failing
-/codex-bridge:task --write --worktree-auto add pagination to the export endpoint
+/codex-bridge:task --write add pagination to the export endpoint
 /codex-bridge:task --resume continue the previous thread without creating a new worktree
 ```
 
@@ -182,14 +182,16 @@ these are the job controls.
 /codex-bridge:status
 /codex-bridge:events task-abc123 --follow
 /codex-bridge:wait task-abc123 --timeout-ms 1800000
-/codex-bridge:wait --any task-a task-b task-c --json
+/codex-bridge:wait --all --jobs "task-a task-b task-c" --json
+/codex-bridge:wait --any --predicate both task-a task-b task-c --json
 /codex-bridge:result task-abc123
 /codex-bridge:cancel task-abc123
 ```
 
-`wait --any` is the fan-out/fan-in primitive: it returns the first terminal job
-with `winner.jobId`, `winner.threadId`, `winner.terminalTag`, and
-`winner.eventsPath`.
+`wait --all` is the fan-in barrier for an explicit job cohort. `wait --any
+--predicate both` wakes on the first `[QUESTION]`, `[PLAN]`, `[DONE]`,
+`[ERROR]`, `[INCOMPLETE]`, or `[CANCELLED]` and returns `winner.jobId`, `winner.threadId`,
+`winner.state`, and `winner.eventsPath`.
 
 events are written in a monitor-friendly format, so background work can be tailed without flooding the parent context.
 
@@ -226,7 +228,7 @@ for non-trivial work, use a brief. it gives codex a clean assignment and gives t
 use it like this:
 
 ```text
-/codex-bridge:task --write --worktree-auto --brief @brief.json --background implement the task described in the structured brief
+/codex-bridge:task --write --brief @brief.json --background implement the task described in the structured brief
 /codex-bridge:adversarial-review --brief @brief.json --task task-abc123 --json
 ```
 
@@ -286,6 +288,12 @@ codex-bridge ships claude code hooks for the stuff that should be enforced by ru
 - post-tool bash/agent monitor hints for background jobs.
 - session lifecycle cleanup and status context.
 - optional stop-time review gate.
+
+if plugin-bundled Monitor handoffs do not reach the parent thread, install the user-settings mirror:
+
+```text
+/codex-bridge:setup --install-monitor-hook
+```
 
 the stop review gate is opt-in:
 

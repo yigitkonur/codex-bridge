@@ -201,3 +201,215 @@ test("codex adapter result and event streaming normalize persisted job state", a
   assert.equal(normalized.exitCode, 0);
   assert.deepEqual(events.map((event) => event.tag), ["DONE", "CHECKPOINT"]);
 });
+
+test("codex adapter result lets terminal events override completed job status", async (t) => {
+  const previousPluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+  const root = makeTempDir("codex-adapter-result-terminal-");
+  const workspace = path.join(root, "workspace");
+  const stateRoot = path.join(root, "state");
+  const sessionDir = path.join(root, "sessions");
+  const eventsPath = path.join(sessionDir, "thread-terminal.events");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(sessionDir);
+  process.env.CODEX_BRIDGE_PLUGIN_DATA = stateRoot;
+  t.after(() => {
+    if (previousPluginData === undefined) {
+      delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_BRIDGE_PLUGIN_DATA = previousPluginData;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const job = {
+    id: "task-terminal",
+    status: "completed",
+    phase: "done",
+    title: "Codex Task",
+    jobClass: "task",
+    workspaceRoot: workspace,
+    threadId: "thread-terminal",
+    summary: "done",
+    result: {
+      eventsPath,
+      phase: "incomplete",
+      pipeline: {
+        error: "auto-review exceeded 5m",
+        failing_stage: "review",
+      },
+    },
+  };
+  writeJobFile(workspace, job.id, job);
+  upsertJob(workspace, job);
+  fs.writeFileSync(
+    eventsPath,
+    [
+      "[PIPELINE:review] 00:44:21",
+      "[ERROR] thread-terminal failed | ClientTimeout",
+      "  auto-review exceeded 5m",
+      "  origin: pipeline:diff",
+      "  failing_stage: review",
+      "[PIPELINE:failed] 00:49:21 failing_stage=review at=diff stages=diff touched=0",
+      "",
+    ].join("\n"),
+  );
+
+  const normalized = await codexAdapter.getResult(job.id, { cwd: workspace });
+
+  assert.equal(normalized.terminalTag, "ERROR");
+  assert.equal(normalized.phase, "error");
+  assert.equal(normalized.exitCode, 1);
+  assert.equal(normalized.workerExitCode, 0);
+  assert.equal(normalized.consistent, false);
+  assert.match(normalized.discrepancyReason, /events emitted \[ERROR\] but worker status implied \[DONE\]/);
+});
+
+test("codex adapter result treats a later pipeline failure as incomplete", async (t) => {
+  const previousPluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+  const root = makeTempDir("codex-adapter-result-pipeline-failed-");
+  const workspace = path.join(root, "workspace");
+  const stateRoot = path.join(root, "state");
+  const sessionDir = path.join(root, "sessions");
+  const eventsPath = path.join(sessionDir, "thread-pipeline-failed.events");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(sessionDir);
+  process.env.CODEX_BRIDGE_PLUGIN_DATA = stateRoot;
+  t.after(() => {
+    if (previousPluginData === undefined) {
+      delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_BRIDGE_PLUGIN_DATA = previousPluginData;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const job = {
+    id: "task-pipeline-failed",
+    status: "completed",
+    phase: "done",
+    title: "Codex Task",
+    jobClass: "task",
+    workspaceRoot: workspace,
+    threadId: "thread-pipeline-failed",
+    summary: "done",
+    result: { eventsPath },
+  };
+  writeJobFile(workspace, job.id, job);
+  upsertJob(workspace, job);
+  fs.writeFileSync(
+    eventsPath,
+    [
+      "[DONE] thread-pipeline-failed completed in 1s | 0 files | +0 -0",
+      "[PIPELINE:failed] 00:49:21 failing_stage=review at=diff stages=diff touched=0",
+      "",
+    ].join("\n"),
+  );
+
+  const normalized = await codexAdapter.getResult(job.id, { cwd: workspace });
+
+  assert.equal(normalized.terminalTag, "INCOMPLETE");
+  assert.equal(normalized.phase, "incomplete");
+  assert.equal(normalized.exitCode, 1);
+  assert.equal(normalized.workerExitCode, 0);
+  assert.equal(normalized.consistent, false);
+});
+
+test("codex adapter result preserves cancelled status when events lack terminal", async (t) => {
+  const previousPluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+  const root = makeTempDir("codex-adapter-result-cancelled-empty-events-");
+  const workspace = path.join(root, "workspace");
+  const stateRoot = path.join(root, "state");
+  const sessionDir = path.join(root, "sessions");
+  const eventsPath = path.join(sessionDir, "thread-cancelled-empty.events");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(sessionDir);
+  process.env.CODEX_BRIDGE_PLUGIN_DATA = stateRoot;
+  t.after(() => {
+    if (previousPluginData === undefined) {
+      delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_BRIDGE_PLUGIN_DATA = previousPluginData;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const job = {
+    id: "task-cancelled-empty",
+    status: "cancelled",
+    phase: "cancelled",
+    title: "Codex Task",
+    jobClass: "task",
+    workspaceRoot: workspace,
+    threadId: "thread-cancelled-empty",
+    summary: "cancelled",
+    result: { eventsPath },
+  };
+  writeJobFile(workspace, job.id, job);
+  upsertJob(workspace, job);
+  fs.writeFileSync(eventsPath, "[CHECKPOINT] thread-cancelled-empty t=1m | phase=running\n");
+
+  const normalized = await codexAdapter.getResult(job.id, { cwd: workspace });
+
+  assert.equal(normalized.terminalTag, "CANCELLED");
+  assert.equal(normalized.phase, "cancelled");
+  assert.equal(normalized.exitCode, 1);
+  assert.equal(normalized.workerExitCode, 1);
+  assert.equal(normalized.consistent, true);
+  assert.equal(normalized.terminalSource, "worker-status");
+  assert.equal(normalized.eventTerminalLine, null);
+});
+
+test("codex adapter result finds legacy events through layered relative session_dir", async (t) => {
+  const previousPluginData = process.env.CODEX_BRIDGE_PLUGIN_DATA;
+  const root = makeTempDir("codex-adapter-result-config-session-");
+  const workspace = path.join(root, "workspace");
+  const stateRoot = path.join(root, "state");
+  const sessionDir = path.join(workspace, ".bridge-sessions");
+  const eventsPath = path.join(sessionDir, "thread-config-session.events");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(sessionDir);
+  fs.writeFileSync(path.join(workspace, "config.yaml"), "session_dir: .bridge-sessions\n", "utf8");
+  process.env.CODEX_BRIDGE_PLUGIN_DATA = stateRoot;
+  t.after(() => {
+    if (previousPluginData === undefined) {
+      delete process.env.CODEX_BRIDGE_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_BRIDGE_PLUGIN_DATA = previousPluginData;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const job = {
+    id: "task-config-session",
+    status: "completed",
+    phase: "done",
+    title: "Codex Task",
+    jobClass: "task",
+    workspaceRoot: workspace,
+    threadId: "thread-config-session",
+    summary: "done",
+    result: {},
+  };
+  writeJobFile(workspace, job.id, job);
+  upsertJob(workspace, job);
+  fs.writeFileSync(
+    eventsPath,
+    [
+      "[ERROR] thread-config-session failed | ClientTimeout",
+      "  auto-review exceeded 5m",
+      "  origin: pipeline:diff",
+      "  failing_stage: review",
+      "[PIPELINE:failed] 00:49:21 failing_stage=review at=diff stages=diff touched=0",
+      "",
+    ].join("\n"),
+  );
+
+  const normalized = await codexAdapter.getResult(job.id, { cwd: workspace });
+
+  assert.equal(normalized.eventsPath, eventsPath);
+  assert.equal(normalized.terminalTag, "ERROR");
+  assert.equal(normalized.phase, "error");
+  assert.equal(normalized.exitCode, 1);
+  assert.equal(normalized.workerExitCode, 0);
+  assert.equal(normalized.consistent, false);
+});

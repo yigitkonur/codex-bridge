@@ -1,6 +1,6 @@
 ---
 description: Show active and recent Codex Bridge jobs for this repository
-argument-hint: "[job-id] [--wait] [--watch [--interval 10s]] [--cleanup [--dry-run]] [--timeout-ms <ms>] [--all] [--json]"
+argument-hint: "[job-id] [--filter completed_fail|needs_attention] [--wait] [--watch [--interval 10s]] [--cleanup [--dry-run]] [--timeout-ms <ms>] [--all] [--session <id>] [--since <iso-ts>] [--json]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
@@ -10,6 +10,7 @@ allowed-tools: Bash(node:*)
 If the user did not pass a job ID:
 
 - Render the command output compactly.
+- Preserve summary counts and needs-attention entries; failed or incomplete jobs are actionable, even when running count is zero.
 - Preserve job ID, kind, status, phase, elapsed or duration, summary, and follow-up commands.
 
 If the user did pass a job ID:

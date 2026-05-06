@@ -27,7 +27,7 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 [ERROR] {threadId} failed | {errorCode}
   {errorMessage}
   origin: {origin}
-  failing_stage: {stage}           # only on pipeline origins when a TimeoutError triggered the failure
+  failing_stage: {stage}           # only on pipeline origins; matches the failed pipeline stage
   upstream_request_id: {uuid}      # v1.5.0+; only when the upstream error message carried a `request id: <uuid>` correlation handle
   phase: {currentPhase}
   actions:
@@ -48,12 +48,12 @@ Every `task --json` launch also returns `result.monitor.{command, shell_fallback
 | `upstream:auth` (v1.5.0) | Upstream 401 Unauthorized (direct Codex auth or proxy-layer). Deterministic; no retry policy will help. Policy `none / maxAttempts: 0`. `[HANDOFF]` precedes `[ERROR]` immediately. |
 | `upstream:invalid-request` (v1.5.0) | Upstream 400 `invalid_request_error` not covered by the more specific `response-chain-lost` matcher. Some proxy-layer 400s are transient; retry policy `same-thread / maxAttempts: 3 / backoffMs: [2000, 5000, 12000]` before surfacing. |
 | `turn` | Every other turn-level failure: `ContextWindowExceeded`, `Unauthorized`, `SandboxError`, generic turn-budget exhaustion, etc. Distinguish by `{errorCode}`. |
-| `pipeline:<lastCompleted>` | Auto-pipeline sub-stage failure. `<lastCompleted>` is the last stage that *finished* — see `failing_stage:` for the one that actually stalled. |
+| `pipeline:<stage>` | Auto-pipeline sub-stage failure. `<stage>` matches `failing_stage`; `PIPELINE_ERROR.lastCompletedStage` records prior progress. |
 | `bridge` | Bridge-layer safety net tripped. The emitted token is the bare string `bridge` (no `bridge:stall` / `bridge:unhandled-exit` sub-tokens — distinguish those two sub-cases by `{errorCode}`: `StallDetected` vs `UnhandledExit`). Indicates a bridge bug; treat as a bug report. |
 
-The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) carry `data.origin` with the same values plus `data.failing_stage` when applicable.
+The NDJSON counterparts (`ERROR`, `PIPELINE_ERROR`) carry `data.origin` with the same values plus `data.failing_stage` when applicable. `PIPELINE_ERROR` also carries `lastCompletedStage`; review verdict/count fields are `null` unless the review stage completed.
 
-`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:diff` + `failing_stage: review` + `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` vs `origin: upstream:*` in tooling.
+`[ERROR]` can originate from the main turn **or** from an auto-pipeline sub-stage (e.g. `auto-review exceeded 5m` with `origin: pipeline:review` + `failing_stage: review` + `phase: pipeline (completed: diff)`). In the pipeline-origin case, the sync `task --json` envelope may still be `ok:true` with `result.phase: "incomplete"` and `result.pipeline.error` set — read the envelope after Monitor self-terminates; don't assume exit-4/5/7 just because `[ERROR]` appeared. Branch on `origin: turn` vs `origin: pipeline:*` vs `origin: upstream:*` in tooling.
 
 The `actions:` block is **cause-aware**: an idle-timeout `[ERROR]` suggests `relaunch: … --idle-timeout-ms 900000 …`, a compact-proxy 502 suggests narrowing required-reads + a shorter follow-up `send`, a pipeline sub-stage failure points at `rerun-review` rather than retrying the whole task, and so on. Every block ends with a `see:` line deep-linking into `skill/references/error-recovery.md` for the full recipe.
 
@@ -152,17 +152,36 @@ Matching NDJSON tag: `HANDOFF`. Monitor does **not** exclude `[HANDOFF]` by defa
 
 Emitted when `command_failure_circuit_breaker: true` (shipped default) detects `N=3` consecutive same-family command failures. `{family}` is one of `osascript`, `applescript-dialog`, `applescript-system`, `open-app`, `computer-use`. `{reason}` is `command-family-circuit-breaker-tripped`. `turnInterrupted: no` today — logging-only (see `config-reference.md#command_failure_circuit_breaker`). Monitor picks this up as non-terminal: `[WARNING]` does **not** self-terminate a following `events --follow` stream; the orchestrator decides whether to `cancel` or `send` a steer based on the family. Counter resets on the next turn and on any successful command. Matching NDJSON tag: `CIRCUIT_BREAKER`.
 
+### [BRANCH_SWITCHED]
+```
+[BRANCH_SWITCHED] {threadId} | working-tree branch changed during task
+  jobId: {jobId}
+  before: {branch}
+  after: {branch}
+  detected_at: {stage}
+  recommendation: inspect current branch and task diff before continuing; earlier operations may have used a different baseline
+```
+
+Emitted when the bridge samples the task cwd's current branch and sees it changed since the previous sample. This is non-terminal: the bridge surfaces the shared-checkout hazard but does not fail the task because an external session or manual git operation may be responsible. Matching NDJSON tag: `BRANCH_SWITCHED`.
+
 ### [HEARTBEAT]
 ```
 [HEARTBEAT] {threadId} t={elapsed} | phase={plan|execute} | pid={pid}
   lastItem: {itemType} (age {ageSeconds})
   budget: {remaining} remaining
-  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000
+  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000
 ```
 
-Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter **excludes** `HEARTBEAT` (see `DEFAULT_MONITOR_EXCLUDE` in `src/lib/session-log.mjs`) so pure-liveness pulses don't flood LLM context; omit `--exclude HEARTBEAT` to see every event including the pulse, or pass `--filter HEARTBEAT` for a heartbeat-only view.
+Emitted every 60 s (override via `CODEX_BRIDGE_HEARTBEAT_MS` env) during any running turn — the unconditional liveness pulse introduced in 1.3.0. Non-terminal: `events --follow` does **not** self-terminate on `[HEARTBEAT]`. Monitor's default filter excludes `HEARTBEAT` and verbose `CHECKPOINT` (see `DEFAULT_MONITOR_EXCLUDE` in `src/lib/session-log.mjs`) so pure-liveness pulses and rich checkpoint bodies don't flood LLM context; omit the default exclude to see every event including the pulse, or pass `--filter HEARTBEAT` for a heartbeat-only view.
 
 Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not alive — the caller can short-circuit their wait and investigate (`kill -0 <pid>` on the heartbeat's `pid`, or `pgrep -f codex-bridge`). The `tail:` line in each block is a ready-to-paste re-attach command so an agent that lost its Monitor session can recover from the most recent events-file line alone.
+
+### [CHECKPOINT_SUMMARY]
+```
+[CHECKPOINT_SUMMARY] {threadId} t={elapsed} | phase={plan|execute|?} | interval={duration} | pid={pid|?} | tools={N} ({breakdown}) | focus={paths} | last="{last action}"
+```
+
+Emitted immediately before a verbose `[CHECKPOINT]` whenever the checkpoint interval has content. This is the default-visible Monitor progress signal: one line, enough to see phase, recent tool volume, likely file focus, and the last meaningful action without streaming the full assistant/tool/diff body.
 
 ### [CHECKPOINT]
 ```
@@ -175,14 +194,26 @@ Purpose: if `[HEARTBEAT]` lines stop arriving, the bridge wrapper process is not
     - {sha} {subject}
   diff-since-last-checkpoint: {diffStat}             # only when diffStat truthy
   files-changed-since-turn-start: {summary}          # only when truthy
-  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000   # only when scriptPath + jobId both present
+  tail: node {scriptPath} events {jobId} --follow --exclude HEARTBEAT,DIRECTIVES,CHECKPOINT --timeout-ms 1800000   # only when scriptPath + jobId both present
 ```
 
 Both `t={elapsed}` and `interval={…}` render through the same duration formatter (`fmtSeconds`) — short windows show as `Xs`, longer ones as `Xm` or `XmYYs`, never as raw milliseconds.
 
-Checked every `CODEX_BRIDGE_CHECKPOINT_MS` (default 5 min — env override) alongside the 60-s `[HEARTBEAT]`, but a `[CHECKPOINT]` block is only **written** for intervals that have something worth surfacing (an actionable item, a new assistant message, or a git delta). If an interval has no actionable items, no assistant message, and no diff, the bridge skips emitting `[CHECKPOINT]` entirely — consumers should not assume one block per interval. Non-terminal; `events --follow` does **not** self-terminate on `[CHECKPOINT]`. Unlike `[HEARTBEAT]`, Monitor's default filter does **not** exclude `[CHECKPOINT]` — it's the primary LLM-facing digest during long runs. Pass `--exclude HEARTBEAT,CHECKPOINT` if you want to drop both. The assistant block is capped at 8000 chars per checkpoint; overflow gets a `… (truncated, N more chars)` tail.
+Checked every `CODEX_BRIDGE_CHECKPOINT_MS` (default 5 min — env override) alongside the 60-s `[HEARTBEAT]`, but checkpoint events are only **written** for intervals that have something worth surfacing (an actionable item, a new assistant message, or a git delta). If an interval has no actionable items, no assistant message, and no diff, the bridge skips checkpoint emission entirely — consumers should not assume one block per interval. Non-terminal; `events --follow` does **not** self-terminate on `[CHECKPOINT]`. Monitor's default filter excludes verbose `[CHECKPOINT]` but keeps `[CHECKPOINT_SUMMARY]`; use `--exclude HEARTBEAT` when debugging and you need the full body. The assistant block is capped at 8000 chars per checkpoint; overflow gets a `… (truncated, N more chars)` tail.
 
-The stall detector (`CODEX_BRIDGE_STALL_CHECKPOINTS`, default 3) counts consecutive **barren** checkpoint windows (zero actionable items — `commandExecution` / `fileChange` / `plan`) and fires `[ERROR] | StallDetected` on hit. **Grace period:** the barren counter only starts incrementing after the first actionable item lands; a turn that's still in its initial reasoning window won't trip the detector. Default stall window therefore = `CHECKPOINT_MS × STALL_CHECKPOINTS` once Codex has produced at least one actionable item.
+The stall detector (`CODEX_BRIDGE_STALL_CHECKPOINTS`, default 3) counts consecutive **barren** checkpoint windows (zero actionable items — `commandExecution` / `fileChange` / `plan`). Barren windows before the terminal threshold emit `[STALL_WARNING]`; the threshold hit fires `[ERROR] | StallDetected`. **Grace period:** the barren counter only starts incrementing after the first actionable item lands; a turn that's still in its initial reasoning window won't trip the detector. Default terminal stall window therefore = `CHECKPOINT_MS × STALL_CHECKPOINTS` once Codex has produced at least one actionable item.
+
+### [STALL_WARNING]
+```
+[STALL_WARNING] {threadId} t={elapsed} | phase={plan|execute|?} | no actionable progress for {N} checkpoint(s)
+  warning_threshold: {duration}
+  terminal_threshold: {duration}
+  remaining_until_terminal: {duration}
+  last_actionable: {summary} ({age} ago)
+  recommendation: inspect the events file, steer the thread, or cancel before terminal stall.
+```
+
+Emitted for each barren checkpoint window after Codex has already produced one actionable item, until terminal `[ERROR] | StallDetected` fires. Non-terminal: `events --follow` does **not** self-terminate on `[STALL_WARNING]`. Matching NDJSON tag: `STALL_WARNING`.
 
 ### [INCOMPLETE]
 ```
@@ -235,12 +266,12 @@ actions:
 
 ### [DIRECTIVES]
 ```
-[DIRECTIVES] {threadId} | mode={plan|default} | effort={none|minimal|low|medium|high|xhigh} | sandbox={readOnly|workspaceWrite|dangerFullAccess} [| approval={never|on-request|on-failure|untrusted}] | quiet={true|false} | skip_meta_skills={true|false} | pipeline={review,check|none} [| model={model}]
+[DIRECTIVES] {threadId} | mode={plan|default} | effort={none|minimal|low|medium|high|xhigh} | sandbox={readOnly|workspaceWrite|dangerFullAccess} [| approval={never|on-request|on-failure|untrusted}] | quiet={true|false} | skip_meta_skills={true|false} | pipeline={diff,review,fix,check|diff|none} [| model={model}] [| models={stage:model,...}] [| warnings={n}]
 ```
 
 Emitted once per turn at `turn/started`, before any `[HEARTBEAT]` / `[CHECKPOINT]` cadence. Surfaces the **effective** runtime config — what the bridge actually resolved after merging CLI flags, `config.yaml`, and built-in defaults. Resolves the invisible-directive problem for keys like `skip_meta_skills` that shape the prompt but otherwise emit nothing observable. Non-terminal.
 
-`pipeline=` reflects the enabled auto-pipeline stages for this run (`review`, `check`, or a comma-joined subset). `pipeline=none` means `--no-pipeline` was passed or the config disabled both stages. The bracketed segments (`approval=`, `model=`) appear in their fixed slots only when set — parse as `key=value` pairs split on ` | ` rather than positional indexing so future optional keys don't break consumers.
+`pipeline=` reflects the enabled auto-pipeline stages for this turn (`diff`, `review`, `fix`, `check`, or a comma-joined subset). `pipeline=diff` means `--no-pipeline` kept diff capture while skipping review/fix/check; `pipeline=none` means this is a plan-only turn or the config disabled both validation stages and no per-run skip requested diff capture. `models=` lists resolved per-stage models such as `assistant:gpt-5.5-codex,plan:gpt-5.5-codex`; `warnings=` is a count of runtime-resolution warnings carried in the JSON envelope's `result.runtime.warnings`. The bracketed segments (`approval=`, `model=`, `models=`, `warnings=`) appear in their fixed slots only when set — parse as `key=value` pairs split on ` | ` rather than positional indexing so future optional keys don't break consumers.
 
 ### [PIPELINE:*] — Auto-pipeline stage progress
 
@@ -249,6 +280,8 @@ Every pipeline stage emits both a **start tag** and a matching **`:done`** tag s
 ```
 [PIPELINE:diff] HH:MM:SS                           # stage start
 [PIPELINE:diff:done] HH:MM:SS 2 files | +23 -5     # stage end (:done pair)
+[PIPELINE:diff:large_change] HH:MM:SS class=destructive reason="1001 lines deleted (threshold 1000)" files=4 additions=0 deletions=1001 paused=true
+[PIPELINE:diff:approved] HH:MM:SS class=destructive reason="1001 lines deleted (threshold 1000)" files=4 additions=0 deletions=1001
 
 [PIPELINE:review] HH:MM:SS                         # stage start
 [PIPELINE:review:done] HH:MM:SS verdict=approve findings=0
@@ -265,14 +298,16 @@ Then exactly one terminal pipeline tag closes the whole pipeline:
 ```
 [PIPELINE:done] HH:MM:SS stages=diff,review,check complete=true touched=0
 # or, if a stage threw:
-[PIPELINE:failed] HH:MM:SS at=review stages=diff,review touched=0
+[PIPELINE:failed] HH:MM:SS failing_stage=review last_completed=diff stages=diff touched=0
 ```
 
 After `[PIPELINE:done]` / `[PIPELINE:failed]`, no further bridge-side writes are coming to the workspace — safe for the orchestrator to commit / inspect. The `touched=N` summary is the count of files in `[PIPELINE:fix:done] files=[…]`; on `task --json` it's also available as `result.pipeline.touchedFiles`.
 
 `[PIPELINE:fix]` only fires when a structured review populated `reviewFindings` (e.g. an adversarial-review result fed back in). The default native auto-review returns plain text, so `reviewFindings` is empty and `[PIPELINE:fix]` does not appear on the normal `auto_review: true` path. Even then, `[PIPELINE:review:done]` still appears with `findings=0`. See `orchestration-flows.md` for lifecycle.
 
-`--no-pipeline` on `task` / `send` skips the pipeline entirely; the events file sees no `[PIPELINE:*]` lines, and the ndjson log carries a `PIPELINE_SKIPPED` entry.
+`[PIPELINE:diff:large_change]` fires before review/fix/check when the task-base diff exceeds `destructive_diff_lines_deleted` or `destructive_diff_files_changed`. With the shipped `destructive_diff_mode: "pause"`, the next block is a `[QUESTION]`; answer `Approve` to continue or `Reject` to return `[INCOMPLETE]`.
+
+`--no-pipeline` on `task` keeps `[PIPELINE:diff]`, `[PIPELINE:diff:done]`, and `[PIPELINE:done]` so the run still captures a task diff, then skips review/fix/check. The ndjson log carries a `PIPELINE_SKIPPED` entry naming the skipped validation stages.
 
 ### [REVIEW] (reserved — not emitted by the current build)
 ```

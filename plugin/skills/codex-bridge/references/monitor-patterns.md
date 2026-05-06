@@ -1,15 +1,15 @@
 # Monitor — Preset A only
 
-The hooks auto-arm Monitor on background dispatches; you almost never derive the invocation by hand. The runtime emits the canonical payload at `result.monitor.tool_hint` and the PostToolUse hook surfaces it as `additionalContext`.
+The PostToolUse hook attempts to surface the Monitor invocation for background dispatches as `additionalContext`. If you do not see that handoff in the next turn, arm Monitor manually with `result.monitor.tool_hint` from the dispatch envelope. Do not assume the hook fired or that Claude Code delivered the context; verify that Monitor starts streaming within a few seconds. `setup --install-monitor-hook` installs the user-settings mirror for Claude Code versions affected by plugin-bundled `additionalContext` delivery bugs.
 
 ## Preset A — the only pattern that ships in v2.x
 
-Use the literal `tool_hint` from the envelope. Default shape:
+Use the literal `tool_hint` from the envelope in the parent thread. Do not wrap Monitor in an Agent subagent; that reintroduces false `completed` notifications for non-terminal progress. Default shape:
 
 ```json
 {
   "description": "codex-bridge events for <task_id>",
-  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs\" events <task_id> --follow --exclude HEARTBEAT --timeout-ms 1800000",
+  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs\" events <task_id> --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000",
   "timeout_ms": 1800000,
   "persistent": false
 }
@@ -17,9 +17,9 @@ Use the literal `tool_hint` from the envelope. Default shape:
 
 Why these defaults:
 
-- `--exclude HEARTBEAT` — heartbeats are 60-s liveness pulses; useful in raw-tail mode but flood Monitor's window. Excluded by default; future tags pass through (forward-compat).
+- `--exclude HEARTBEAT,CHECKPOINT` — heartbeats are pure liveness and full checkpoints are verbose forensic blocks. `[CHECKPOINT_SUMMARY]` remains visible; future tags pass through (forward-compat).
 - `--timeout-ms 1800000` (30 min) — covers most write-mode tasks; adjust manually for unusually long runs.
-- `persistent: false` — Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`/`[PLAN]` and shouldn't keep running.
+- `persistent: false` — Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`/`[PLAN]`/`[CANCELLED]` and shouldn't keep running.
 
 ## Event tags you'll see
 
@@ -30,10 +30,13 @@ The bridge emits a fixed vocabulary on the `.events` stream. Treat unknown tags 
 | `[DONE]` | terminal | Task finished successfully | Monitor self-closes; inspect result/diff |
 | `[ERROR]` | terminal | Non-recoverable failure | Read `origin:` line; see `error-recovery.md` |
 | `[INCOMPLETE]` | terminal | Partial completion | Check `[PIPELINE:check:done] missing_items=…` for the failing criteria |
+| `[CANCELLED]` | terminal | Task was cancelled | Monitor self-closes; inspect cancel result |
 | `[PLAN]` | interrupt | Plan-mode produced a plan | `respond` approve or revise |
 | `[QUESTION]` | interrupt | Backend asked a clarifier | `respond` with the answer |
 | `[CONFIRMED]` | interrupt | Echo after a `respond` | Informational |
-| `[CHECKPOINT]` | progress | Every ~5 min | Read for "what is Codex doing"; act if drifting |
+| `[CHECKPOINT_SUMMARY]` | progress | Every ~5 min | Read for "what is Codex doing"; act if drifting |
+| `[CHECKPOINT]` | progress | Every ~5 min | Verbose forensic block; excluded by default |
+| `[STALL_WARNING]` | recovery | Barren checkpoint before terminal stall | Inspect, steer, or cancel before `[ERROR]` |
 | `[HEARTBEAT]` | progress | Every ~60 s | Liveness pulse; **excluded by default Monitor** |
 | `[DIRECTIVES]` | bootstrap | Once at session start | Records mode/effort/sandbox/pipeline; informational |
 | `[PIPELINE:<stage>]` | pipeline | Stage entered | Stages: `diff`, `plan`, `execute`, `review`, `fix`, `check` |
@@ -47,12 +50,12 @@ The bridge emits a fixed vocabulary on the `.events` stream. Treat unknown tags 
 | `[WARNING]` | recovery | Circuit-breaker fired | Cancel if env can't run that family |
 | `[ADAPTER:<name>:<event>]` | adapter | Backend-specific event | Treat as informational unless adapter docs say otherwise |
 
-Continuation lines (indented under a header) inherit the header's filter decision, so an included `[CHECKPOINT]` ships with its `assistant:`, `tools:`, and `diff-since-last-checkpoint:` body.
+Continuation lines (indented under a header) inherit the header's filter decision, so default-excluded `[CHECKPOINT]` drops its body too.
 
 ## When Monitor is the wrong tool
 
 - Watching `xcodebuild`, `npm test`, `cargo build`, etc. — those don't write `.events` files. Use `Bash --run-in-background`.
 - Polling a file for content — plain shell loop (`until [ -s path ]; do sleep 1; done`).
-- Watching N parallel Codex jobs — Monitor is single-job. Use `status --watch` for the fan-in view.
+- Watching N parallel Codex jobs — Monitor is single-job. Use `wait --any --predicate both` for the next actionable job, `wait --all` as the wave barrier, or `status --watch` for a live table.
 
 If you see a foreign tail (anything not a codex-bridge `.events` file), Monitor's tag filter will never match and you'll waste the full timeout. Reach for the right tool instead.

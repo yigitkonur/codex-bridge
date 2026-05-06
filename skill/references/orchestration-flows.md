@@ -113,17 +113,17 @@ Use when you want to tail progress without hand-rolling `tail -f`. Steers toolin
 ```
 task --background --write "prompt"      → jobId + result.monitor hint
   → events <jobId> --follow \
-           --exclude HEARTBEAT \
+           --exclude HEARTBEAT,CHECKPOINT \
            --timeout-ms 1800000         → line-stream of non-noise tags
   → self-terminates on terminal tag
   → result <jobId> --json               → full rendered result + stored job record
 ```
 
-The `result.monitor.tool_hint` object in the launch payload has the exact shape the `Monitor` tool expects and already bakes in `--exclude HEARTBEAT` — paste it directly, don't re-template.
+The `result.monitor.tool_hint` object in the launch payload has the exact shape the `Monitor` tool expects and already bakes in `--exclude HEARTBEAT,CHECKPOINT` — paste it directly, don't re-template.
 
 ### Handling unknown tags (forward-compat)
 
-The v1.4.0 default (`--exclude HEARTBEAT`) means any tag a future bridge version emits reaches the orchestrator verbatim — including tags your code doesn't know about. The canonical extractor for the head tag is the regex `/^\[([^\]]+)\]/` (match anything between leading brackets). Split on `:` for the subtype (`[PIPELINE:review]` → head `PIPELINE`, subtype `review`). Don't assume the tag vocabulary is closed; if you see a tag you don't recognize, surface the line verbatim to the user/log and keep watching — the bridge only self-terminates on `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, or `[PLAN]`.
+The v1.4.0 exclusion-based default (`--exclude HEARTBEAT,CHECKPOINT`) means any tag a future bridge version emits reaches the orchestrator verbatim — including `[CHECKPOINT_SUMMARY]`, `[STALL_WARNING]`, and tags your code doesn't know about. The canonical extractor for the head tag is the regex `/^\[([^\]]+)\]/` (match anything between leading brackets). Split on `:` for the subtype (`[PIPELINE:review]` → head `PIPELINE`, subtype `review`). Don't assume the tag vocabulary is closed; if you see a tag you don't recognize, surface the line verbatim to the user/log and keep watching — the bridge only self-terminates on `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, or `[CANCELLED]`.
 
 ## Waiting without streaming
 
@@ -198,7 +198,9 @@ This happens when Codex's question-asking skill (whichever upstream chain is cur
 Monitor is a **single-job** tool — it tails one `.events` file and self-terminates on the first terminal tag. When you need to run several independent tasks and collect their outcomes, use async primitives instead:
 
 - `task --background --json` launches a detached worker and returns the job record immediately.
-- `status --watch` renders the multi-job table on an interval and exits when every tracked job reaches a terminal state.
+- `wait --all --jobs "<ids>"` blocks until an explicit job cohort reaches terminal state.
+- `wait --any --predicate both <ids...>` wakes when any job needs attention or reaches terminal state.
+- `status --watch` renders the multi-job table when you want a human live view of all tracked jobs.
 - `await-artifact <job-id> <path>` blocks until a specific file materializes and stabilizes, or the job reaches a terminal state, or the timeout fires.
 
 ### Fan-out / fan-in recipe
@@ -222,12 +224,18 @@ for i in 1 2 3 4 5; do
   JOBS+=("${job_id}:${thread}:missions/out/mission-${i}.md")
 done
 
-# 2. Fan in — two options.
+# 2. Fan in — three options.
 
-# (a) Watch the whole cohort reach terminal state:
-bridge status --watch --interval 10s --watch-timeout-ms 1800000
+# (a) Block until the launched cohort reaches terminal state:
+bridge wait --all --jobs "$(printf '%s\n' "${JOBS[@]}" | cut -d: -f1)" \
+  --timeout-ms 1800000 --json
 
-# (b) Or block per-artifact (stricter — fail-fast on any one):
+# (b) Or wake on the next question/plan/terminal event:
+bridge wait --any --predicate both \
+  --jobs "$(printf '%s\n' "${JOBS[@]}" | cut -d: -f1)" \
+  --timeout-ms 1800000 --json
+
+# (c) Or block per-artifact (stricter — fail-fast on any one):
 for entry in "${JOBS[@]}"; do
   job_id="${entry%%:*}"
   rest="${entry#*:}"
@@ -251,11 +259,12 @@ done
 |---|---|
 | One job, interactive, need live progress | Monitor `events --follow` |
 | One job, unattended, just want the final result | Sync `task --json` |
-| N jobs, all must finish before you move on | `task --background --json` fan-out + `status --watch` |
+| N jobs, all must finish before you move on | `task --background --json` fan-out + `wait --all --jobs "<ids>"` |
+| N jobs, first question/plan/failure should wake you | `task --background --json` fan-out + `wait --any --predicate both <ids...>` |
 | N jobs, each has a known output path | `task --background --json` fan-out + `await-artifact` per job |
-| N jobs, mixed success criteria | Launch async, poll `status --all --json` on your own cadence |
+| N jobs, human live view | `status --watch` |
 
-`status --watch --json` emits one NDJSON snapshot per tick so it's scriptable; without `--json` it re-renders a markdown table in place. Exits 0 when every tracked job is terminal; the summary payload's `reason` is `all-terminal`, `watch-timeout`, or `sigint`. `await-artifact` returns exit 7 on timeout **and** on "job terminated without producing the file"; the payload carries `exists`, `terminated`, and on non-success `reason: "timeout" | "job-<status>"` (e.g. `job-failed`, `job-cancelled`) so the caller can tell the cases apart.
+`wait --all --json` returns `{summary,jobs}` for exactly the target ids you passed. `status --watch --json` emits one NDJSON snapshot per tick so it's scriptable; without `--json` it re-renders a markdown table in place. Exits 0 when every tracked job is terminal; the summary payload's `reason` is `all-terminal`, `watch-timeout`, or `sigint`. A separate `status --json` poll exposes event-derived `summary.completed_fail`, `summary.completed_incomplete`, and `needs_attention`; `summary.running === 0` means terminal, not necessarily successful. `await-artifact` returns exit 7 on timeout **and** on "job terminated without producing the file"; the payload carries `exists`, `terminated`, and on non-success `reason: "timeout" | "job-<status>"` (e.g. `job-failed`, `job-cancelled`) so the caller can tell the cases apart.
 
 
 ## Recovering from upstream state loss

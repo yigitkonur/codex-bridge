@@ -39,6 +39,18 @@ test("boolean inline values are unchanged", () => {
   );
 });
 
+test("no-prefixed long booleans set the positive option false", () => {
+  assert.deepEqual(
+    parseArgs(["--no-worktree-auto", "--no-json"], {
+      booleanOptions: ["worktree-auto", "json"]
+    }),
+    {
+      options: { "worktree-auto": false, json: false },
+      positionals: []
+    }
+  );
+});
+
 test("unknown inline long options stay rejected in strict mode", () => {
   assert.throws(
     () => parseArgs(["--answer=FOO=bar=baz"], {}),

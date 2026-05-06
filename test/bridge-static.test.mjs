@@ -51,14 +51,16 @@ test("broker direct invocation detection uses platform-safe file URLs", () => {
 });
 
 test("wait terminal matching is anchored to event headers", () => {
-  assert.match(handlersInspect, /const TERMINAL = TERMINAL_TAG_REGEX/);
+  assert.match(handlersInspect, /WAIT_PREDICATE_ALIASES/);
   assert.match(handlersInspect, /TERMINAL_TAG_REGEX/);
-  assert.match(handlersInspect, /async function handleWaitAny/);
-  assert.match(handlersInspect, /mode: "any"/);
+  assert.match(handlersInspect, /repeatableValueOptions: \["jobs"\]/);
+  assert.match(handlersInspect, /booleanOptions: \["json", "any", "all"\]/);
+  assert.match(handlersInspect, /const tags = waitPredicateTags\(predicate\)/);
+  assert.match(handlersInspect, /const mode = options\.any \? "any" : "all"/);
   // The Monitor-hint shell fallback lives in envelope-helpers.mjs after the
   // Phase 0 dispatcher split.
-  assert.match(envelopeHelpers, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*\|"\[PLAN\]"\*/);
-  assert.doesNotMatch(envelopeHelpers, /\*"\[DONE\]"\*\|\*"\[ERROR\]"\*\|\*"\[INCOMPLETE\]"\*\|\*"\[PLAN\]"\*/);
+  assert.match(envelopeHelpers, /case "\$line" in "\[DONE\]"\*\|"\[ERROR\]"\*\|"\[INCOMPLETE\]"\*\|"\[PLAN\]"\*\|"\[CANCELLED\]"\*/);
+  assert.doesNotMatch(envelopeHelpers, /\*"\[DONE\]"\*\|\*"\[ERROR\]"\*\|\*"\[INCOMPLETE\]"\*\|\*"\[PLAN\]"\*\|\*"\[CANCELLED\]"\*/);
 });
 
 test("task retry binds same-thread retry to the failed thread id", () => {
@@ -93,7 +95,7 @@ test("task brief is delivered into effective worker prompt", () => {
 
 test("task rejects thread-only resume with automatic worktree creation", () => {
   const handleTask = handlersTask.match(/async function handleTask\(argv\)[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
-  assert.match(handleTask, /resumeLast && options\["worktree-auto"\]/);
+  assert.match(handleTask, /resumeLast && requestedWorktreeAuto/);
   assert.match(handleTask, /RESUME_WORKTREE_CONFLICT/);
   assert.match(handleTask, /codex-bridge iterate <task_id>/);
 });
@@ -122,7 +124,8 @@ test("session directories resolve relative to canonical workspace roots", () => 
   assert.ok(callSites.length >= 6, "interactive commands should pass workspace root as session_dir base");
   assert.match(taskRuntime, /resolveSessionDir\(config\.session_dir, workspaceRoot\)/);
   assert.match(taskRuntime, /resolveSessionDir\(reviewConfig\.session_dir, resolveWorkspaceRoot\(request\.cwd\)\)/);
-  assert.match(taskRuntime, /resolveSessionDir\(getBridgeConfig\(cwd \?\? null, job\.workspaceRoot\)\.session_dir, job\.workspaceRoot\)/);
+  assert.match(taskRuntime, /const config = getBridgeConfig\(cwd \?\? null, job\.workspaceRoot\);/);
+  assert.match(taskRuntime, /const resolvedSessionDir = resolveSessionDir\(config\.session_dir, job\.workspaceRoot\);/);
 });
 
 test("v2.2 ergonomics hooks are wired into runtime surfaces", () => {
@@ -304,8 +307,9 @@ test("task pipeline envelope preserves partial-completion proof fields", () => {
 test("auto-pipeline final diff is task-base aware and check events include missing items", () => {
   assert.match(autoPipeline, /import \{ readMeta \} from "\.\.\/\.\.\/lib\/registry\.mjs";/);
   assert.match(autoPipeline, /const taskMeta = jobId \? readMeta\(jobId\) : null;/);
-  assert.match(autoPipeline, /const captureTaskDiff = \(\) =>/);
-  assert.match(autoPipeline, /const finalDiff = captureTaskDiff\(\);/);
+  assert.match(autoPipeline, /const captureTaskDiff = \(extraTouchedFiles = \[\]\) =>/);
+  assert.match(autoPipeline, /const diffRisk = classifyPipelineDiffRisk\(diff1, config\);/);
+  assert.match(autoPipeline, /const finalDiff = captureTaskDiff\(fixFilesTouched\);/);
   assert.match(autoPipeline, /missing_items=\$\{JSON\.stringify\(completionResult\.missing_items\)\}/);
 });
 
@@ -367,7 +371,7 @@ test("resume, questions, steering, and cancel use adapter lifecycle methods", ()
 });
 
 test("result command asks the selected adapter for normalized result", () => {
-  const result = handlersInspect.match(/async function handleResult[\s\S]*?function waitForTerminalEvent/)?.[0] ?? "";
+  const result = handlersInspect.match(/async function handleResult[\s\S]*?const WAIT_PREDICATE_ALIASES/)?.[0] ?? "";
   assert.match(result, /const adapter = await resolveCommandAdapter/);
   assert.match(result, /adapter\.getResult\(job\.id, \{ cwd \}\)/);
   assert.match(result, /adapterResult/);
@@ -407,6 +411,20 @@ test("worktree-auto keeps job state anchored to the launch workspace", () => {
   const task = handlersTask.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
   assert.match(task, /const stateCwd = cwd;/);
   assert.match(task, /const job = buildTaskJob\(workspaceRoot, taskMetadata, write, \{/);
+});
+
+test("write tasks default to worktree isolation unless explicitly disabled", () => {
+  const task = handlersTask.match(/async function handleTask[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  assert.match(task, /const disabledWorktreeAuto = options\["worktree-auto"\] === false \|\| worktreeAutoDefaultDisabled\(\);/);
+  assert.match(task, /requestedWorktreeAuto \|\|\s*\(write && !readOnly && !resumeLast && !disabledWorktreeAuto\)/);
+});
+
+test("task base-ref flag is parsed and passed to worktree creation", () => {
+  const task = handlersTask.match(/async function handleTask\(argv\)[\s\S]*?async function handleTaskWorker/)?.[0] ?? "";
+  assert.match(handlersTask, /function resolveTaskBaseRefOption/);
+  assert.match(task, /"base-ref"/);
+  assert.match(task, /const baseRefOverride = resolveTaskBaseRefOption\(options\["base-ref"\]\)/);
+  assert.match(task, /baseRef: baseRefOverride/);
 });
 
 test("background task-worker receives the original workspace root", () => {

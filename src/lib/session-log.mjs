@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
@@ -109,6 +110,69 @@ export function logNdjson(session, tag, method, data) {
   } catch {
     // Logging failure must not kill the task
   }
+}
+
+function sha256Text(text) {
+  return `sha256:${createHash("sha256").update(text).digest("hex")}`;
+}
+
+function cacheDeveloperInstructions(session, hash, text) {
+  if (!session?.sessionDir) return null;
+  const hex = hash.replace(/^sha256:/, "");
+  if (!/^[a-f0-9]{64}$/.test(hex)) return null;
+  const relPath = path.join("developer-instructions", `${hex}.txt`);
+  const absPath = path.join(session.sessionDir, relPath);
+  try {
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, text, { flag: "wx" });
+  } catch (err) {
+    if (err?.code !== "EEXIST") return null;
+  }
+  return relPath;
+}
+
+export function compactTurnParamsForNdjson(session, data = {}) {
+  const collaborationMode = data?.collaborationMode;
+  const settings = collaborationMode?.settings;
+  const instructions = settings?.developer_instructions;
+  if (typeof instructions !== "string" || instructions.length === 0) {
+    return data;
+  }
+
+  const persistedInstructions = redactText(instructions, session);
+  const hash = sha256Text(persistedInstructions);
+  const ref = cacheDeveloperInstructions(session, hash, persistedInstructions);
+  if (!ref) {
+    return {
+      ...data,
+      collaborationMode: {
+        ...collaborationMode,
+        settings: {
+          ...settings,
+          developer_instructions_hash: hash,
+          developer_instructions_length: persistedInstructions.length,
+        },
+      },
+    };
+  }
+
+  const {
+    developer_instructions: _developerInstructions,
+    ...restSettings
+  } = settings;
+
+  return {
+    ...data,
+    collaborationMode: {
+      ...collaborationMode,
+      settings: {
+        ...restSettings,
+        developer_instructions_hash: hash,
+        developer_instructions_length: persistedInstructions.length,
+        developer_instructions_ref: ref,
+      },
+    },
+  };
 }
 
 export function logEvent(session, formattedBlock) {
@@ -227,18 +291,70 @@ export function captureGitDiff(cwd, session, options = {}) {
   const baseRef = typeof options.baseRef === "string" && options.baseRef.trim()
     ? options.baseRef.trim()
     : "HEAD";
-  const numstatResult = spawnSync("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 10000 });
   const fullResult = spawnSync("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 10000 });
-  const untrackedFiles = getUntrackedFileStats(cwd);
+  const summary = summarizeGitDiff(cwd, { baseRef });
 
-  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles, baseRef);
+  const diffContent = appendUntrackedDiffMarkers(
+    fullResult.stdout || "",
+    summary.rawFiles.filter((file) => file.untracked),
+    baseRef
+  );
   const diffPath = writeDiff(session, diffContent);
 
+  return {
+    diffStat: summary.diffStat,
+    files: summary.files,
+    fileStats: summary.fileStats,
+    diffPath,
+  };
+}
+
+export function summarizeGitDiff(cwd, options = {}) {
+  const baseRef = typeof options.baseRef === "string" && options.baseRef.trim()
+    ? options.baseRef.trim()
+    : "HEAD";
+  const numstatResult = spawnSync("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 10000 });
+  const untrackedFiles = getUntrackedFileStats(cwd);
   const numstatOutput = numstatResult.stdout || "";
   const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
   const summary = summarizeNumstat(files);
 
-  return { diffStat: summary, files: files.map(formatFileStat), diffPath };
+  return {
+    diffStat: summary,
+    files: files.map(formatFileStat),
+    fileStats: files.map(formatStructuredFileStat),
+    rawFiles: files,
+  };
+}
+
+export function summarizeTouchedFiles(touchedFiles) {
+  const files = uniqueTouchedFiles(touchedFiles);
+  return {
+    diffStat: files.length === 0
+      ? "0 files | +0 -0"
+      : `${files.length} touched ${files.length === 1 ? "file" : "files"}`,
+    files: files.map((file) => `T ${file}`),
+    fileStats: files.map((file) => ({
+      path: file,
+      additions: null,
+      deletions: null,
+      status: "T",
+      untracked: false,
+    })),
+    diffPath: null,
+  };
+}
+
+function uniqueTouchedFiles(touchedFiles) {
+  const seen = new Set();
+  const files = [];
+  for (const file of touchedFiles ?? []) {
+    const normalized = String(file ?? "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    files.push(normalized);
+  }
+  return files;
 }
 
 function getUntrackedFileStats(cwd) {
@@ -357,6 +473,16 @@ function parseGitNumstat(output) {
   return files;
 }
 
+function formatStructuredFileStat({ fileName, adds, dels, status = null, untracked = false }) {
+  return {
+    path: fileName,
+    additions: adds,
+    deletions: dels,
+    status: status ?? (fileName.includes("=>") ? "R" : "M"),
+    untracked: Boolean(untracked),
+  };
+}
+
 function formatFileStat({ fileName, adds, dels, status = null }) {
   const prefix = fileName.includes("=>") ? "R" : "M";
   if (status) {
@@ -403,16 +529,41 @@ function jobCommandCwd(cwd, stateCwd) {
   return stateCwd ?? cwd;
 }
 
-export function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+export function formatDoneEvent(session, {
+  duration,
+  diffStat,
+  files,
+  config,
+  diffPath,
+  scriptPath,
+  jobId = null,
+  cwd = null,
+  stateCwd = null,
+  taskDiff = null,
+  workspaceDiff = null,
+  workspaceWasClean = null,
+  touchedFiles = null,
+}) {
   const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const headline = taskDiff?.diffStat ? `task_diff: ${taskDiff.diffStat}` : diffStat;
   const lines = [
-    `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
+    `[DONE] ${session.threadId} completed in ${duration}s | ${headline}`,
     `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
     `  diff: ${diffPath}`,
   ];
-  if (files && files.length > 0) {
-    lines.push("  files:");
-    for (const f of files.slice(0, 20)) {
+  if (workspaceDiff?.diffStat) {
+    lines.push(`  workspace_diff: ${workspaceDiff.diffStat}`);
+  }
+  if (typeof workspaceWasClean === "boolean") {
+    lines.push(`  workspace_was_clean: ${workspaceWasClean}`);
+  }
+  if (Array.isArray(touchedFiles)) {
+    lines.push(`  touchedFiles: ${JSON.stringify(touchedFiles.slice(0, 20))}${touchedFiles.length > 20 ? ` (+${touchedFiles.length - 20} more)` : ""}`);
+  }
+  const displayedFiles = taskDiff?.files ?? files;
+  if (displayedFiles && displayedFiles.length > 0) {
+    lines.push(taskDiff ? "  task_files:" : "  files:");
+    for (const f of displayedFiles.slice(0, 20)) {
       lines.push(`    ${f}`);
     }
   }
@@ -505,12 +656,14 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
 
   if (typeof origin === "string" && origin.startsWith("pipeline:")) {
     // Pipeline origin: the main task may still have succeeded; only the
-    // review/fix/check stage stalled. Guide the reader to inspect and rerun
-    // review rather than retry the whole task.
+    // review/fix/check stage stalled. Guide the reader to inspect, rerun the
+    // review from the current worktree, or relaunch with a wider pipeline
+    // budget when the same stage repeatedly times out.
     const stageLine = failingStage ? ` (failing stage: ${failingStage})` : "";
     lines.push(
       `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
       `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
+      `    extend-timeout: ${commandPrefix(scriptPath, "task", cwd)} --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 1800000 "<same prompt>"`,
       see("pipeline-stage-timeout"),
     );
     return lines;
@@ -696,6 +849,51 @@ export function formatIncompleteEvent(session, { diffStat, diffPath, verdict, fi
   return lines.join("\n");
 }
 
+export function formatCancelledEvent(session, {
+  jobId = null,
+  reason = "cancelled-by-user",
+  cancelledAt = null,
+  createdAt = null,
+  cleanup = null,
+  interrupt = null,
+  terminate = null,
+  warnings = [],
+  scriptPath = null,
+  cwd = null,
+  stateCwd = null,
+}) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const cancelledAtIso = cancelledAt ?? new Date().toISOString();
+  const lines = [`[CANCELLED] ${session.threadId} cancelled at ${cancelledAtIso}`];
+  if (jobId) lines.push(`  job_id: ${jobId}`);
+  lines.push(`  reason: ${reason}`);
+  const started = Date.parse(createdAt ?? "");
+  const ended = Date.parse(cancelledAtIso);
+  if (Number.isFinite(started) && Number.isFinite(ended) && ended >= started) {
+    lines.push(`  duration_before_cancel: ${fmtSeconds(ended - started)}`);
+  }
+  if (interrupt || terminate) {
+    lines.push(
+      `  stopped: turn_interrupted=${Boolean(interrupt?.interrupted)} process_terminated=${Boolean(terminate?.delivered)}`
+    );
+  }
+  if (cleanup) {
+    lines.push(
+      `  cleanup: ${cleanup.reason ?? "unknown"}; worktree_removed=${Boolean(cleanup.worktreeRemoved)} branch_deleted=${Boolean(cleanup.branchDeleted)}`
+    );
+  }
+  if (warnings.length > 0) {
+    lines.push("  warnings:");
+    for (const warning of warnings.slice(0, 10)) {
+      lines.push(`    - ${warning}`);
+    }
+  }
+  if (scriptPath && jobId) {
+    lines.push(resultActionLine(scriptPath, jobId, "  detail: ", jobCwd));
+  }
+  return lines.join("\n");
+}
+
 export function formatQuestionEvent(session, { requestId, questions, scriptPath, cwd = null }) {
   const lines = [`[QUESTION] ${session.threadId} ${requestId}`];
   for (const q of (questions || [])) {
@@ -797,19 +995,19 @@ export function fmtSeconds(ms) {
 // Canonical terminal-tag set — tags that self-terminate
 // `events --follow`. Exported so the finally-backstop regex, Monitor's
 // `terminal_tags` array, and every future consumer agree by construction.
-export const TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE", "PLAN"]);
-export const TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN)\]/m;
+export const TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE", "PLAN", "CANCELLED"]);
+export const TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN|CANCELLED)\]/m;
 
 // v1.4.0 — default Monitor/`events --follow` uses EXCLUSION instead of
 // inclusion so new tags introduced by future bridge versions pass through
 // automatically. Pre-1.4.0 the default was an inclusion list that silently
 // dropped any tag not on the list — the "nothing is happening" class of
-// failure. HEARTBEAT is the only tag excluded by default (every 60 s,
-// pure liveness — would flood LLM context); CHECKPOINT and every
-// interrupt-class tag (DONE, ERROR, INCOMPLETE, PLAN, QUESTION) pass
-// through. An orchestrator who wants to also drop CHECKPOINT passes
-// `--exclude HEARTBEAT,CHECKPOINT` explicitly.
-export const DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT"]);
+// failure. HEARTBEAT is excluded by default (every 60 s, pure liveness),
+// DIRECTIVES is excluded because it is startup metadata, and verbose CHECKPOINT
+// is excluded because CHECKPOINT_SUMMARY carries the live progress signal.
+// Interrupt and terminal tags (DONE, ERROR, INCOMPLETE, PLAN, CANCELLED,
+// QUESTION) pass through.
+export const DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "DIRECTIVES", "CHECKPOINT"]);
 
 // Canonical tail invocation — reused by every `.events` block's `tail:`
 // line and by `buildMonitorHint`. One builder so a change to the default
@@ -819,6 +1017,92 @@ export function formatTailCommand({ scriptPath, jobId, timeoutMs = 1_800_000, ex
     ? ` --exclude ${Array.from(exclude).join(",")}`
     : "";
   return `${commandPrefix(scriptPath, "events", cwd)} ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
+}
+
+function summarizeToolBreakdown(tools) {
+  const counts = new Map();
+  for (const tool of tools ?? []) {
+    const label = inferToolLabel(tool);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 5)
+    .map(([label, count]) => `${label}:${count}`)
+    .join(",");
+}
+
+function inferToolLabel(tool) {
+  const type = String(tool?.type ?? "tool").trim() || "tool";
+  const summary = String(tool?.summary ?? "");
+  if (type !== "commandExecution") return type;
+  const known = /\b(rg|sed|nl|cat|jq|npm|node|git|ls|find|grep|python3?|perl|curl|gh|go|cargo|swift|xcodebuild|make|pnpm|yarn)\b/.exec(summary);
+  if (known) return known[1];
+  const first = summary.trim().match(/^(?:[A-Z_]+=("[^"]*"|'[^']*'|\S+)\s+)*(?:\/[\w.-]+\/)*([\w.-]+)/);
+  const fallback = first?.[2] ?? type;
+  return ["bash", "sh", "zsh", "env"].includes(fallback) ? type : fallback;
+}
+
+function summarizeFocus(tools) {
+  const counts = new Map();
+  for (const tool of tools ?? []) {
+    for (const file of extractSummaryPaths(tool?.summary)) {
+      counts.set(file, (counts.get(file) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 3)
+    .map(([file]) => file)
+    .join(",");
+}
+
+function extractSummaryPaths(summary) {
+  const text = String(summary ?? "");
+  const found = [];
+  const pathPattern = /(?:^|[\s'"=])([A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)+)(?=$|[\s'",:;)])/g;
+  for (const match of text.matchAll(pathPattern)) {
+    const candidate = match[1].replace(/[),.;!?]+$/g, "");
+    if (!candidate || candidate.startsWith("http://") || candidate.startsWith("https://")) continue;
+    if (!found.includes(candidate)) found.push(candidate);
+  }
+  return found;
+}
+
+function summarizeLastAction({ tools = [], commits = [], diffStat = null, lastAssistantMessage = null }) {
+  const lastTool = tools.length > 0 ? tools[tools.length - 1] : null;
+  if (lastTool) {
+    return `${lastTool.type}${lastTool.summary ? `: ${compactPreview(lastTool.summary, 110)}` : ""}`;
+  }
+  const lastCommit = commits.length > 0 ? commits[commits.length - 1] : null;
+  if (lastCommit) return `commit: ${lastCommit.sha} ${lastCommit.subject}`;
+  if (diffStat) return `diff: ${diffStat}`;
+  if (lastAssistantMessage) return `assistant: ${compactPreview(lastAssistantMessage, 110)}`;
+  return "none";
+}
+
+export function formatCheckpointSummaryEvent(session, {
+  elapsedMs,
+  phase,
+  intervalMs,
+  pid,
+  lastAssistantMessage = null,
+  tools = [],
+  commits = [],
+  diffStat = null,
+}) {
+  const breakdown = summarizeToolBreakdown(tools);
+  const focus = summarizeFocus(tools);
+  const last = summarizeLastAction({ tools, commits, diffStat, lastAssistantMessage });
+  const parts = [
+    `[CHECKPOINT_SUMMARY] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"}`,
+    `interval=${fmtSeconds(intervalMs)}`,
+    `pid=${pid ?? "?"}`,
+    `tools=${tools.length}${breakdown ? ` (${breakdown})` : ""}`,
+  ];
+  if (focus) parts.push(`focus=${focus}`);
+  parts.push(`last="${compactPreview(last, 140).replaceAll("\"", "'")}"`);
+  return parts.join(" | ");
 }
 
 // v1.3.0 — periodic rich digest of in-flight work. Emitted every 5 min (or
@@ -911,6 +1195,43 @@ export function formatCheckpointEvent(session, {
   return lines.join("\n");
 }
 
+export function formatStallWarningEvent(session, {
+  elapsedMs,
+  phase,
+  barrenCheckpoints,
+  warningThresholdMs,
+  terminalThresholdMs,
+  remainingMs,
+  lastActionableSummary = null,
+  lastActionableAgeMs = null,
+  scriptPath = null,
+  jobId = null,
+  cwd = null,
+}) {
+  const count = Number.isFinite(barrenCheckpoints) ? barrenCheckpoints : 0;
+  const plural = count === 1 ? "" : "s";
+  const fmtDuration = (value) => Number.isFinite(value) ? fmtSeconds(value) : "unknown";
+  const lines = [
+    `[STALL_WARNING] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | no actionable progress for ${count} checkpoint${plural}`,
+    `  warning_threshold: ${fmtDuration(warningThresholdMs)}`,
+    `  terminal_threshold: ${fmtDuration(terminalThresholdMs)}`,
+  ];
+  if (Number.isFinite(remainingMs) && remainingMs > 0) {
+    lines.push(`  remaining_until_terminal: ${fmtSeconds(remainingMs)}`);
+  }
+  if (lastActionableSummary) {
+    const age = Number.isFinite(lastActionableAgeMs) ? ` (${fmtSeconds(lastActionableAgeMs)} ago)` : "";
+    lines.push(`  last_actionable: ${compactPreview(lastActionableSummary, 220)}${age}`);
+  } else {
+    lines.push("  last_actionable: (none recorded)");
+  }
+  lines.push("  recommendation: inspect the events file, steer the thread, or cancel before terminal stall.");
+  if (scriptPath && jobId) {
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
+  }
+  return lines.join("\n");
+}
+
 // v1.4.1 — first-event surface for the *effective* runtime config of the
 // current turn. Emitted at `onTurnStart`, before the 5-minute CHECKPOINT
 // cadence kicks in, so a reader who asks "what config did this run actually
@@ -926,6 +1247,8 @@ export function formatDirectivesEvent(session, {
   skipMetaSkills = false,
   pipelineEnabled = [],
   model = null,
+  models = null,
+  warnings = [],
 }) {
   const parts = [
     `mode=${mode}`,
@@ -937,6 +1260,17 @@ export function formatDirectivesEvent(session, {
   parts.push(`skip_meta_skills=${skipMetaSkills ? "true" : "false"}`);
   parts.push(`pipeline=${Array.isArray(pipelineEnabled) && pipelineEnabled.length > 0 ? pipelineEnabled.join(",") : "none"}`);
   if (model) parts.push(`model=${model}`);
+  if (models && typeof models === "object" && !Array.isArray(models)) {
+    const modelEntries = Object.entries(models)
+      .filter(([, value]) => typeof value === "string" && value.length > 0)
+      .map(([stage, value]) => `${stage}:${value}`);
+    if (modelEntries.length > 0) {
+      parts.push(`models=${modelEntries.join(",")}`);
+    }
+  }
+  if (Array.isArray(warnings) && warnings.length > 0) {
+    parts.push(`warnings=${warnings.length}`);
+  }
   return `[DIRECTIVES] ${session.threadId} | ${parts.join(" | ")}`;
 }
 
@@ -961,6 +1295,20 @@ export function formatWarningEvent(session, { reason, family, threshold, sampleC
   ];
   if (sampleCommand) lines.push(`  sample: ${sampleCommand.slice(0, 120)}`);
   lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
+  return lines.join("\n");
+}
+
+export function formatBranchSwitchedEvent(session, { before, after, detectedAt, jobId = null }) {
+  const lines = [
+    `[BRANCH_SWITCHED] ${session.threadId} | working-tree branch changed during task`,
+    `  before: ${before ?? "(unknown)"}`,
+    `  after: ${after ?? "(unknown)"}`,
+    `  detected_at: ${detectedAt ?? "unknown"}`,
+    "  recommendation: inspect current branch and task diff before continuing; earlier operations may have used a different baseline",
+  ];
+  if (jobId) {
+    lines.splice(1, 0, `  jobId: ${jobId}`);
+  }
   return lines.join("\n");
 }
 

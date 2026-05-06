@@ -10,8 +10,10 @@ export {
   COMPLETION_CHECK_SCHEMA,
   buildCollaborationMode,
   buildSandboxPolicy,
+  resolveCollaborationEffort,
   resolveEffort,
   resolveModel,
+  resolvePlanEffort,
 } from "./runtime-options.mjs";
 
 const CONFIG_SCHEMA = {
@@ -30,6 +32,9 @@ const CONFIG_SCHEMA = {
   turn_default_ms: { type: "positive-number" },
   pipeline_stage_ms: { type: "positive-number" },
   pipeline_total_ms: { type: "positive-number" },
+  destructive_diff_mode: { type: "enum", values: ["pause", "warn", "ignore"] },
+  destructive_diff_lines_deleted: { type: "positive-number" },
+  destructive_diff_files_changed: { type: "positive-number" },
   question_answer_ms: { type: "positive-number" },
   artifact_retention_jobs: { type: "positive-number" },
   artifact_retention_days: { type: "positive-number" },

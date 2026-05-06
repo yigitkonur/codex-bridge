@@ -5,7 +5,7 @@ The full plan→execute→review→merge loop, written for an Opus-driver. `iter
 ## The loop
 
 ```
-Brief ──▶ task --background --worktree-auto --brief ──▶ Monitor (auto-armed)
+Brief ──▶ task --background --write --brief ──▶ Monitor (verify armed)
                                                           │
                                               [PLAN]      │   [QUESTION]
                                                 ▼         │     ▼
@@ -47,26 +47,27 @@ Compose a brief — see `brief-composition.md`. Save to `brief.json` near your w
 Either via slash command (preferred):
 
 ```
-/codex-bridge:task --background --write --worktree-auto --brief @brief.json implement the task described in the structured brief
+/codex-bridge:task --background --write --brief @brief.json implement the task described in the structured brief
 ```
 
 Or directly:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task \
-  --background --write --worktree-auto --json --brief @brief.json \
+  --background --write --json --brief @brief.json \
   "Implement the task described in the structured brief."
 ```
 
-The PostToolUse(Bash|Agent) hook parses accepted bridge envelopes, captures `result.jobId`, and emits an `additionalContext` block with the literal Monitor invocation. **Arm the Monitor on your next turn with that exact payload — do not modify it.**
+The PostToolUse(Bash|Agent) hook attempts to parse accepted bridge envelopes, capture `result.jobId`, and emit an `additionalContext` block with the literal Monitor invocation. If you see that block, arm Monitor with that exact payload. If it does not appear, use `result.monitor.tool_hint` from the dispatch envelope directly. `setup --install-monitor-hook` installs the user-settings mirror that makes this handoff more reliable on Claude Code versions where plugin-bundled `additionalContext` is dropped.
 
 ## Monitor
 
-Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`/`[PLAN]`. While it streams:
+Monitor self-terminates on `[DONE]`/`[ERROR]`/`[INCOMPLETE]`/`[PLAN]`/`[CANCELLED]`. While it streams:
 
 - **`[PLAN]`** → read it; either `send <thread-id> --mode default "Implement the plan."` to approve, or `send <thread-id> "Revise: …"` to push back.
 - **`[QUESTION]`** → `respond <request-id> --question-id <qid> --answer "<label>"`.
-- **`[CHECKPOINT]`** → informational digest every ~5 min. Read for "what is Codex doing"; act only if it's drifting.
+- **`[CHECKPOINT_SUMMARY]`** → informational digest every ~5 min. Read for "what is Codex doing"; act only if it's drifting. Use verbose `[CHECKPOINT]` only when debugging.
+- **`[STALL_WARNING]`** → no actionable progress for a barren checkpoint window. Inspect, steer, or cancel before terminal stall.
 - **`[WARNING]`** → circuit-breaker fired. Cancel if the environment can't run that family; steer if Codex needs redirection.
 
 ## Review
@@ -106,12 +107,15 @@ Don't stack N Monitor calls — Monitor is one-job. For N > 1:
 ```bash
 # Launch N background tasks
 for brief in briefs/*.json; do
-  node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --write --worktree-auto --json --brief @"$brief" \
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --background --write --json --brief @"$brief" \
     | jq -r '.result.jobId' >> .tasks.txt
 done
 
-# Watch all of them with one fan-in view
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" status --watch --interval 10s
+# Block until the launched cohort reaches terminal state
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" wait --all --jobs "$(cat .tasks.txt)" --timeout-ms 1800000 --json
+
+# Or wake on the next question/plan/terminal event
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" wait --any --jobs "$(cat .tasks.txt)" --predicate both --json
 ```
 
-Each background task gets its own worktree, so they don't fight each other for the working tree. Review and verdict each individually.
+Use `status --watch --interval 10s` when you want the human live table instead of a blocking primitive. For scripts, `status --json` exposes event-derived `summary.completed_fail`, `summary.completed_incomplete`, and `needs_attention`; do not treat `summary.running === 0` as success by itself. Each background task gets its own worktree, so they don't fight each other for the working tree. Review and verdict each individually.

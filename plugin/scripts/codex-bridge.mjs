@@ -1,7 +1,7 @@
 // src/codex-bridge.mjs
-import fs23 from "node:fs";
-import os7 from "node:os";
-import path21 from "node:path";
+import fs24 from "node:fs";
+import os8 from "node:os";
+import path23 from "node:path";
 import process16 from "node:process";
 
 // src/lib/cli-errors.mjs
@@ -667,6 +667,14 @@ function parseArgs(argv, config = {}) {
         options[key2] = inlineValue === void 0 ? true : inlineValue !== "false";
         continue;
       }
+      if (rawKey.startsWith("no-")) {
+        const positiveRawKey = rawKey.slice("no-".length);
+        const positiveKey = aliasMap[positiveRawKey] ?? positiveRawKey;
+        if (booleanOptions.has(positiveKey)) {
+          options[positiveKey] = false;
+          continue;
+        }
+      }
       if (valueOptions.has(key2)) {
         const nextValue = inlineValue ?? argv[index + 1];
         if (nextValue === void 0) {
@@ -773,12 +781,12 @@ function splitRawArgumentString(raw) {
 }
 
 // src/adapters/index.mjs
-import process9 from "node:process";
+import process10 from "node:process";
 
 // src/adapters/codex/index.mjs
-import fs11 from "node:fs";
-import path9 from "node:path";
-import process8 from "node:process";
+import fs13 from "node:fs";
+import path11 from "node:path";
+import process9 from "node:process";
 
 // src/lib/fs.mjs
 import fs from "node:fs";
@@ -851,7 +859,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // src/lib/process.mjs
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import process4 from "node:process";
 var DEFAULT_RUN_COMMAND_TIMEOUT_MS = 1e4;
 function resolveRunCommandTimeout(timeout) {
@@ -865,7 +873,7 @@ function resolveRunCommandTimeout(timeout) {
   return Math.max(1, Math.floor(parsed));
 }
 function runCommand(command, args = [], options = {}) {
-  const spawnSyncImpl = options.spawnSync ?? spawnSync2;
+  const spawnSyncImpl = options.spawnSync ?? spawnSync;
   const result = spawnSyncImpl(command, args, {
     cwd: options.cwd,
     env: options.env,
@@ -994,7 +1002,7 @@ import os from "node:os";
 import path4 from "node:path";
 
 // src/lib/official-plugin.mjs
-import { spawnSync as spawnSync3 } from "node:child_process";
+import { spawnSync as spawnSync2 } from "node:child_process";
 var OFFICIAL_PLUGIN_STATUS = Object.freeze({
   ACTIVE: "active",
   ABSENT: "absent",
@@ -1070,7 +1078,7 @@ function extractPluginEntries(parsed) {
   return null;
 }
 function detectOfficialOpenAICodexPluginUncached(options = {}) {
-  const spawn5 = options.spawnSync ?? spawnSync3;
+  const spawn5 = options.spawnSync ?? spawnSync2;
   const result = spawn5("claude", ["plugin", "list", "--json"], {
     cwd: options.cwd ?? process.cwd(),
     env: options.env ?? process.env,
@@ -1279,6 +1287,38 @@ function detectDefaultBranch(cwd) {
 }
 function getCurrentBranch(cwd) {
   return gitChecked(cwd, ["branch", "--show-current"]).stdout.trim() || "HEAD";
+}
+function assertCurrentBranch(cwd, expectedBranch) {
+  const expected = String(expectedBranch ?? "").trim();
+  if (!expected) {
+    throw new CliError("--on-branch requires a non-empty branch name.", {
+      class: "validation",
+      code: "ON_BRANCH_EMPTY",
+      retryable: false
+    });
+  }
+  ensureGitRepository(cwd);
+  const current = getCurrentBranch(cwd);
+  if (current !== expected) {
+    throw new CliError(
+      `--on-branch=${expected}, current branch=${current}`,
+      {
+        class: "validation",
+        code: "BRANCH_MISMATCH",
+        retryable: false,
+        suggestion: `The working tree branch changed or is not the intended target. Run \`git checkout ${expected}\` and retry, pass --on-branch=${current} if that branch is intended, or omit --on-branch to accept the current branch.`
+      }
+    );
+  }
+  return current;
+}
+function tryGetCurrentBranch(cwd) {
+  try {
+    ensureGitRepository(cwd);
+    return getCurrentBranch(cwd);
+  } catch {
+    return null;
+  }
 }
 function getWorkingTreeState(cwd) {
   const staged = gitChecked(cwd, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
@@ -1605,6 +1645,22 @@ function currentCheckoutRef(cwd) {
   if (symbolic.ok) return symbolic.stdout.trim();
   return runGit(cwd, ["rev-parse", "HEAD"]).trim();
 }
+function resolveSubagentBaseRef(cwd, baseRef, currentBranch) {
+  if (baseRef != null) {
+    const normalized = String(baseRef).trim();
+    if (!normalized) {
+      throw new Error("createSubagentWorktree: baseRef must not be empty");
+    }
+    return {
+      ref: normalized.toLowerCase() === "current" ? currentBranch !== "HEAD" ? currentBranch : "HEAD" : normalized,
+      source: "cli-flag"
+    };
+  }
+  if (currentBranch !== "HEAD") {
+    return { ref: currentBranch, source: "current-branch" };
+  }
+  return { ref: detectDefaultBranch(cwd), source: "default-branch" };
+}
 function createSubagentWorktree({
   cwd,
   taskId,
@@ -1627,7 +1683,8 @@ function createSubagentWorktree({
     });
   }
   const currentBranch = getCurrentBranch(cwd);
-  const resolvedBaseRef = baseRef ?? (currentBranch !== "HEAD" ? currentBranch : null) ?? detectDefaultBranch(cwd) ?? "HEAD";
+  const resolvedBase = resolveSubagentBaseRef(cwd, baseRef, currentBranch);
+  const resolvedBaseRef = resolvedBase.ref;
   const baseSha = runGit(repoRoot, [
     "rev-parse",
     "--verify",
@@ -1654,6 +1711,7 @@ function createSubagentWorktree({
       path: wtPath,
       branch,
       base_ref: resolvedBaseRef,
+      base_ref_source: resolvedBase.source,
       base_sha: baseSha,
       created_at: createdAt
     };
@@ -1686,6 +1744,7 @@ function createSubagentWorktree({
       path: cwd,
       branch,
       base_ref: resolvedBaseRef,
+      base_ref_source: resolvedBase.source,
       base_sha: baseSha,
       created_at: createdAt,
       previous_ref: previousRef,
@@ -1693,7 +1752,7 @@ function createSubagentWorktree({
     };
   }
 }
-function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
+function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath, keepBranch = false }) {
   assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
@@ -1720,7 +1779,7 @@ function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot,
       throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
     }
   }
-  if (branch) {
+  if (branch && !keepBranch) {
     assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
     if (branchExists(repoRoot, branch)) {
       if (getCurrentBranch(repoRoot) === branch) {
@@ -1737,7 +1796,10 @@ function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot,
       }
     }
   }
-  return { pruned: !fs3.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
+  return {
+    pruned: !fs3.existsSync(wtPath),
+    branchDeleted: branch && !keepBranch ? !branchExists(repoRoot, branch) : false
+  };
 }
 function mergeSubagentBranch({
   cwd,
@@ -4244,7 +4306,8 @@ function waitForResponse(sessionDir, threadId, timeoutMs = DEFAULT_QUESTION_TIME
 import fs7 from "node:fs";
 import path7 from "node:path";
 import os3 from "node:os";
-import { spawnSync as spawnSync4 } from "node:child_process";
+import { createHash as createHash2 } from "node:crypto";
+import { spawnSync as spawnSync3 } from "node:child_process";
 var MAX_UNTRACKED_STAT_BYTES = 256 * 1024;
 function resolveSessionDir(configDir, baseDir = process.cwd()) {
   const configured = configDir ?? "~/.codex-bridge/sessions";
@@ -4320,6 +4383,13 @@ function readNdjson(sessionOrPath, { maxEntries = null } = {}) {
     }
   });
 }
+function readEvents(sessionOrPath, { maxBlocks = null } = {}) {
+  const eventsPath = typeof sessionOrPath === "string" ? sessionOrPath : sessionOrPath?.eventsPath;
+  if (!eventsPath || !fs7.existsSync(eventsPath)) return [];
+  const raw = fs7.readFileSync(eventsPath, "utf8");
+  const blocks = raw.split(/\n(?=\[[^\]]+\])/).map((block) => block.trim()).filter(Boolean);
+  return Number.isInteger(maxBlocks) && maxBlocks > 0 ? blocks.slice(-maxBlocks) : blocks;
+}
 function logNdjson(session, tag, method, data) {
   const entry = {
     ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -4332,6 +4402,63 @@ function logNdjson(session, tag, method, data) {
     fs7.appendFileSync(session.ndjsonPath, redactText(JSON.stringify(entry), session) + "\n");
   } catch {
   }
+}
+function sha256Text(text) {
+  return `sha256:${createHash2("sha256").update(text).digest("hex")}`;
+}
+function cacheDeveloperInstructions(session, hash, text) {
+  if (!session?.sessionDir) return null;
+  const hex = hash.replace(/^sha256:/, "");
+  if (!/^[a-f0-9]{64}$/.test(hex)) return null;
+  const relPath = path7.join("developer-instructions", `${hex}.txt`);
+  const absPath = path7.join(session.sessionDir, relPath);
+  try {
+    fs7.mkdirSync(path7.dirname(absPath), { recursive: true });
+    fs7.writeFileSync(absPath, text, { flag: "wx" });
+  } catch (err) {
+    if (err?.code !== "EEXIST") return null;
+  }
+  return relPath;
+}
+function compactTurnParamsForNdjson(session, data = {}) {
+  const collaborationMode = data?.collaborationMode;
+  const settings = collaborationMode?.settings;
+  const instructions = settings?.developer_instructions;
+  if (typeof instructions !== "string" || instructions.length === 0) {
+    return data;
+  }
+  const persistedInstructions = redactText(instructions, session);
+  const hash = sha256Text(persistedInstructions);
+  const ref = cacheDeveloperInstructions(session, hash, persistedInstructions);
+  if (!ref) {
+    return {
+      ...data,
+      collaborationMode: {
+        ...collaborationMode,
+        settings: {
+          ...settings,
+          developer_instructions_hash: hash,
+          developer_instructions_length: persistedInstructions.length
+        }
+      }
+    };
+  }
+  const {
+    developer_instructions: _developerInstructions,
+    ...restSettings
+  } = settings;
+  return {
+    ...data,
+    collaborationMode: {
+      ...collaborationMode,
+      settings: {
+        ...restSettings,
+        developer_instructions_hash: hash,
+        developer_instructions_length: persistedInstructions.length,
+        developer_instructions_ref: ref
+      }
+    }
+  };
 }
 function logEvent(session, formattedBlock) {
   try {
@@ -4370,11 +4497,11 @@ function writeReview(session, reviewData) {
 function captureGitSnapshot(cwd) {
   const isoTimestamp = (/* @__PURE__ */ new Date()).toISOString();
   try {
-    const headResult = spawnSync4("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (headResult.status !== 0 || !headResult.stdout) {
       return { headSha: null, porcelain: null, isoTimestamp };
     }
-    const statusResult = spawnSync4("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
     return {
       headSha: headResult.stdout.trim(),
       porcelain: statusResult.status === 0 ? statusResult.stdout ?? "" : "",
@@ -4392,7 +4519,7 @@ function diffGitSnapshot(cwd, snapshot) {
   let currentHeadSha = null;
   let dirtyFiles = [];
   try {
-    const logResult = spawnSync4(
+    const logResult = spawnSync3(
       "git",
       ["log", "--format=%h", `${snapshot.headSha}..HEAD`],
       { cwd, encoding: "utf8", timeout: 1e4 }
@@ -4400,11 +4527,11 @@ function diffGitSnapshot(cwd, snapshot) {
     if (logResult.status === 0 && logResult.stdout) {
       commits = logResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
-    const headResult = spawnSync4("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const headResult = spawnSync3("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (headResult.status === 0 && headResult.stdout) {
       currentHeadSha = headResult.stdout.trim();
     }
-    const statusResult = spawnSync4("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
+    const statusResult = spawnSync3("git", ["status", "--porcelain=v1"], { cwd, encoding: "utf8", timeout: 1e4 });
     if (statusResult.status === 0 && statusResult.stdout) {
       dirtyFiles = statusResult.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     }
@@ -4420,19 +4547,64 @@ function diffGitSnapshot(cwd, snapshot) {
 }
 function captureGitDiff(cwd, session, options = {}) {
   const baseRef = typeof options.baseRef === "string" && options.baseRef.trim() ? options.baseRef.trim() : "HEAD";
-  const numstatResult = spawnSync4("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
-  const fullResult = spawnSync4("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
-  const untrackedFiles = getUntrackedFileStats(cwd);
-  const diffContent = appendUntrackedDiffMarkers(fullResult.stdout || "", untrackedFiles, baseRef);
+  const fullResult = spawnSync3("git", ["diff", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
+  const summary = summarizeGitDiff(cwd, { baseRef });
+  const diffContent = appendUntrackedDiffMarkers(
+    fullResult.stdout || "",
+    summary.rawFiles.filter((file) => file.untracked),
+    baseRef
+  );
   const diffPath = writeDiff(session, diffContent);
+  return {
+    diffStat: summary.diffStat,
+    files: summary.files,
+    fileStats: summary.fileStats,
+    diffPath
+  };
+}
+function summarizeGitDiff(cwd, options = {}) {
+  const baseRef = typeof options.baseRef === "string" && options.baseRef.trim() ? options.baseRef.trim() : "HEAD";
+  const numstatResult = spawnSync3("git", ["diff", "--numstat", baseRef], { cwd, encoding: "utf8", timeout: 1e4 });
+  const untrackedFiles = getUntrackedFileStats(cwd);
   const numstatOutput = numstatResult.stdout || "";
   const files = [...parseGitNumstat(numstatOutput), ...untrackedFiles];
   const summary = summarizeNumstat(files);
-  return { diffStat: summary, files: files.map(formatFileStat), diffPath };
+  return {
+    diffStat: summary,
+    files: files.map(formatFileStat),
+    fileStats: files.map(formatStructuredFileStat),
+    rawFiles: files
+  };
+}
+function summarizeTouchedFiles(touchedFiles) {
+  const files = uniqueTouchedFiles(touchedFiles);
+  return {
+    diffStat: files.length === 0 ? "0 files | +0 -0" : `${files.length} touched ${files.length === 1 ? "file" : "files"}`,
+    files: files.map((file) => `T ${file}`),
+    fileStats: files.map((file) => ({
+      path: file,
+      additions: null,
+      deletions: null,
+      status: "T",
+      untracked: false
+    })),
+    diffPath: null
+  };
+}
+function uniqueTouchedFiles(touchedFiles) {
+  const seen = /* @__PURE__ */ new Set();
+  const files = [];
+  for (const file of touchedFiles ?? []) {
+    const normalized = String(file ?? "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    files.push(normalized);
+  }
+  return files;
 }
 function getUntrackedFileStats(cwd) {
   try {
-    const result = spawnSync4(
+    const result = spawnSync3(
       "git",
       ["ls-files", "--others", "--exclude-standard", "-z"],
       { cwd, encoding: "utf8", timeout: 1e4 }
@@ -4531,6 +4703,15 @@ function parseGitNumstat(output) {
   }
   return files;
 }
+function formatStructuredFileStat({ fileName, adds, dels, status = null, untracked = false }) {
+  return {
+    path: fileName,
+    additions: adds,
+    deletions: dels,
+    status: status ?? (fileName.includes("=>") ? "R" : "M"),
+    untracked: Boolean(untracked)
+  };
+}
 function formatFileStat({ fileName, adds, dels, status = null }) {
   const prefix = fileName.includes("=>") ? "R" : "M";
   if (status) {
@@ -4561,16 +4742,41 @@ function cancelActionLine(scriptPath, jobId, indent = "    cancel: ", cwd = null
 function jobCommandCwd(cwd, stateCwd) {
   return stateCwd ?? cwd;
 }
-function formatDoneEvent(session, { duration, diffStat, files, config, diffPath, scriptPath, jobId = null, cwd = null, stateCwd = null }) {
+function formatDoneEvent(session, {
+  duration,
+  diffStat,
+  files,
+  config,
+  diffPath,
+  scriptPath,
+  jobId = null,
+  cwd = null,
+  stateCwd = null,
+  taskDiff = null,
+  workspaceDiff = null,
+  workspaceWasClean = null,
+  touchedFiles = null
+}) {
   const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const headline = taskDiff?.diffStat ? `task_diff: ${taskDiff.diffStat}` : diffStat;
   const lines = [
-    `[DONE] ${session.threadId} completed in ${duration}s | ${diffStat}`,
+    `[DONE] ${session.threadId} completed in ${duration}s | ${headline}`,
     `  config: model=${config.model} effort=${config.effort} mode=${config.modeFlow || "default"}`,
     `  diff: ${diffPath}`
   ];
-  if (files && files.length > 0) {
-    lines.push("  files:");
-    for (const f of files.slice(0, 20)) {
+  if (workspaceDiff?.diffStat) {
+    lines.push(`  workspace_diff: ${workspaceDiff.diffStat}`);
+  }
+  if (typeof workspaceWasClean === "boolean") {
+    lines.push(`  workspace_was_clean: ${workspaceWasClean}`);
+  }
+  if (Array.isArray(touchedFiles)) {
+    lines.push(`  touchedFiles: ${JSON.stringify(touchedFiles.slice(0, 20))}${touchedFiles.length > 20 ? ` (+${touchedFiles.length - 20} more)` : ""}`);
+  }
+  const displayedFiles = taskDiff?.files ?? files;
+  if (displayedFiles && displayedFiles.length > 0) {
+    lines.push(taskDiff ? "  task_files:" : "  files:");
+    for (const f of displayedFiles.slice(0, 20)) {
       lines.push(`    ${f}`);
     }
   }
@@ -4643,6 +4849,7 @@ function buildActionsBlock({ origin, errorCode, scriptPath, threadId, jobId, fai
     lines.push(
       `    inspect:     ${commandPrefix(scriptPath, "result", jobCwd)} ${jobId ?? threadId}    # main task may already be done${stageLine}`,
       `    rerun-review: ${commandPrefix(scriptPath, "review", cwd)} --scope working-tree`,
+      `    extend-timeout: ${commandPrefix(scriptPath, "task", cwd)} --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 1800000 "<same prompt>"`,
       see("pipeline-stage-timeout")
     );
     return lines;
@@ -4795,6 +5002,50 @@ function formatIncompleteEvent(session, { diffStat, diffPath, verdict, findingCo
   lines.push(resultActionLine(scriptPath, jobId, "    detail: ", jobCwd));
   return lines.join("\n");
 }
+function formatCancelledEvent(session, {
+  jobId = null,
+  reason = "cancelled-by-user",
+  cancelledAt = null,
+  createdAt = null,
+  cleanup = null,
+  interrupt = null,
+  terminate = null,
+  warnings = [],
+  scriptPath = null,
+  cwd = null,
+  stateCwd = null
+}) {
+  const jobCwd = jobCommandCwd(cwd, stateCwd);
+  const cancelledAtIso = cancelledAt ?? (/* @__PURE__ */ new Date()).toISOString();
+  const lines = [`[CANCELLED] ${session.threadId} cancelled at ${cancelledAtIso}`];
+  if (jobId) lines.push(`  job_id: ${jobId}`);
+  lines.push(`  reason: ${reason}`);
+  const started = Date.parse(createdAt ?? "");
+  const ended = Date.parse(cancelledAtIso);
+  if (Number.isFinite(started) && Number.isFinite(ended) && ended >= started) {
+    lines.push(`  duration_before_cancel: ${fmtSeconds(ended - started)}`);
+  }
+  if (interrupt || terminate) {
+    lines.push(
+      `  stopped: turn_interrupted=${Boolean(interrupt?.interrupted)} process_terminated=${Boolean(terminate?.delivered)}`
+    );
+  }
+  if (cleanup) {
+    lines.push(
+      `  cleanup: ${cleanup.reason ?? "unknown"}; worktree_removed=${Boolean(cleanup.worktreeRemoved)} branch_deleted=${Boolean(cleanup.branchDeleted)}`
+    );
+  }
+  if (warnings.length > 0) {
+    lines.push("  warnings:");
+    for (const warning of warnings.slice(0, 10)) {
+      lines.push(`    - ${warning}`);
+    }
+  }
+  if (scriptPath && jobId) {
+    lines.push(resultActionLine(scriptPath, jobId, "  detail: ", jobCwd));
+  }
+  return lines.join("\n");
+}
 function formatQuestionEvent(session, { requestId, questions, scriptPath, cwd = null }) {
   const lines = [`[QUESTION] ${session.threadId} ${requestId}`];
   for (const q of questions || []) {
@@ -4868,12 +5119,84 @@ function fmtSeconds(ms) {
   const rem = s % 60;
   return rem === 0 ? `${m}m` : `${m}m${String(rem).padStart(2, "0")}s`;
 }
-var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE", "PLAN"]);
-var TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN)\]/m;
-var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT"]);
+var TERMINAL_TAGS = Object.freeze(["DONE", "ERROR", "INCOMPLETE", "PLAN", "CANCELLED"]);
+var TERMINAL_TAG_REGEX = /^\[(DONE|ERROR|INCOMPLETE|PLAN|CANCELLED)\]/m;
+var DEFAULT_MONITOR_EXCLUDE = Object.freeze(["HEARTBEAT", "CHECKPOINT"]);
 function formatTailCommand({ scriptPath, jobId, timeoutMs = 18e5, exclude = DEFAULT_MONITOR_EXCLUDE, cwd = null }) {
   const excludeClause = exclude && exclude.length > 0 ? ` --exclude ${Array.from(exclude).join(",")}` : "";
   return `${commandPrefix(scriptPath, "events", cwd)} ${jobId} --follow${excludeClause} --timeout-ms ${timeoutMs}`;
+}
+function summarizeToolBreakdown(tools) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const tool of tools ?? []) {
+    const label = inferToolLabel(tool);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 5).map(([label, count]) => `${label}:${count}`).join(",");
+}
+function inferToolLabel(tool) {
+  const type2 = String(tool?.type ?? "tool").trim() || "tool";
+  const summary = String(tool?.summary ?? "");
+  if (type2 !== "commandExecution") return type2;
+  const known = /\b(rg|sed|nl|cat|jq|npm|node|git|ls|find|grep|python3?|perl|curl|gh|go|cargo|swift|xcodebuild|make|pnpm|yarn)\b/.exec(summary);
+  if (known) return known[1];
+  const first = summary.trim().match(/^(?:[A-Z_]+=("[^"]*"|'[^']*'|\S+)\s+)*(?:\/[\w.-]+\/)*([\w.-]+)/);
+  const fallback = first?.[2] ?? type2;
+  return ["bash", "sh", "zsh", "env"].includes(fallback) ? type2 : fallback;
+}
+function summarizeFocus(tools) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const tool of tools ?? []) {
+    for (const file of extractSummaryPaths(tool?.summary)) {
+      counts.set(file, (counts.get(file) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 3).map(([file]) => file).join(",");
+}
+function extractSummaryPaths(summary) {
+  const text = String(summary ?? "");
+  const found = [];
+  const pathPattern = /(?:^|[\s'"=])([A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)+)(?=$|[\s'",:;)])/g;
+  for (const match of text.matchAll(pathPattern)) {
+    const candidate = match[1].replace(/[),.;!?]+$/g, "");
+    if (!candidate || candidate.startsWith("http://") || candidate.startsWith("https://")) continue;
+    if (!found.includes(candidate)) found.push(candidate);
+  }
+  return found;
+}
+function summarizeLastAction({ tools = [], commits = [], diffStat = null, lastAssistantMessage = null }) {
+  const lastTool = tools.length > 0 ? tools[tools.length - 1] : null;
+  if (lastTool) {
+    return `${lastTool.type}${lastTool.summary ? `: ${compactPreview(lastTool.summary, 110)}` : ""}`;
+  }
+  const lastCommit = commits.length > 0 ? commits[commits.length - 1] : null;
+  if (lastCommit) return `commit: ${lastCommit.sha} ${lastCommit.subject}`;
+  if (diffStat) return `diff: ${diffStat}`;
+  if (lastAssistantMessage) return `assistant: ${compactPreview(lastAssistantMessage, 110)}`;
+  return "none";
+}
+function formatCheckpointSummaryEvent(session, {
+  elapsedMs,
+  phase,
+  intervalMs,
+  pid,
+  lastAssistantMessage = null,
+  tools = [],
+  commits = [],
+  diffStat = null
+}) {
+  const breakdown = summarizeToolBreakdown(tools);
+  const focus = summarizeFocus(tools);
+  const last = summarizeLastAction({ tools, commits, diffStat, lastAssistantMessage });
+  const parts = [
+    `[CHECKPOINT_SUMMARY] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"}`,
+    `interval=${fmtSeconds(intervalMs)}`,
+    `pid=${pid ?? "?"}`,
+    `tools=${tools.length}${breakdown ? ` (${breakdown})` : ""}`
+  ];
+  if (focus) parts.push(`focus=${focus}`);
+  parts.push(`last="${compactPreview(last, 140).replaceAll('"', "'")}"`);
+  return parts.join(" | ");
 }
 function formatCheckpointEvent(session, {
   elapsedMs,
@@ -4932,6 +5255,42 @@ function formatCheckpointEvent(session, {
   }
   return lines.join("\n");
 }
+function formatStallWarningEvent(session, {
+  elapsedMs,
+  phase,
+  barrenCheckpoints,
+  warningThresholdMs,
+  terminalThresholdMs,
+  remainingMs,
+  lastActionableSummary = null,
+  lastActionableAgeMs = null,
+  scriptPath = null,
+  jobId = null,
+  cwd = null
+}) {
+  const count = Number.isFinite(barrenCheckpoints) ? barrenCheckpoints : 0;
+  const plural = count === 1 ? "" : "s";
+  const fmtDuration = (value) => Number.isFinite(value) ? fmtSeconds(value) : "unknown";
+  const lines = [
+    `[STALL_WARNING] ${session.threadId} t=${fmtSeconds(elapsedMs)} | phase=${phase ?? "?"} | no actionable progress for ${count} checkpoint${plural}`,
+    `  warning_threshold: ${fmtDuration(warningThresholdMs)}`,
+    `  terminal_threshold: ${fmtDuration(terminalThresholdMs)}`
+  ];
+  if (Number.isFinite(remainingMs) && remainingMs > 0) {
+    lines.push(`  remaining_until_terminal: ${fmtSeconds(remainingMs)}`);
+  }
+  if (lastActionableSummary) {
+    const age = Number.isFinite(lastActionableAgeMs) ? ` (${fmtSeconds(lastActionableAgeMs)} ago)` : "";
+    lines.push(`  last_actionable: ${compactPreview(lastActionableSummary, 220)}${age}`);
+  } else {
+    lines.push("  last_actionable: (none recorded)");
+  }
+  lines.push("  recommendation: inspect the events file, steer the thread, or cancel before terminal stall.");
+  if (scriptPath && jobId) {
+    lines.push(`  tail: ${formatTailCommand({ scriptPath, jobId, cwd })}`);
+  }
+  return lines.join("\n");
+}
 function formatDirectivesEvent(session, {
   mode,
   effort,
@@ -4940,7 +5299,9 @@ function formatDirectivesEvent(session, {
   quiet = false,
   skipMetaSkills = false,
   pipelineEnabled = [],
-  model = null
+  model = null,
+  models = null,
+  warnings = []
 }) {
   const parts = [
     `mode=${mode}`,
@@ -4952,6 +5313,15 @@ function formatDirectivesEvent(session, {
   parts.push(`skip_meta_skills=${skipMetaSkills ? "true" : "false"}`);
   parts.push(`pipeline=${Array.isArray(pipelineEnabled) && pipelineEnabled.length > 0 ? pipelineEnabled.join(",") : "none"}`);
   if (model) parts.push(`model=${model}`);
+  if (models && typeof models === "object" && !Array.isArray(models)) {
+    const modelEntries = Object.entries(models).filter(([, value]) => typeof value === "string" && value.length > 0).map(([stage, value]) => `${stage}:${value}`);
+    if (modelEntries.length > 0) {
+      parts.push(`models=${modelEntries.join(",")}`);
+    }
+  }
+  if (Array.isArray(warnings) && warnings.length > 0) {
+    parts.push(`warnings=${warnings.length}`);
+  }
   return `[DIRECTIVES] ${session.threadId} | ${parts.join(" | ")}`;
 }
 function formatPipelineEvent(session, { stage, suffix, detail }) {
@@ -4969,543 +5339,34 @@ function formatWarningEvent(session, { reason, family, threshold, sampleCommand,
   lines.push(`  turnInterrupted: ${turnInterrupted ? "yes" : "no"}`);
   return lines.join("\n");
 }
+function formatBranchSwitchedEvent(session, { before, after, detectedAt, jobId = null }) {
+  const lines = [
+    `[BRANCH_SWITCHED] ${session.threadId} | working-tree branch changed during task`,
+    `  before: ${before ?? "(unknown)"}`,
+    `  after: ${after ?? "(unknown)"}`,
+    `  detected_at: ${detectedAt ?? "unknown"}`,
+    "  recommendation: inspect current branch and task diff before continuing; earlier operations may have used a different baseline"
+  ];
+  if (jobId) {
+    lines.splice(1, 0, `  jobId: ${jobId}`);
+  }
+  return lines.join("\n");
+}
 
 // src/lib/job-control.mjs
-import fs9 from "node:fs";
+import fs12 from "node:fs";
+import path10 from "node:path";
 
-// src/lib/tracked-jobs.mjs
-import fs8 from "node:fs";
+// src/lib/bridge-config.mjs
+import fs10 from "node:fs";
 import process7 from "node:process";
-var SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
-function nowIso2() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-function normalizeProgressEvent(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return {
-      message: String(value.message ?? "").trim(),
-      phase: typeof value.phase === "string" && value.phase.trim() ? value.phase.trim() : null,
-      threadId: typeof value.threadId === "string" && value.threadId.trim() ? value.threadId.trim() : null,
-      turnId: typeof value.turnId === "string" && value.turnId.trim() ? value.turnId.trim() : null,
-      stderrMessage: value.stderrMessage == null ? null : String(value.stderrMessage).trim(),
-      logTitle: typeof value.logTitle === "string" && value.logTitle.trim() ? value.logTitle.trim() : null,
-      logBody: value.logBody == null ? null : String(value.logBody).trimEnd()
-    };
-  }
-  return {
-    message: String(value ?? "").trim(),
-    phase: null,
-    threadId: null,
-    turnId: null,
-    stderrMessage: String(value ?? "").trim(),
-    logTitle: null,
-    logBody: null
-  };
-}
-function appendLogLine(logFile, message) {
-  const normalized = String(message ?? "").trim();
-  if (!logFile || !normalized) {
-    return;
-  }
-  fs8.appendFileSync(logFile, `[${nowIso2()}] ${normalized}
-`, "utf8");
-}
-function appendLogBlock(logFile, title, body) {
-  if (!logFile || !body) {
-    return;
-  }
-  fs8.appendFileSync(logFile, `
-[${nowIso2()}] ${title}
-${String(body).trimEnd()}
-`, "utf8");
-}
-function createJobLogFile(workspaceRoot, jobId, title) {
-  const logFile = resolveJobLogFile(workspaceRoot, jobId);
-  fs8.writeFileSync(logFile, "", "utf8");
-  if (title) {
-    appendLogLine(logFile, `Starting ${title}.`);
-  }
-  return logFile;
-}
-function createJobRecord(base, options = {}) {
-  const env = options.env ?? process7.env;
-  const sessionId = env[options.sessionIdEnv ?? SESSION_ID_ENV];
-  return {
-    ...base,
-    createdAt: nowIso2(),
-    ...sessionId ? { sessionId } : {}
-  };
-}
-function createJobProgressUpdater(workspaceRoot, jobId) {
-  let lastPhase = null;
-  let lastThreadId = null;
-  let lastTurnId = null;
-  return (event) => {
-    const normalized = normalizeProgressEvent(event);
-    const patch = { id: jobId };
-    let changed = false;
-    if (normalized.phase && normalized.phase !== lastPhase) {
-      lastPhase = normalized.phase;
-      patch.phase = normalized.phase;
-      changed = true;
-    }
-    if (normalized.threadId && normalized.threadId !== lastThreadId) {
-      lastThreadId = normalized.threadId;
-      patch.threadId = normalized.threadId;
-      changed = true;
-    }
-    if (normalized.turnId && normalized.turnId !== lastTurnId) {
-      lastTurnId = normalized.turnId;
-      patch.turnId = normalized.turnId;
-      changed = true;
-    }
-    if (!changed) {
-      return;
-    }
-    const jobFile = resolveJobFile(workspaceRoot, jobId);
-    if (!fs8.existsSync(jobFile)) {
-      return;
-    }
-    let storedJob;
-    try {
-      storedJob = readJobFile(jobFile);
-    } catch (error) {
-      if (error?.code !== "JOB_DETAIL_CORRUPT") {
-        throw error;
-      }
-      storedJob = listJobs(workspaceRoot, { raw: true }).find((job) => job.id === jobId) ?? {
-        id: jobId,
-        status: "running",
-        phase: "running"
-      };
-      patch.detailRecovery = {
-        code: "JOB_DETAIL_CORRUPT",
-        jobFile,
-        corruptPath: error.corruptPath ?? null
-      };
-    }
-    writeJobFile(workspaceRoot, jobId, {
-      ...storedJob,
-      ...patch
-    });
-    upsertJob(workspaceRoot, patch);
-  };
-}
-function createProgressReporter({ stderr = false, logFile = null, onEvent = null } = {}) {
-  if (!stderr && !logFile && !onEvent) {
-    return null;
-  }
-  return (eventOrMessage) => {
-    const event = normalizeProgressEvent(eventOrMessage);
-    const stderrMessage = event.stderrMessage ?? event.message;
-    if (stderr && stderrMessage) {
-      process7.stderr.write(`[codex] ${stderrMessage}
-`);
-    }
-    appendLogLine(logFile, event.message);
-    appendLogBlock(logFile, event.logTitle, event.logBody);
-    onEvent?.(event);
-  };
-}
-function readStoredJobOrNull(workspaceRoot, jobId) {
-  const jobFile = resolveJobFile(workspaceRoot, jobId);
-  if (!fs8.existsSync(jobFile)) {
-    return null;
-  }
-  try {
-    return readJobFile(jobFile);
-  } catch (error) {
-    if (error?.code === "JOB_DETAIL_CORRUPT") {
-      return listJobs(workspaceRoot, { raw: true }).find((job) => job.id === jobId) ?? null;
-    }
-    throw error;
-  }
-}
-async function runTrackedJob(job, runner, options = {}) {
-  const runningRecord = {
-    ...job,
-    status: "running",
-    startedAt: nowIso2(),
-    phase: "starting",
-    pid: process7.pid,
-    logFile: options.logFile ?? job.logFile ?? null
-  };
-  writeJobFile(job.workspaceRoot, job.id, runningRecord);
-  upsertJob(job.workspaceRoot, runningRecord);
-  try {
-    const execution = await runner();
-    const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
-    const completedAt = nowIso2();
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...runningRecord,
-      status: completionStatus,
-      threadId: execution.threadId ?? null,
-      turnId: execution.turnId ?? null,
-      pid: null,
-      phase: completionStatus === "completed" ? "done" : "failed",
-      completedAt,
-      result: execution.payload,
-      rendered: execution.rendered
-    });
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      status: completionStatus,
-      threadId: execution.threadId ?? null,
-      turnId: execution.turnId ?? null,
-      summary: execution.summary,
-      phase: completionStatus === "completed" ? "done" : "failed",
-      pid: null,
-      completedAt
-    });
-    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
-    return execution;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
-    const completedAt = nowIso2();
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...existing,
-      status: "failed",
-      phase: "failed",
-      errorMessage,
-      pid: null,
-      completedAt,
-      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
-    });
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      status: "failed",
-      phase: "failed",
-      pid: null,
-      errorMessage,
-      completedAt
-    });
-    throw error;
-  }
-}
-
-// src/lib/job-control.mjs
-var DEFAULT_MAX_STATUS_JOBS = 8;
-var DEFAULT_MAX_PROGRESS_LINES = 4;
-function sortJobsNewestFirst2(jobs) {
-  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
-}
-function getCurrentSessionId(options = {}) {
-  return options.env?.[SESSION_ID_ENV] ?? process.env[SESSION_ID_ENV] ?? null;
-}
-function filterJobsForCurrentSession(jobs, options = {}) {
-  const sessionId = getCurrentSessionId(options);
-  if (!sessionId) {
-    return jobs;
-  }
-  return jobs.filter((job) => job.sessionId === sessionId);
-}
-function getJobTypeLabel(job) {
-  if (typeof job.kindLabel === "string" && job.kindLabel) {
-    return job.kindLabel;
-  }
-  if (job.kind === "adversarial-review") {
-    return "adversarial-review";
-  }
-  if (job.jobClass === "review") {
-    return "review";
-  }
-  if (job.jobClass === "task") {
-    return "task";
-  }
-  if (job.kind === "review") {
-    return "review";
-  }
-  if (job.kind === "task") {
-    return "task";
-  }
-  return "job";
-}
-function stripLogPrefix(line) {
-  return line.replace(/^\[[^\]]+\]\s*/, "").trim();
-}
-function isProgressBlockTitle(line) {
-  return ["Final output", "Assistant message", "Reasoning summary", "Review output"].includes(line) || /^Subagent .+ message$/.test(line) || /^Subagent .+ reasoning summary$/.test(line);
-}
-function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_LINES) {
-  if (!logFile || !fs9.existsSync(logFile)) {
-    return [];
-  }
-  const lines = fs9.readFileSync(logFile, "utf8").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).filter((line) => line.startsWith("[")).map(stripLogPrefix).filter((line) => line && !isProgressBlockTitle(line));
-  return lines.slice(-maxLines);
-}
-function formatElapsedDuration(startValue, endValue = null) {
-  const start = Date.parse(startValue ?? "");
-  if (!Number.isFinite(start)) {
-    return null;
-  }
-  const end = endValue ? Date.parse(endValue) : Date.now();
-  if (!Number.isFinite(end) || end < start) {
-    return null;
-  }
-  const totalSeconds = Math.max(0, Math.round((end - start) / 1e3));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor(totalSeconds % 3600 / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-  return `${seconds}s`;
-}
-function looksLikeVerificationCommand2(line) {
-  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
-    line
-  );
-}
-function inferLegacyJobPhase(job, progressPreview = []) {
-  switch (job.status) {
-    case "queued":
-      return "queued";
-    case "cancelled":
-      return "cancelled";
-    case "failed":
-      return "failed";
-    case "completed":
-      return "done";
-    default:
-      break;
-  }
-  for (let index = progressPreview.length - 1; index >= 0; index -= 1) {
-    const line = progressPreview[index].toLowerCase();
-    if (line.startsWith("starting codex") || line.startsWith("thread ready") || line.startsWith("turn started")) {
-      return "starting";
-    }
-    if (line.startsWith("reviewer started") || line.includes("review mode")) {
-      return "reviewing";
-    }
-    if (line.startsWith("searching:") || line.startsWith("calling ") || line.startsWith("running tool:")) {
-      return "investigating";
-    }
-    if (line.startsWith("starting collaboration tool:")) {
-      return "investigating";
-    }
-    if (line.startsWith("running command:")) {
-      return looksLikeVerificationCommand2(line) ? "verifying" : job.jobClass === "review" ? "reviewing" : "investigating";
-    }
-    if (line.startsWith("command completed:")) {
-      return looksLikeVerificationCommand2(line) ? "verifying" : "running";
-    }
-    if (line.startsWith("applying ") || line.startsWith("file changes ")) {
-      return "editing";
-    }
-    if (line.startsWith("turn completed")) {
-      return "finalizing";
-    }
-    if (line.startsWith("codex error:") || line.startsWith("failed:")) {
-      return "failed";
-    }
-  }
-  return job.jobClass === "review" ? "reviewing" : "running";
-}
-function enrichJob(job, options = {}) {
-  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
-  const enriched = {
-    ...job,
-    kindLabel: getJobTypeLabel(job),
-    progressPreview: job.status === "queued" || job.status === "running" || job.status === "failed" ? readJobProgressPreview(job.logFile, maxProgressLines) : [],
-    elapsed: formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? null),
-    duration: job.status === "completed" || job.status === "failed" || job.status === "cancelled" ? formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? job.updatedAt) : null
-  };
-  return {
-    ...enriched,
-    phase: enriched.phase ?? inferLegacyJobPhase(enriched, enriched.progressPreview)
-  };
-}
-function readStoredJob(workspaceRoot, jobId) {
-  const jobFile = resolveJobFile(workspaceRoot, jobId);
-  if (!fs9.existsSync(jobFile)) {
-    return null;
-  }
-  try {
-    return readJobFile(jobFile);
-  } catch (error) {
-    if (error?.code === "JOB_DETAIL_CORRUPT") {
-      throw new CliError(`Job detail for ${jobId} is corrupt.`, {
-        class: "conflict",
-        code: "JOB_DETAIL_CORRUPT",
-        retryable: false,
-        suggestion: "Run `status` to inspect the state index; relaunch the task if the detail artifact is required.",
-        details: {
-          jobId,
-          jobFile,
-          corruptPath: error.corruptPath ?? null,
-          cause: error.cause?.message ?? null
-        },
-        nextAction: {
-          kind: "inspect-status",
-          command: `status ${jobId}`,
-          description: "Inspect the state-index record that survived the corrupt detail file."
-        }
-      });
-    }
-    throw error;
-  }
-}
-function matchJobReference(jobs, reference, predicate = () => true) {
-  const filtered = jobs.filter(predicate);
-  if (!reference) {
-    return filtered[0] ?? null;
-  }
-  const exact = filtered.find((job) => job.id === reference);
-  if (exact) {
-    return exact;
-  }
-  const byThread = filtered.find((job) => job.threadId && job.threadId === reference);
-  if (byThread) {
-    return byThread;
-  }
-  const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
-  if (prefixMatches.length === 1) {
-    return prefixMatches[0];
-  }
-  if (prefixMatches.length > 1) {
-    throw new CliError(`Job reference "${reference}" is ambiguous. Use a longer job id.`, {
-      class: "validation",
-      code: "AMBIGUOUS_JOB_REFERENCE",
-      retryable: false
-    });
-  }
-  throw new CliError(`No job found for "${reference}".`, {
-    class: "not_found",
-    code: "JOB_NOT_FOUND",
-    retryable: false,
-    suggestion: "Run `status` to list known jobs."
-  });
-}
-function isResultTerminalJob(job) {
-  return job.status === "completed" || job.status === "failed" || job.status === "cancelled" || job.status === "orphaned";
-}
-function buildStatusSnapshot(cwd, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getConfig(workspaceRoot);
-  const allJobs = listJobs(workspaceRoot);
-  const jobs = sortJobsNewestFirst2(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
-  const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
-  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
-  const running = jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => enrichJob(job, { maxProgressLines }));
-  const latestFinishedRaw = jobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
-  const latestFinished = latestFinishedRaw ? enrichJob(latestFinishedRaw, { maxProgressLines }) : null;
-  const recent = (options.all ? jobs : jobs.slice(0, maxJobs)).filter((job) => job.status !== "queued" && job.status !== "running" && job.id !== latestFinished?.id).map((job) => enrichJob(job, { maxProgressLines }));
-  return {
-    workspaceRoot,
-    config,
-    sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
-    running,
-    latestFinished,
-    recent,
-    needsReview: Boolean(config.stopReviewGate)
-  };
-}
-function buildSingleJobSnapshot(cwd, reference, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
-  const selected = matchJobReference(jobs, reference);
-  if (!selected) {
-    throw new CliError(`No job found for "${reference}".`, {
-      class: "not_found",
-      code: "JOB_NOT_FOUND",
-      retryable: false,
-      suggestion: "Run `status` to inspect known jobs."
-    });
-  }
-  return {
-    workspaceRoot,
-    job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
-  };
-}
-function resolveResultJob(cwd, reference) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst2(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
-  if (reference) {
-    const activeMatch = jobs.find(
-      (job) => (job.status === "queued" || job.status === "running") && (job.id === reference || job.id.startsWith(reference) || job.threadId === reference)
-    );
-    if (activeMatch) {
-      throw new CliError(`Job ${activeMatch.id} is still ${activeMatch.status}.`, {
-        class: "conflict",
-        code: "JOB_NOT_FINISHED",
-        retryable: false,
-        suggestion: `Check \`status ${activeMatch.id} --wait\` and try again once it finishes.`
-      });
-    }
-  }
-  const selected = matchJobReference(
-    jobs,
-    reference,
-    isResultTerminalJob
-  );
-  if (selected) {
-    return { workspaceRoot, job: selected };
-  }
-  if (reference) {
-    throw new CliError(`No finished job found for "${reference}".`, {
-      class: "not_found",
-      code: "JOB_NOT_FOUND",
-      retryable: false,
-      suggestion: "Run `status` to inspect active jobs."
-    });
-  }
-  throw new CliError("No finished Codex jobs found for this repository yet.", {
-    class: "not_found",
-    code: "NO_FINISHED_JOBS",
-    retryable: false
-  });
-}
-function resolveCancelableJob(cwd, reference, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
-  const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
-  if (reference) {
-    const selected = matchJobReference(activeJobs, reference);
-    if (!selected) {
-      throw new CliError(`No active job found for "${reference}".`, {
-        class: "not_found",
-        code: "ACTIVE_JOB_NOT_FOUND",
-        retryable: false
-      });
-    }
-    return { workspaceRoot, job: selected };
-  }
-  const sessionScopedActiveJobs = filterJobsForCurrentSession(activeJobs, options);
-  if (sessionScopedActiveJobs.length === 1) {
-    return { workspaceRoot, job: sessionScopedActiveJobs[0] };
-  }
-  if (sessionScopedActiveJobs.length > 1) {
-    throw new CliError("Multiple Codex jobs are active.", {
-      class: "validation",
-      code: "AMBIGUOUS_CANCEL",
-      retryable: false,
-      suggestion: "Pass a job id to `cancel`."
-    });
-  }
-  if (getCurrentSessionId(options)) {
-    throw new CliError("No active Codex jobs to cancel for this session.", {
-      class: "not_found",
-      code: "NO_ACTIVE_JOBS",
-      retryable: false
-    });
-  }
-  throw new CliError("No active Codex jobs to cancel.", {
-    class: "not_found",
-    code: "NO_ACTIVE_JOBS",
-    retryable: false
-  });
-}
 
 // src/lib/config.mjs
-import fs10 from "node:fs";
+import fs8 from "node:fs";
 import path8 from "node:path";
 import os4 from "node:os";
 
-// ../../../Users/yigitkonur/dev/codex-bridge/node_modules/js-yaml/dist/js-yaml.mjs
+// node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
@@ -8133,16 +7994,15 @@ var jsYaml = {
 var DEFAULT_CONFIG = {
   mode: "plan",
   model: "gpt-5.4",
-  // Default reasoning effort for execute turns. Plan turns are always forced
-  // to "xhigh" regardless (plan is a bounded reasoning exercise; more effort
-  // is always worth it there). For execute turns the historical default was
-  // "high", but live delegations on non-trivial scaffolding (multi-file
-  // ports, cross-module refactors) consistently benefited from "xhigh" —
-  // the wall-clock tax is modest relative to the turn budget and the quality
-  // uplift is large. "xhigh" is the new default; callers who want a cheaper
-  // turn set `effort: "high"` (or lower) in config.yaml or pass
-  // `--effort high` at the CLI. Accepted values: none | minimal | low |
-  // medium | high | xhigh.
+  // Default reasoning effort for execute turns. Plan turns default to xhigh,
+  // but an explicit per-run `--effort` must still be honored. The historical
+  // execute default was "high", but live delegations on non-trivial
+  // scaffolding (multi-file ports, cross-module refactors) consistently
+  // benefited from "xhigh" — the wall-clock tax is modest relative to the
+  // turn budget and the quality uplift is large. "xhigh" is the new default;
+  // callers who want a cheaper turn set `effort: "high"` (or lower) in
+  // config.yaml or pass `--effort high` at the CLI. Accepted values: none |
+  // minimal | low | medium | high | xhigh.
   effort: "xhigh",
   auto_review: true,
   post_task_prompt: [
@@ -8212,8 +8072,18 @@ var DEFAULT_CONFIG = {
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
   // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
-  pipeline_stage_ms: 3e5,
-  pipeline_total_ms: 9e5,
+  // v2.2.1 raises the default stage budget from the old 5-minute floor to
+  // a 12-minute median-task budget; pipeline total follows at 30 minutes so
+  // review + fix + check can all complete without making runaway calls
+  // unbounded. Small tasks still finish as soon as their model calls return.
+  pipeline_stage_ms: 72e4,
+  pipeline_total_ms: 18e5,
+  // Deterministic auto-pipeline guardrail. Native review is probabilistic;
+  // these thresholds make destructive or unusually wide diffs pause before
+  // review/fix/check can normalize the change as successful.
+  destructive_diff_mode: "pause",
+  destructive_diff_lines_deleted: 1e3,
+  destructive_diff_files_changed: 30,
   // How long `requestUserInput` waits for a human/orchestrator to answer
   // before rejecting the server request. Five minutes is tight for thoughtful
   // decisions; make it configurable so a slow loop can widen the window
@@ -8225,7 +8095,13 @@ var DEFAULT_CONFIG = {
   prompt_footer: "When you need to ask a question to user, always use the request_user_input tool with distinct options to help the user navigate choices. Never ask questions as plain text messages."
 };
 function resolveEffort(config, options = {}) {
-  return options.effort ?? config.effort ?? "high";
+  return options.effort ?? config.effort ?? DEFAULT_CONFIG.effort;
+}
+function resolvePlanEffort(_config, options = {}) {
+  return options.effort ?? DEFAULT_CONFIG.effort;
+}
+function resolveCollaborationEffort(mode, config, options = {}) {
+  return mode === "plan" ? resolvePlanEffort(config, options) : resolveEffort(config, options);
 }
 function resolveModel(config, options = {}) {
   return options.model ?? config.model ?? DEFAULT_CONFIG.model;
@@ -8234,7 +8110,7 @@ function buildCollaborationMode(mode, config, options = {}) {
   if (!mode) {
     return null;
   }
-  const effort = mode === "plan" ? "xhigh" : resolveEffort(config, options);
+  const effort = resolveCollaborationEffort(mode, config, options);
   return {
     mode,
     settings: {
@@ -8295,6 +8171,9 @@ var CONFIG_SCHEMA = {
   turn_default_ms: { type: "positive-number" },
   pipeline_stage_ms: { type: "positive-number" },
   pipeline_total_ms: { type: "positive-number" },
+  destructive_diff_mode: { type: "enum", values: ["pause", "warn", "ignore"] },
+  destructive_diff_lines_deleted: { type: "positive-number" },
+  destructive_diff_files_changed: { type: "positive-number" },
   question_answer_ms: { type: "positive-number" },
   artifact_retention_jobs: { type: "positive-number" },
   artifact_retention_days: { type: "positive-number" },
@@ -8307,11 +8186,11 @@ function isConfigValueValid(schema2, value) {
   return schema2.type === "string" ? typeof value === "string" : schema2.type === "boolean" ? typeof value === "boolean" : schema2.type === "object" ? value && typeof value === "object" && !Array.isArray(value) : schema2.type === "positive-number" ? Number(value) > 0 : schema2.type === "enum" ? typeof value === "string" && schema2.values.includes(value) : true;
 }
 function parseConfigFile(filePath, source) {
-  if (!filePath || !fs10.existsSync(filePath)) {
+  if (!filePath || !fs8.existsSync(filePath)) {
     return { config: {}, diagnostics: [] };
   }
   try {
-    const raw = fs10.readFileSync(filePath, "utf8");
+    const raw = fs8.readFileSync(filePath, "utf8");
     const doc = jsYaml.load(raw) ?? {};
     const bridge = doc.codex_bridge ?? doc;
     return {
@@ -8401,11 +8280,11 @@ function loadConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
     mergedConfig,
     sources: {
       skillConfigPath,
-      skillConfigExists: fs10.existsSync(skillConfigPath),
+      skillConfigExists: fs8.existsSync(skillConfigPath),
       workspaceConfigPath,
-      workspaceConfigExists: workspaceConfigPath ? fs10.existsSync(workspaceConfigPath) : false,
+      workspaceConfigExists: workspaceConfigPath ? fs8.existsSync(workspaceConfigPath) : false,
       overrideConfigPath,
-      overrideConfigExists: overrideConfigPath ? fs10.existsSync(overrideConfigPath) : false
+      overrideConfigExists: overrideConfigPath ? fs8.existsSync(overrideConfigPath) : false
     },
     diagnostics: [
       ...skillParsed.diagnostics,
@@ -8425,6 +8304,1038 @@ function resolveConfigSources(skillDir, overrideDir = null, workspaceRoot = null
 }
 function validateConfigLayers(skillDir, overrideDir = null, workspaceRoot = null) {
   return loadConfigLayers(skillDir, overrideDir, workspaceRoot).diagnostics;
+}
+
+// src/lib/runtime-paths.mjs
+import fs9 from "node:fs";
+import path9 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// package.json
+var package_default = {
+  name: "codex-bridge",
+  version: "2.2.0",
+  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor-ready events, and trust-budgeted merge.",
+  type: "module",
+  scripts: {
+    "baseline:contracts": "node scripts/baseline-contracts.mjs",
+    build: "node esbuild.config.mjs",
+    dev: "node src/codex-bridge.mjs",
+    "release:package": "node scripts/package-release.mjs",
+    "smoke:runtime": "node scripts/runtime-smoke.mjs",
+    test: "node --test test/*.test.mjs",
+    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
+  },
+  author: "Yigit Konur",
+  license: "MIT",
+  engines: {
+    node: ">=22.0.0"
+  },
+  devDependencies: {
+    esbuild: "^0.24.0",
+    "js-yaml": "^4.1.0"
+  }
+};
+
+// src/lib/runtime-paths.mjs
+function resolveDispatcherDir() {
+  const here = path9.dirname(fileURLToPath2(import.meta.url));
+  if (fs9.existsSync(path9.join(here, "codex-bridge.mjs"))) return here;
+  const parent = path9.resolve(here, "..");
+  if (fs9.existsSync(path9.join(parent, "codex-bridge.mjs"))) return parent;
+  return here;
+}
+var SCRIPT_DIR = resolveDispatcherDir();
+var SCRIPT_PATH = path9.join(SCRIPT_DIR, "codex-bridge.mjs");
+var ROOT_DIR = fs9.existsSync(path9.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path9.resolve(SCRIPT_DIR, "..");
+var REVIEW_SCHEMA = path9.join(ROOT_DIR, "schemas", "review-output.schema.json");
+var EXECUTE_INSTRUCTIONS_PATH = path9.join(ROOT_DIR, "templates", "execute-instructions.md");
+var PLAN_ENFORCEMENT_PATH = path9.join(ROOT_DIR, "templates", "plan-enforcement.md");
+var BRIDGE_VERSION = package_default.version;
+var BRIDGE_SCHEMA_VERSION = "1.0";
+var BRIDGE_CAPABILITIES = Object.freeze([
+  "plan-mode",
+  "background-jobs",
+  "auto-pipeline",
+  "adversarial-review",
+  "stop-gate-review",
+  "structured-errors",
+  "per-subcommand-help",
+  "machine-readable-help",
+  "workspace-config-override",
+  "update-check",
+  "backend-adapter"
+]);
+var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
+var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
+var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
+var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
+
+// src/lib/bridge-config.mjs
+var BRIDGE_CONFIG_SKILL_LAYER = null;
+function getBridgeConfig(cwd = null, workspaceRoot = null) {
+  if (!cwd && !workspaceRoot) {
+    if (!BRIDGE_CONFIG_SKILL_LAYER) {
+      BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
+    }
+    return BRIDGE_CONFIG_SKILL_LAYER;
+  }
+  return loadConfig(ROOT_DIR, cwd, workspaceRoot);
+}
+async function resolveCommandAdapter({
+  cwd = null,
+  workspaceRoot = null,
+  backend = null,
+  metaBackend = null,
+  taskMetadata = null,
+  subagentType = null
+} = {}) {
+  const resolvedWorkspaceRoot = workspaceRoot ?? (cwd ? resolveWorkspaceRoot(cwd) : null);
+  return resolveAdapterForRuntime({
+    skillDir: ROOT_DIR,
+    cwd,
+    workspaceRoot: resolvedWorkspaceRoot,
+    backend,
+    metaBackend,
+    taskMetadata,
+    subagentType,
+    env: process7.env
+  });
+}
+function ensureCodexRuntimeAdapter(adapter2) {
+  if (adapter2?.name === "codex") return;
+  throw validationError(
+    `Backend '${adapter2?.name ?? "unknown"}' is selected but this CLI path is not wired to that adapter yet.`,
+    "BACKEND_INCAPABLE",
+    "Use --backend codex, unset CODEX_BRIDGE_BACKEND, or choose a config default_backend supported by this build."
+  );
+}
+var DEVELOPER_INSTRUCTIONS_FALLBACK = {
+  plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
+  default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
+};
+function loadDeveloperInstructions(mode) {
+  const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
+  try {
+    return fs10.readFileSync(templatePath, "utf8");
+  } catch {
+    return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
+  }
+}
+
+// src/lib/tracked-jobs.mjs
+import fs11 from "node:fs";
+import process8 from "node:process";
+var SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+function nowIso2() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function normalizeProgressEvent(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return {
+      message: String(value.message ?? "").trim(),
+      phase: typeof value.phase === "string" && value.phase.trim() ? value.phase.trim() : null,
+      threadId: typeof value.threadId === "string" && value.threadId.trim() ? value.threadId.trim() : null,
+      turnId: typeof value.turnId === "string" && value.turnId.trim() ? value.turnId.trim() : null,
+      stderrMessage: value.stderrMessage == null ? null : String(value.stderrMessage).trim(),
+      logTitle: typeof value.logTitle === "string" && value.logTitle.trim() ? value.logTitle.trim() : null,
+      logBody: value.logBody == null ? null : String(value.logBody).trimEnd()
+    };
+  }
+  return {
+    message: String(value ?? "").trim(),
+    phase: null,
+    threadId: null,
+    turnId: null,
+    stderrMessage: String(value ?? "").trim(),
+    logTitle: null,
+    logBody: null
+  };
+}
+function appendLogLine(logFile, message) {
+  const normalized = String(message ?? "").trim();
+  if (!logFile || !normalized) {
+    return;
+  }
+  fs11.appendFileSync(logFile, `[${nowIso2()}] ${normalized}
+`, "utf8");
+}
+function appendLogBlock(logFile, title, body) {
+  if (!logFile || !body) {
+    return;
+  }
+  fs11.appendFileSync(logFile, `
+[${nowIso2()}] ${title}
+${String(body).trimEnd()}
+`, "utf8");
+}
+function createJobLogFile(workspaceRoot, jobId, title) {
+  const logFile = resolveJobLogFile(workspaceRoot, jobId);
+  fs11.writeFileSync(logFile, "", "utf8");
+  if (title) {
+    appendLogLine(logFile, `Starting ${title}.`);
+  }
+  return logFile;
+}
+function createJobRecord(base, options = {}) {
+  const env = options.env ?? process8.env;
+  const sessionId = env[options.sessionIdEnv ?? SESSION_ID_ENV];
+  return {
+    ...base,
+    createdAt: nowIso2(),
+    ...sessionId ? { sessionId } : {}
+  };
+}
+function createJobProgressUpdater(workspaceRoot, jobId) {
+  let lastPhase = null;
+  let lastThreadId = null;
+  let lastTurnId = null;
+  return (event) => {
+    const normalized = normalizeProgressEvent(event);
+    const patch = { id: jobId };
+    let changed = false;
+    if (normalized.phase && normalized.phase !== lastPhase) {
+      lastPhase = normalized.phase;
+      patch.phase = normalized.phase;
+      changed = true;
+    }
+    if (normalized.threadId && normalized.threadId !== lastThreadId) {
+      lastThreadId = normalized.threadId;
+      patch.threadId = normalized.threadId;
+      changed = true;
+    }
+    if (normalized.turnId && normalized.turnId !== lastTurnId) {
+      lastTurnId = normalized.turnId;
+      patch.turnId = normalized.turnId;
+      changed = true;
+    }
+    if (!changed) {
+      return;
+    }
+    const jobFile = resolveJobFile(workspaceRoot, jobId);
+    if (!fs11.existsSync(jobFile)) {
+      return;
+    }
+    let storedJob;
+    try {
+      storedJob = readJobFile(jobFile);
+    } catch (error) {
+      if (error?.code !== "JOB_DETAIL_CORRUPT") {
+        throw error;
+      }
+      storedJob = listJobs(workspaceRoot, { raw: true }).find((job) => job.id === jobId) ?? {
+        id: jobId,
+        status: "running",
+        phase: "running"
+      };
+      patch.detailRecovery = {
+        code: "JOB_DETAIL_CORRUPT",
+        jobFile,
+        corruptPath: error.corruptPath ?? null
+      };
+    }
+    writeJobFile(workspaceRoot, jobId, {
+      ...storedJob,
+      ...patch
+    });
+    upsertJob(workspaceRoot, patch);
+  };
+}
+function createProgressReporter({ stderr = false, logFile = null, onEvent = null } = {}) {
+  if (!stderr && !logFile && !onEvent) {
+    return null;
+  }
+  return (eventOrMessage) => {
+    const event = normalizeProgressEvent(eventOrMessage);
+    const stderrMessage = event.stderrMessage ?? event.message;
+    if (stderr && stderrMessage) {
+      process8.stderr.write(`[codex] ${stderrMessage}
+`);
+    }
+    appendLogLine(logFile, event.message);
+    appendLogBlock(logFile, event.logTitle, event.logBody);
+    onEvent?.(event);
+  };
+}
+function readStoredJobOrNull(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs11.existsSync(jobFile)) {
+    return null;
+  }
+  try {
+    return readJobFile(jobFile);
+  } catch (error) {
+    if (error?.code === "JOB_DETAIL_CORRUPT") {
+      return listJobs(workspaceRoot, { raw: true }).find((job) => job.id === jobId) ?? null;
+    }
+    throw error;
+  }
+}
+async function runTrackedJob(job, runner, options = {}) {
+  const runningRecord = {
+    ...job,
+    status: "running",
+    startedAt: nowIso2(),
+    phase: "starting",
+    pid: process8.pid,
+    logFile: options.logFile ?? job.logFile ?? null
+  };
+  writeJobFile(job.workspaceRoot, job.id, runningRecord);
+  upsertJob(job.workspaceRoot, runningRecord);
+  try {
+    const execution = await runner();
+    const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
+    const completedAt = nowIso2();
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...runningRecord,
+      status: completionStatus,
+      threadId: execution.threadId ?? null,
+      turnId: execution.turnId ?? null,
+      pid: null,
+      phase: completionStatus === "completed" ? "done" : "failed",
+      completedAt,
+      result: execution.payload,
+      rendered: execution.rendered
+    });
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: completionStatus,
+      threadId: execution.threadId ?? null,
+      turnId: execution.turnId ?? null,
+      summary: execution.summary,
+      phase: completionStatus === "completed" ? "done" : "failed",
+      pid: null,
+      completedAt
+    });
+    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    return execution;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+    const completedAt = nowIso2();
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...existing,
+      status: "failed",
+      phase: "failed",
+      errorMessage,
+      pid: null,
+      completedAt,
+      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
+    });
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      errorMessage,
+      completedAt
+    });
+    throw error;
+  }
+}
+
+// src/lib/job-control.mjs
+var DEFAULT_MAX_STATUS_JOBS = 8;
+var DEFAULT_MAX_PROGRESS_LINES = 4;
+function sortJobsNewestFirst2(jobs) {
+  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
+function getCurrentSessionId(options = {}) {
+  return options.env?.[SESSION_ID_ENV] ?? process.env[SESSION_ID_ENV] ?? null;
+}
+function filterJobsForCurrentSession(jobs, options = {}) {
+  const sessionId = getCurrentSessionId(options);
+  if (!sessionId) {
+    return jobs;
+  }
+  return jobs.filter((job) => job.sessionId === sessionId);
+}
+function getJobTypeLabel(job) {
+  if (typeof job.kindLabel === "string" && job.kindLabel) {
+    return job.kindLabel;
+  }
+  if (job.kind === "adversarial-review") {
+    return "adversarial-review";
+  }
+  if (job.jobClass === "review") {
+    return "review";
+  }
+  if (job.jobClass === "task") {
+    return "task";
+  }
+  if (job.kind === "review") {
+    return "review";
+  }
+  if (job.kind === "task") {
+    return "task";
+  }
+  return "job";
+}
+function stripLogPrefix(line) {
+  return line.replace(/^\[[^\]]+\]\s*/, "").trim();
+}
+function isProgressBlockTitle(line) {
+  return ["Final output", "Assistant message", "Reasoning summary", "Review output"].includes(line) || /^Subagent .+ message$/.test(line) || /^Subagent .+ reasoning summary$/.test(line);
+}
+function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_LINES) {
+  if (!logFile || !fs12.existsSync(logFile)) {
+    return [];
+  }
+  const lines = fs12.readFileSync(logFile, "utf8").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).filter((line) => line.startsWith("[")).map(stripLogPrefix).filter((line) => line && !isProgressBlockTitle(line));
+  return lines.slice(-maxLines);
+}
+function readJobProgressEvents(logFile) {
+  if (!logFile || !fs12.existsSync(logFile)) {
+    return [];
+  }
+  return fs12.readFileSync(logFile, "utf8").split(/\r?\n/).map((line) => /^\[([^\]]+)\]\s*(.*)$/.exec(line.trimEnd())).filter(Boolean).map((match) => ({
+    timestampMs: Date.parse(match[1]),
+    message: String(match[2] ?? "").trim()
+  })).filter((entry) => entry.message && !isProgressBlockTitle(entry.message));
+}
+function formatElapsedDuration(startValue, endValue = null) {
+  const start = Date.parse(startValue ?? "");
+  if (!Number.isFinite(start)) {
+    return null;
+  }
+  const end = endValue ? Date.parse(endValue) : Date.now();
+  if (!Number.isFinite(end) || end < start) {
+    return null;
+  }
+  const totalSeconds = Math.max(0, Math.round((end - start) / 1e3));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+function looksLikeVerificationCommand2(line) {
+  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
+    line
+  );
+}
+function inferLegacyJobPhase(job, progressPreview = []) {
+  switch (job.status) {
+    case "queued":
+      return "queued";
+    case "cancelled":
+      return "cancelled";
+    case "failed":
+      return "failed";
+    case "completed":
+      return "done";
+    default:
+      break;
+  }
+  for (let index = progressPreview.length - 1; index >= 0; index -= 1) {
+    const line = progressPreview[index].toLowerCase();
+    if (line.startsWith("starting codex") || line.startsWith("thread ready") || line.startsWith("turn started")) {
+      return "starting";
+    }
+    if (line.startsWith("reviewer started") || line.includes("review mode")) {
+      return "reviewing";
+    }
+    if (line.startsWith("searching:") || line.startsWith("calling ") || line.startsWith("running tool:")) {
+      return "investigating";
+    }
+    if (line.startsWith("starting collaboration tool:")) {
+      return "investigating";
+    }
+    if (line.startsWith("running command:")) {
+      return looksLikeVerificationCommand2(line) ? "verifying" : job.jobClass === "review" ? "reviewing" : "investigating";
+    }
+    if (line.startsWith("command completed:")) {
+      return looksLikeVerificationCommand2(line) ? "verifying" : "running";
+    }
+    if (line.startsWith("applying ") || line.startsWith("file changes ")) {
+      return "editing";
+    }
+    if (line.startsWith("turn completed")) {
+      return "finalizing";
+    }
+    if (line.startsWith("codex error:") || line.startsWith("failed:")) {
+      return "failed";
+    }
+  }
+  return job.jobClass === "review" ? "reviewing" : "running";
+}
+function secondsBetween(startMs, endMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return null;
+  }
+  return Math.max(0, Math.round((endMs - startMs) / 1e3));
+}
+function countArtifactsFromProgress(events) {
+  let total = 0;
+  for (const event of events) {
+    const match = /^Applying (\d+) file change\(s\)\.$/.exec(event.message);
+    if (match) {
+      total += Number(match[1]);
+    }
+  }
+  return total;
+}
+function countEvents(eventsPath) {
+  if (!eventsPath || !fs12.existsSync(eventsPath)) {
+    return 0;
+  }
+  return readEvents(eventsPath).length;
+}
+function buildJobProgress(job, storedJob, options = {}) {
+  const asOfMs = options.asOfMs ?? Date.now();
+  const startMs = Date.parse(job.startedAt ?? storedJob?.startedAt ?? job.createdAt ?? storedJob?.createdAt ?? "");
+  const progressEvents = readJobProgressEvents(job.logFile ?? storedJob?.logFile ?? null);
+  const lastEvent = progressEvents.at(-1) ?? null;
+  const eventsPath = resolveStatusEventsPath(job, storedJob, options.workspaceRoot, options.config);
+  return {
+    elapsed_seconds: secondsBetween(startMs, asOfMs),
+    artifacts_written: countArtifactsFromProgress(progressEvents),
+    target_artifacts: null,
+    shell_commands_run: progressEvents.filter((event) => event.message.startsWith("Running command:")).length,
+    last_action: lastEvent?.message ?? null,
+    last_action_at_seconds: lastEvent ? secondsBetween(startMs, lastEvent.timestampMs) : null,
+    tokens_consumed_estimate: null,
+    events_since_last_status: countEvents(eventsPath)
+  };
+}
+function enrichJob(job, options = {}) {
+  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const storedJob = options.storedJob ?? (options.workspaceRoot ? readStoredJobForStatus(options.workspaceRoot, job.id) : null);
+  const enriched = {
+    ...job,
+    kindLabel: getJobTypeLabel(job),
+    progressPreview: job.status === "queued" || job.status === "running" || job.status === "failed" ? readJobProgressPreview(job.logFile, maxProgressLines) : [],
+    elapsed: formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? null),
+    duration: job.status === "completed" || job.status === "failed" || job.status === "cancelled" ? formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? job.updatedAt) : null
+  };
+  const withPhase = {
+    ...enriched,
+    phase: enriched.phase ?? inferLegacyJobPhase(enriched, enriched.progressPreview)
+  };
+  if (!isActiveStatus(withPhase.status)) {
+    return withPhase;
+  }
+  return {
+    ...withPhase,
+    progress: buildJobProgress(withPhase, storedJob, options)
+  };
+}
+function readStoredJob(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs12.existsSync(jobFile)) {
+    return null;
+  }
+  try {
+    return readJobFile(jobFile);
+  } catch (error) {
+    if (error?.code === "JOB_DETAIL_CORRUPT") {
+      throw new CliError(`Job detail for ${jobId} is corrupt.`, {
+        class: "conflict",
+        code: "JOB_DETAIL_CORRUPT",
+        retryable: false,
+        suggestion: "Run `status` to inspect the state index; relaunch the task if the detail artifact is required.",
+        details: {
+          jobId,
+          jobFile,
+          corruptPath: error.corruptPath ?? null,
+          cause: error.cause?.message ?? null
+        },
+        nextAction: {
+          kind: "inspect-status",
+          command: `status ${jobId}`,
+          description: "Inspect the state-index record that survived the corrupt detail file."
+        }
+      });
+    }
+    throw error;
+  }
+}
+function matchJobReference(jobs, reference, predicate = () => true) {
+  const filtered = jobs.filter(predicate);
+  if (!reference) {
+    return filtered[0] ?? null;
+  }
+  const exact = filtered.find((job) => job.id === reference);
+  if (exact) {
+    return exact;
+  }
+  const byThread = filtered.find((job) => job.threadId && job.threadId === reference);
+  if (byThread) {
+    return byThread;
+  }
+  const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
+  if (prefixMatches.length === 1) {
+    return prefixMatches[0];
+  }
+  if (prefixMatches.length > 1) {
+    throw new CliError(`Job reference "${reference}" is ambiguous. Use a longer job id.`, {
+      class: "validation",
+      code: "AMBIGUOUS_JOB_REFERENCE",
+      retryable: false
+    });
+  }
+  throw new CliError(`No job found for "${reference}".`, {
+    class: "not_found",
+    code: "JOB_NOT_FOUND",
+    retryable: false,
+    suggestion: "Run `status` to list known jobs."
+  });
+}
+function isResultTerminalJob(job) {
+  return job.status === "completed" || job.status === "failed" || job.status === "cancelled" || job.status === "orphaned";
+}
+function isActiveStatus(status) {
+  return status === "queued" || status === "running";
+}
+function firstEventLine(block) {
+  return String(block ?? "").split(/\r?\n/, 1)[0] ?? "";
+}
+function eventTagForBlock(block) {
+  return /^\[([^\]]+)\]/.exec(firstEventLine(block))?.[1] ?? null;
+}
+function readStoredJobForStatus(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs12.existsSync(jobFile)) {
+    return null;
+  }
+  try {
+    return readJobFile(jobFile);
+  } catch {
+    return null;
+  }
+}
+function resolveStatusEventsPath(job, storedJob, workspaceRoot, config = {}) {
+  const candidates = [
+    storedJob?.result?.eventsPath,
+    storedJob?.result?.artifacts?.eventsPath,
+    storedJob?.eventsPath,
+    job.eventsPath,
+    job.result?.eventsPath
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  const threadId = job.threadId ?? storedJob?.threadId ?? null;
+  if (!threadId) {
+    return null;
+  }
+  const eventsDir = [
+    storedJob?.result?.eventsDir,
+    storedJob?.result?.artifacts?.eventsDir,
+    storedJob?.eventsDir,
+    job.eventsDir,
+    job.result?.eventsDir
+  ].find((candidate) => typeof candidate === "string" && candidate.trim());
+  const sessionDir = eventsDir || config.session_dir;
+  return sessionDir ? path10.join(resolveSessionDir(sessionDir, workspaceRoot), `${threadId}.events`) : null;
+}
+function readStatusEventState(eventsPath) {
+  if (!eventsPath || !fs12.existsSync(eventsPath)) {
+    return { eventsPath: eventsPath ?? null, terminal: null, attention: null };
+  }
+  const events = readEvents(eventsPath);
+  let pipelineFailed = null;
+  let attention = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const block = events[index];
+    const tag = eventTagForBlock(block);
+    if (!tag) {
+      continue;
+    }
+    if (!attention && (tag === "QUESTION" || tag === "PLAN")) {
+      attention = { tag, line: firstEventLine(block), eventsPath };
+    }
+    if (tag === "PIPELINE:failed") {
+      pipelineFailed = { tag, line: firstEventLine(block), eventsPath };
+      continue;
+    }
+    if (TERMINAL_TAGS.includes(tag)) {
+      if (pipelineFailed && tag !== "ERROR") {
+        return { eventsPath, terminal: pipelineFailed, attention };
+      }
+      return { eventsPath, terminal: { tag, line: firstEventLine(block), eventsPath }, attention };
+    }
+  }
+  return { eventsPath, terminal: pipelineFailed, attention };
+}
+function msSince(job, asOfMs) {
+  const since = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
+  return Number.isFinite(since) ? Math.max(0, asOfMs - since) : null;
+}
+function reasonForAttention(job, terminal) {
+  return terminal?.line || job.errorMessage || job.summary || `${job.status ?? "unknown"} job needs attention`;
+}
+function classifyStatusJob(job, { storedJob, workspaceRoot, config, asOfMs }) {
+  const eventsPath = resolveStatusEventsPath(job, storedJob, workspaceRoot, config);
+  const eventState = readStatusEventState(eventsPath);
+  const terminalTag = eventState.terminal?.tag ?? null;
+  const base = {
+    terminalTag,
+    eventsPath: eventState.eventsPath ?? eventsPath,
+    reason: eventState.terminal?.line ?? null
+  };
+  const active = isActiveStatus(job.status);
+  const attention = [];
+  if (eventState.attention?.tag === "QUESTION") {
+    attention.push({
+      jobId: job.id,
+      state: "QUESTION",
+      reason: eventState.attention.line,
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath: eventState.attention.eventsPath
+    });
+  }
+  if (eventState.attention?.tag === "PLAN" || !active && terminalTag === "PLAN") {
+    attention.push({
+      jobId: job.id,
+      state: "PLAN",
+      reason: eventState.attention?.line ?? eventState.terminal?.line ?? "Plan awaiting approval",
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath: eventState.attention?.eventsPath ?? eventState.terminal?.eventsPath ?? eventsPath
+    });
+  }
+  if (active) {
+    return { ...base, bucket: "running", attention };
+  }
+  if (job.status === "cancelled") {
+    return { ...base, bucket: "cancelled", attention };
+  }
+  if (terminalTag === "PIPELINE:failed" || terminalTag === "ERROR") {
+    attention.push({
+      jobId: job.id,
+      state: terminalTag === "PIPELINE:failed" ? "PIPELINE_FAILED" : "ERROR",
+      reason: reasonForAttention(job, eventState.terminal),
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath: eventState.terminal?.eventsPath ?? eventsPath
+    });
+    return { ...base, bucket: "completed_fail", attention };
+  }
+  if (terminalTag === "INCOMPLETE") {
+    attention.push({
+      jobId: job.id,
+      state: "INCOMPLETE",
+      reason: reasonForAttention(job, eventState.terminal),
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath: eventState.terminal?.eventsPath ?? eventsPath
+    });
+    return { ...base, bucket: "completed_incomplete", attention };
+  }
+  if (terminalTag === "PLAN") {
+    return { ...base, bucket: "awaiting_plan", attention };
+  }
+  if (terminalTag === "DONE") {
+    return { ...base, bucket: "completed_success", attention };
+  }
+  if (job.status === "failed" || job.status === "orphaned") {
+    attention.push({
+      jobId: job.id,
+      state: job.status === "orphaned" ? "ORPHANED" : "FAILED",
+      reason: reasonForAttention(job, eventState.terminal),
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath
+    });
+    return { ...base, bucket: "completed_fail", attention };
+  }
+  if (job.status === "completed") {
+    return { ...base, bucket: "completed_success", attention };
+  }
+  return { ...base, bucket: "other_terminal", attention };
+}
+function statusStateEntry(job, storedJob, classification) {
+  return {
+    id: job.id,
+    jobId: job.id,
+    state: classification.bucket,
+    status: job.status ?? null,
+    phase: job.phase ?? null,
+    terminalTag: classification.terminalTag ?? null,
+    reason: classification.reason ?? job.errorMessage ?? null,
+    threadId: job.threadId ?? storedJob?.threadId ?? null,
+    summary: job.summary ?? storedJob?.summary ?? null,
+    updatedAt: job.updatedAt ?? null,
+    completedAt: job.completedAt ?? null,
+    eventsPath: classification.eventsPath ?? null
+  };
+}
+function normalizeSessionFilter(value) {
+  if (value == null) {
+    return null;
+  }
+  const sessionId = String(value).trim();
+  return sessionId || null;
+}
+function parseSinceFilter(value) {
+  if (value == null) {
+    return null;
+  }
+  const sinceMs = Date.parse(String(value));
+  if (!Number.isFinite(sinceMs)) {
+    throw new CliError(`Invalid --since timestamp: ${value}`, {
+      class: "validation",
+      code: "INVALID_STATUS_SINCE",
+      retryable: false,
+      suggestion: "Pass an ISO timestamp, for example `--since 2026-05-06T12:00:00.000Z`."
+    });
+  }
+  return sinceMs;
+}
+function jobWatermarkMs(job) {
+  const values = [job.createdAt, job.startedAt, job.updatedAt, job.completedAt].map((value) => Date.parse(value ?? "")).filter(Number.isFinite);
+  return values.length > 0 ? Math.max(...values) : null;
+}
+function selectStatusJobs(allJobs, options = {}) {
+  const explicitSession = normalizeSessionFilter(options.session);
+  const sinceMs = parseSinceFilter(options.since);
+  let jobs = allJobs;
+  if (explicitSession) {
+    jobs = jobs.filter((job) => job.sessionId === explicitSession);
+  } else if (!options.all) {
+    jobs = filterJobsForCurrentSession(jobs, options);
+  }
+  if (sinceMs != null) {
+    jobs = jobs.filter((job) => {
+      const watermarkMs = jobWatermarkMs(job);
+      return watermarkMs != null && watermarkMs >= sinceMs;
+    });
+  }
+  return jobs;
+}
+function buildStatusSummary(jobs, workspaceRoot, config = {}, asOf = /* @__PURE__ */ new Date()) {
+  const asOfMs = asOf.getTime();
+  const summary = {
+    total: jobs.length,
+    running: 0,
+    completed_success: 0,
+    completed_fail: 0,
+    completed_incomplete: 0,
+    cancelled: 0,
+    other_terminal: 0,
+    interrupts: {
+      awaiting_plan: 0,
+      awaiting_question: 0
+    },
+    by_state: {
+      running: 0,
+      completed_success: 0,
+      completed_fail: 0,
+      completed_incomplete: 0,
+      cancelled: 0,
+      other_terminal: 0
+    },
+    awaiting_attention: 0,
+    as_of: asOf.toISOString()
+  };
+  const byState = {
+    running: [],
+    completed_success: [],
+    completed_fail: [],
+    completed_incomplete: [],
+    cancelled: [],
+    other_terminal: [],
+    awaiting_plan: []
+  };
+  const needsAttention = [];
+  for (const job of jobs) {
+    const storedJob = readStoredJobForStatus(workspaceRoot, job.id);
+    const classification = classifyStatusJob(job, { storedJob, workspaceRoot, config, asOfMs });
+    const entry = statusStateEntry(job, storedJob, classification);
+    if (byState[classification.bucket]) {
+      byState[classification.bucket].push(entry);
+    }
+    switch (classification.bucket) {
+      case "running":
+        summary.running += 1;
+        summary.by_state.running += 1;
+        break;
+      case "completed_success":
+        summary.completed_success += 1;
+        summary.by_state.completed_success += 1;
+        break;
+      case "completed_fail":
+        summary.completed_fail += 1;
+        summary.by_state.completed_fail += 1;
+        break;
+      case "completed_incomplete":
+        summary.completed_incomplete += 1;
+        summary.by_state.completed_incomplete += 1;
+        break;
+      case "cancelled":
+        summary.cancelled += 1;
+        summary.by_state.cancelled += 1;
+        break;
+      case "awaiting_plan":
+        summary.interrupts.awaiting_plan += 1;
+        break;
+      default:
+        summary.other_terminal += 1;
+        summary.by_state.other_terminal += 1;
+        break;
+    }
+    for (const entry2 of classification.attention) {
+      if (entry2.state === "PLAN") {
+        summary.interrupts.awaiting_plan += classification.bucket === "awaiting_plan" ? 0 : 1;
+      } else if (entry2.state === "QUESTION") {
+        summary.interrupts.awaiting_question += 1;
+      }
+      needsAttention.push(entry2);
+    }
+  }
+  summary.awaiting_attention = needsAttention.length;
+  return { summary, needsAttention, byState };
+}
+function buildStatusSnapshot(cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = getConfig(workspaceRoot);
+  const runtimeConfig = getBridgeConfig(cwd, workspaceRoot);
+  const allJobs = listJobs(workspaceRoot);
+  const jobs = sortJobsNewestFirst2(selectStatusJobs(allJobs, options));
+  const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
+  const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const asOf = /* @__PURE__ */ new Date();
+  const asOfMs = asOf.getTime();
+  const enrichedJobs = jobs.map(
+    (job) => enrichJob(job, {
+      maxProgressLines,
+      workspaceRoot,
+      config: runtimeConfig,
+      asOfMs
+    })
+  );
+  const running = enrichedJobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => job);
+  const latestFinished = enrichedJobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
+  const recent = (options.all ? enrichedJobs : enrichedJobs.slice(0, maxJobs)).filter((job) => job.status !== "queued" && job.status !== "running" && job.id !== latestFinished?.id).map((job) => job);
+  const statusSummary = buildStatusSummary(jobs, workspaceRoot, runtimeConfig, asOf);
+  return {
+    workspaceRoot,
+    config,
+    sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
+    as_of: statusSummary.summary.as_of,
+    jobs: enrichedJobs,
+    summary: statusSummary.summary,
+    running,
+    latestFinished,
+    recent,
+    needs_attention: statusSummary.needsAttention,
+    by_state: statusSummary.byState,
+    needsReview: Boolean(config.stopReviewGate)
+  };
+}
+function buildSingleJobSnapshot(cwd, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const runtimeConfig = getBridgeConfig(cwd, workspaceRoot);
+  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
+  const selected = matchJobReference(jobs, reference);
+  const asOf = /* @__PURE__ */ new Date();
+  if (!selected) {
+    throw new CliError(`No job found for "${reference}".`, {
+      class: "not_found",
+      code: "JOB_NOT_FOUND",
+      retryable: false,
+      suggestion: "Run `status` to inspect known jobs."
+    });
+  }
+  return {
+    workspaceRoot,
+    as_of: asOf.toISOString(),
+    job: enrichJob(selected, {
+      maxProgressLines: options.maxProgressLines,
+      workspaceRoot,
+      config: runtimeConfig,
+      asOfMs: asOf.getTime()
+    })
+  };
+}
+function resolveResultJob(cwd, reference) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst2(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+  if (reference) {
+    const activeMatch = jobs.find(
+      (job) => (job.status === "queued" || job.status === "running") && (job.id === reference || job.id.startsWith(reference) || job.threadId === reference)
+    );
+    if (activeMatch) {
+      throw new CliError(`Job ${activeMatch.id} is still ${activeMatch.status}.`, {
+        class: "conflict",
+        code: "JOB_NOT_FINISHED",
+        retryable: false,
+        suggestion: `Check \`status ${activeMatch.id} --wait\` and try again once it finishes.`
+      });
+    }
+  }
+  const selected = matchJobReference(
+    jobs,
+    reference,
+    isResultTerminalJob
+  );
+  if (selected) {
+    return { workspaceRoot, job: selected };
+  }
+  if (reference) {
+    throw new CliError(`No finished job found for "${reference}".`, {
+      class: "not_found",
+      code: "JOB_NOT_FOUND",
+      retryable: false,
+      suggestion: "Run `status` to inspect active jobs."
+    });
+  }
+  throw new CliError("No finished Codex jobs found for this repository yet.", {
+    class: "not_found",
+    code: "NO_FINISHED_JOBS",
+    retryable: false
+  });
+}
+function resolveCancelableJob(cwd, reference, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst2(listJobs(workspaceRoot));
+  const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
+  if (reference) {
+    const selected = matchJobReference(activeJobs, reference);
+    if (!selected) {
+      throw new CliError(`No active job found for "${reference}".`, {
+        class: "not_found",
+        code: "ACTIVE_JOB_NOT_FOUND",
+        retryable: false
+      });
+    }
+    return { workspaceRoot, job: selected };
+  }
+  const sessionScopedActiveJobs = filterJobsForCurrentSession(activeJobs, options);
+  if (sessionScopedActiveJobs.length === 1) {
+    return { workspaceRoot, job: sessionScopedActiveJobs[0] };
+  }
+  if (sessionScopedActiveJobs.length > 1) {
+    throw new CliError("Multiple Codex jobs are active.", {
+      class: "validation",
+      code: "AMBIGUOUS_CANCEL",
+      retryable: false,
+      suggestion: "Pass a job id to `cancel`."
+    });
+  }
+  if (getCurrentSessionId(options)) {
+    throw new CliError("No active Codex jobs to cancel for this session.", {
+      class: "not_found",
+      code: "NO_ACTIVE_JOBS",
+      retryable: false
+    });
+  }
+  throw new CliError("No active Codex jobs to cancel.", {
+    class: "not_found",
+    code: "NO_ACTIVE_JOBS",
+    retryable: false
+  });
 }
 
 // src/adapters/codex/index.mjs
@@ -8470,9 +9381,9 @@ var runtime = defaultRuntime;
 function normalizeAdapterOptions(options = {}) {
   return options && typeof options === "object" && !Array.isArray(options) ? options : {};
 }
-function defaultSessionDirForCwd(cwd) {
-  const config = getConfig(cwd);
-  return resolveSessionDir(config.session_dir ?? DEFAULT_CONFIG.session_dir);
+function defaultSessionDirForCwd(cwd, workspaceRoot = cwd) {
+  const config = loadConfig(ROOT_DIR, cwd, workspaceRoot);
+  return resolveSessionDir(config.session_dir, workspaceRoot);
 }
 function buildTurnOptions(prompt, options) {
   const adapterOptions = normalizeAdapterOptions(options.adapterOptions);
@@ -8502,9 +9413,137 @@ function eventTagForLine(line) {
   const generic = /^\[([^\]]+)\]/.exec(line);
   return generic?.[1] ?? "ADAPTER:codex:event";
 }
+var EVENT_TERMINAL_PHASE = Object.freeze({
+  DONE: "done",
+  ERROR: "error",
+  INCOMPLETE: "incomplete",
+  PLAN: "plan-pending",
+  CANCELLED: "cancelled",
+  UNKNOWN: "error"
+});
+var SUCCESS_TERMINAL_TAGS = /* @__PURE__ */ new Set(["DONE", "PLAN"]);
+function workerTerminalTagForStatus(status) {
+  switch (status) {
+    case "completed":
+      return "DONE";
+    case "failed":
+    case "orphaned":
+      return "ERROR";
+    case "cancelled":
+      return "CANCELLED";
+    default:
+      return null;
+  }
+}
+function workerExitCodeForStatus(status) {
+  return status === "completed" ? 0 : 1;
+}
+function exitCodeForTerminalTag(tag, workerExitCode) {
+  if (!tag) return workerExitCode;
+  return SUCCESS_TERMINAL_TAGS.has(tag) ? 0 : 1;
+}
+function phaseForTerminalTag(tag, fallback) {
+  return EVENT_TERMINAL_PHASE[tag] ?? fallback ?? "error";
+}
+function firstEventLine2(block) {
+  return String(block ?? "").split(/\r?\n/, 1)[0] ?? "";
+}
+function bracketTagForEventBlock(block) {
+  return /^\[([^\]]+)\]/.exec(firstEventLine2(block))?.[1] ?? null;
+}
+function resolveStoredEventsPath(storedJob, threadId, cwd, workspaceRoot, options) {
+  const candidates = [
+    options.eventsPath,
+    storedJob?.result?.eventsPath,
+    storedJob?.result?.artifacts?.eventsPath,
+    storedJob?.eventsPath
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  if (!threadId) return null;
+  const eventDirs = [
+    options.sessionDir,
+    storedJob?.result?.eventsDir,
+    storedJob?.result?.artifacts?.eventsDir,
+    storedJob?.eventsDir
+  ];
+  const configuredEventDir = eventDirs.find((candidate) => typeof candidate === "string" && candidate.trim());
+  const sessionDir = configuredEventDir ? resolveSessionDir(configuredEventDir, workspaceRoot ?? cwd) : defaultSessionDirForCwd(cwd, workspaceRoot);
+  return path11.join(sessionDir, `${threadId}.events`);
+}
+function readEventTerminalState(eventsPath) {
+  if (!eventsPath || !fs13.existsSync(eventsPath)) {
+    return { found: false, eventsPath: eventsPath ?? null, eventsFileExists: false };
+  }
+  const events = readEvents(eventsPath);
+  let pipelineFailed = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const rawTag = bracketTagForEventBlock(events[index]);
+    if (rawTag === "PIPELINE:failed") {
+      pipelineFailed = {
+        tag: "INCOMPLETE",
+        rawTag,
+        line: firstEventLine2(events[index])
+      };
+      continue;
+    }
+    if (TERMINAL_TAGS.includes(rawTag)) {
+      if (pipelineFailed && rawTag !== "ERROR") {
+        return {
+          found: true,
+          ...pipelineFailed,
+          eventsPath,
+          source: "pipeline-failed"
+        };
+      }
+      return {
+        found: true,
+        tag: rawTag,
+        rawTag,
+        line: firstEventLine2(events[index]),
+        eventsPath,
+        source: "events-terminal"
+      };
+    }
+  }
+  if (pipelineFailed) {
+    return {
+      found: true,
+      ...pipelineFailed,
+      eventsPath,
+      source: "pipeline-failed"
+    };
+  }
+  return {
+    found: true,
+    tag: "UNKNOWN",
+    rawTag: null,
+    line: null,
+    eventsPath,
+    source: "events-missing-terminal"
+  };
+}
+function formatDiscrepancyReason(eventState, terminalTag, workerTerminalTag, workerExitCode) {
+  const eventTag = eventState.rawTag ? `[${eventState.rawTag}]` : "no terminal tag";
+  const classification = eventState.rawTag && eventState.rawTag !== terminalTag ? `, classified as [${terminalTag}]` : "";
+  return `events emitted ${eventTag}${classification} but worker status implied [${workerTerminalTag ?? "UNKNOWN"}] (workerExitCode=${workerExitCode})`;
+}
+function storedFinalMessage(storedJob) {
+  const candidates = [
+    storedJob?.result?.rawOutput,
+    storedJob?.result?.raw_output,
+    storedJob?.result?.finalMessage,
+    storedJob?.result?.codex?.stdout,
+    storedJob?.result?.reviewText
+  ];
+  return candidates.find((value) => typeof value === "string" && value.length > 0) ?? null;
+}
 async function dispatch(prompt, options = {}) {
   const normalized = normalizeAdapterOptions(options);
-  const cwd = normalized.cwd ?? process8.cwd();
+  const cwd = normalized.cwd ?? process9.cwd();
   const sessionDir = normalized.sessionDir ?? defaultSessionDirForCwd(cwd);
   const result = await runtime.runTurn(cwd, buildTurnOptions(prompt, normalized));
   return {
@@ -8532,7 +9571,7 @@ async function resume(threadId, prompt, options = {}) {
   });
 }
 async function steer(threadId, turnId, prompt, options = {}) {
-  const cwd = normalizeAdapterOptions(options).cwd ?? process8.cwd();
+  const cwd = normalizeAdapterOptions(options).cwd ?? process9.cwd();
   return runtime.steerTurn(cwd, { threadId, turnId, prompt });
 }
 async function respond(_threadOrJobId, requestId, answer, options = {}) {
@@ -8561,7 +9600,7 @@ async function respond(_threadOrJobId, requestId, answer, options = {}) {
 }
 async function cancel(_jobId, options = {}) {
   const normalized = normalizeAdapterOptions(options);
-  const result = await runtime.interruptTurn(normalized.cwd ?? process8.cwd(), {
+  const result = await runtime.interruptTurn(normalized.cwd ?? process9.cwd(), {
     threadId: normalized.threadId ?? null,
     turnId: normalized.turnId ?? null
   });
@@ -8572,29 +9611,33 @@ async function cancel(_jobId, options = {}) {
     reason: result.detail ?? null
   };
 }
-function storedFinalMessage(storedJob) {
-  const candidates = [
-    storedJob?.result?.rawOutput,
-    storedJob?.result?.raw_output,
-    storedJob?.result?.finalMessage,
-    storedJob?.result?.codex?.stdout,
-    storedJob?.result?.reviewText
-  ];
-  return candidates.find((value) => typeof value === "string" && value.length > 0) ?? null;
-}
 async function getResult(jobId, options = {}) {
   const normalized = normalizeAdapterOptions(options);
-  const cwd = normalized.cwd ?? process8.cwd();
+  const cwd = normalized.cwd ?? process9.cwd();
   const { workspaceRoot, job } = resolveResultJob(cwd, jobId);
   const storedJob = readStoredJob(workspaceRoot, job.id);
-  const exitCode = job.status === "completed" ? 0 : 1;
+  const workerExitCode = workerExitCodeForStatus(job.status);
+  const workerTerminalTag = workerTerminalTagForStatus(job.status);
+  const eventsPath = resolveStoredEventsPath(storedJob, job.threadId ?? storedJob?.threadId ?? null, cwd, workspaceRoot, normalized);
+  const eventState = readEventTerminalState(eventsPath);
+  const eventHasTerminal = eventState.found && eventState.source !== "events-missing-terminal";
+  const terminalTag = eventHasTerminal ? eventState.tag : workerTerminalTag;
+  const consistent = !eventHasTerminal || workerTerminalTag === null || workerTerminalTag === terminalTag;
+  const phase = eventHasTerminal ? phaseForTerminalTag(terminalTag, storedJob?.result?.phase ?? job.phase ?? storedJob?.phase ?? job.status ?? "error") : job.phase ?? storedJob?.phase ?? job.status ?? "error";
+  const exitCode = exitCodeForTerminalTag(terminalTag, workerExitCode);
   const finalMessage = storedFinalMessage(storedJob);
   return {
     jobId: job.id,
     threadId: job.threadId ?? storedJob?.threadId ?? null,
-    phase: job.phase ?? storedJob?.phase ?? job.status ?? "error",
+    phase,
     exitCode,
-    terminalTag: job.status === "completed" ? "DONE" : job.status === "cancelled" ? "ERROR" : null,
+    terminalTag,
+    workerExitCode,
+    consistent,
+    discrepancyReason: consistent ? null : formatDiscrepancyReason(eventState, terminalTag, workerTerminalTag, workerExitCode),
+    eventsPath: eventState.eventsPath,
+    terminalSource: eventHasTerminal ? eventState.source : "worker-status",
+    eventTerminalLine: eventHasTerminal ? eventState.line ?? null : null,
     summary: finalMessage ?? job.summary ?? storedJob?.summary ?? null,
     finalMessage,
     artifacts: storedJob?.result?.artifacts ?? {},
@@ -8603,7 +9646,7 @@ async function getResult(jobId, options = {}) {
 }
 async function* streamEvents(jobId, optionsOrSignal = {}) {
   const options = optionsOrSignal instanceof AbortSignal ? { signal: optionsOrSignal } : normalizeAdapterOptions(optionsOrSignal);
-  const cwd = options.cwd ?? process8.cwd();
+  const cwd = options.cwd ?? process9.cwd();
   const snapshot = buildSingleJobSnapshot(cwd, jobId);
   const threadId = snapshot.job.threadId;
   if (!threadId) {
@@ -8612,8 +9655,8 @@ async function* streamEvents(jobId, optionsOrSignal = {}) {
     throw err;
   }
   const sessionDir = options.sessionDir ?? defaultSessionDirForCwd(cwd);
-  const eventsPath = options.eventsPath ?? path9.join(sessionDir, `${threadId}.events`);
-  const content = fs11.readFileSync(eventsPath, "utf8");
+  const eventsPath = options.eventsPath ?? path11.join(sessionDir, `${threadId}.events`);
+  const content = fs13.readFileSync(eventsPath, "utf8");
   for (const line of content.split(/\r?\n/).filter(Boolean)) {
     if (options.signal?.aborted) return;
     yield {
@@ -8777,7 +9820,7 @@ function metadataSubagentType(metadata) {
   return metadata.subagentType ?? metadata.subagent_type;
 }
 function buildAdapterSelectionOptions(options = {}) {
-  const env = options.env ?? process9.env;
+  const env = options.env ?? process10.env;
   const metadata = options.taskMetadata ?? options.metadata ?? null;
   const layers = options.configLayers ?? {};
   return {
@@ -8830,9 +9873,9 @@ function isThreadId(value) {
 }
 
 // src/lib/registry.mjs
-import fs12 from "node:fs";
+import fs14 from "node:fs";
 import os5 from "node:os";
-import path10 from "node:path";
+import path12 from "node:path";
 var REGISTRY_SCHEMA_VERSION = "1.0";
 var tmpCounter = 0;
 function tmpSuffix() {
@@ -8850,7 +9893,7 @@ var RegistryReadError = class extends Error {
 function registryRoot() {
   const override = process.env.CODEX_BRIDGE_REGISTRY;
   if (override && override.length > 0) return override;
-  return path10.join(os5.homedir(), ".codex-bridge", "jobs");
+  return path12.join(os5.homedir(), ".codex-bridge", "jobs");
 }
 function jobDir(taskId) {
   if (!taskId || typeof taskId !== "string") {
@@ -8866,18 +9909,18 @@ function jobDir(taskId) {
       `jobDir(taskId): taskId must not be "." or "..": ${JSON.stringify(taskId)}`
     );
   }
-  return path10.join(registryRoot(), taskId);
+  return path12.join(registryRoot(), taskId);
 }
 function existsTask(taskId) {
   try {
-    return fs12.existsSync(jobDir(taskId));
+    return fs14.existsSync(jobDir(taskId));
   } catch {
     return false;
   }
 }
 function ensureJobDir(taskId) {
   const dir = jobDir(taskId);
-  fs12.mkdirSync(dir, { recursive: true });
+  fs14.mkdirSync(dir, { recursive: true });
   return dir;
 }
 function writeMeta(taskId, meta) {
@@ -8891,19 +9934,19 @@ function writeMeta(taskId, meta) {
     task_id: taskId,
     written_at: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const target = path10.join(dir, "meta.json");
+  const target = path12.join(dir, "meta.json");
   const tmp = `${target}.tmp.${tmpSuffix()}`;
-  fs12.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
+  fs14.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
 `, "utf8");
-  fs12.renameSync(tmp, target);
+  fs14.renameSync(tmp, target);
   return target;
 }
 function writeRegistryTextFile(taskId, fileName, content) {
   const dir = ensureJobDir(taskId);
-  const target = path10.join(dir, fileName);
+  const target = path12.join(dir, fileName);
   const tmp = `${target}.tmp.${tmpSuffix()}`;
-  fs12.writeFileSync(tmp, content, "utf8");
-  fs12.renameSync(tmp, target);
+  fs14.writeFileSync(tmp, content, "utf8");
+  fs14.renameSync(tmp, target);
   return target;
 }
 function writeBriefArtifacts(taskId, { brief, rendered, hash, source } = {}) {
@@ -8927,13 +9970,13 @@ function writeDiffArtifact(taskId, diffContent) {
   return writeRegistryTextFile(taskId, "diff.patch", String(diffContent ?? ""));
 }
 function readMeta(taskId) {
-  const target = path10.join(jobDir(taskId), "meta.json");
+  const target = path12.join(jobDir(taskId), "meta.json");
   return readRegistryJson(target);
 }
 function readRegistryJson(target) {
   let text;
   try {
-    text = fs12.readFileSync(target, "utf8");
+    text = fs14.readFileSync(target, "utf8");
   } catch (error) {
     if (error?.code === "ENOENT") {
       return null;
@@ -8955,9 +9998,9 @@ function readRegistryJson(target) {
 var TASK_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 function listTasks() {
   const root = registryRoot();
-  if (!fs12.existsSync(root)) return [];
+  if (!fs14.existsSync(root)) return [];
   try {
-    return fs12.readdirSync(root, { withFileTypes: true }).filter(
+    return fs14.readdirSync(root, { withFileTypes: true }).filter(
       (entry) => entry.isDirectory() && entry.name !== "." && entry.name !== ".." && TASK_ID_PATTERN.test(entry.name)
     ).map((entry) => entry.name).sort();
   } catch {
@@ -8965,7 +10008,7 @@ function listTasks() {
   }
 }
 function readVerdict(taskId) {
-  const target = path10.join(jobDir(taskId), "verdict.json");
+  const target = path12.join(jobDir(taskId), "verdict.json");
   return readRegistryJson(target);
 }
 function writeVerdict(taskId, verdict) {
@@ -8984,11 +10027,11 @@ function writeVerdict(taskId, verdict) {
     task_id: taskId,
     decided_at: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const target = path10.join(dir, "verdict.json");
+  const target = path12.join(dir, "verdict.json");
   const tmp = `${target}.tmp.${tmpSuffix()}`;
-  fs12.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
+  fs14.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
 `, "utf8");
-  fs12.renameSync(tmp, target);
+  fs14.renameSync(tmp, target);
   return target;
 }
 function writeReview2(taskId, review) {
@@ -9002,18 +10045,18 @@ function writeReview2(taskId, review) {
     task_id: taskId,
     ts: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const target = path10.join(dir, "review.json");
+  const target = path12.join(dir, "review.json");
   const tmp = `${target}.tmp.${tmpSuffix()}`;
-  fs12.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
+  fs14.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}
 `, "utf8");
-  fs12.renameSync(tmp, target);
+  fs14.renameSync(tmp, target);
   return target;
 }
 
 // src/lib/brief.mjs
-import fs13 from "node:fs";
-import path11 from "node:path";
-import { createHash as createHash2 } from "node:crypto";
+import fs15 from "node:fs";
+import path13 from "node:path";
+import { createHash as createHash3 } from "node:crypto";
 var BRIEF_SCHEMA_VERSION = "1.0";
 var VALID_BACKENDS = /* @__PURE__ */ new Set(["codex"]);
 var PARENT_ID_PATTERN = /^(task|review)-[A-Za-z0-9._-]+$/;
@@ -9167,7 +10210,7 @@ function validateBriefShape(brief) {
   return errors;
 }
 function briefHash(briefText) {
-  return `sha256:${createHash2("sha256").update(briefText, "utf8").digest("hex")}`;
+  return `sha256:${createHash3("sha256").update(briefText, "utf8").digest("hex")}`;
 }
 function loadBrief(arg, options = {}) {
   if (!isString(arg) || arg.length === 0) {
@@ -9177,12 +10220,12 @@ function loadBrief(arg, options = {}) {
   let source;
   if (arg.startsWith("@")) {
     const requestedPath = arg.slice(1);
-    const filePath = isString(options?.baseDir) && options.baseDir.length > 0 ? path11.resolve(options.baseDir, requestedPath) : path11.resolve(requestedPath);
-    if (!fs13.existsSync(filePath)) {
+    const filePath = isString(options?.baseDir) && options.baseDir.length > 0 ? path13.resolve(options.baseDir, requestedPath) : path13.resolve(requestedPath);
+    if (!fs15.existsSync(filePath)) {
       return fail(ERR.FILE_NOT_FOUND, `brief file not found: ${filePath}`);
     }
     try {
-      raw = fs13.readFileSync(filePath, "utf8");
+      raw = fs15.readFileSync(filePath, "utf8");
       source = filePath;
     } catch (err) {
       return fail(ERR.FILE_NOT_FOUND, `cannot read brief file: ${err.message}`);
@@ -9428,6 +10471,42 @@ function appendActiveJobsTable(lines, jobs) {
     );
   }
 }
+function appendStatusSummary(lines, summary) {
+  if (!summary) {
+    return;
+  }
+  lines.push(
+    `Summary: total=${summary.total ?? 0} running=${summary.running ?? 0} success=${summary.completed_success ?? 0} failed=${summary.completed_fail ?? 0} incomplete=${summary.completed_incomplete ?? 0} cancelled=${summary.cancelled ?? 0} attention=${summary.awaiting_attention ?? 0}`
+  );
+  lines.push(
+    `Interrupts: plan=${summary.interrupts?.awaiting_plan ?? 0} question=${summary.interrupts?.awaiting_question ?? 0}`
+  );
+  lines.push("");
+}
+function appendNeedsAttention(lines, entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return;
+  }
+  lines.push("Needs attention:");
+  for (const entry of entries) {
+    const reason = entry.reason ? ` \u2014 ${entry.reason}` : "";
+    lines.push(`- ${entry.jobId} [${entry.state}]${reason}`);
+  }
+  lines.push("");
+}
+function appendFilteredJobs(lines, filter, entries) {
+  if (!filter || filter === "needs_attention" || !Array.isArray(entries) || entries.length === 0) {
+    return;
+  }
+  lines.push(`Filtered jobs (${filter}):`);
+  for (const entry of entries) {
+    const label = entry.jobId ?? entry.id;
+    const state = entry.terminalTag ?? entry.status ?? entry.state ?? "unknown";
+    const reason = entry.reason ? ` \u2014 ${entry.reason}` : "";
+    lines.push(`- ${label} [${state}]${reason}`);
+  }
+  lines.push("");
+}
 function pushJobDetails(lines, job, options = {}) {
   lines.push(`- ${formatJobLine(job)}`);
   if (job.summary) {
@@ -9494,10 +10573,14 @@ function renderSetupReport(report) {
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
+    `- monitor hook mirror: ${report.monitorHookInstalled ? "installed" : "not installed"} (${report.monitorHookSettingsPath ?? "n/a"})`,
     ""
   ];
   if (report.reviewGateSuppressionReason) {
     lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
+  }
+  if (report.monitorHookSettingsParseError) {
+    lines.push(`Monitor hook settings warning: ${report.monitorHookSettingsParseError}`, "");
   }
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");
@@ -9624,6 +10707,9 @@ function renderStatusReport(report) {
     `Review gate: ${report.config.stopReviewGate ? "enabled" : "disabled"}`,
     ""
   ];
+  appendStatusSummary(lines, report.summary);
+  appendNeedsAttention(lines, report.needs_attention);
+  appendFilteredJobs(lines, report.filter, report.filtered_jobs);
   if (report.running.length > 0) {
     appendActiveJobsTable(lines, report.running);
     lines.push("");
@@ -9757,14 +10843,22 @@ function renderCancelReport(job) {
   if (job.summary) {
     lines.push(`- Summary: ${job.summary}`);
   }
+  if (job.cleanup?.worktreePath) {
+    const status = job.cleanup.succeeded ? "removed worktree and branch" : job.cleanup.reason === "preserved-by-user" ? "preserved worktree artifacts" : `cleanup ${job.cleanup.reason}`;
+    lines.push(`- Cleanup: ${status}`);
+    lines.push(`  - Worktree: ${job.cleanup.worktreePath}`);
+    if (job.cleanup.branchName) {
+      lines.push(`  - Branch: ${job.cleanup.branchName}`);
+    }
+  }
   lines.push("- Check `codex-bridge status` for the updated queue.");
   return `${lines.join("\n").trimEnd()}
 `;
 }
 
 // src/adapters/codex/pipeline.mjs
-import fs14 from "node:fs";
-import path12 from "node:path";
+import fs16 from "node:fs";
+import path14 from "node:path";
 
 // src/lib/review-result.mjs
 var REVIEW_RESULT_SCHEMA_VERSION = "1.0";
@@ -10044,12 +11138,15 @@ function reviewResultTypeError(message, field) {
 }
 
 // src/adapters/codex/pipeline.mjs
-var PIPELINE_TIMEOUT_MS_DEFAULT = 9e5;
-var STAGE_TIMEOUT_MS_DEFAULT = 3e5;
+var PIPELINE_TIMEOUT_MS_DEFAULT = 18e5;
+var STAGE_TIMEOUT_MS_DEFAULT = 72e4;
+var DIFF_APPROVAL_QUESTION_ID = "destructive_diff";
+var DIFF_APPROVAL_APPROVE = "Approve";
+var DIFF_APPROVAL_REJECT = "Reject";
 function loadExecuteInstructions(rootDir) {
-  const p = path12.join(rootDir, "templates", "execute-instructions.md");
+  const p = path14.join(rootDir, "templates", "execute-instructions.md");
   try {
-    return fs14.readFileSync(p, "utf8");
+    return fs16.readFileSync(p, "utf8");
   } catch {
     return "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed.";
   }
@@ -10067,7 +11164,12 @@ async function runAutoPipeline(options) {
     jobId = null,
     stateCwd = cwd,
     stageTimeoutMs = null,
-    totalTimeoutMs = null
+    totalTimeoutMs = null,
+    questionAnswerMs = null,
+    expectedWriteWork = false,
+    turnStartSnapshot = null,
+    turnTouchedFiles = [],
+    checkBranchState = null
   } = options;
   const stageMs = Number(stageTimeoutMs) > 0 ? Number(stageTimeoutMs) : STAGE_TIMEOUT_MS_DEFAULT;
   const totalMs = Number(totalTimeoutMs) > 0 ? Number(totalTimeoutMs) : PIPELINE_TIMEOUT_MS_DEFAULT;
@@ -10076,8 +11178,19 @@ async function runAutoPipeline(options) {
   const executeInstructions = loadExecuteInstructions(rootDir);
   const taskMeta = jobId ? readMeta(jobId) : null;
   const taskDiffBaseRef = typeof taskMeta?.base_sha === "string" && taskMeta.base_sha ? taskMeta.base_sha : typeof taskMeta?.base_ref === "string" && taskMeta.base_ref ? taskMeta.base_ref : null;
-  const captureTaskDiff = () => taskDiffBaseRef ? captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef }) : captureGitDiff(cwd, session);
+  const cleanStartDiffBaseRef = !taskDiffBaseRef && typeof turnStartSnapshot?.headSha === "string" && typeof turnStartSnapshot?.porcelain === "string" && turnStartSnapshot.porcelain.trim().length === 0 ? turnStartSnapshot.headSha : null;
+  const captureTaskDiff = (extraTouchedFiles = []) => taskDiffBaseRef || cleanStartDiffBaseRef ? captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef ?? cleanStartDiffBaseRef }) : summarizeTouchedFiles([...turnTouchedFiles, ...extraTouchedFiles]);
+  const diffRiskBaseRef = taskDiffBaseRef ?? (typeof turnStartSnapshot?.headSha === "string" && turnStartSnapshot.headSha ? turnStartSnapshot.headSha : null);
+  const captureDiffForRisk = () => diffRiskBaseRef ? captureGitDiff(cwd, session, { baseRef: diffRiskBaseRef }) : captureGitDiff(cwd, session);
+  const captureWorkspaceDiff = () => summarizeGitDiff(cwd);
   const remainingPipelineMs = () => totalMs - (Date.now() - startTime);
+  const sampleBranch = (detectedAt) => {
+    if (typeof checkBranchState !== "function") return;
+    try {
+      checkBranchState(detectedAt);
+    } catch {
+    }
+  };
   const checkPipelineTimeout = () => {
     if (remainingPipelineMs() <= 0) {
       throw new PipelineTimeoutError(completedStages, totalMs);
@@ -10103,15 +11216,73 @@ async function runAutoPipeline(options) {
   let reviewFindings = [];
   let reviewFindingCount = 0;
   let incompleteStage = null;
+  let completionResult = { complete: true, missing_items: [], summary: "Complete" };
+  let skipValidationStages = false;
   try {
+    sampleBranch("pipeline:diff:before");
     logEvent(session, formatPipelineEvent(session, { stage: "diff" }));
     logNdjson(session, "PIPELINE_STAGE", null, { stage: "diff" });
-    const diff1 = captureGitDiff(cwd, session);
+    const diff1 = captureDiffForRisk();
+    sampleBranch("pipeline:diff:after");
     completedStages.push("diff");
     logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
+    const diffRisk = classifyPipelineDiffRisk(diff1, config);
+    if (diffRisk.class !== "low_risk") {
+      const riskDetail = formatDiffRiskDetail(diffRisk);
+      if (diffRisk.mode === "ignore") {
+        logNdjson(session, "PIPELINE_DIFF_RISK_IGNORED", null, diffRisk);
+      } else {
+        const paused = diffRisk.mode === "pause";
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "diff",
+          suffix: "large_change",
+          detail: `${riskDetail} paused=${paused ? "true" : "false"}`
+        }));
+        logNdjson(session, "PIPELINE_DIFF_RISK", null, { ...diffRisk, paused });
+      }
+      if (diffRisk.mode === "pause") {
+        const decision = await waitForDiffRiskApproval({
+          session,
+          cwd,
+          scriptPath,
+          config,
+          questionAnswerMs,
+          diffRisk
+        });
+        if (decision.approved) {
+          logEvent(session, formatPipelineEvent(session, {
+            stage: "diff",
+            suffix: "approved",
+            detail: riskDetail
+          }));
+          logNdjson(session, "PIPELINE_DIFF_APPROVED", null, { ...diffRisk, requestId: decision.requestId });
+        } else {
+          reviewVerdict = "needs-attention";
+          incompleteStage = "diff";
+          skipValidationStages = true;
+          const reason = decision.timedOut ? `Destructive diff requires approval before review/fix/check; no response within ${decision.timeoutMs}ms.` : `Destructive diff rejected by user: ${diffRisk.reason}.`;
+          completionResult = {
+            complete: false,
+            missing_items: [reason],
+            summary: "destructive diff approval required"
+          };
+          logEvent(session, formatPipelineEvent(session, {
+            stage: "diff",
+            suffix: "rejected",
+            detail: decision.timedOut ? `${riskDetail} timeout_ms=${decision.timeoutMs}` : riskDetail
+          }));
+          logNdjson(session, "PIPELINE_DIFF_REJECTED", null, {
+            ...diffRisk,
+            requestId: decision.requestId,
+            timedOut: decision.timedOut
+          });
+        }
+      }
+    }
     checkPipelineTimeout();
     let unstructuredReviewAttention = false;
-    if (config.auto_review) {
+    if (!skipValidationStages && config.auto_review) {
+      sampleBranch("pipeline:review:before");
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "review" });
       try {
@@ -10145,6 +11316,7 @@ async function runAutoPipeline(options) {
           throw stageError;
         }
         completedStages.push("review");
+        sampleBranch("pipeline:review:after");
         checkPipelineTimeout();
         const parsed = parseNativeReviewText(reviewResult.reviewText);
         reviewVerdict = parsed.verdict;
@@ -10157,6 +11329,7 @@ async function runAutoPipeline(options) {
           detail: `verdict=${reviewVerdict} findings=${reviewFindingCount}`
         }));
         if (reviewFindings.length > 0) {
+          sampleBranch("pipeline:fix:before");
           logEvent(session, formatPipelineEvent(session, { stage: "fix" }));
           logNdjson(session, "PIPELINE_STAGE", null, { stage: "fix", findingCount: reviewFindings.length });
           const diffBeforeFix = captureGitDiff(cwd, session);
@@ -10212,6 +11385,7 @@ async function runAutoPipeline(options) {
             );
           }
           completedStages.push("fix");
+          sampleBranch("pipeline:fix:after");
           checkPipelineTimeout();
           const diffAfterFix = captureGitDiff(cwd, session);
           const diffContentAfterFix = readCapturedDiffContent(diffAfterFix);
@@ -10243,8 +11417,8 @@ async function runAutoPipeline(options) {
         completedStages.push("review-failed");
       }
     }
-    let completionResult = { complete: true, missing_items: [], summary: "Complete" };
-    if (config.post_task_prompt && config.post_task_prompt.trim()) {
+    if (!skipValidationStages && config.post_task_prompt && config.post_task_prompt.trim()) {
+      sampleBranch("pipeline:check:before");
       logEvent(session, formatPipelineEvent(session, { stage: "check" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "check" });
       try {
@@ -10268,6 +11442,7 @@ async function runAutoPipeline(options) {
           checkDeadline.timeoutErrorFactory
         );
         completedStages.push("check");
+        sampleBranch("pipeline:check:after");
         if (checkResult.status !== 0) {
           incompleteStage = "check";
           completionResult = {
@@ -10338,21 +11513,41 @@ async function runAutoPipeline(options) {
         summary: completionResult.complete ? "native review needs attention" : typeof completionResult.summary === "string" ? completionResult.summary : "native review needs attention"
       };
     }
-    const finalDiff = captureTaskDiff();
+    sampleBranch("pipeline:final:before");
+    const finalDiff = captureTaskDiff(fixFilesTouched);
+    const workspaceDiff = taskDiffBaseRef || cleanStartDiffBaseRef ? captureWorkspaceDiff() : captureGitDiff(cwd, session);
+    const finalDiffPath = finalDiff.diffPath ?? workspaceDiff.diffPath ?? "";
+    const taskFilesTouched = [
+      ...new Set([...turnTouchedFiles, ...fixFilesTouched].map((file) => String(file ?? "").trim()).filter(Boolean))
+    ];
     const duration = Math.round((Date.now() - startTime) / 1e3);
-    const missingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
-    const completionSummary = typeof completionResult.summary === "string" ? completionResult.summary : null;
-    const complete = Boolean(completionResult.complete);
+    const noFilesTouched = Boolean(expectedWriteWork) && !hasWriteWorkAfterSnapshot({
+      cwd,
+      startSnapshot: turnStartSnapshot,
+      touchedFiles: turnTouchedFiles
+    });
+    const completionMissingItems = Array.isArray(completionResult.missing_items) ? completionResult.missing_items : [];
+    const missingItems = noFilesTouched ? [
+      "no_files_touched: Write-mode task completed without touching files or changing git state.",
+      ...completionMissingItems
+    ] : completionMissingItems;
+    const completionSummary = noFilesTouched ? "no-files-touched" : typeof completionResult.summary === "string" ? completionResult.summary : null;
+    const complete = Boolean(completionResult.complete) && !noFilesTouched;
     const partial = !complete;
-    const failingStage = partial ? incompleteStage : null;
+    const failingStage = noFilesTouched ? "diff" : partial ? incompleteStage : null;
     const completion = normalizeCompletionResult(completionResult, missingItems, completionSummary, complete);
+    const finalVerdict = noFilesTouched ? "no_files_touched" : reviewVerdict;
     if (complete) {
       logEvent(session, formatDoneEvent(session, {
         duration,
         diffStat: finalDiff.diffStat,
         files: finalDiff.files,
         config: { model: config.model, effort: config.effort, modeFlow: "plan\u2192default" },
-        diffPath: finalDiff.diffPath,
+        diffPath: finalDiffPath,
+        taskDiff: finalDiff,
+        workspaceDiff,
+        workspaceWasClean: typeof turnStartSnapshot?.porcelain === "string" ? turnStartSnapshot.porcelain.trim().length === 0 : null,
+        touchedFiles: taskFilesTouched,
         scriptPath,
         jobId,
         cwd,
@@ -10361,8 +11556,8 @@ async function runAutoPipeline(options) {
     } else {
       logEvent(session, formatIncompleteEvent(session, {
         diffStat: finalDiff.diffStat,
-        diffPath: finalDiff.diffPath,
-        verdict: reviewVerdict,
+        diffPath: finalDiffPath,
+        verdict: finalVerdict,
         findingCount: reviewFindingCount,
         failingStage,
         missingItems,
@@ -10383,9 +11578,11 @@ async function runAutoPipeline(options) {
       reviewVerdict,
       reviewFindingCount,
       fixFilesTouched,
+      noWorkReason: noFilesTouched ? "no_files_touched" : null,
       missingItems,
       completionSummary,
       completion,
+      taskTouchedFiles: taskFilesTouched,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
@@ -10398,15 +11595,18 @@ async function runAutoPipeline(options) {
       completedStages,
       duration,
       diff: finalDiff,
+      workspaceDiff,
       failing_stage: failingStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
       reviewVerdict,
       reviewFindingCount,
       fixFilesTouched,
+      noWorkReason: noFilesTouched ? "no_files_touched" : null,
       completion,
       missingItems,
       completionSummary,
+      taskTouchedFiles: taskFilesTouched,
       touchedFiles: fixFilesTouched
     };
   } catch (error) {
@@ -10415,13 +11615,17 @@ async function runAutoPipeline(options) {
     const errorMessage = error instanceof PipelineTimeoutError ? `Auto-pipeline exceeded ${fmtSeconds(totalMs)}. Completed stages: ${completedStages.join(", ")}` : error.message;
     let finalDiff;
     try {
-      finalDiff = captureTaskDiff();
+      finalDiff = captureTaskDiff(fixFilesTouched);
     } catch {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
-    const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
-    const origin = `pipeline:${lastStage}`;
+    const lastCompletedStage = completedStages[completedStages.length - 1] ?? null;
     const failingStage = error instanceof TimeoutError ? mapStageLabel(error.label) : error instanceof PipelineStageError ? error.stage : null;
+    const origin = `pipeline:${failingStage ?? "pipeline"}`;
+    const reviewPayload = buildReviewPayload(completedStages, {
+      reviewVerdict,
+      reviewFindingCount
+    });
     const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
@@ -10440,18 +11644,18 @@ async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       origin,
+      lastCompletedStage,
       failing_stage: failingStage,
       partial: true,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       touchedFiles: fixFilesTouched
     });
     logEvent(session, formatPipelineEvent(session, {
       stage: "failed",
-      detail: `failing_stage=${failingStage ?? "unknown"} at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+      detail: `failing_stage=${failingStage ?? "unknown"} last_completed=${lastCompletedStage ?? "none"} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
     const completion = normalizeCompletionResult(
       { complete: false, missing_items: [], summary: null },
@@ -10466,11 +11670,12 @@ async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       diff: finalDiff,
+      origin,
+      lastCompletedStage,
       failing_stage: failingStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       completion,
       missingItems: [],
@@ -10478,6 +11683,15 @@ async function runAutoPipeline(options) {
       touchedFiles: fixFilesTouched
     };
   }
+}
+function buildReviewPayload(completedStages, { reviewVerdict, reviewFindingCount }) {
+  if (!completedStages.includes("review")) {
+    return {
+      reviewVerdict: null,
+      reviewFindingCount: null
+    };
+  }
+  return { reviewVerdict, reviewFindingCount };
 }
 function normalizeCompletionResult(completionResult, missingItems, completionSummary, complete) {
   const source = completionResult && typeof completionResult === "object" && !Array.isArray(completionResult) ? completionResult : {};
@@ -10487,6 +11701,177 @@ function normalizeCompletionResult(completionResult, missingItems, completionSum
     missing_items: missingItems,
     summary: completionSummary
   };
+}
+function normalizePorcelain(porcelain) {
+  return String(porcelain ?? "").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).sort().join("\n");
+}
+function hasWriteWorkAfterSnapshot({ cwd, startSnapshot, touchedFiles }) {
+  if (Array.isArray(touchedFiles) && touchedFiles.length > 0) {
+    return true;
+  }
+  if (!startSnapshot?.headSha) {
+    return false;
+  }
+  const currentSnapshot = captureGitSnapshot(cwd);
+  if (!currentSnapshot?.headSha) {
+    return false;
+  }
+  if (currentSnapshot.headSha !== startSnapshot.headSha) {
+    return true;
+  }
+  return normalizePorcelain(currentSnapshot.porcelain) !== normalizePorcelain(startSnapshot.porcelain);
+}
+function classifyPipelineDiffRisk(diff, config = {}) {
+  const stats = normalizeDiffStats(diff);
+  const totals = stats.reduce((acc, file) => {
+    acc.additions += file.additions;
+    acc.deletions += file.deletions;
+    return acc;
+  }, { additions: 0, deletions: 0 });
+  const filesChanged = stats.length;
+  const mode = normalizeDestructiveDiffMode(config.destructive_diff_mode);
+  const deletionThreshold = positiveNumberOrDefault(
+    config.destructive_diff_lines_deleted,
+    DEFAULT_CONFIG.destructive_diff_lines_deleted
+  );
+  const filesThreshold = positiveNumberOrDefault(
+    config.destructive_diff_files_changed,
+    DEFAULT_CONFIG.destructive_diff_files_changed
+  );
+  const summary = {
+    additions: totals.additions,
+    deletions: totals.deletions,
+    filesChanged,
+    thresholds: {
+      linesDeleted: deletionThreshold,
+      filesChanged: filesThreshold
+    },
+    mode
+  };
+  if (totals.deletions > deletionThreshold) {
+    return {
+      class: "destructive",
+      reason: `${totals.deletions} lines deleted (threshold ${deletionThreshold})`,
+      ...summary
+    };
+  }
+  if (filesChanged > filesThreshold) {
+    return {
+      class: "wide_blast",
+      reason: `${filesChanged} files changed (threshold ${filesThreshold})`,
+      ...summary
+    };
+  }
+  return { class: "low_risk", reason: null, ...summary };
+}
+function normalizeDiffStats(diff) {
+  if (Array.isArray(diff?.fileStats)) {
+    return diff.fileStats.map((file) => ({
+      path: typeof file.path === "string" ? file.path : "",
+      additions: nonNegativeInteger(file.additions),
+      deletions: nonNegativeInteger(file.deletions)
+    })).filter((file) => file.path);
+  }
+  return (Array.isArray(diff?.files) ? diff.files : []).map(parseFormattedDiffStat).filter(Boolean);
+}
+function parseFormattedDiffStat(value) {
+  const match = String(value).match(/^[A-Z]\s+(.+?)\s+\(\+(\d+)\s+-(\d+)\)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    path: match[1],
+    additions: nonNegativeInteger(match[2]),
+    deletions: nonNegativeInteger(match[3])
+  };
+}
+function nonNegativeInteger(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+function positiveNumberOrDefault(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+function normalizeDestructiveDiffMode(value) {
+  return ["pause", "warn", "ignore"].includes(value) ? value : DEFAULT_CONFIG.destructive_diff_mode;
+}
+function formatDiffRiskDetail(diffRisk) {
+  return [
+    `class=${diffRisk.class}`,
+    `reason=${JSON.stringify(diffRisk.reason)}`,
+    `files=${diffRisk.filesChanged}`,
+    `additions=${diffRisk.additions}`,
+    `deletions=${diffRisk.deletions}`
+  ].join(" ");
+}
+async function waitForDiffRiskApproval({ session, cwd, scriptPath, config, questionAnswerMs, diffRisk }) {
+  const threadId = session.threadId;
+  const requestId = `req-${String(threadId).slice(-6)}-${Date.now().toString(36)}`;
+  const question = {
+    id: DIFF_APPROVAL_QUESTION_ID,
+    question: `This task produced a ${diffRisk.class} diff (${diffRisk.reason}). Continue to review/fix/check?`,
+    options: [
+      {
+        label: DIFF_APPROVAL_APPROVE,
+        description: "Continue the auto-pipeline for this diff."
+      },
+      {
+        label: DIFF_APPROVAL_REJECT,
+        description: "Stop the auto-pipeline and mark the task incomplete."
+      }
+    ]
+  };
+  const entry = {
+    internalId: requestId,
+    rpcRequestId: null,
+    method: "item/tool/requestUserInput",
+    threadId,
+    firstQuestionId: DIFF_APPROVAL_QUESTION_ID,
+    params: {
+      threadId,
+      source: "pipeline-diff-risk",
+      questions: [question]
+    },
+    createdAt: Date.now()
+  };
+  const timeoutMs = positiveNumberOrDefault(
+    questionAnswerMs,
+    positiveNumberOrDefault(config.question_answer_ms, DEFAULT_CONFIG.question_answer_ms)
+  );
+  writePendingRequest(session.sessionDir, threadId, entry);
+  logEvent(session, formatQuestionEvent(session, {
+    requestId,
+    questions: [question],
+    scriptPath,
+    cwd
+  }));
+  logNdjson(session, "QUESTION", "pipeline/diff-risk", { requestId, questions: [question], diffRisk });
+  try {
+    const response = await waitForResponse(session.sessionDir, threadId, timeoutMs, requestId);
+    if (response?.payload) {
+      const answer = extractDiffApprovalAnswer(response.payload);
+      if (answer === DIFF_APPROVAL_APPROVE) {
+        logEvent(session, formatConfirmedEvent(session, { requestId }));
+        logNdjson(session, "CONFIRMED", "pipeline/diff-risk", { requestId, answer });
+        return { approved: true, timedOut: false, requestId, timeoutMs };
+      }
+      logNdjson(session, "CONFIRMED", "pipeline/diff-risk", {
+        requestId,
+        answer: answer ?? null,
+        approved: false
+      });
+      return { approved: false, timedOut: false, requestId, timeoutMs };
+    }
+    logNdjson(session, "QUESTION_TIMEOUT", "pipeline/diff-risk", { requestId, timeoutMs });
+    return { approved: false, timedOut: true, requestId, timeoutMs };
+  } finally {
+    clearPendingRequest(session.sessionDir, threadId);
+  }
+}
+function extractDiffApprovalAnswer(payload) {
+  const answer = payload?.answers?.[DIFF_APPROVAL_QUESTION_ID]?.answers?.[0];
+  return typeof answer === "string" ? answer : null;
 }
 function buildFixPrompt(findings) {
   const lines = ["Fix the following review findings:"];
@@ -10503,7 +11888,7 @@ function readCapturedDiffContent(diff) {
     return "";
   }
   try {
-    return fs14.readFileSync(diff.diffPath, "utf8");
+    return fs16.readFileSync(diff.diffPath, "utf8");
   } catch {
     return "";
   }
@@ -10639,78 +12024,9 @@ function withTimeout2(promise, timeoutMs, label, timeoutErrorFactory = null) {
 
 // src/lib/update-check.mjs
 import { spawn as spawn3 } from "node:child_process";
-import fs16 from "node:fs";
-import path14 from "node:path";
+import fs17 from "node:fs";
+import path15 from "node:path";
 import os6 from "node:os";
-
-// src/lib/runtime-paths.mjs
-import fs15 from "node:fs";
-import path13 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// package.json
-var package_default = {
-  name: "codex-bridge",
-  version: "2.2.0",
-  description: "Hook-driven Claude Code plugin that delegates implementation, review, and closed-loop iteration to OpenAI Codex with worktree isolation, structured briefs, Monitor auto-arm, and trust-budgeted merge.",
-  type: "module",
-  scripts: {
-    "baseline:contracts": "node scripts/baseline-contracts.mjs",
-    build: "node esbuild.config.mjs",
-    dev: "node src/codex-bridge.mjs",
-    "release:package": "node scripts/package-release.mjs",
-    "smoke:runtime": "node scripts/runtime-smoke.mjs",
-    test: "node --test test/*.test.mjs",
-    "verify:static": "npm run build && npm test && npm run baseline:contracts -- --check"
-  },
-  author: "Yigit Konur",
-  license: "MIT",
-  engines: {
-    node: ">=22.0.0"
-  },
-  devDependencies: {
-    esbuild: "^0.24.0",
-    "js-yaml": "^4.1.0"
-  }
-};
-
-// src/lib/runtime-paths.mjs
-function resolveDispatcherDir() {
-  const here = path13.dirname(fileURLToPath2(import.meta.url));
-  if (fs15.existsSync(path13.join(here, "codex-bridge.mjs"))) return here;
-  const parent = path13.resolve(here, "..");
-  if (fs15.existsSync(path13.join(parent, "codex-bridge.mjs"))) return parent;
-  return here;
-}
-var SCRIPT_DIR = resolveDispatcherDir();
-var SCRIPT_PATH = path13.join(SCRIPT_DIR, "codex-bridge.mjs");
-var ROOT_DIR = fs15.existsSync(path13.join(SCRIPT_DIR, "schemas")) ? SCRIPT_DIR : path13.resolve(SCRIPT_DIR, "..");
-var REVIEW_SCHEMA = path13.join(ROOT_DIR, "schemas", "review-output.schema.json");
-var EXECUTE_INSTRUCTIONS_PATH = path13.join(ROOT_DIR, "templates", "execute-instructions.md");
-var PLAN_ENFORCEMENT_PATH = path13.join(ROOT_DIR, "templates", "plan-enforcement.md");
-var BRIDGE_VERSION = package_default.version;
-var BRIDGE_SCHEMA_VERSION = "1.0";
-var BRIDGE_CAPABILITIES = Object.freeze([
-  "plan-mode",
-  "background-jobs",
-  "auto-pipeline",
-  "adversarial-review",
-  "stop-gate-review",
-  "structured-errors",
-  "per-subcommand-help",
-  "machine-readable-help",
-  "workspace-config-override",
-  "update-check",
-  "backend-adapter"
-]);
-var DEFAULT_STATUS_WAIT_TIMEOUT_MS = 24e4;
-var DEFAULT_STATUS_POLL_INTERVAL_MS = 2e3;
-var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-var MODEL_ALIASES = /* @__PURE__ */ new Map([["spark", "gpt-5.3-codex-spark"]]);
-var STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
-var STOP_REVIEW_GATE_LOCK_FILE = ".codex-bridge-stop-review-gate.lock";
-
-// src/lib/update-check.mjs
 function maybeTriggerAutoApply(rawArgv, subcommand) {
   try {
     if (process.env.CODEX_BRIDGE_NO_UPDATE_CHECK === "1") return;
@@ -10730,20 +12046,20 @@ function maybeTriggerAutoApply(rawArgv, subcommand) {
 }
 function spawnDetachedAutoApply(targetVersion) {
   try {
-    const logDir = path14.join(os6.homedir(), ".codex-bridge");
-    fs16.mkdirSync(logDir, { recursive: true });
-    const logFile = path14.join(logDir, "auto-update.log");
+    const logDir = path15.join(os6.homedir(), ".codex-bridge");
+    fs17.mkdirSync(logDir, { recursive: true });
+    const logFile = path15.join(logDir, "auto-update.log");
     try {
-      const stat = fs16.statSync(logFile);
-      if (stat.size > 2 * 1024 * 1024) fs16.truncateSync(logFile, 0);
+      const stat = fs17.statSync(logFile);
+      if (stat.size > 2 * 1024 * 1024) fs17.truncateSync(logFile, 0);
     } catch {
     }
-    const fd = fs16.openSync(logFile, "a");
+    const fd = fs17.openSync(logFile, "a");
     try {
       const banner = `
 [${(/* @__PURE__ */ new Date()).toISOString()}] auto-apply triggered for v${targetVersion} (from ${BRIDGE_VERSION})
 `;
-      fs16.writeSync(fd, banner);
+      fs17.writeSync(fd, banner);
       const child = spawn3(
         "npx",
         ["-y", "skills@latest", "add", "yigitkonur/codex-bridge", "-a", "claude-code", "-g", "-y"],
@@ -10755,7 +12071,7 @@ function spawnDetachedAutoApply(targetVersion) {
       );
       child.on("error", () => {
         try {
-          fs16.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
+          fs17.appendFileSync(logFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] spawn failed (npx not on PATH?)
 `, "utf8");
         } catch {
         }
@@ -10763,7 +12079,7 @@ function spawnDetachedAutoApply(targetVersion) {
       child.unref();
     } finally {
       try {
-        fs16.closeSync(fd);
+        fs17.closeSync(fd);
       } catch {
       }
     }
@@ -10777,12 +12093,12 @@ var GITHUB_API_URL = "https://api.github.com/repos/yigitkonur/codex-bridge/relea
 var USER_AGENT = "codex-bridge-update-check";
 function cachePath() {
   const pluginDataDir = process.env.CODEX_BRIDGE_PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
-  const root = pluginDataDir ? path14.join(pluginDataDir, "codex-bridge-update.json") : path14.join(os6.homedir(), ".codex-bridge", "update-cache.json");
+  const root = pluginDataDir ? path15.join(pluginDataDir, "codex-bridge-update.json") : path15.join(os6.homedir(), ".codex-bridge", "update-cache.json");
   return root;
 }
 function readCache() {
   try {
-    const raw = fs16.readFileSync(cachePath(), "utf8");
+    const raw = fs17.readFileSync(cachePath(), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed == null) return null;
     return parsed;
@@ -10793,8 +12109,8 @@ function readCache() {
 function writeCache(entry) {
   try {
     const p = cachePath();
-    fs16.mkdirSync(path14.dirname(p), { recursive: true });
-    fs16.writeFileSync(p, JSON.stringify(entry, null, 2));
+    fs17.mkdirSync(path15.dirname(p), { recursive: true });
+    fs17.writeFileSync(p, JSON.stringify(entry, null, 2));
     return true;
   } catch {
     return false;
@@ -10808,9 +12124,9 @@ function cacheLockPath() {
 }
 function removeStaleLock(lockPath, staleMs) {
   try {
-    const stat = fs16.statSync(lockPath);
+    const stat = fs17.statSync(lockPath);
     if (Date.now() - stat.mtimeMs <= staleMs) return false;
-    fs16.unlinkSync(lockPath);
+    fs17.unlinkSync(lockPath);
     return true;
   } catch (err) {
     return err?.code === "ENOENT";
@@ -10819,15 +12135,15 @@ function removeStaleLock(lockPath, staleMs) {
 function acquireCacheLock(staleMs) {
   const lockPath = cacheLockPath();
   try {
-    fs16.mkdirSync(path14.dirname(lockPath), { recursive: true });
+    fs17.mkdirSync(path15.dirname(lockPath), { recursive: true });
   } catch {
     return null;
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = fs16.openSync(lockPath, "wx");
+      const fd = fs17.openSync(lockPath, "wx");
       try {
-        fs16.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+        fs17.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
       } catch {
       }
       return { fd, lockPath };
@@ -10840,11 +12156,11 @@ function acquireCacheLock(staleMs) {
 }
 function releaseCacheLock(lock) {
   try {
-    fs16.closeSync(lock.fd);
+    fs17.closeSync(lock.fd);
   } catch {
   }
   try {
-    fs16.unlinkSync(lock.lockPath);
+    fs17.unlinkSync(lock.lockPath);
   } catch {
   }
 }
@@ -11305,60 +12621,6 @@ async function runIterateLoop(options = {}) {
   };
 }
 
-// src/lib/bridge-config.mjs
-import fs17 from "node:fs";
-import process10 from "node:process";
-var BRIDGE_CONFIG_SKILL_LAYER = null;
-function getBridgeConfig(cwd = null, workspaceRoot = null) {
-  if (!cwd && !workspaceRoot) {
-    if (!BRIDGE_CONFIG_SKILL_LAYER) {
-      BRIDGE_CONFIG_SKILL_LAYER = loadConfig(ROOT_DIR);
-    }
-    return BRIDGE_CONFIG_SKILL_LAYER;
-  }
-  return loadConfig(ROOT_DIR, cwd, workspaceRoot);
-}
-async function resolveCommandAdapter({
-  cwd = null,
-  workspaceRoot = null,
-  backend = null,
-  metaBackend = null,
-  taskMetadata = null,
-  subagentType = null
-} = {}) {
-  const resolvedWorkspaceRoot = workspaceRoot ?? (cwd ? resolveWorkspaceRoot(cwd) : null);
-  return resolveAdapterForRuntime({
-    skillDir: ROOT_DIR,
-    cwd,
-    workspaceRoot: resolvedWorkspaceRoot,
-    backend,
-    metaBackend,
-    taskMetadata,
-    subagentType,
-    env: process10.env
-  });
-}
-function ensureCodexRuntimeAdapter(adapter2) {
-  if (adapter2?.name === "codex") return;
-  throw validationError(
-    `Backend '${adapter2?.name ?? "unknown"}' is selected but this CLI path is not wired to that adapter yet.`,
-    "BACKEND_INCAPABLE",
-    "Use --backend codex, unset CODEX_BRIDGE_BACKEND, or choose a config default_backend supported by this build."
-  );
-}
-var DEVELOPER_INSTRUCTIONS_FALLBACK = {
-  plan: "Produce one concrete plan using the plan tool. Do not write code, do not ask questions, do not brainstorm alternatives.",
-  default: "Execute the task autonomously. Do not ask questions. Make reasonable assumptions and proceed."
-};
-function loadDeveloperInstructions(mode) {
-  const templatePath = mode === "plan" ? PLAN_ENFORCEMENT_PATH : EXECUTE_INSTRUCTIONS_PATH;
-  try {
-    return fs17.readFileSync(templatePath, "utf8");
-  } catch {
-    return DEVELOPER_INSTRUCTIONS_FALLBACK[mode] ?? DEVELOPER_INSTRUCTIONS_FALLBACK.default;
-  }
-}
-
 // src/lib/envelope-helpers.mjs
 function buildRecovery({ reason, retryable, nextActions = [], artifacts = {}, details = {} }) {
   return {
@@ -11397,7 +12659,7 @@ function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
     exclude: DEFAULT_MONITOR_EXCLUDE,
     cwd
   });
-  const shellFallback = eventsPath ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*) break ;; esac; done` : null;
+  const shellFallback = eventsPath ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*|"[CANCELLED]"*) break ;; esac; done` : null;
   return {
     command: cliCommand,
     shell_fallback: shellFallback,
@@ -11405,7 +12667,7 @@ function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
     exclude_tags: [...DEFAULT_MONITOR_EXCLUDE],
     timeout_ms: 18e5,
     tool_hint: {
-      description: "codex-bridge task events (excludes heartbeat noise; passes interrupts + checkpoints through)",
+      description: "codex-bridge task events (excludes heartbeat, directives, and verbose checkpoints)",
       command: cliCommand,
       timeout_ms: 36e5,
       persistent: false
@@ -11426,8 +12688,8 @@ function extractItemText(item) {
       }
       const first = changes[0] ?? {};
       const kind = first.kind ?? first.change ?? first.op ?? "";
-      const path22 = first.path ?? "";
-      const summary = `${kind ? kind + " " : ""}${path22}`.trim();
+      const path24 = first.path ?? "";
+      const summary = `${kind ? kind + " " : ""}${path24}`.trim();
       if (!summary) return null;
       const suffix = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
       return `${summary}${suffix}`.slice(0, 200);
@@ -11473,20 +12735,20 @@ function extractItemText(item) {
 // src/commands-meta.mjs
 var COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
+    synopsis: "task [--write] [--read-only] [--worktree-auto|--no-worktree-auto] [--base-ref <ref>] [--on-branch <name>] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. Write-mode tasks use per-task worktree isolation by default; --worktree-auto remains accepted for explicitness, and --no-worktree-auto opts into in-place edits. Prompts for isolated work must use repo-relative paths, not absolute paths inside the launch checkout. Base ref can be set with --base-ref <ref> (branch, ref, SHA, or current); omit it to inherit the current branch. Use --on-branch <name> to fail before dispatch if the launch checkout is not on the expected branch. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry. Background Monitor hints are single-job; for N > 1 parallel jobs, use wait --any --predicate both for the next actionable job, wait --all for the wave barrier, or status --watch for a live table.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
       "codex-bridge task --prompt-file prompt.md --effort high --write",
       'codex-bridge task --resume-last "Continue the previous thread"',
       'codex-bridge task --background --write "Rewrite tests" --json',
-      'codex-bridge task --background --write --worktree-auto --brief @brief.json --json "Implement the task described in the structured brief"'
+      'codex-bridge task --background --write --base-ref main --brief @brief.json --json "Implement the task described in the structured brief"'
     ]
   },
   send: {
-    synopsis: "send <thread-id> [--backend <name>] [--mode plan|default] [--effort <level>] [--quiet] [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
-    summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task.",
+    synopsis: "send <thread-id> [--backend <name>] [--mode plan|default] [--on-branch <name>] [--effort <level>] [--quiet] [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task. Use --on-branch <name> to fail before dispatch if the checkout is not on the expected branch.",
     examples: [
       'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --mode default "Implement the plan."',
       'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 "Revise step 2: use token bucket instead"'
@@ -11539,12 +12801,16 @@ var COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
-    summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
+    synopsis: "status [job-id] [--all] [--session <id>] [--since <iso-ts>] [--filter running|completed_success|completed_fail|completed_incomplete|cancelled|needs_attention] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "List jobs, or inspect one by id. List JSON includes result.jobs (always an array), result.summary, result.as_of, and active-job progress digests. Multi-job status includes event-derived summary counts and needs_attention for failed/incomplete/interrupted jobs. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
       "codex-bridge status task-abc --wait --timeout-ms 600000",
       "codex-bridge status --all --json",
+      "codex-bridge status --all --session claude-session-id --json",
+      "codex-bridge status --since 2026-05-06T12:00:00.000Z --json",
+      "codex-bridge status --filter completed_fail --json",
+      "codex-bridge status --filter needs_attention --json",
       "codex-bridge status --watch --interval 5s",
       "codex-bridge status --watch --all --json"
     ]
@@ -11558,11 +12824,12 @@ var COMMANDS = Object.freeze({
     ]
   },
   wait: {
-    synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
-    summary: "Block until target job events emit [DONE], [ERROR], [INCOMPLETE], or [PLAN]. With --any, return the first terminal job from N targets.",
+    synopsis: "wait [--all|--any] [--jobs <ids>] <job-id-or-thread-id...> [--predicate terminal|interrupt|error|both] [--timeout-ms <ms>] [--json]",
+    summary: "Block until all targets match a predicate (default: terminal) or, with --any, return the first matching job. Predicates are event-backed: terminal=[DONE]/[ERROR]/[INCOMPLETE]/[PLAN]/[CANCELLED], interrupt=[PLAN]/[QUESTION], error=[ERROR]/[INCOMPLETE], both=terminal+interrupt.",
     examples: [
       "codex-bridge wait task-abc --timeout-ms 600000 --json",
-      "codex-bridge wait --any task-a task-b task-c --json",
+      'codex-bridge wait --all --jobs "task-a task-b task-c" --json',
+      "codex-bridge wait --any --predicate both task-a task-b task-c --json",
       "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
     ]
   },
@@ -11570,15 +12837,18 @@ var COMMANDS = Object.freeze({
     synopsis: "events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclude <tags>] [--timeout-ms <ms>] [--json]",
     summary: "Stream the target's events file. `--filter` keeps only listed tags (inclusion); `--exclude` drops listed tags and shows everything else (exclusion \u2014 forward-compatible default for Monitor). Flags are mutually exclusive.",
     examples: [
-      "codex-bridge events task-abc --follow --exclude HEARTBEAT  # default Monitor shape",
-      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN  # narrow inclusion view",
-      "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 600000"
+      "codex-bridge events task-abc --follow --exclude HEARTBEAT,CHECKPOINT  # default Monitor shape",
+      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED  # narrow inclusion view",
+      "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT --timeout-ms 600000  # include verbose checkpoints"
     ]
   },
   cancel: {
-    synopsis: "cancel [job-id] [--json]",
-    summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
-    examples: ["codex-bridge cancel task-abc"]
+    synopsis: "cancel [job-id] [--keep-worktree] [--keep-branch] [--keep-all] [--json]",
+    summary: "Cancel a running job. Attempts `turn/interrupt`, terminates the worker tree, and removes bridge-created worktree artifacts unless preserved.",
+    examples: [
+      "codex-bridge cancel task-abc",
+      "codex-bridge cancel task-abc --keep-all"
+    ]
   },
   merge: {
     synopsis: "merge <task_id> [--no-tests] [--pr] [--json]",
@@ -11597,9 +12867,9 @@ var COMMANDS = Object.freeze({
     ]
   },
   setup: {
-    synopsis: "setup [--json] [--enable-review-gate | --disable-review-gate]",
-    summary: "Health check: Node/npm/Codex install, auth, broker runtime; toggle stop-gate review.",
-    examples: ["codex-bridge setup --json"]
+    synopsis: "setup [--json] [--install-monitor-hook] [--enable-review-gate | --disable-review-gate]",
+    summary: "Health check: Node/npm/Codex install, auth, broker runtime; install the Monitor hook mirror; toggle stop-gate review.",
+    examples: ["codex-bridge setup --json", "codex-bridge setup --install-monitor-hook --json"]
   },
   version: {
     synopsis: "version [--backend <name>] [--check-update] [--json]",
@@ -11664,13 +12934,16 @@ var GLOBAL_FLAGS_DOC = [
 
 // src/handlers/meta.mjs
 import { spawnSync as spawnSync5 } from "node:child_process";
+import fs21 from "node:fs";
+import os7 from "node:os";
+import path19 from "node:path";
 import process13 from "node:process";
 
 // src/lib/stop-review-gate.mjs
 import fs18 from "node:fs";
-import path15 from "node:path";
+import path16 from "node:path";
 function resolveStopReviewGateLockPath(workspaceRoot) {
-  return path15.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
+  return path16.join(workspaceRoot, STOP_REVIEW_GATE_LOCK_FILE);
 }
 function readStopReviewGate(workspaceRoot, officialPlugin = detectOfficialOpenAICodexPlugin({ cwd: workspaceRoot })) {
   const lockPath = resolveStopReviewGateLockPath(workspaceRoot);
@@ -11769,9 +13042,9 @@ function applyStopReviewGateSnapshot(snapshot) {
 }
 
 // src/lib/task-runtime.mjs
-import { spawn as spawn4 } from "node:child_process";
+import { spawn as spawn4, spawnSync as spawnSync4 } from "node:child_process";
 import fs19 from "node:fs";
-import path16 from "node:path";
+import path17 from "node:path";
 import process11 from "node:process";
 function mirrorDiffToRegistry(taskId, diffPath) {
   if (!taskId || !diffPath) return null;
@@ -12375,7 +13648,7 @@ function safeRealPath(filePath) {
   try {
     return fs19.realpathSync.native ? fs19.realpathSync.native(filePath) : fs19.realpathSync(filePath);
   } catch {
-    return path16.resolve(filePath);
+    return path17.resolve(filePath);
   }
 }
 function samePath(left, right) {
@@ -12394,7 +13667,7 @@ function requireTaskReviewContext(taskId, options = {}) {
   const meta = readMeta(taskId);
   if (!meta) {
     throw notFoundError(
-      `no meta.json found for ${taskId}; run task --worktree-auto before reviewing with --task`,
+      `no meta.json found for ${taskId}; run task --write before reviewing with --task so the task is registered with an isolated worktree`,
       "TASK_NOT_FOUND"
     );
   }
@@ -12413,10 +13686,10 @@ function requireTaskReviewContext(taskId, options = {}) {
       "TASK_WORKTREE_BRANCH_MISSING"
     );
   }
-  const reviewCwd = path16.resolve(worktreePath);
-  if (options.cwd && !samePath(path16.resolve(process11.cwd(), options.cwd), reviewCwd)) {
+  const reviewCwd = path17.resolve(worktreePath);
+  if (options.cwd && !samePath(path17.resolve(process11.cwd(), options.cwd), reviewCwd)) {
     throw validationError(
-      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path16.resolve(process11.cwd(), options.cwd)}`,
+      `--task ${taskId} resolves to ${reviewCwd}, but --cwd points to ${path17.resolve(process11.cwd(), options.cwd)}`,
       "TASK_CWD_CONFLICT",
       "Omit --cwd with --task, or pass the task worktree path recorded in meta.json."
     );
@@ -12464,8 +13737,109 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   };
 }
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check \`codex-bridge status ${payload.jobId}\` for progress.
+  const lines = [
+    `${payload.title} started in the background as ${payload.jobId}. Check \`codex-bridge status ${payload.jobId}\` for progress.`
+  ];
+  if (payload.runtime?.effective) {
+    const effective = payload.runtime.effective;
+    const runtimeParts = [
+      `mode=${effective.mode}`,
+      `effort=${effective.effort}`,
+      `model=${effective.model ?? "default"}`
+    ];
+    lines.push(`Runtime: ${runtimeParts.join(" ")}.`);
+  }
+  if (Array.isArray(payload.runtime?.warnings) && payload.runtime.warnings.length > 0) {
+    lines.push(`Runtime warnings: ${payload.runtime.warnings.join("; ")}`);
+  }
+  const worktree = payload.worktree;
+  if (worktree?.base_ref) {
+    const source = worktree.base_ref_source ? ` (${worktree.base_ref_source})` : "";
+    lines.push(`Worktree base: ${worktree.base_ref}${source}.`);
+  }
+  return `${lines.join("\n")}
 `;
+}
+function resolveTaskMode(request, config) {
+  const configuredMode = request.mode ?? config.mode ?? "plan";
+  const activeMode = configuredMode === "plan" && !request.resumeLast ? "plan" : "default";
+  return {
+    configuredMode,
+    activeMode,
+    isPlanMode: activeMode === "plan"
+  };
+}
+function resolveTaskModel(request, config) {
+  return request.model ?? config.model ?? DEFAULT_CONFIG.model;
+}
+function resolveTaskEffort(request, config, isPlanMode) {
+  return isPlanMode ? request.effort ?? DEFAULT_CONFIG.effort : request.effort ?? config.effort ?? DEFAULT_CONFIG.effort;
+}
+function resolvePipelineStages(request, config, isPlanMode) {
+  if (isPlanMode) return [];
+  if (request.noPipeline) return ["diff"];
+  const stages = [];
+  if (config.auto_review || config.post_task_prompt) {
+    stages.push("diff");
+  }
+  if (config.auto_review) {
+    stages.push("review", "fix");
+  }
+  if (config.post_task_prompt) {
+    stages.push("check");
+  }
+  return stages;
+}
+function compactObject(value) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry != null)
+  );
+}
+function buildTaskRuntimeSummary(request, config, options = {}) {
+  const { activeMode, configuredMode, isPlanMode } = resolveTaskMode(request, config);
+  const turnParams = options.turnParams ?? null;
+  const collaborationSettings = turnParams?.collaborationMode?.settings ?? null;
+  const effectiveModel = turnParams?.model ?? options.model ?? resolveTaskModel(request, config);
+  const turnEffort = turnParams?.effort ?? options.effort ?? resolveTaskEffort(request, config, isPlanMode);
+  const effectiveEffort = isPlanMode ? collaborationSettings?.reasoning_effort ?? turnEffort : turnEffort;
+  const planModel = isPlanMode ? collaborationSettings?.model ?? effectiveModel : null;
+  const planEffort = isPlanMode ? collaborationSettings?.reasoning_effort ?? effectiveEffort : null;
+  const pipeline = resolvePipelineStages(request, config, isPlanMode);
+  const pipelineModel = effectiveModel;
+  const models = compactObject({
+    assistant: effectiveModel,
+    plan: planModel,
+    review: pipeline.includes("review") ? pipelineModel : null,
+    fix: pipeline.includes("fix") ? pipelineModel : null,
+    check: pipeline.includes("check") ? pipelineModel : null
+  });
+  const warnings = [];
+  if (request.model && isPlanMode && planModel && planModel !== request.model) {
+    warnings.push(`--model ${request.model} resolved to ${planModel} for the plan stage`);
+  }
+  if (request.effort && effectiveEffort !== request.effort) {
+    warnings.push(`--effort ${request.effort} resolved to ${effectiveEffort} for the assistant turn`);
+  }
+  if (request.effort && planEffort && planEffort !== request.effort) {
+    warnings.push(`--effort ${request.effort} resolved to ${planEffort} for the plan stage`);
+  }
+  return {
+    requested: {
+      mode: request.mode ?? null,
+      model: request.model ?? null,
+      effort: request.effort ?? null
+    },
+    effective: {
+      mode: activeMode,
+      configuredMode,
+      model: effectiveModel,
+      effort: effectiveEffort,
+      plan: isPlanMode ? { model: planModel, effort: planEffort } : null
+    },
+    models,
+    pipeline,
+    warnings
+  };
 }
 function getJobKindLabel(kind, jobClass) {
   if (kind === "adversarial-review") {
@@ -12550,7 +13924,8 @@ function buildTaskRequest({
   pipelineStageMs,
   pipelineTotalMs,
   questionAnswerMs,
-  backend = null
+  backend = null,
+  onBranch = null
 }) {
   const opt = (n) => Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null;
   return {
@@ -12572,15 +13947,78 @@ function buildTaskRequest({
     pipelineTotalMs: opt(pipelineTotalMs),
     questionAnswerMs: opt(questionAnswerMs),
     noPipeline: Boolean(noPipeline),
-    backend: backend ?? null
+    backend: backend ?? null,
+    onBranch: onBranch ?? null
   };
 }
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path16.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path17.resolve(cwd, options["prompt-file"]));
   }
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
+}
+var ABSOLUTE_PATH_PATTERN = /\/[^\s'"`<>]+/g;
+function normalizeAbsolutePathCandidate(candidate) {
+  let text = String(candidate ?? "").trim();
+  while (/[),.;!?]$/.test(text)) {
+    text = text.slice(0, -1);
+  }
+  const lineRef = text.match(/^(.+):\d+(?::\d+)?$/);
+  if (lineRef) {
+    text = lineRef[1];
+  }
+  return text;
+}
+function uniquePathRoots(roots) {
+  const out = [];
+  for (const root of roots) {
+    if (typeof root !== "string" || !root.trim()) continue;
+    const resolved = path17.resolve(root);
+    if (!out.includes(resolved)) out.push(resolved);
+    try {
+      const real = fs19.realpathSync.native(resolved);
+      if (!out.includes(real)) out.push(real);
+    } catch {
+    }
+  }
+  return out;
+}
+function pathIsInsideRoot(candidate, root) {
+  const relative = path17.relative(root, candidate);
+  return relative === "" || relative && !relative.startsWith("..") && !path17.isAbsolute(relative);
+}
+function findWorktreePromptAbsolutePathConflicts(promptText, workspaceRoot, aliases = []) {
+  const text = String(promptText ?? "");
+  const roots = uniquePathRoots([workspaceRoot, ...aliases]);
+  if (!text || roots.length === 0) return [];
+  const conflicts = [];
+  for (const match of text.matchAll(ABSOLUTE_PATH_PATTERN)) {
+    const candidate = normalizeAbsolutePathCandidate(match[0]);
+    if (!path17.isAbsolute(candidate)) continue;
+    const resolved = path17.resolve(candidate);
+    if (!roots.some((root) => pathIsInsideRoot(resolved, root))) continue;
+    if (!conflicts.includes(candidate)) {
+      conflicts.push(candidate);
+    }
+  }
+  return conflicts;
+}
+function formatWorktreePromptAbsolutePathConflict(conflicts, workspaceRoot) {
+  const paths = conflicts.slice(0, 8).map((p) => `  - ${p}`).join("\n");
+  const more = conflicts.length > 8 ? `
+  ...and ${conflicts.length - 8} more` : "";
+  return [
+    "--worktree-auto cannot safely dispatch a prompt that names absolute paths inside the launch workspace.",
+    "",
+    "Those paths resolve to the main checkout, not the isolated task worktree, so Codex could write outside the worktree and defeat isolation.",
+    "",
+    `Workspace: ${workspaceRoot}`,
+    "Conflicting paths:",
+    `${paths}${more}`,
+    "",
+    "Use repo-relative paths in the prompt, or pass --no-worktree-auto if you intentionally want to target the main checkout."
+  ].join("\n");
 }
 function readPromptFileOrThrow(absPath) {
   try {
@@ -12640,6 +14078,41 @@ function parseDurationOption(flagName, raw, { defaultMs = null } = {}) {
     );
   }
   return ms;
+}
+function normalizePorcelain2(porcelain) {
+  return String(porcelain ?? "").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).sort().join("\n");
+}
+function hasWriteWorkAfterSnapshot2(cwd, startSnapshot, touchedFiles = []) {
+  if (Array.isArray(touchedFiles) && touchedFiles.length > 0) {
+    return true;
+  }
+  if (!startSnapshot?.headSha) {
+    return false;
+  }
+  const currentSnapshot = captureGitSnapshot(cwd);
+  if (!currentSnapshot?.headSha) {
+    return false;
+  }
+  if (currentSnapshot.headSha !== startSnapshot.headSha) {
+    return true;
+  }
+  return normalizePorcelain2(currentSnapshot.porcelain) !== normalizePorcelain2(startSnapshot.porcelain);
+}
+function resolveTaskDiffBaseRef(taskId) {
+  if (!taskId) {
+    return null;
+  }
+  try {
+    const taskMeta = readMeta(taskId);
+    if (typeof taskMeta?.base_sha === "string" && taskMeta.base_sha) {
+      return taskMeta.base_sha;
+    }
+    if (typeof taskMeta?.base_ref === "string" && taskMeta.base_ref) {
+      return taskMeta.base_ref;
+    }
+  } catch {
+  }
+  return null;
 }
 function persistFailureErrorInPayload(execution, command = null) {
   if (!execution || execution.exitStatus === 0) {
@@ -12784,7 +14257,9 @@ function enqueueBackgroundTask(cwd, job, request) {
       request: spawnedRecord.request
     });
   }
-  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir, job.workspaceRoot);
+  const config = getBridgeConfig(cwd ?? null, job.workspaceRoot);
+  const resolvedSessionDir = resolveSessionDir(config.session_dir, job.workspaceRoot);
+  const runtime2 = buildTaskRuntimeSummary(request, config);
   return {
     payload: {
       jobId: job.id,
@@ -12797,14 +14272,56 @@ function enqueueBackgroundTask(cwd, job, request) {
       registryTaskId: job.registryTaskId ?? null,
       worktree: job.worktree ?? null,
       logFile,
+      runtime: runtime2,
       monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null, cwd: request.stateCwd ?? job.workspaceRoot })
     },
     logFile
   };
 }
+function createBranchSwitchMonitor({ cwd, jobId = null }) {
+  const state = {
+    lastBranch: tryGetCurrentBranch(cwd),
+    switches: []
+  };
+  return {
+    check(detectedAt, session) {
+      const currentBranch = tryGetCurrentBranch(cwd);
+      if (!currentBranch) return null;
+      if (!state.lastBranch) {
+        state.lastBranch = currentBranch;
+        return null;
+      }
+      if (currentBranch === state.lastBranch) return null;
+      const event = {
+        before: state.lastBranch,
+        after: currentBranch,
+        detectedAt,
+        jobId
+      };
+      state.lastBranch = currentBranch;
+      state.switches.push(event);
+      if (session) {
+        logEvent(session, formatBranchSwitchedEvent(session, event));
+        logNdjson(session, "BRANCH_SWITCHED", null, {
+          before: event.before,
+          after: event.after,
+          detected_at: event.detectedAt,
+          jobId
+        });
+      }
+      return event;
+    },
+    switches() {
+      return state.switches.slice();
+    }
+  };
+}
 async function runBridgeTask(request) {
   const stateCwd = request.stateCwd ?? request.cwd;
   const workspaceRoot = resolveWorkspaceRoot(stateCwd);
+  if (request.onBranch) {
+    assertCurrentBranch(stateCwd, request.onBranch);
+  }
   const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
   const adapter2 = await resolveCommandAdapter({
     cwd: request.cwd ?? null,
@@ -12816,8 +14333,13 @@ async function runBridgeTask(request) {
   });
   ensureCodexRuntimeAdapter(adapter2);
   const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
-  const effectiveMode = request.mode ?? config.mode ?? "plan";
-  const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
+  const { isPlanMode } = resolveTaskMode(request, config);
+  const resolvedModel = resolveTaskModel(request, config);
+  const resolvedEffort = resolveTaskEffort(request, config, isPlanMode);
+  let runtimeSummary = buildTaskRuntimeSummary(request, config, {
+    model: resolvedModel,
+    effort: resolvedEffort
+  });
   const metaSkillsPreamble = "[ORCHESTRATOR DIRECTIVE] Do not invoke your own planning, brainstorming, ceremony, or meta-skill chains before execution. Do not create scaffold files (spec documents, plan documents, design memos) under paths like `docs/`, `plans/`, `specs/`, or similar before touching the deliverable \u2014 unless the task explicitly asks for such an artifact as its output.";
   const metaSkillsPrefix = config.skip_meta_skills ? isPlanMode ? `${metaSkillsPreamble} The calling orchestrator is already driving the plan/execute loop; produce a concise inline [PLAN] and stop \u2014 the orchestrator approves before execution.
 
@@ -12857,8 +14379,17 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     ...request,
     adapter: adapter2,
     sessionDir,
+    model: resolvedModel,
     prompt: promptWithFooter,
-    collaborationMode: isPlanMode ? buildCollaborationMode("plan", config, { developerInstructions }) : request.write ? buildCollaborationMode("default", config, { developerInstructions, effort: request.effort }) : null,
+    collaborationMode: isPlanMode ? buildCollaborationMode("plan", config, {
+      developerInstructions,
+      effort: request.effort,
+      model: resolvedModel
+    }) : request.write ? buildCollaborationMode("default", config, {
+      developerInstructions,
+      effort: request.effort,
+      model: resolvedModel
+    }) : null,
     // Always resolve through buildSandboxPolicy so `config.sandbox_policy`
     // wins regardless of plan/write flags. When no override is set, the
     // mode-derived default applies (plan → readOnly, --write → workspaceWrite,
@@ -12874,7 +14405,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       isPlanMode || !request.write ? "plan" : "default",
       config
     ),
-    effort: isPlanMode ? "xhigh" : request.effort ?? config.effort ?? "high",
+    effort: resolvedEffort,
     // Turn timeout resolution (most specific wins): CLI flag → config.yaml
     // key → built-in default. Plan and execute turns use separate budgets
     // because plan is a bounded reasoning exercise while execute spans the
@@ -12899,7 +14430,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const s = heartbeatState.session;
       breakerState.recent.length = 0;
       breakerState.tripped = false;
-      logNdjson(s, "TURN_PARAMS", "turn/start", {
+      logNdjson(s, "TURN_PARAMS", "turn/start", compactTurnParamsForNdjson(s, {
         model: info.turnParams.model,
         effort: info.turnParams.effort,
         collaborationMode: info.turnParams.collaborationMode,
@@ -12907,21 +14438,24 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         hasOutputSchema: Boolean(info.turnParams.outputSchema),
         promptLength: info.promptLength,
         promptPreview: info.promptPreview
-      });
+      }));
       try {
+        runtimeSummary = buildTaskRuntimeSummary(request, config, {
+          turnParams: info.turnParams,
+          model: resolvedModel,
+          effort: resolvedEffort
+        });
         const sandboxType = info.turnParams.sandboxPolicy?.type ?? "unknown";
-        const pipelineEnabled = [];
-        if (config.auto_review) pipelineEnabled.push("review");
-        if (config.post_task_prompt) pipelineEnabled.push("check");
-        if (request.noPipeline) pipelineEnabled.length = 0;
         logEvent(s, formatDirectivesEvent(s, {
           mode: isPlanMode ? "plan" : "default",
-          effort: info.turnParams.effort ?? "?",
+          effort: runtimeSummary.effective.effort ?? info.turnParams.effort ?? "?",
           sandbox: sandboxType,
           quiet: request.onProgress == null,
           skipMetaSkills: Boolean(config.skip_meta_skills),
-          pipelineEnabled,
-          model: info.turnParams.model ?? null
+          pipelineEnabled: runtimeSummary.pipeline,
+          model: info.turnParams.model ?? null,
+          models: runtimeSummary.models,
+          warnings: runtimeSummary.warnings
         }));
       } catch {
       }
@@ -12934,11 +14468,16 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         config,
         request.jobId ?? null
       );
-      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
-        itemId: item?.id ?? null,
-        itemType: item?.type ?? null,
-        text: extractItemText(item)
-      });
+      const itemText = extractItemText(item);
+      if (item?.type === "reasoning" && itemText == null) {
+        reasoningNullItemCounts.set(effectiveThreadId, (reasoningNullItemCounts.get(effectiveThreadId) ?? 0) + 1);
+      } else {
+        logNdjson(s, "ITEM_COMPLETED", "item/completed", {
+          itemId: item?.id ?? null,
+          itemType: item?.type ?? null,
+          text: itemText
+        });
+      }
       heartbeatState.lastItem = item?.type ?? null;
       heartbeatState.lastItemAt = Date.now();
       try {
@@ -12947,26 +14486,35 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           checkpointState.lastAssistantMessage = item.text;
         }
         if (itemType === "commandExecution") {
+          const summary = extractItemText(item) ?? "";
           checkpointState.tools.push({
             type: "commandExecution",
-            summary: extractItemText(item) ?? ""
+            summary
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          checkpointState.lastActionableAt = Date.now();
+          checkpointState.lastActionableSummary = summary ? `commandExecution: ${summary}` : "commandExecution";
         } else if (itemType === "fileChange") {
+          const summary = extractItemText(item) ?? "(unknown)";
           checkpointState.tools.push({
             type: "fileChange",
-            summary: extractItemText(item) ?? "(unknown)"
+            summary
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          checkpointState.lastActionableAt = Date.now();
+          checkpointState.lastActionableSummary = `fileChange: ${summary}`;
         } else if (itemType === "plan") {
+          const summary = extractItemText(item) ?? "(plan)";
           checkpointState.tools.push({
             type: "plan",
-            summary: extractItemText(item) ?? "(plan)"
+            summary
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          checkpointState.lastActionableAt = Date.now();
+          checkpointState.lastActionableSummary = `plan: ${summary}`;
         }
       } catch {
       }
@@ -13020,6 +14568,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const HEARTBEAT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_HEARTBEAT_MS) : 6e4;
   const CHECKPOINT_INTERVAL_MS = Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0 ? Number(process11.env.CODEX_BRIDGE_CHECKPOINT_MS) : 5 * 60 * 1e3;
   const STALL_CHECKPOINT_THRESHOLD = Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0 ? Number(process11.env.CODEX_BRIDGE_STALL_CHECKPOINTS) : 3;
+  const STALL_WARNING_THRESHOLD_MS = CHECKPOINT_INTERVAL_MS;
+  const STALL_TERMINAL_THRESHOLD_MS = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   let terminalEmitted = false;
@@ -13041,14 +14591,16 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     // reset every checkpoint
     barrenCheckpoints: 0,
     // consecutive checkpoints with actionableCount == 0
-    seenFirstActionable: false
+    seenFirstActionable: false,
     // gate for barren-counter start (prevents false stall on slow-to-start turns)
+    lastActionableAt: null,
+    lastActionableSummary: null
   };
   const gitCwd = request.cwd && typeof request.cwd === "string" ? request.cwd : null;
   const readGitHead = () => {
     if (!gitCwd) return null;
     try {
-      const r = spawnSync("git", ["rev-parse", "HEAD"], {
+      const r = spawnSync4("git", ["rev-parse", "HEAD"], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -13061,7 +14613,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitLogRange = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return [];
     try {
-      const r = spawnSync(
+      const r = spawnSync4(
         "git",
         ["log", "--no-color", "--no-decorate", "-n", "50", "--pretty=%h %s", `${from}..${to}`],
         { cwd: gitCwd, encoding: "utf8", timeout: 5e3 }
@@ -13078,7 +14630,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   const readGitDiffStat = (from, to) => {
     if (!gitCwd || !from || !to || from === to) return null;
     try {
-      const r = spawnSync("git", ["diff", "--shortstat", `${from}..${to}`], {
+      const r = spawnSync4("git", ["diff", "--shortstat", `${from}..${to}`], {
         cwd: gitCwd,
         encoding: "utf8",
         timeout: 5e3
@@ -13141,6 +14693,19 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           checkpointState.tools = [];
           logEvent(
             heartbeatState.session,
+            formatCheckpointSummaryEvent(heartbeatState.session, {
+              elapsedMs,
+              phase: heartbeatState.phase,
+              intervalMs,
+              pid: process11.pid,
+              lastAssistantMessage: checkpointState.lastAssistantMessage,
+              tools: toolsSnapshot,
+              commits,
+              diffStat
+            })
+          );
+          logEvent(
+            heartbeatState.session,
             formatCheckpointEvent(heartbeatState.session, {
               elapsedMs,
               phase: heartbeatState.phase,
@@ -13156,6 +14721,13 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
               cwd: stateCwd
             })
           );
+          logNdjson(heartbeatState.session, "CHECKPOINT_SUMMARY", null, {
+            elapsedMs,
+            intervalMs,
+            actionableCount: checkpointState.actionableCount,
+            toolCount: toolsSnapshot.length,
+            commitsInInterval: commits.length
+          });
           logNdjson(heartbeatState.session, "CHECKPOINT", null, {
             elapsedMs,
             intervalMs,
@@ -13174,9 +14746,40 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
           checkpointState.barrenCheckpoints = 0;
         }
       }
+      if (checkpointState.barrenCheckpoints > 0 && checkpointState.barrenCheckpoints < STALL_CHECKPOINT_THRESHOLD && !terminalEmitted) {
+        try {
+          const barrenWindowMs = CHECKPOINT_INTERVAL_MS * checkpointState.barrenCheckpoints;
+          const remainingMs = Math.max(0, STALL_TERMINAL_THRESHOLD_MS - barrenWindowMs);
+          logEvent(
+            heartbeatState.session,
+            formatStallWarningEvent(heartbeatState.session, {
+              elapsedMs,
+              phase: heartbeatState.phase ?? "execute",
+              barrenCheckpoints: checkpointState.barrenCheckpoints,
+              warningThresholdMs: STALL_WARNING_THRESHOLD_MS,
+              terminalThresholdMs: STALL_TERMINAL_THRESHOLD_MS,
+              remainingMs,
+              lastActionableSummary: checkpointState.lastActionableSummary,
+              lastActionableAgeMs: checkpointState.lastActionableAt ? now - checkpointState.lastActionableAt : null,
+              scriptPath: SCRIPT_PATH,
+              jobId: request.jobId ?? null,
+              cwd: stateCwd
+            })
+          );
+          logNdjson(heartbeatState.session, "STALL_WARNING", null, {
+            origin: "bridge",
+            barrenCheckpoints: checkpointState.barrenCheckpoints,
+            warningThresholdMs: STALL_WARNING_THRESHOLD_MS,
+            terminalThresholdMs: STALL_TERMINAL_THRESHOLD_MS,
+            remainingMs,
+            lastActionableSummary: checkpointState.lastActionableSummary
+          });
+        } catch {
+        }
+      }
       if (checkpointState.barrenCheckpoints >= STALL_CHECKPOINT_THRESHOLD && !terminalEmitted) {
         try {
-          const stallWindowMs = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
+          const stallWindowMs = STALL_TERMINAL_THRESHOLD_MS;
           logEvent(
             heartbeatState.session,
             formatErrorEvent(heartbeatState.session, {
@@ -13233,8 +14836,13 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
   };
   let result;
   let session;
+  const branchSwitchMonitor = createBranchSwitchMonitor({
+    cwd: request.cwd,
+    jobId: request.jobId ?? null
+  });
   const turnStartSnapshot = captureGitSnapshot(request.cwd);
   const retryHistory = [];
+  const reasoningNullItemCounts = /* @__PURE__ */ new Map();
   try {
     result = await executeTaskRun(bridgeRequest);
     while (result.exitStatus !== 0 && result.error) {
@@ -13278,7 +14886,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       result = retryResult;
     }
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
-    const computedEventsPath = result.threadId ? path16.join(sessionDir, `${result.threadId}.events`) : null;
+    branchSwitchMonitor.check("after-execute", session);
+    const computedEventsPath = result.threadId ? path17.join(sessionDir, `${result.threadId}.events`) : null;
     const monitor = buildMonitorHint({
       eventsPath: computedEventsPath,
       jobId: request.jobId ?? null,
@@ -13297,6 +14906,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       turnId: result.turnId,
       status: result.exitStatus,
       planDetected: result.planDetected,
+      reasoningStepsCount: reasoningNullItemCounts.get(result.threadId) ?? 0,
       touchedFiles: result.payload?.touchedFiles ?? []
     });
     const setPhase = (phase, nextAction, extras = {}) => {
@@ -13307,6 +14917,7 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         eventsPath: computedEventsPath,
         eventsDir: sessionDir,
         jobId: request.jobId ?? null,
+        runtime: runtimeSummary,
         ...extras
       };
     };
@@ -13352,10 +14963,10 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       const policyForOrigin = getUpstreamRetryPolicy(origin);
       const isUpstreamTerminal = Boolean(policyForOrigin);
       if (isUpstreamTerminal) {
-        const eventsPath = path16.join(sessionDir, `${session.threadId}.events`);
-        const diffPath = path16.join(sessionDir, `${session.threadId}.diff`);
-        const planPath = path16.join(sessionDir, `${session.threadId}.plan.md`);
-        const reviewPath = path16.join(sessionDir, `${session.threadId}.review.json`);
+        const eventsPath = path17.join(sessionDir, `${session.threadId}.events`);
+        const diffPath = path17.join(sessionDir, `${session.threadId}.diff`);
+        const planPath = path17.join(sessionDir, `${session.threadId}.plan.md`);
+        const reviewPath = path17.join(sessionDir, `${session.threadId}.review.json`);
         const reason = policyForOrigin.strategy === "none" ? origin === "upstream:auth" ? "upstream-auth-requires-reauth" : "upstream-no-retry-policy" : "upstream-retry-exhausted";
         handoffForEnvelope = buildHandoffEnvelope({
           classified: { origin, code: errorCode, message: errorMessage },
@@ -13480,14 +15091,21 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       return { ...result, session, planPath };
     }
     if (request.noPipeline) {
-      logNdjson(session, "PIPELINE_SKIPPED", null, { reason: "--no-pipeline flag" });
+      logNdjson(session, "PIPELINE_SKIPPED", null, {
+        reason: "--no-pipeline flag",
+        skippedStages: ["review", "fix", "check"],
+        retainedStages: ["diff"]
+      });
     }
-    if (result.exitStatus === 0 && !request.noPipeline && (config.auto_review || config.post_task_prompt)) {
+    const shouldRunPipeline = result.exitStatus === 0 && (request.noPipeline || config.auto_review || config.post_task_prompt);
+    if (shouldRunPipeline) {
+      const pipelineBaseConfig = request.noPipeline ? { ...config, auto_review: false, post_task_prompt: "" } : config;
+      const pipelineConfig = { ...pipelineBaseConfig, model: resolvedModel };
       const pipelineResult = await runAutoPipeline({
         session,
         threadId: result.threadId,
         cwd: request.cwd,
-        config,
+        config: pipelineConfig,
         scriptPath: SCRIPT_PATH,
         rootDir: ROOT_DIR,
         runAppServerTurn,
@@ -13499,14 +15117,19 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
         // resolution order" so we only pass resolved numbers when we have
         // them.
         stageTimeoutMs: request.pipelineStageMs ?? (Number(config.pipeline_stage_ms) > 0 ? Number(config.pipeline_stage_ms) : null),
-        totalTimeoutMs: request.pipelineTotalMs ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null)
+        totalTimeoutMs: request.pipelineTotalMs ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null),
+        questionAnswerMs: request.questionAnswerMs ?? null,
+        expectedWriteWork: Boolean(request.write),
+        turnStartSnapshot,
+        turnTouchedFiles: result.payload?.touchedFiles ?? [],
+        checkBranchState: (detectedAt) => branchSwitchMonitor.check(detectedAt, session)
       });
       if (pipelineResult?.complete === false) {
         const pipelineErrored = Boolean(pipelineResult.error);
         const failedStage = pipelineResult.failing_stage ?? (pipelineResult.completedStages?.length ? pipelineResult.completedStages[pipelineResult.completedStages.length - 1] : "diff");
         const nextAction = pipelineErrored ? {
           command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
-          description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`
+          description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, rerun with a larger --pipeline-stage-timeout-ms / --pipeline-total-timeout-ms budget.`
         } : {
           command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
           description: "Codex's completion check flagged gaps. Read [INCOMPLETE] in events for specifics."
@@ -13521,14 +15144,49 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
       markTerminalEmitted();
       return { ...result, session, pipeline: pipelineResult };
     }
-    const diff = captureGitDiff(request.cwd, session);
+    const taskDiffBaseRef = resolveTaskDiffBaseRef(request.jobId ?? request.taskId ?? null);
+    const cleanStartDiffBaseRef = !taskDiffBaseRef && typeof turnStartSnapshot?.headSha === "string" && typeof turnStartSnapshot?.porcelain === "string" && turnStartSnapshot.porcelain.trim().length === 0 ? turnStartSnapshot.headSha : null;
+    const taskTouchedFiles = result.payload?.touchedFiles ?? [];
+    const taskDiff = taskDiffBaseRef || cleanStartDiffBaseRef ? captureGitDiff(request.cwd, session, { baseRef: taskDiffBaseRef ?? cleanStartDiffBaseRef }) : summarizeTouchedFiles(taskTouchedFiles);
+    const workspaceDiff = taskDiffBaseRef || cleanStartDiffBaseRef ? summarizeGitDiff(request.cwd) : captureGitDiff(request.cwd, session);
+    const diff = taskDiff.diffPath ? taskDiff : workspaceDiff;
     mirrorDiffToRegistry(request.jobId ?? request.taskId ?? null, diff.diffPath);
+    if (!hasWriteWorkAfterSnapshot2(request.cwd, turnStartSnapshot, taskTouchedFiles) && request.write) {
+      const missingItems = ["no_files_touched: Write-mode task completed without touching files or changing git state."];
+      logEvent(session, formatIncompleteEvent(session, {
+        diffStat: diff.diffStat,
+        diffPath: diff.diffPath,
+        verdict: "no_files_touched",
+        findingCount: 0,
+        failingStage: "diff",
+        missingItems,
+        scriptPath: SCRIPT_PATH,
+        jobId: request.jobId ?? null,
+        cwd: request.cwd,
+        stateCwd
+      }));
+      logNdjson(session, "NO_WORK", null, {
+        reason: "no_files_touched",
+        expectedWriteWork: true,
+        touchedFiles: taskTouchedFiles
+      });
+      markTerminalEmitted();
+      setPhase("incomplete", {
+        command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
+        description: "Write-mode task finished without touching files or changing git state."
+      }, { diffPath: diff.diffPath, monitor, missingItems, noWorkReason: "no_files_touched" });
+      return { ...result, session, diff, noWorkReason: "no_files_touched" };
+    }
     logEvent(session, formatDoneEvent(session, {
       duration: 0,
-      diffStat: diff.diffStat,
-      files: diff.files,
+      diffStat: taskDiff.diffStat,
+      files: taskDiff.files,
       config: { model: config.model, effort: config.effort, modeFlow: isPlanMode ? "plan\u2192default" : "default" },
       diffPath: diff.diffPath,
+      taskDiff,
+      workspaceDiff,
+      workspaceWasClean: typeof turnStartSnapshot?.porcelain === "string" ? turnStartSnapshot.porcelain.trim().length === 0 : null,
+      touchedFiles: taskTouchedFiles,
       scriptPath: SCRIPT_PATH,
       jobId: request.jobId ?? null,
       cwd: request.cwd,
@@ -13538,8 +15196,8 @@ ${config.prompt_footer}` : `${metaSkillsPrefix}${taskPrompt}`;
     setPhase("done", {
       command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
       description: "Task finished. Inspect full result or send a follow-up."
-    }, { diffPath: diff.diffPath, monitor });
-    return { ...result, session, diff };
+    }, { diffPath: diff.diffPath, taskDiff, workspaceDiff, touchedFiles: taskTouchedFiles, monitor });
+    return { ...result, session, diff, taskDiff, workspaceDiff };
   } finally {
     stopHeartbeat();
     stopCheckpoint();
@@ -13582,7 +15240,7 @@ function extractPlanSteps(planText) {
 
 // src/lib/handler-utils.mjs
 import fs20 from "node:fs";
-import path17 from "node:path";
+import path18 from "node:path";
 import process12 from "node:process";
 function normalizeRequestedModel(model) {
   if (model == null) {
@@ -13641,17 +15299,17 @@ function parseCommandInput(argv, config = {}) {
   });
 }
 function resolveCommandCwd(options = {}) {
-  return options.cwd ? path17.resolve(process12.cwd(), options.cwd) : process12.cwd();
+  return options.cwd ? path18.resolve(process12.cwd(), options.cwd) : process12.cwd();
 }
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
 }
 function resolvePromptInput(options, positionals, cwd) {
   if (options["prompt-file"]) {
-    return readPromptFileOrThrow(path17.resolve(cwd, options["prompt-file"]));
+    return readPromptFileOrThrow(path18.resolve(cwd, options["prompt-file"]));
   }
   if (positionals.length === 1) {
-    const candidate = path17.resolve(cwd, positionals[0]);
+    const candidate = path18.resolve(cwd, positionals[0]);
     try {
       if (fs20.existsSync(candidate) && fs20.statSync(candidate).isFile()) {
         return fs20.readFileSync(candidate, "utf8");
@@ -13665,6 +15323,137 @@ function resolvePromptInput(options, positionals, cwd) {
 }
 
 // src/handlers/meta.mjs
+var MONITOR_HOOK_EVENT = "PostToolUse";
+var MONITOR_HOOK_MATCHER = "Bash|Agent";
+var MONITOR_HOOK_SCRIPT = "post-tool-bash.mjs";
+function resolveClaudeSettingsPath() {
+  return path19.join(os7.homedir(), ".claude", "settings.json");
+}
+function resolveMonitorHookScriptPath() {
+  const candidates = [
+    path19.join(ROOT_DIR, "hooks", MONITOR_HOOK_SCRIPT),
+    path19.resolve(ROOT_DIR, "..", "hooks", MONITOR_HOOK_SCRIPT)
+  ];
+  return candidates.find((candidate) => fs21.existsSync(candidate)) ?? candidates[0];
+}
+function monitorHookCommand(hookScriptPath) {
+  return `node ${JSON.stringify(hookScriptPath)}`;
+}
+function buildMonitorHookEntry(hookScriptPath) {
+  return {
+    matcher: MONITOR_HOOK_MATCHER,
+    hooks: [
+      {
+        type: "command",
+        command: monitorHookCommand(hookScriptPath),
+        timeout: 5
+      }
+    ]
+  };
+}
+function readClaudeSettings(settingsPath) {
+  if (!fs21.existsSync(settingsPath)) {
+    return { exists: false, settings: {}, parseError: null };
+  }
+  try {
+    const raw = fs21.readFileSync(settingsPath, "utf8");
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        exists: true,
+        settings: null,
+        parseError: "settings file must contain a JSON object"
+      };
+    }
+    return { exists: true, settings: parsed, parseError: null };
+  } catch (err) {
+    return {
+      exists: true,
+      settings: null,
+      parseError: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+function hasMonitorHookMirror(settings, hookScriptPath) {
+  const postToolUse = settings?.hooks?.[MONITOR_HOOK_EVENT];
+  if (!Array.isArray(postToolUse)) return false;
+  const command = monitorHookCommand(hookScriptPath);
+  return postToolUse.some(
+    (entry) => entry?.matcher === MONITOR_HOOK_MATCHER && Array.isArray(entry.hooks) && entry.hooks.some(
+      (hook) => hook?.type === "command" && hook?.command === command
+    )
+  );
+}
+function getMonitorHookMirrorStatus() {
+  const settingsPath = resolveClaudeSettingsPath();
+  const hookScriptPath = resolveMonitorHookScriptPath();
+  const read = readClaudeSettings(settingsPath);
+  return {
+    installed: read.settings ? hasMonitorHookMirror(read.settings, hookScriptPath) : false,
+    settingsPath,
+    settingsExists: read.exists,
+    settingsParseError: read.parseError,
+    hookScriptPath,
+    hookScriptExists: fs21.existsSync(hookScriptPath),
+    installCommand: "codex-bridge setup --install-monitor-hook"
+  };
+}
+function writeClaudeSettings(settingsPath, settings) {
+  fs21.mkdirSync(path19.dirname(settingsPath), { recursive: true });
+  const tmpPath = `${settingsPath}.tmp-${process13.pid}-${Date.now()}`;
+  fs21.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}
+`, "utf8");
+  fs21.renameSync(tmpPath, settingsPath);
+}
+function installMonitorHookMirror() {
+  const settingsPath = resolveClaudeSettingsPath();
+  const hookScriptPath = resolveMonitorHookScriptPath();
+  if (!fs21.existsSync(hookScriptPath)) {
+    throw validationError(
+      `Cannot install Monitor hook mirror because ${MONITOR_HOOK_SCRIPT} was not found at ${hookScriptPath}.`,
+      "MONITOR_HOOK_SCRIPT_MISSING",
+      "Run this from a packaged codex-bridge plugin install, or arm Monitor manually from result.monitor.tool_hint."
+    );
+  }
+  const read = readClaudeSettings(settingsPath);
+  if (read.parseError) {
+    throw validationError(
+      `Cannot update ${settingsPath}: ${read.parseError}.`,
+      "CLAUDE_SETTINGS_PARSE_ERROR",
+      "Fix ~/.claude/settings.json so it is valid JSON, then rerun setup --install-monitor-hook."
+    );
+  }
+  const settings = read.settings ?? {};
+  if (settings.hooks == null) {
+    settings.hooks = {};
+  }
+  if (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks must be a JSON object.`,
+      "CLAUDE_SETTINGS_HOOKS_INVALID",
+      "Fix ~/.claude/settings.json hooks shape, then rerun setup --install-monitor-hook."
+    );
+  }
+  const existing = settings.hooks[MONITOR_HOOK_EVENT];
+  if (existing == null) {
+    settings.hooks[MONITOR_HOOK_EVENT] = [];
+  } else if (!Array.isArray(existing)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks.${MONITOR_HOOK_EVENT} must be an array.`,
+      "CLAUDE_SETTINGS_POST_TOOL_USE_INVALID",
+      "Fix ~/.claude/settings.json hooks.PostToolUse shape, then rerun setup --install-monitor-hook."
+    );
+  }
+  const alreadyInstalled = hasMonitorHookMirror(settings, hookScriptPath);
+  if (!alreadyInstalled) {
+    settings.hooks[MONITOR_HOOK_EVENT].push(buildMonitorHookEntry(hookScriptPath));
+    writeClaudeSettings(settingsPath, settings);
+  }
+  return {
+    alreadyInstalled,
+    status: getMonitorHookMirrorStatus()
+  };
+}
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -13674,6 +15463,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter2 = await resolveCommandAdapter({ cwd, workspaceRoot });
+  const monitorHook = getMonitorHookMirrorStatus();
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -13688,6 +15478,13 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
   } else if (!reviewGate.enabled) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
+  }
+  if (monitorHook.settingsParseError) {
+    nextSteps.push(`Monitor hook mirror status could not read ${monitorHook.settingsPath}: ${monitorHook.settingsParseError}.`);
+  } else if (!monitorHook.installed && monitorHook.hookScriptExists) {
+    nextSteps.push("Optional: run `codex-bridge setup --install-monitor-hook` to mirror the Monitor PostToolUse hook into Claude user settings.");
+  } else if (!monitorHook.installed && !monitorHook.hookScriptExists) {
+    nextSteps.push("Monitor hook mirror unavailable in this install; arm Monitor manually from `result.monitor.tool_hint` after background dispatch.");
   }
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
@@ -13707,6 +15504,13 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
     reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
     reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
+    monitorHookInstalled: monitorHook.installed,
+    monitorHookSettingsPath: monitorHook.settingsPath,
+    monitorHookSettingsExists: monitorHook.settingsExists,
+    monitorHookSettingsParseError: monitorHook.settingsParseError,
+    monitorHookScriptPath: monitorHook.hookScriptPath,
+    monitorHookScriptExists: monitorHook.hookScriptExists,
+    monitorHookInstallCommand: monitorHook.installCommand,
     actionsTaken,
     nextSteps
   };
@@ -13715,7 +15519,7 @@ async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook"]
   });
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw conflictError(
@@ -13753,6 +15557,12 @@ async function handleSetup(argv) {
         `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
       );
     }
+  }
+  if (options["install-monitor-hook"]) {
+    const result = installMonitorHookMirror();
+    actionsTaken.push(
+      result.alreadyInstalled ? `Monitor PostToolUse hook mirror already present in ${result.status.settingsPath}.` : `Installed Monitor PostToolUse hook mirror in ${result.status.settingsPath}.`
+    );
   }
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });
   emitSuccess("setup", finalReport, renderSetupReport(finalReport), {
@@ -14167,8 +15977,28 @@ async function handleReview(argv) {
 }
 
 // src/handlers/task.mjs
-import path18 from "node:path";
+import path20 from "node:path";
 import process14 from "node:process";
+function resolveTaskBaseRefOption(baseRef) {
+  if (baseRef == null) return null;
+  const normalized = String(baseRef).trim();
+  if (!normalized) {
+    throw validationError("--base-ref requires a non-empty ref.", "BASE_REF_EMPTY");
+  }
+  return normalized;
+}
+function resolveTaskOnBranchOption(onBranch) {
+  if (onBranch == null) return null;
+  const normalized = String(onBranch).trim();
+  if (!normalized) {
+    throw validationError("--on-branch requires a non-empty branch name.", "ON_BRANCH_EMPTY");
+  }
+  return normalized;
+}
+function worktreeAutoDefaultDisabled() {
+  const raw = process14.env.CODEX_BRIDGE_DISABLE_WORKTREE_AUTO;
+  return raw === "1" || raw === "true" || raw === "yes";
+}
 async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -14186,7 +16016,9 @@ async function handleTask(argv) {
       "pipeline-total-timeout-ms",
       "question-timeout-ms",
       "brief",
-      "intercepted-from"
+      "intercepted-from",
+      "base-ref",
+      "on-branch"
     ],
     booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
@@ -14204,20 +16036,57 @@ async function handleTask(argv) {
   const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
   const noPipeline = Boolean(options["no-pipeline"]);
+  const baseRefOverride = resolveTaskBaseRefOption(options["base-ref"]);
+  const onBranch = resolveTaskOnBranchOption(options["on-branch"]);
   const quietMode = Boolean(options.quiet) || Boolean(options.json) && options.quiet !== false;
   let cwd = resolveCommandCwd(options);
   const stateCwd = cwd;
   const workspaceRoot = resolveCommandWorkspace(options);
+  const resumeLast = Boolean(options["resume-last"] || options.resume);
+  const fresh = Boolean(options.fresh);
+  if (resumeLast && fresh) {
+    throw conflictError(
+      "Choose either --resume/--resume-last or --fresh.",
+      "RESUME_FRESH_CONFLICT"
+    );
+  }
+  const write = Boolean(options.write);
+  const readOnly = Boolean(options["read-only"]);
+  if (write && readOnly) {
+    throw conflictError(
+      "Choose either --write or --read-only, not both.",
+      "WRITE_READ_ONLY_CONFLICT"
+    );
+  }
+  const requestedWorktreeAuto = options["worktree-auto"] === true;
+  const disabledWorktreeAuto = options["worktree-auto"] === false || worktreeAutoDefaultDisabled();
+  const effectiveWorktreeAuto = requestedWorktreeAuto || write && !readOnly && !resumeLast && !disabledWorktreeAuto;
+  if (requestedWorktreeAuto && !write) {
+    throw conflictError(
+      "--worktree-auto requires --write.",
+      "WORKTREE_WRITE_REQUIRED"
+    );
+  }
+  if (onBranch) {
+    assertCurrentBranch(stateCwd, onBranch);
+  }
   let brief = null;
   let briefHash2 = null;
   let briefSource = null;
   if (options.brief || options["intercepted-from"]) {
-    if (!options["worktree-auto"]) {
+    if (!effectiveWorktreeAuto) {
       throw conflictError(
-        "--brief and --intercepted-from require --worktree-auto (the registry slot that stores brief.json / intercepted_from is created by the worktree path).",
+        "--brief and --intercepted-from require worktree isolation (pass --write so task uses the default worktree, or pass --worktree-auto explicitly).",
         "BRIEF_REQUIRES_WORKTREE_AUTO"
       );
     }
+  }
+  if (baseRefOverride && !effectiveWorktreeAuto) {
+    throw conflictError(
+      "--base-ref requires worktree isolation.",
+      "BASE_REF_REQUIRES_WORKTREE_AUTO",
+      "Pass `--write --base-ref <ref>` (worktree isolation is the write-mode default), or remove --base-ref for a non-worktree task."
+    );
   }
   if (options.brief) {
     const result = loadBrief(options.brief, { baseDir: cwd });
@@ -14236,29 +16105,26 @@ async function handleTask(argv) {
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
-  const resumeLast = Boolean(options["resume-last"] || options.resume);
-  const fresh = Boolean(options.fresh);
-  if (resumeLast && fresh) {
+  if (resumeLast && requestedWorktreeAuto) {
     throw conflictError(
-      "Choose either --resume/--resume-last or --fresh.",
-      "RESUME_FRESH_CONFLICT"
-    );
-  }
-  if (resumeLast && options["worktree-auto"]) {
-    throw conflictError(
-      "--resume/--resume-last resumes a Codex thread only and cannot safely create a fresh worktree. Use `iterate <task_id>` to continue task worktree state, or start a fresh `task --write --worktree-auto` from the current branch.",
+      "--resume/--resume-last resumes a Codex thread only and cannot safely create a fresh worktree. Use `iterate <task_id>` to continue task worktree state, or start a fresh `task --write --base-ref <ref>`.",
       "RESUME_WORKTREE_CONFLICT",
       "Use `codex-bridge iterate <task_id>` for follow-up fixes, or drop --resume-last and dispatch a fresh worktree task."
     );
   }
   requireTaskRequest(prompt, resumeLast);
-  const write = Boolean(options.write);
-  const readOnly = Boolean(options["read-only"]);
-  if (write && readOnly) {
-    throw conflictError(
-      "Choose either --write or --read-only, not both.",
-      "WRITE_READ_ONLY_CONFLICT"
-    );
+  if (effectiveWorktreeAuto) {
+    const guardText = brief ? `${prompt}
+
+${renderBriefAsMarkdown(brief)}` : prompt;
+    const pathConflicts = findWorktreePromptAbsolutePathConflicts(guardText, workspaceRoot, [cwd, stateCwd]);
+    if (pathConflicts.length > 0) {
+      throw validationError(
+        formatWorktreePromptAbsolutePathConflict(pathConflicts, workspaceRoot),
+        "WORKTREE_ABSOLUTE_PATH_CONFLICT",
+        "Rewrite those prompt paths relative to the repo root for isolated writes, or pass --no-worktree-auto if in-place edits are intentional."
+      );
+    }
   }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
@@ -14276,19 +16142,14 @@ async function handleTask(argv) {
     adapterCapabilities: adapter2.capabilities()
   });
   let worktreeInfo = null;
-  if (options["worktree-auto"]) {
-    if (!write) {
-      throw conflictError(
-        "--worktree-auto requires --write.",
-        "WORKTREE_WRITE_REQUIRED"
-      );
-    }
+  if (effectiveWorktreeAuto) {
     ensureCodexAvailable(cwd);
     try {
       worktreeInfo = createSubagentWorktree({
         cwd,
         taskId: job.id,
         backend: adapter2.name,
+        baseRef: baseRefOverride,
         allowBranchFallback: false
       });
       if (worktreeInfo.isolation_mode !== "worktree") {
@@ -14304,6 +16165,7 @@ async function handleTask(argv) {
           worktree: worktreeInfo,
           isolation_mode: worktreeInfo.isolation_mode,
           base_ref: worktreeInfo.base_ref,
+          base_ref_source: worktreeInfo.base_ref_source,
           base_sha: worktreeInfo.base_sha,
           phase: "queued",
           brief_hash: briefHash2,
@@ -14355,7 +16217,8 @@ async function handleTask(argv) {
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
-      backend: adapter2.name
+      backend: adapter2.name,
+      onBranch
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -14386,6 +16249,7 @@ async function handleTask(argv) {
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
       backend: adapter2.name,
+      onBranch,
       // `--quiet` suppresses the stderr `[codex] …` progress stream so
       // agents don't pattern-match a thread UUID out of it. Monitor /
       // `events --follow` remain the canonical in-run observation surface.
@@ -14402,7 +16266,7 @@ async function handleTaskWorker(argv) {
     throw usageError("Missing required --job-id for task-worker.");
   }
   const cwd = resolveCommandCwd(options);
-  const workspaceRoot = options["workspace-root"] ? path18.resolve(process14.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
+  const workspaceRoot = options["workspace-root"] ? path20.resolve(process14.cwd(), options["workspace-root"]) : resolveCommandWorkspace(options);
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw notFoundError(
@@ -14453,11 +16317,88 @@ async function handleTaskWorker(argv) {
     { logFile }
   );
 }
+function readCancelWorktree(job, existing) {
+  const registryTaskId = existing.registryTaskId ?? job.registryTaskId ?? job.id;
+  try {
+    const meta = readMeta(registryTaskId);
+    return {
+      worktree: meta?.worktree ?? existing.worktree ?? job.worktree ?? null,
+      warning: null
+    };
+  } catch (error) {
+    return {
+      worktree: existing.worktree ?? job.worktree ?? null,
+      warning: `could not read worktree metadata: ${error?.message ?? error}`
+    };
+  }
+}
+function cleanupCancelledWorktree({ workspaceRoot, job, existing, keepWorktree, keepBranch }) {
+  const { worktree, warning } = readCancelWorktree(job, existing);
+  const cleanup = {
+    attempted: false,
+    succeeded: true,
+    reason: "not-worktree-task",
+    worktreePath: worktree?.path ?? null,
+    branchName: worktree?.branch ?? null,
+    worktreeRemoved: false,
+    branchDeleted: false,
+    preservedWorktree: false,
+    preservedBranch: false,
+    failures: []
+  };
+  if (warning) {
+    cleanup.failures.push({ step: "metadata", message: warning });
+  }
+  if (worktree?.isolation_mode !== "worktree") {
+    cleanup.succeeded = cleanup.failures.length === 0;
+    return cleanup;
+  }
+  const effectiveKeepWorktree = Boolean(keepWorktree);
+  const effectiveKeepBranch = Boolean(keepBranch || effectiveKeepWorktree);
+  cleanup.preservedWorktree = effectiveKeepWorktree;
+  cleanup.preservedBranch = effectiveKeepBranch;
+  if (effectiveKeepWorktree && effectiveKeepBranch) {
+    cleanup.succeeded = false;
+    cleanup.reason = "preserved-by-user";
+    return cleanup;
+  }
+  const branch = typeof worktree.branch === "string" ? worktree.branch : null;
+  const branchForCleanup = branch && branch.startsWith("subagent/") ? branch : null;
+  if (branch && !branchForCleanup && !effectiveKeepBranch) {
+    cleanup.failures.push({
+      step: "branch_delete",
+      message: `refusing to delete non-bridge branch ${branch}`
+    });
+  }
+  cleanup.attempted = true;
+  try {
+    const result = pruneWorktreeOnCancel({
+      cwd: workspaceRoot,
+      taskId: job.id,
+      branch: branchForCleanup,
+      previousRef: worktree.previous_ref,
+      path: worktree.path,
+      keepBranch: effectiveKeepBranch
+    });
+    cleanup.reason = cleanup.failures.length > 0 ? "partial" : "cleaned";
+    cleanup.worktreeRemoved = Boolean(result.pruned);
+    cleanup.branchDeleted = Boolean(result.branchDeleted);
+    cleanup.succeeded = cleanup.failures.length === 0 && (effectiveKeepWorktree || cleanup.worktreeRemoved) && (effectiveKeepBranch || !branchForCleanup || cleanup.branchDeleted);
+  } catch (error) {
+    cleanup.succeeded = false;
+    cleanup.reason = "failed";
+    cleanup.failures.push({
+      step: "git_cleanup",
+      message: error?.message ?? String(error)
+    });
+  }
+  return cleanup;
+}
 async function handleCancel(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "keep-worktree", "keep-branch", "keep-all"]
   });
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
@@ -14489,14 +16430,52 @@ async function handleCancel(argv) {
   if (terminate.attempted && !terminate.delivered) {
     warnings.push(`process ${job.pid} was already gone (method=${terminate.method ?? "unknown"})`);
   }
+  const keepWorktree = Boolean(options["keep-worktree"] || options["keep-all"]);
+  const keepBranch = Boolean(options["keep-branch"] || options["keep-all"]);
+  if (keepWorktree && !keepBranch && !options["keep-all"]) {
+    warnings.push("preserving worktree also preserves its checked-out branch");
+  }
+  const cleanup = cleanupCancelledWorktree({
+    workspaceRoot,
+    job,
+    existing,
+    keepWorktree,
+    keepBranch
+  });
+  for (const failure of cleanup.failures) {
+    warnings.push(`cleanup ${failure.step} failed: ${failure.message}`);
+  }
   const completedAt = nowIso2();
+  let cancelledEventsPath = null;
+  if (threadId) {
+    const config = getBridgeConfig(cwd, workspaceRoot);
+    const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+    const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    cancelledEventsPath = session.eventsPath;
+    logEvent(session, formatCancelledEvent(session, {
+      jobId: job.id,
+      reason: "cancelled-by-user",
+      cancelledAt: completedAt,
+      createdAt: existing.createdAt ?? job.createdAt ?? null,
+      cleanup,
+      interrupt,
+      terminate,
+      warnings,
+      scriptPath: SCRIPT_PATH,
+      cwd,
+      stateCwd: workspaceRoot
+    }));
+  } else {
+    warnings.push("cancelled job has no thread id; no events file was updated");
+  }
   const nextJob = {
     ...job,
     status: "cancelled",
     phase: "cancelled",
     pid: null,
     completedAt,
-    errorMessage: "Cancelled by user."
+    errorMessage: "Cancelled by user.",
+    cleanup
   };
   writeJobFile(workspaceRoot, job.id, {
     ...existing,
@@ -14509,7 +16488,8 @@ async function handleCancel(argv) {
     phase: "cancelled",
     pid: null,
     errorMessage: "Cancelled by user.",
-    completedAt
+    completedAt,
+    cleanup
   });
   const kindLabel = existing.kindLabel ?? job.kindLabel ?? job.jobClass ?? "task";
   const KIND_TITLE = {
@@ -14527,6 +16507,7 @@ async function handleCancel(argv) {
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted,
     reason: "cancelled-by-user",
+    cleanup,
     warnings,
     title: normalizedTitle,
     dispatchTitle: job.title ?? null,
@@ -14540,6 +16521,7 @@ async function handleCancel(argv) {
       ],
       artifacts: {
         logFile: job.logFile ?? null,
+        eventsPath: cancelledEventsPath,
         threadId,
         turnId
       },
@@ -14549,7 +16531,8 @@ async function handleCancel(argv) {
         interruptReason: interrupt.reason ?? null,
         terminateAttempted: terminate.attempted,
         terminateDelivered: Boolean(terminate.delivered),
-        terminateMethod: terminate.method ?? null
+        terminateMethod: terminate.method ?? null,
+        cleanup
       }
     })
   };
@@ -14567,7 +16550,8 @@ async function handleSend(argv) {
       "backend",
       "idle-timeout-ms",
       "turn-timeout-ms",
-      "question-timeout-ms"
+      "question-timeout-ms",
+      "on-branch"
     ],
     booleanOptions: ["json", "wait", "quiet"],
     aliasMap: { m: "mode" }
@@ -14596,6 +16580,31 @@ async function handleSend(argv) {
     throw validationError("send requires a prompt (text or file)", "MISSING_PROMPT");
   }
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const onBranch = resolveTaskOnBranchOption(options["on-branch"]);
+  if (onBranch) {
+    assertCurrentBranch(cwd, onBranch);
+  }
+  let lastObservedBranch = tryGetCurrentBranch(cwd);
+  const logSendBranchSwitch = (session2, detectedAt) => {
+    const currentBranch = tryGetCurrentBranch(cwd);
+    if (!lastObservedBranch || !currentBranch || currentBranch === lastObservedBranch) {
+      if (currentBranch) lastObservedBranch = currentBranch;
+      return;
+    }
+    const event = {
+      before: lastObservedBranch,
+      after: currentBranch,
+      detectedAt,
+      jobId: null
+    };
+    lastObservedBranch = currentBranch;
+    logEvent(session2, formatBranchSwitchedEvent(session2, event));
+    logNdjson(session2, "BRANCH_SWITCHED", "send", {
+      before: event.before,
+      after: event.after,
+      detected_at: event.detectedAt
+    });
+  };
   const config = getBridgeConfig(cwd, workspaceRoot);
   const adapter2 = await resolveCommandAdapter({
     cwd,
@@ -14607,11 +16616,14 @@ async function handleSend(argv) {
   const modeOverride = options.mode;
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
   const sendIsPlanMode = modeOverride === "plan";
+  const requestedEffort = normalizeReasoningEffort(options.effort);
+  const turnEffort = sendIsPlanMode ? requestedEffort ?? DEFAULT_CONFIG.effort : requestedEffort ?? config.effort ?? DEFAULT_CONFIG.effort;
+  const reasoningNullItemCounts = /* @__PURE__ */ new Map();
   const turnOptions = {
     resumeThreadId: threadId,
     prompt,
     model: config.model,
-    effort: normalizeReasoningEffort(options.effort ?? config.effort),
+    effort: turnEffort,
     sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : void 0,
     onProgress: null,
     // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
@@ -14624,7 +16636,7 @@ async function handleSend(argv) {
     turnTimeoutMs: turnTimeoutOverride ?? (sendIsPlanMode ? Number(config.turn_plan_ms) > 0 ? Number(config.turn_plan_ms) : DEFAULT_CONFIG.turn_plan_ms : Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
-      logNdjson(s, "TURN_PARAMS", "turn/start", {
+      logNdjson(s, "TURN_PARAMS", "turn/start", compactTurnParamsForNdjson(s, {
         model: info.turnParams.model,
         effort: info.turnParams.effort,
         collaborationMode: info.turnParams.collaborationMode,
@@ -14632,17 +16644,22 @@ async function handleSend(argv) {
         hasOutputSchema: Boolean(info.turnParams.outputSchema),
         promptLength: info.promptLength,
         promptPreview: info.promptPreview
-      });
+      }));
     },
     onItemCompleted: (item, { threadId: itemThreadId }) => {
       const effectiveThreadId = itemThreadId ?? null;
       if (!effectiveThreadId) return;
       const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
-      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
-        itemId: item?.id ?? null,
-        itemType: item?.type ?? null,
-        text: extractItemText(item)
-      });
+      const itemText = extractItemText(item);
+      if (item?.type === "reasoning" && itemText == null) {
+        reasoningNullItemCounts.set(effectiveThreadId, (reasoningNullItemCounts.get(effectiveThreadId) ?? 0) + 1);
+      } else {
+        logNdjson(s, "ITEM_COMPLETED", "item/completed", {
+          itemId: item?.id ?? null,
+          itemType: item?.type ?? null,
+          text: itemText
+        });
+      }
     },
     onServerRequest: createBridgeServerRequestHandler({
       sessionDir,
@@ -14655,7 +16672,7 @@ async function handleSend(argv) {
   turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
   if (modeOverride) {
     turnOptions.collaborationMode = buildCollaborationMode(modeOverride, config, {
-      effort: options.effort,
+      effort: requestedEffort,
       developerInstructions: loadDeveloperInstructions(modeOverride)
     });
   }
@@ -14674,6 +16691,7 @@ async function handleSend(argv) {
   if (result.status !== 0) {
     const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
     const session2 = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    logSendBranchSwitch(session2, "send:after");
     const classified = classifyError(errLike);
     logEvent(session2, formatErrorEvent(session2, {
       errorCode: classified.code,
@@ -14683,11 +16701,15 @@ async function handleSend(argv) {
       scriptPath: SCRIPT_PATH,
       cwd
     }));
-    logNdjson(session2, "ERROR", "turn/completed", { error: classified });
+    logNdjson(session2, "ERROR", "turn/completed", {
+      error: classified,
+      reasoningStepsCount: reasoningNullItemCounts.get(threadId) ?? 0
+    });
     emitError(errLike, { json: options.json, command: "send" });
     return;
   }
   const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+  logSendBranchSwitch(session, "send:after");
   if (result.planDetected && result.planText) {
     const planPath = writePlan(session, result.planText);
     const steps = extractPlanSteps(result.planText);
@@ -14702,7 +16724,8 @@ async function handleSend(argv) {
     logNdjson(session, "PLAN", "item/completed", {
       turnId: result.turnId ?? null,
       planPath,
-      planDetected: true
+      planDetected: true,
+      reasoningStepsCount: reasoningNullItemCounts.get(threadId) ?? 0
     });
     const eventsPath2 = session?.eventsPath ?? null;
     const renderedLines2 = [`Plan updated for ${threadId}.`];
@@ -14740,7 +16763,8 @@ async function handleSend(argv) {
   }));
   logNdjson(session, "DONE", "turn/completed", {
     turnId: result.turnId ?? null,
-    status: result.status
+    status: result.status,
+    reasoningStepsCount: reasoningNullItemCounts.get(threadId) ?? 0
   });
   const eventsPath = session?.eventsPath ?? null;
   const renderedLines = [`Sent to ${threadId}. Status: ${result.status}`];
@@ -14862,13 +16886,13 @@ async function handleRespond(argv) {
 }
 
 // src/handlers/inspect.mjs
-import fs21 from "node:fs";
-import path19 from "node:path";
+import fs22 from "node:fs";
+import path21 from "node:path";
 import process15 from "node:process";
 async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs", "filter", "session", "since"],
     booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
   });
   const cwd = resolveCommandCwd(options);
@@ -14879,18 +16903,26 @@ async function handleStatus(argv) {
     if (options["prune-orphans"] || options.cleanup || options.wait) {
       throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
     }
+    if (options.filter) {
+      throw usageError("`--filter` is mutually exclusive with `--watch`.");
+    }
     const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 1e4 });
     const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
     await runStatusWatch(cwd, {
       intervalMs,
       overallTimeoutMs,
       all: options.all,
+      session: options.session,
+      since: options.since,
       json: options.json,
       startedAt
     });
     return;
   }
   if (options["prune-orphans"] || options.cleanup) {
+    if (options.filter) {
+      throw usageError("`--filter` is mutually exclusive with `--prune-orphans`/`--cleanup`.");
+    }
     const report2 = options.cleanup ? cleanupTerminalJobs(cwd, {
       dryRun: Boolean(options["dry-run"]),
       retentionDays: Number(options["retention-days"]) > 0 ? Number(options["retention-days"]) : null,
@@ -14904,6 +16936,9 @@ async function handleStatus(argv) {
   }
   const reference = positionals[0] ?? "";
   if (reference) {
+    if (options.filter) {
+      throw usageError("`status --filter` does not take a job-id argument.");
+    }
     const snapshot = options.wait ? await waitForSingleJobSnapshot(cwd, reference, {
       timeoutMs: options["timeout-ms"],
       pollIntervalMs: options["poll-interval-ms"]
@@ -14917,13 +16952,52 @@ async function handleStatus(argv) {
   if (options.wait) {
     throw usageError("`status --wait` requires a job id.");
   }
-  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
-  emitSuccess("status", report, renderStatusReport(report), {
+  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, {
+    all: options.all,
+    session: options.session,
+    since: options.since
+  }));
+  const filtered = options.filter ? filterStatusReport(report, options.filter) : report;
+  emitSuccess("status", filtered, renderStatusReport(filtered), {
     json: options.json,
     startedAt
   });
 }
-async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: json2, startedAt }) {
+var STATUS_FILTERS = /* @__PURE__ */ new Set([
+  "running",
+  "completed_success",
+  "completed_fail",
+  "completed_incomplete",
+  "cancelled",
+  "needs_attention"
+]);
+function filterStatusReport(report, filter) {
+  if (!STATUS_FILTERS.has(filter)) {
+    throw usageError(`Unknown status --filter value: ${filter}`);
+  }
+  if (filter === "needs_attention") {
+    return {
+      ...report,
+      filter,
+      filtered_jobs: report.needs_attention ?? [],
+      running: [],
+      latestFinished: null,
+      recent: []
+    };
+  }
+  const jobs = report.by_state?.[filter] ?? [];
+  const attentionJobIds = new Set(jobs.map((job) => job.jobId ?? job.id));
+  return {
+    ...report,
+    filter,
+    filtered_jobs: jobs,
+    running: filter === "running" ? report.running : [],
+    latestFinished: null,
+    recent: [],
+    needs_attention: (report.needs_attention ?? []).filter((entry) => attentionJobIds.has(entry.jobId))
+  };
+}
+async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, session, since, json: json2, startedAt }) {
   const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
   let ticks = 0;
   let interrupted = false;
@@ -14934,19 +17008,22 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json: js
   try {
     while (true) {
       ticks += 1;
-      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all }));
+      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all, session, since }));
       const activeCount = snapshot.running?.length ?? 0;
       const tickEntry = {
         schema_version: "1.0",
         tick: ticks,
         ts: (/* @__PURE__ */ new Date()).toISOString(),
         activeCount,
+        summary: snapshot.summary ?? null,
+        needsAttentionCount: snapshot.summary?.awaiting_attention ?? 0,
         running: (snapshot.running ?? []).map((j) => ({
           id: j.id,
           status: j.status,
           phase: j.phase ?? null,
           threadId: j.threadId ?? null,
-          kind: j.kindLabel ?? j.kind ?? null
+          kind: j.kindLabel ?? j.kind ?? null,
+          progress: j.progress ?? null
         }))
       };
       if (json2) {
@@ -15004,7 +17081,7 @@ async function handleAwaitArtifact(argv) {
   const cwd = resolveCommandCwd(options);
   const timeoutMs = parseDurationOption("--timeout-ms", options["timeout-ms"], { defaultMs: 9e5 });
   const pollIntervalMs = parseDurationOption("--poll-interval-ms", options["poll-interval-ms"], { defaultMs: 2e3 });
-  const resolvedPath = path19.isAbsolute(artifactPath) ? artifactPath : path19.resolve(cwd, artifactPath);
+  const resolvedPath = path21.isAbsolute(artifactPath) ? artifactPath : path21.resolve(cwd, artifactPath);
   const deadline = Date.now() + timeoutMs;
   let prevSize = null;
   while (true) {
@@ -15021,7 +17098,7 @@ async function handleAwaitArtifact(argv) {
     const jobTerminal = jobStatus !== "queued" && jobStatus !== "running";
     let statInfo = null;
     try {
-      statInfo = fs21.statSync(resolvedPath);
+      statInfo = fs22.statSync(resolvedPath);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -15214,7 +17291,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
   const retentionJobs = options.retentionJobs ?? (Number(config.artifact_retention_jobs) || 50);
   const dryRun = Boolean(options.dryRun);
   const jobs = listJobs(workspaceRoot, { raw: true });
-  const terminal = sortJobsNewestFirst2(jobs.filter((job) => !isActiveStatus(job.status)));
+  const terminal = sortJobsNewestFirst2(jobs.filter((job) => !isActiveStatus2(job.status)));
   const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1e3;
   const removable = terminal.filter((job, index) => {
     const ts = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
@@ -15230,7 +17307,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
       for (const filePath of [resolveJobFile(workspaceRoot, job.id), job.logFile, `${job.logFile}.worker.err`]) {
         if (!filePath) continue;
         try {
-          fs21.rmSync(filePath, { force: true });
+          fs22.rmSync(filePath, { force: true });
         } catch {
         }
       }
@@ -15248,7 +17325,7 @@ function cleanupTerminalJobs(cwd, options = {}) {
     candidateCount: removable.length
   };
 }
-function isActiveStatus(status) {
+function isActiveStatus2(status) {
   return status === "queued" || status === "running";
 }
 function renderCleanupReport(report) {
@@ -15406,152 +17483,56 @@ function renderResultTranscript(payload) {
   return `${lines.join("\n").trimEnd()}
 `;
 }
-function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
-  return new Promise((resolve) => {
-    let resolved = false;
-    let offset = 0;
-    let watcher = null;
-    let pollTimer = null;
-    let timer = null;
-    const finish = (payload) => {
-      if (resolved) return;
-      resolved = true;
-      if (watcher) {
-        try {
-          watcher.close();
-        } catch {
-        }
-      }
-      if (pollTimer) clearInterval(pollTimer);
-      if (timer) clearTimeout(timer);
-      resolve(payload);
-    };
-    const scan = () => {
-      try {
-        const data = fs21.readFileSync(eventsPath, "utf8");
-        if (data.length < offset) offset = 0;
-        const tail = data.slice(offset);
-        offset = data.length;
-        for (const line of tail.split("\n")) {
-          const m = pattern.exec(line);
-          if (m) {
-            finish({ timedOut: false, tag: m[1], line });
-            return;
-          }
-        }
-      } catch (e) {
-        if (e.code !== "ENOENT") throw e;
-      }
-    };
-    const attachWatcher = () => {
-      try {
-        watcher = fs21.watch(eventsPath, { persistent: false }, scan);
-        scan();
-      } catch (e) {
-        if (e.code === "ENOENT") {
-          if (!pollTimer) {
-            pollTimer = setInterval(() => {
-              if (fs21.existsSync(eventsPath)) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-                attachWatcher();
-              }
-            }, 500);
-          }
-        } else {
-          throw e;
-        }
-      }
-    };
-    if (fs21.existsSync(eventsPath)) {
-      scan();
-      if (!resolved) attachWatcher();
-    } else {
-      pollTimer = setInterval(() => {
-        if (fs21.existsSync(eventsPath)) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          attachWatcher();
-        }
-      }, 500);
-    }
-    timer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
-  });
-}
-async function handleWait(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms"],
-    booleanOptions: ["json", "any"]
-  });
-  const cwd = resolveCommandCwd(options);
-  if (options.any) {
-    await handleWaitAny(cwd, positionals, options, startedAt);
-    return;
-  }
-  const reference = positionals[0] ?? "";
-  if (!reference) {
-    throw usageError("wait requires <job-id-or-thread-id>");
-  }
-  let job;
-  try {
-    job = resolveResultJob(cwd, reference).job;
-  } catch (err) {
-    if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, reference).job;
-    } else {
-      throw err;
-    }
-  }
-  if (!job?.threadId) {
-    throw notFoundError(
-      `Job ${job?.id ?? reference} has no thread id yet.`,
-      "JOB_HAS_NO_THREAD"
+var WAIT_PREDICATE_ALIASES = Object.freeze({
+  terminal: "terminal",
+  interrupt: "interrupt",
+  error: "error",
+  both: "both",
+  "terminal+interrupt": "both",
+  "interrupt+terminal": "both",
+  "terminal|interrupt": "both",
+  "interrupt|terminal": "both"
+});
+var INTERRUPT_TAGS = Object.freeze(["PLAN", "QUESTION"]);
+var ERROR_TAGS = Object.freeze(["ERROR", "INCOMPLETE"]);
+function normalizeWaitPredicate(value) {
+  if (value == null || String(value).trim() === "") return "terminal";
+  const key = String(value).trim().toLowerCase().replaceAll(",", "+").replace(/\s+/g, "");
+  const normalized = WAIT_PREDICATE_ALIASES[key];
+  if (!normalized) {
+    throw usageError(
+      `Unsupported wait predicate "${value}".`,
+      "Use one of: terminal, interrupt, error, both, interrupt+terminal."
     );
   }
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path19.join(sessionDir, `${job.threadId}.events`);
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
-  const TERMINAL = TERMINAL_TAG_REGEX;
-  const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
-  if (result.timedOut) {
-    throw new CliError(
-      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1e3)}s.`,
-      {
-        class: "timeout",
-        code: "WAIT_TIMEOUT",
-        retryable: true,
-        suggestion: "Run `status <job-id>` to inspect live state."
-      }
-    );
-  }
-  const elapsedMs = Date.now() - startedAt;
-  emitSuccess(
-    "wait",
-    {
-      jobId: job.id,
-      threadId: job.threadId,
-      terminalTag: result.tag,
-      lastEventLine: result.line,
-      eventsPath,
-      elapsedMs
-    },
-    `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1e3)}s
-`,
-    { json: options.json, startedAt }
-  );
+  return normalized;
 }
-async function handleWaitAny(cwd, references, options, startedAt) {
-  const refs = references.filter(Boolean);
-  if (refs.length < 2) {
-    throw usageError("wait --any requires at least two job ids or thread ids.");
+function waitPredicateTags(predicate) {
+  if (predicate === "terminal") return new Set(TERMINAL_TAGS);
+  if (predicate === "interrupt") return new Set(INTERRUPT_TAGS);
+  if (predicate === "error") return new Set(ERROR_TAGS);
+  return /* @__PURE__ */ new Set([...TERMINAL_TAGS, ...INTERRUPT_TAGS]);
+}
+function collectWaitReferences(positionals, jobsOption) {
+  const raw = [
+    ...Array.isArray(jobsOption) ? jobsOption : jobsOption == null ? [] : [jobsOption],
+    ...positionals
+  ];
+  const refs = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const value of raw) {
+    for (const ref of String(value).split(/[\s,]+/)) {
+      if (!ref || seen.has(ref)) continue;
+      seen.add(ref);
+      refs.push(ref);
+    }
   }
-  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  return refs;
+}
+function resolveWaitTargets(cwd, references) {
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const TERMINAL = TERMINAL_TAG_REGEX;
-  const targets = refs.map((reference) => {
+  return references.map((reference) => {
     let job;
     try {
       job = resolveResultJob(cwd, reference).job;
@@ -15568,68 +17549,264 @@ async function handleWaitAny(cwd, references, options, startedAt) {
     return {
       reference,
       job,
-      eventsPath: path19.join(sessionDir, `${job.threadId}.events`)
+      eventsPath: path21.join(sessionDir, `${job.threadId}.events`)
     };
   });
-  const deadline = Date.now() + timeoutMs;
-  let winner = null;
-  while (!winner && Date.now() < deadline) {
-    for (const target of targets) {
-      const result = scanTerminalEvent(target.eventsPath, TERMINAL);
-      if (result) {
-        winner = { target, result };
-        break;
+}
+function matchWaitLine(line, tags) {
+  const m = /^\[([^\]]+)\]/.exec(line);
+  if (!m) return null;
+  const rawTag = m[1];
+  const tag = rawTag.split(":")[0].toUpperCase();
+  if (!tags.has(tag)) return null;
+  return { tag, rawTag, line };
+}
+function createWaitWatcher(target, tags, onMatch) {
+  let closed = false;
+  let offset = 0;
+  let watcher = null;
+  let pollTimer = null;
+  const close = () => {
+    closed = true;
+    if (watcher) {
+      try {
+        watcher.close();
+      } catch {
       }
     }
-    if (!winner) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    if (pollTimer) clearInterval(pollTimer);
+  };
+  const scan = () => {
+    if (closed) return false;
+    try {
+      const data = fs22.readFileSync(target.eventsPath, "utf8");
+      if (data.length < offset) offset = 0;
+      const tail = data.slice(offset);
+      offset = data.length;
+      for (const line of tail.split("\n")) {
+        const event = matchWaitLine(line, tags);
+        if (event) {
+          onMatch(target, event);
+          return true;
+        }
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
     }
-  }
-  if (!winner) {
-    throw new CliError(`No terminal event for any target within ${Math.round(timeoutMs / 1e3)}s.`, {
-      class: "timeout",
-      code: "WAIT_TIMEOUT",
-      retryable: true,
-      suggestion: "Run `status --watch --all` to inspect live multi-job state."
-    });
-  }
-  const elapsedMs = Date.now() - startedAt;
-  emitSuccess(
-    "wait",
-    {
-      mode: "any",
-      winner: {
-        reference: winner.target.reference,
-        jobId: winner.target.job.id,
-        threadId: winner.target.job.threadId,
-        terminalTag: winner.result.tag,
-        lastEventLine: winner.result.line,
-        eventsPath: winner.target.eventsPath
-      },
-      targets: targets.map((target) => ({
+    return false;
+  };
+  const attachWatcher = () => {
+    if (closed) return;
+    try {
+      watcher = fs22.watch(target.eventsPath, { persistent: false }, scan);
+      scan();
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      if (!pollTimer) {
+        pollTimer = setInterval(() => {
+          if (fs22.existsSync(target.eventsPath)) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            attachWatcher();
+          }
+        }, 500);
+      }
+    }
+  };
+  if (!scan()) attachWatcher();
+  return { close };
+}
+function waitForTargetMatches(targets, tags, { mode, timeoutMs }) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const watchers = [];
+    const matches = /* @__PURE__ */ new Map();
+    let timer = null;
+    const closeAll = () => {
+      for (const watcher of watchers) watcher.close();
+      if (timer) clearTimeout(timer);
+    };
+    const finish = (payload) => {
+      if (resolved) return;
+      resolved = true;
+      closeAll();
+      resolve(payload);
+    };
+    const onMatch = (target, event) => {
+      if (resolved || matches.has(target.job.id)) return;
+      const match = {
         reference: target.reference,
         jobId: target.job.id,
         threadId: target.job.threadId,
-        eventsPath: target.eventsPath
-      })),
+        state: event.tag,
+        rawTag: event.rawTag,
+        terminalTag: TERMINAL_TAGS.includes(event.tag) ? event.tag : null,
+        interruptTag: INTERRUPT_TAGS.includes(event.tag) ? event.tag : null,
+        lastEventLine: event.line,
+        eventsPath: target.eventsPath,
+        matchedAtMs: Date.now()
+      };
+      matches.set(target.job.id, match);
+      if (mode === "any") {
+        finish({ timedOut: false, winner: match, matches: [...matches.values()] });
+      } else if (matches.size === targets.length) {
+        finish({ timedOut: false, matches: [...matches.values()] });
+      }
+    };
+    for (const target of targets) {
+      const watcher = createWaitWatcher(target, tags, onMatch);
+      watchers.push(watcher);
+      if (resolved) {
+        watcher.close();
+        return;
+      }
+    }
+    timer = setTimeout(() => {
+      finish({ timedOut: true, matches: [...matches.values()] });
+    }, timeoutMs);
+  });
+}
+function summarizeWaitMatches(matches, total) {
+  const summary = {
+    total,
+    matched: matches.length,
+    pending: total - matches.length,
+    completed: 0,
+    plan: 0,
+    failed: 0,
+    cancelled: 0,
+    errors: 0,
+    incomplete: 0,
+    questions: 0,
+    interrupts: 0,
+    terminal: 0
+  };
+  for (const match of matches) {
+    if (match.state === "DONE") summary.completed += 1;
+    if (match.state === "PLAN") summary.plan += 1;
+    if (match.state === "CANCELLED") summary.cancelled += 1;
+    if (match.state === "ERROR") summary.errors += 1;
+    if (match.state === "INCOMPLETE") summary.incomplete += 1;
+    if (match.state === "QUESTION") summary.questions += 1;
+    if (match.terminalTag) summary.terminal += 1;
+    if (match.interruptTag) summary.interrupts += 1;
+  }
+  summary.failed = summary.errors + summary.incomplete;
+  return summary;
+}
+async function handleWait(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "predicate"],
+    repeatableValueOptions: ["jobs"],
+    booleanOptions: ["json", "any", "all"]
+  });
+  const cwd = resolveCommandCwd(options);
+  if (options.any && options.all) {
+    throw usageError("Pass either --any OR --all, not both.");
+  }
+  const references = collectWaitReferences(positionals, options.jobs);
+  if (references.length === 0) {
+    throw usageError("wait requires at least one job id or thread id.");
+  }
+  const mode = options.any ? "any" : "all";
+  const predicate = normalizeWaitPredicate(options.predicate);
+  const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
+  const targets = resolveWaitTargets(cwd, references);
+  const tags = waitPredicateTags(predicate);
+  if (mode === "any" && targets.length < 2) {
+    throw usageError("wait --any requires at least two job ids or thread ids.");
+  }
+  const result = await waitForTargetMatches(targets, tags, { mode, timeoutMs });
+  if (result.timedOut) {
+    const partial = result.matches ?? [];
+    throw new CliError(
+      `No ${predicate} event matched ${mode === "any" ? "any target" : "all targets"} within ${Math.round(timeoutMs / 1e3)}s.`,
+      {
+        class: "timeout",
+        code: "WAIT_TIMEOUT",
+        retryable: true,
+        suggestion: mode === "any" ? "Run `status --watch --all` to inspect live multi-job state." : "Run `status <job-id>` for pending jobs, or increase --timeout-ms.",
+        details: {
+          mode,
+          predicate,
+          summary: summarizeWaitMatches(partial, targets.length),
+          jobs: partial,
+          pending: targets.filter((target) => !partial.some((match) => match.jobId === target.job.id)).map((target) => ({
+            reference: target.reference,
+            jobId: target.job.id,
+            threadId: target.job.threadId,
+            eventsPath: target.eventsPath
+          }))
+        }
+      }
+    );
+  }
+  const elapsedMs = Date.now() - startedAt;
+  const matches = result.matches ?? [];
+  if (mode === "any") {
+    const winner = result.winner;
+    emitSuccess(
+      "wait",
+      {
+        mode,
+        predicate,
+        jobId: winner.jobId,
+        threadId: winner.threadId,
+        state: winner.state,
+        terminalTag: winner.terminalTag,
+        interruptTag: winner.interruptTag,
+        lastEventLine: winner.lastEventLine,
+        eventsPath: winner.eventsPath,
+        elapsedMs,
+        winner,
+        targets: targets.map((target) => ({
+          reference: target.reference,
+          jobId: target.job.id,
+          threadId: target.job.threadId,
+          eventsPath: target.eventsPath
+        }))
+      },
+      `${winner.state} ${winner.jobId} after ${Math.round(elapsedMs / 1e3)}s
+`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  if (!options.all && targets.length === 1 && predicate === "terminal") {
+    const [match] = matches;
+    emitSuccess(
+      "wait",
+      {
+        jobId: match.jobId,
+        threadId: match.threadId,
+        terminalTag: match.terminalTag,
+        lastEventLine: match.lastEventLine,
+        eventsPath: match.eventsPath,
+        elapsedMs
+      },
+      `${match.terminalTag} ${match.threadId} after ${Math.round(elapsedMs / 1e3)}s
+`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+  const matchedAt = matches.map((match) => match.matchedAtMs);
+  emitSuccess(
+    "wait",
+    {
+      mode,
+      predicate,
+      summary: summarizeWaitMatches(matches, targets.length),
+      jobs: matches,
+      firstMatchedAtMs: matchedAt.length ? Math.min(...matchedAt) - startedAt : null,
+      lastMatchedAtMs: matchedAt.length ? Math.max(...matchedAt) - startedAt : null,
       elapsedMs
     },
-    `${winner.result.tag} ${winner.target.job.id} after ${Math.round(elapsedMs / 1e3)}s
+    `all ${targets.length} jobs matched ${predicate} after ${Math.round(elapsedMs / 1e3)}s
 `,
     { json: options.json, startedAt }
   );
-}
-function scanTerminalEvent(eventsPath, pattern) {
-  try {
-    const data = fs21.readFileSync(eventsPath, "utf8");
-    for (const line of data.split("\n")) {
-      const m = pattern.exec(line);
-      if (m) return { timedOut: false, tag: m[1], line };
-    }
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  return null;
 }
 async function handleEvents(argv) {
   const startedAt = Date.now();
@@ -15665,7 +17842,7 @@ async function handleEvents(argv) {
   }
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path19.join(sessionDir, `${job.threadId}.events`);
+  const eventsPath = path21.join(sessionDir, `${job.threadId}.events`);
   const parseTagList = (raw) => {
     if (raw == null || raw === "") return null;
     const tags = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -15696,26 +17873,40 @@ async function handleEvents(argv) {
   const TERMINAL = TERMINAL_TAG_REGEX;
   let initial = "";
   let alreadyTerminal = false;
-  if (fs21.existsSync(eventsPath)) {
-    initial = fs21.readFileSync(eventsPath, "utf8");
+  let initialTerminalTag = null;
+  let initialTerminalLine = null;
+  if (fs22.existsSync(eventsPath)) {
+    initial = fs22.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
-      if (TERMINAL.test(line)) alreadyTerminal = true;
+      const terminal = TERMINAL.exec(line);
+      if (terminal && !alreadyTerminal) {
+        alreadyTerminal = true;
+        initialTerminalTag = terminal[1];
+        initialTerminalLine = line;
+      }
     }
   }
   const timeoutMs = Math.max(1e3, Number(options["timeout-ms"]) || 6e5);
   if (!options.follow || alreadyTerminal) {
+    const resultPayload = {
+      jobId: job.id,
+      threadId: job.threadId,
+      eventsPath,
+      followed: Boolean(options.follow),
+      filter: options.filter ?? null,
+      exclude: options.exclude ?? null
+    };
+    if (options.follow && alreadyTerminal) {
+      resultPayload.timedOut = false;
+      resultPayload.terminalTag = initialTerminalTag;
+      resultPayload.terminalLine = initialTerminalLine;
+      resultPayload.elapsedMs = 0;
+    }
     emitSuccess(
       "events",
-      {
-        jobId: job.id,
-        threadId: job.threadId,
-        eventsPath,
-        followed: Boolean(options.follow),
-        filter: options.filter ?? null,
-        exclude: options.exclude ?? null
-      },
+      resultPayload,
       "",
       { json: options.json, startedAt }
     );
@@ -15743,7 +17934,7 @@ async function handleEvents(argv) {
     const scanAppended = () => {
       let data;
       try {
-        data = fs21.readFileSync(eventsPath, "utf8");
+        data = fs22.readFileSync(eventsPath, "utf8");
       } catch (e) {
         if (e.code === "ENOENT") return;
         throw e;
@@ -15765,13 +17956,13 @@ async function handleEvents(argv) {
     };
     const attachWatcher = () => {
       try {
-        watcher = fs21.watch(eventsPath, { persistent: false }, scanAppended);
+        watcher = fs22.watch(eventsPath, { persistent: false }, scanAppended);
         scanAppended();
       } catch (e) {
         if (e.code === "ENOENT") {
           if (!pollTimer)
             pollTimer = setInterval(() => {
-              if (fs21.existsSync(eventsPath)) {
+              if (fs22.existsSync(eventsPath)) {
                 clearInterval(pollTimer);
                 pollTimer = null;
                 attachWatcher();
@@ -15782,11 +17973,11 @@ async function handleEvents(argv) {
         }
       }
     };
-    if (fs21.existsSync(eventsPath)) {
+    if (fs22.existsSync(eventsPath)) {
       attachWatcher();
     } else {
       pollTimer = setInterval(() => {
-        if (fs21.existsSync(eventsPath)) {
+        if (fs22.existsSync(eventsPath)) {
           clearInterval(pollTimer);
           pollTimer = null;
           attachWatcher();
@@ -15818,7 +18009,7 @@ async function handleEvents(argv) {
       timedOut,
       // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
       // distinguish happy-path closure from timeout without re-reading the
-      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN on success,
+      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN / CANCELLED on success,
       // or null when the stream ended via timeout. elapsedMs measures
       // follow duration only (not total job elapsed time).
       terminalTag,
@@ -15883,7 +18074,7 @@ async function handleSummary(argv) {
   const tailLines = parseInt(options.tail) || 200;
   let content;
   try {
-    content = fs21.readFileSync(session.ndjsonPath, "utf8");
+    content = fs22.readFileSync(session.ndjsonPath, "utf8");
   } catch {
     throw new CliError(
       `Cannot read session log: ${session.ndjsonPath}`,
@@ -15946,8 +18137,8 @@ function buildTranscript(entries, threadId) {
 }
 
 // src/handlers/registry.mjs
-import fs22 from "node:fs";
-import path20 from "node:path";
+import fs23 from "node:fs";
+import path22 from "node:path";
 function readReviewedBranchHeadSha(verdict) {
   const candidates = [
     verdict?.branch_head_sha,
@@ -15970,7 +18161,7 @@ function readCurrentTaskBranchHeadSha(meta, cwd) {
     meta?.worktree?.path,
     cwd
   ].filter(
-    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs22.existsSync(candidate) && all.indexOf(candidate) === index
+    (candidate, index, all) => typeof candidate === "string" && candidate.length > 0 && fs23.existsSync(candidate) && all.indexOf(candidate) === index
   );
   for (const candidateCwd of candidates) {
     const result = runCommand("git", ["rev-parse", "--verify", branch], {
@@ -16051,9 +18242,9 @@ function buildIterateArtifacts(taskId, execution = null, logFile = null) {
   const dir = jobDir(taskId);
   return {
     registry_dir: dir,
-    meta_path: path20.join(dir, "meta.json"),
-    review_path: path20.join(dir, "review.json"),
-    verdict_path: path20.join(dir, "verdict.json"),
+    meta_path: path22.join(dir, "meta.json"),
+    review_path: path22.join(dir, "review.json"),
+    verdict_path: path22.join(dir, "verdict.json"),
     events_path: execution?.payload?.eventsPath ?? null,
     events_dir: execution?.payload?.eventsDir ?? null,
     log_file: logFile
@@ -16454,10 +18645,10 @@ async function handleVerdict(argv) {
     throw usageError("verdict modes are mutually exclusive: choose one of --set, --payload-stdin, or --discard");
   }
   if (options.discard) {
-    const target = path20.join(jobDir(taskId), "verdict.json");
+    const target = path22.join(jobDir(taskId), "verdict.json");
     let removed = false;
-    if (fs22.existsSync(target)) {
-      fs22.rmSync(target, { force: true });
+    if (fs23.existsSync(target)) {
+      fs23.rmSync(target, { force: true });
       removed = true;
     }
     emitSuccess(
@@ -16619,14 +18810,14 @@ async function handleMerge(argv) {
   const meta = readMeta(taskId);
   if (!meta) {
     throw notFoundError(
-      `no meta.json found for ${taskId}; the task was not dispatched via --worktree-auto`
+      `no meta.json found for ${taskId}; the task was not dispatched as an isolated worktree task`
     );
   }
   const branch = meta.worktree?.branch;
   const baseRef = meta.worktree?.base_ref ?? "main";
   if (!branch) {
     throw new CliError(
-      `meta.json for ${taskId} missing worktree.branch \u2014 task may not have been dispatched via --worktree-auto`,
+      `meta.json for ${taskId} missing worktree.branch \u2014 task may not have been dispatched as an isolated worktree task`,
       { code: "MERGE_META_INVALID", class: "internal" }
     );
   }
@@ -16841,10 +19032,10 @@ process16.stderr.on("error", (err) => {
 });
 function writeCrashLog(kind, error) {
   try {
-    const crashDir = path21.join(os7.homedir(), ".codex-bridge", "crashes");
-    fs23.mkdirSync(crashDir, { recursive: true });
+    const crashDir = path23.join(os8.homedir(), ".codex-bridge", "crashes");
+    fs24.mkdirSync(crashDir, { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const file = path21.join(crashDir, `${ts}-${process16.pid}.log`);
+    const file = path23.join(crashDir, `${ts}-${process16.pid}.log`);
     const payload = {
       kind,
       ts,
@@ -16855,7 +19046,7 @@ function writeCrashLog(kind, error) {
       bridgeVersion: BRIDGE_VERSION,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack, code: error.code } : { raw: String(error) }
     };
-    fs23.writeFileSync(file, JSON.stringify(payload, null, 2));
+    fs24.writeFileSync(file, JSON.stringify(payload, null, 2));
     try {
       process16.stderr.write(
         `[codex-bridge] internal ${kind}: ${error?.message ?? error} \u2014 crash report at ${file}

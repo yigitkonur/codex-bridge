@@ -105,9 +105,9 @@ test("events --exclude HEARTBEAT drops both header and continuation lines", () =
   }
 });
 
-// Companion: the documented Monitor preset uses --exclude HEARTBEAT, so verify
-// every other tag from the canonical event vocabulary passes through.
-test("events with default --exclude HEARTBEAT preserves the rest of the tag vocabulary", () => {
+// Companion: the documented Monitor preset excludes heartbeat, directives,
+// and verbose checkpoint body while preserving concise checkpoint summaries.
+test("events with default monitor exclude preserves checkpoint summary but drops runtime echoes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-exclude-heartbeat-vocab-"));
   const workspace = path.join(root, "workspace");
   const pluginData = path.join(root, "plugin-data");
@@ -145,11 +145,13 @@ test("events with default --exclude HEARTBEAT preserves the rest of the tag voca
       `[DIRECTIVES] ${tid} | mode=default`,
       `[HEARTBEAT] ${tid} t=1m | phase=execute | pid=1`,
       "  noisy: should not appear",
+      `[CHECKPOINT_SUMMARY] ${tid} t=5m | phase=execute | tools=1 (rg:1) | last="rg src"`,
       `[CHECKPOINT] ${tid} t=5m | phase=execute`,
-      "  assistant: making progress",
+      "  assistant: verbose body should not appear",
       `[PIPELINE:review] 06:55:00`,
       `[PIPELINE:review:done] 06:55:30 verdict=approved findings=0`,
       `[PIPELINE:check:done] 06:55:35 complete=false missing=2 missing_items=["a","b"]`,
+      `[STALL_WARNING] ${tid} t=10m | phase=execute | no actionable progress for 1 checkpoint`,
       `[WARNING] ${tid} circuit-breaker fired`,
       `[INCOMPLETE] ${tid} | 0 files | +0 -0`,
     ].join("\n") + "\n";
@@ -165,7 +167,7 @@ test("events with default --exclude HEARTBEAT preserves the rest of the tag voca
 
     const result = spawnSync(
       process.execPath,
-      [bridgePath, "events", job.id, "--exclude", "HEARTBEAT", "--cwd", workspace],
+      [bridgePath, "events", job.id, "--exclude", "HEARTBEAT,CHECKPOINT", "--cwd", workspace],
       { cwd: workspace, env, encoding: "utf8" }
     );
 
@@ -176,14 +178,14 @@ test("events with default --exclude HEARTBEAT preserves the rest of the tag voca
     // as a member, doubled trailing backslash) that happened to work for our
     // test data but would mis-escape any tag containing brackets/backslashes.
     const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    for (const tag of ["DIRECTIVES", "CHECKPOINT", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "WARNING", "INCOMPLETE"]) {
+    for (const tag of ["CHECKPOINT_SUMMARY", "PIPELINE:review", "PIPELINE:review:done", "PIPELINE:check:done", "STALL_WARNING", "WARNING", "INCOMPLETE"]) {
       assert.match(result.stdout, new RegExp(`\\[${escapeRegExp(tag)}\\]`), `${tag} should pass through`);
     }
+    assert.doesNotMatch(result.stdout, /\[DIRECTIVES\]/);
     assert.doesNotMatch(result.stdout, /\[HEARTBEAT\]/);
+    assert.doesNotMatch(result.stdout, /\[CHECKPOINT\]/);
     assert.doesNotMatch(result.stdout, /noisy: should not appear/);
-
-    // Continuation lines under non-excluded headers must still be visible.
-    assert.match(result.stdout, /assistant: making progress/);
+    assert.doesNotMatch(result.stdout, /verbose body should not appear/);
 
     // Confirm the new check-stage payload survives the filter intact (P1-04).
     assert.match(result.stdout, /missing_items=\[/);

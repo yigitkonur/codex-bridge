@@ -135,7 +135,7 @@ const JSON_ENVELOPE_PROBES = Object.freeze([
   },
   {
     command: "setup --json",
-    expected: ["result.ready", "result.reviewGateLockPath", "result.reviewGateEnabled", "result.active_backend", "result.adapter_capabilities"],
+    expected: ["result.ready", "result.reviewGateLockPath", "result.reviewGateEnabled", "result.monitorHookInstalled", "result.active_backend", "result.adapter_capabilities"],
     test: "test/baseline-contracts.test.mjs"
   },
   {
@@ -147,7 +147,7 @@ const JSON_ENVELOPE_PROBES = Object.freeze([
 
 const COMMAND_COVERAGE = Object.freeze({
   setup: {
-    mutation: "project stop-review-gate lock and persisted setup state when enable/disable flags are used",
+    mutation: "project stop-review-gate lock and Claude user-settings Monitor hook mirror when setup flags are used",
     success_tests: ["test/official-plugin.test.mjs", "test/plugin-surfaces.test.mjs"],
     failure_tests: ["test/baseline-contracts.test.mjs"],
     baseline_gap: null

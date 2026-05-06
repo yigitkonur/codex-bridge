@@ -71,12 +71,18 @@ Terminal tags:
   `failing_stage`, and the JSON envelope before retrying.
 - `[INCOMPLETE]` - partial completion with artifacts present.
 - `[PLAN]` - plan-mode stopped for approval and is terminal for `wait`.
+- `[CANCELLED]` - user cancellation completed and is terminal for `wait`.
 
 Interrupt and progress tags:
 
 - `[QUESTION]` - backend is waiting for `respond`.
 - `[CONFIRMED]` - question response was accepted.
-- `[CHECKPOINT]` - periodic state snapshot.
+- `[CHECKPOINT_SUMMARY]` - concise periodic progress snapshot surfaced by the
+  default Monitor command.
+- `[CHECKPOINT]` - verbose periodic state snapshot, written for forensics and
+  excluded from the default Monitor command.
+- `[STALL_WARNING]` - non-terminal barren-checkpoint warning before terminal
+  stall detection.
 - `[HEARTBEAT]` - liveness pulse, excluded from the default Monitor command.
 - `[WARNING]` - non-fatal anomaly.
 
@@ -84,6 +90,9 @@ Pipeline tags:
 
 - `[PIPELINE:<stage>]` and `[PIPELINE:<stage>:done]` for `diff`, `review`,
   `fix`, and `check`.
+- `[PIPELINE:diff:large_change]`, `[PIPELINE:diff:approved]`, and
+  `[PIPELINE:diff:rejected]` for destructive/wide diff approval gates before
+  review/fix/check.
 - `[PIPELINE:review:failed]`, `[PIPELINE:check:failed]`,
   `[PIPELINE:done]`, and `[PIPELINE:failed]`.
 

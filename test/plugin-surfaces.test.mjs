@@ -158,7 +158,7 @@ function queuedTaskEnvelope(jobId = "task-mabc123-def456") {
       monitor: {
         tool_hint: {
           description: "codex-bridge task events",
-          command: `node "${path.join(rootPath, "plugin/scripts/codex-bridge.mjs")}" events ${jobId} --follow --exclude HEARTBEAT --timeout-ms 1800000`,
+          command: `node "${path.join(rootPath, "plugin/scripts/codex-bridge.mjs")}" events ${jobId} --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000`,
           timeout_ms: 3600000,
           persistent: false
         }
@@ -460,6 +460,7 @@ test("packaged plugin manifest paths resolve to plugin-local surfaces", () => {
     assert.deepEqual(hookScriptRefs, [
       "hooks/post-tool-bash.mjs",
       "hooks/pre-tool-agent.mjs",
+      "hooks/pre-tool-bash.mjs",
       "hooks/session-lifecycle-hook.mjs",
       "hooks/session-lifecycle-hook.mjs",
       "hooks/stop-gate.mjs",
@@ -523,13 +524,82 @@ test("all packaged CLAUDE_PLUGIN_ROOT references resolve inside plugin", () => {
   }
 });
 
-test("task command routes substantial work through the runner subagent and Monitor", () => {
+test("task command dispatches through Bash and terminal-only Monitor", () => {
   const taskCommand = readText("plugin/commands/task.md");
 
-  assert.match(taskCommand, /subagent_type: "codex-bridge:codex-bridge-runner"/);
+  assert.match(taskCommand, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
   assert.match(taskCommand, /task-resume-candidate --json/);
   assert.match(taskCommand, /result\.monitor\.tool_hint/);
+  assert.match(taskCommand, /Do not wrap Monitor in an Agent subagent/);
+  assert.match(taskCommand, /N > 1 parallel background tasks/);
+  assert.match(taskCommand, /status --watch/);
+  assert.match(taskCommand, /wait --any --predicate both/);
+  assert.match(taskCommand, /wait --all --jobs/);
   assert.match(taskCommand, /\[DONE\].*\[ERROR\].*\[INCOMPLETE\]/s);
+  assert.doesNotMatch(taskCommand, /subagent_type: "codex-bridge:codex-bridge-runner"/);
+});
+
+test("task help advertises explicit worktree base ref", () => {
+  const result = runBridge("src/codex-bridge.mjs", ["task", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--worktree-auto\|--no-worktree-auto/);
+  assert.match(result.stdout, /--base-ref <ref>/);
+  assert.match(result.stdout, /--on-branch <name>/);
+  assert.match(result.stdout, /Write-mode tasks use per-task worktree isolation by default/);
+  assert.match(result.stdout, /--no-worktree-auto opts into in-place edits/);
+  assert.match(result.stdout, /Base ref can be set with --base-ref/);
+  assert.match(result.stdout, /fail before dispatch if the launch checkout is not on the expected branch/);
+  assert.match(result.stdout, /Background Monitor hints are single-job/);
+  assert.match(result.stdout, /status --watch/);
+  assert.match(result.stdout, /wait --any --predicate both/);
+  assert.match(result.stdout, /wait --all/);
+});
+
+test("send help advertises branch assertion", () => {
+  const result = runBridge("src/codex-bridge.mjs", ["send", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--on-branch <name>/);
+  assert.match(result.stdout, /fail before dispatch if the checkout is not on the expected branch/);
+});
+
+test("first-use docs warn against stacked Monitor for parallel jobs", () => {
+  const legacySkill = readText("skill/SKILL.md");
+  const packagedSkill = readText("plugin/skills/codex-bridge/SKILL.md");
+  const legacyMonitorPatterns = readText("skill/references/monitor-patterns.md");
+
+  assert.match(legacySkill, /Parallel warning:[\s\S]*N > 1[\s\S]*do \*\*not\*\* stack N Monitor calls[\s\S]*wait --any --predicate both[\s\S]*wait --all[\s\S]*status --watch/);
+  assert.match(packagedSkill, /N > 1 parallel background jobs[\s\S]*do \*\*not\*\* stack one Monitor per job[\s\S]*wait --any --predicate both[\s\S]*wait --all[\s\S]*status --watch/);
+  assert.match(legacyMonitorPatterns, /Do not stack one Monitor per job/);
+  assert.match(legacyMonitorPatterns, /wait --all --jobs/);
+  assert.match(legacyMonitorPatterns, /wait --any --predicate both/);
+  assert.doesNotMatch(legacyMonitorPatterns, /Each task gets its own `events --follow`/);
+});
+
+test("task rejects base-ref without worktree-auto", () => {
+  const result = runBridge("src/codex-bridge.mjs", ["task", "--base-ref", "main", "--json", "noop"]);
+  assert.equal(parseBridgeError(result).code, "BASE_REF_REQUIRES_WORKTREE_AUTO");
+});
+
+test("task --on-branch rejects unexpected checkout before dispatch", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-on-branch-"));
+  const repo = path.join(tempRoot, "repo");
+  fs.mkdirSync(repo, { recursive: true });
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "bridge@example.test"]);
+  runGit(repo, ["config", "user.name", "Codex Bridge Test"]);
+  fs.writeFileSync(path.join(repo, "README.md"), "base\n", "utf8");
+  runGit(repo, ["add", "README.md"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  runGit(repo, ["branch", "-M", "main"]);
+  runGit(repo, ["checkout", "-b", "feature"]);
+
+  const result = runBridge(
+    "src/codex-bridge.mjs",
+    ["task", "--cwd", repo, "--on-branch", "main", "--json", "noop"],
+  );
+  const error = parseBridgeError(result);
+  assert.equal(error.code, "BRANCH_MISMATCH");
+  assert.match(error.message, /--on-branch=main, current branch=feature/);
 });
 
 test("bundled plugin CLI exposes the verdict command", () => {
@@ -842,6 +912,7 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   ].sort());
   assert.match(JSON.stringify(hooksConfig), /session-lifecycle-hook\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /pre-tool-agent\.mjs/);
+  assert.match(JSON.stringify(hooksConfig), /pre-tool-bash\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /post-tool-bash\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /user-prompt-submit\.mjs/);
   assert.match(JSON.stringify(hooksConfig), /subagent-stop\.mjs/);
@@ -864,6 +935,68 @@ test("Claude plugin wires lifecycle hooks through the bundled bridge CLI", () =>
   assert.match(stopHook, /decision: "block"/);
   assert.match(stopHook, /"scripts", "codex-bridge\.mjs"/);
   assert.doesNotMatch(stopHook, /"skill", "scripts", "codex-bridge\.mjs"/);
+});
+
+test("setup installs the Monitor hook mirror idempotently", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-monitor-hook-"));
+  try {
+    const home = path.join(tempRoot, "home");
+    const bin = path.join(tempRoot, "bin");
+    const pluginData = path.join(tempRoot, "plugin-data");
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(bin, { recursive: true });
+    fs.mkdirSync(pluginData, { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(bin, "node"));
+
+    const env = {
+      HOME: home,
+      PATH: bin,
+      CODEX_BRIDGE_PLUGIN_DATA: pluginData,
+    };
+
+    const first = runBridge("src/codex-bridge.mjs", ["setup", "--install-monitor-hook", "--json"], { env });
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const firstPayload = JSON.parse(first.stdout);
+    assert.equal(firstPayload.result.monitorHookInstalled, true);
+    assert.equal(firstPayload.result.monitorHookSettingsExists, true);
+    assert.equal(firstPayload.result.monitorHookScriptExists, true);
+
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const postToolUse = settings.hooks.PostToolUse;
+    assert.equal(postToolUse.length, 1);
+    assert.equal(postToolUse[0].matcher, "Bash|Agent");
+    assert.equal(postToolUse[0].hooks.length, 1);
+    assert.equal(postToolUse[0].hooks[0].type, "command");
+    assert.equal(postToolUse[0].hooks[0].timeout, 5);
+    assert.match(postToolUse[0].hooks[0].command, /hooks\/post-tool-bash\.mjs"/);
+
+    const second = runBridge("src/codex-bridge.mjs", ["setup", "--install-monitor-hook", "--json"], { env });
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    const settingsAfterSecondRun = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.equal(settingsAfterSecondRun.hooks.PostToolUse.length, 1);
+    assert.match(JSON.parse(second.stdout).result.actionsTaken[0], /already present/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("packaged Monitor docs require verification instead of promising hidden auto-arm", () => {
+  const packagedSkill = readText("plugin/skills/codex-bridge/SKILL.md");
+  const monitorPatterns = readText("plugin/skills/codex-bridge/references/monitor-patterns.md");
+  const orchestrationFlows = readText("plugin/skills/codex-bridge/references/orchestration-flows.md");
+  const taskCommand = readText("plugin/commands/task.md");
+
+  for (const body of [packagedSkill, monitorPatterns, orchestrationFlows, taskCommand]) {
+    assert.doesNotMatch(body, /hooks auto-arm Monitor/);
+    assert.doesNotMatch(body, /almost never have to remember/);
+    assert.doesNotMatch(body, /Monitor \(auto-armed\)/);
+  }
+  assert.match(monitorPatterns, /Do not assume the hook fired/);
+  assert.match(monitorPatterns, /\[STALL_WARNING\]/);
+  assert.match(orchestrationFlows, /\[STALL_WARNING\][\s\S]*terminal stall/);
+  assert.match(packagedSkill, /setup --install-monitor-hook/);
+  assert.match(taskCommand, /verify that Monitor starts streaming/);
 });
 
 test("stop review hook re-reads activation after legacy setup migration", { skip: "skipped during incremental T14 land — implementation details under refactoring" }, () => {
@@ -1026,6 +1159,25 @@ test("SubagentStop reports only the job id correlated from subagent output", () 
     { HOME: home, CODEX_BRIDGE_PLUGIN_DATA: pluginData },
   );
   assert.deepEqual(uncorrelated, { continue: true });
+});
+
+test("SubagentStop flags bridge subagents that stopped without dispatching", () => {
+  const output = runHook(
+    "plugin/hooks/subagent-stop.mjs",
+    {
+      hook_event_name: "SubagentStop",
+      agent_type: "codex-bridge:codex-bridge-runner",
+      last_assistant_message: "I need Bash permission to invoke codex-bridge.mjs.",
+      cwd: rootPath,
+      session_id: "session-a",
+    },
+  );
+
+  assert.equal(output.continue, true);
+  assert.equal(output.hookSpecificOutput.hookEventName, "SubagentStop");
+  assert.match(output.hookSpecificOutput.additionalContext, /did not dispatch/);
+  assert.match(output.hookSpecificOutput.additionalContext, /BASH_DENIED/);
+  assert.match(output.hookSpecificOutput.additionalContext, /treat this subagent result as failed/);
 });
 
 test("plugin Stop hook blocks when an active gate cannot verify setup", () => {
@@ -1338,6 +1490,8 @@ test("runner subagent remains a thin forwarding wrapper", () => {
   assert.match(runner, /name: codex-bridge-runner/);
   assert.match(runner, /Use exactly one `Bash` call/);
   assert.match(runner, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-bridge\.mjs" task/);
+  assert.match(runner, /BASH_DENIED/);
+  assert.match(runner, /Do not use this subagent for parallel dispatch/);
   assert.match(runner, /Do not inspect the repository/);
   assert.match(runner, /Return the stdout of the bridge command exactly as-is/);
 });

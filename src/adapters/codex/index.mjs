@@ -8,10 +8,15 @@ import {
   withAppServer,
 } from "./codex.mjs";
 import { readPendingRequestById, writeResponseFile } from "../../lib/pending-requests.mjs";
-import { resolveSessionDir, TERMINAL_TAG_REGEX } from "../../lib/session-log.mjs";
+import {
+  readEvents,
+  resolveSessionDir,
+  TERMINAL_TAG_REGEX,
+  TERMINAL_TAGS,
+} from "../../lib/session-log.mjs";
 import { buildSingleJobSnapshot, readStoredJob, resolveResultJob } from "../../lib/job-control.mjs";
-import { DEFAULT_CONFIG } from "../../lib/config.mjs";
-import { getConfig } from "../../lib/state.mjs";
+import { loadConfig } from "../../lib/config.mjs";
+import { ROOT_DIR } from "../../lib/runtime-paths.mjs";
 
 function buildCapabilities() {
   return Object.freeze({
@@ -61,9 +66,9 @@ function normalizeAdapterOptions(options = {}) {
     : {};
 }
 
-function defaultSessionDirForCwd(cwd) {
-  const config = getConfig(cwd);
-  return resolveSessionDir(config.session_dir ?? DEFAULT_CONFIG.session_dir);
+function defaultSessionDirForCwd(cwd, workspaceRoot = cwd) {
+  const config = loadConfig(ROOT_DIR, cwd, workspaceRoot);
+  return resolveSessionDir(config.session_dir, workspaceRoot);
 }
 
 function buildTurnOptions(prompt, options) {
@@ -94,6 +99,156 @@ function eventTagForLine(line) {
   if (terminal) return terminal[1];
   const generic = /^\[([^\]]+)\]/.exec(line);
   return generic?.[1] ?? "ADAPTER:codex:event";
+}
+
+const EVENT_TERMINAL_PHASE = Object.freeze({
+  DONE: "done",
+  ERROR: "error",
+  INCOMPLETE: "incomplete",
+  PLAN: "plan-pending",
+  CANCELLED: "cancelled",
+  UNKNOWN: "error",
+});
+
+const SUCCESS_TERMINAL_TAGS = new Set(["DONE", "PLAN"]);
+
+function workerTerminalTagForStatus(status) {
+  switch (status) {
+    case "completed":
+      return "DONE";
+    case "failed":
+    case "orphaned":
+      return "ERROR";
+    case "cancelled":
+      return "CANCELLED";
+    default:
+      return null;
+  }
+}
+
+function workerExitCodeForStatus(status) {
+  return status === "completed" ? 0 : 1;
+}
+
+function exitCodeForTerminalTag(tag, workerExitCode) {
+  if (!tag) return workerExitCode;
+  return SUCCESS_TERMINAL_TAGS.has(tag) ? 0 : 1;
+}
+
+function phaseForTerminalTag(tag, fallback) {
+  return EVENT_TERMINAL_PHASE[tag] ?? fallback ?? "error";
+}
+
+function firstEventLine(block) {
+  return String(block ?? "").split(/\r?\n/, 1)[0] ?? "";
+}
+
+function bracketTagForEventBlock(block) {
+  return /^\[([^\]]+)\]/.exec(firstEventLine(block))?.[1] ?? null;
+}
+
+function resolveStoredEventsPath(storedJob, threadId, cwd, workspaceRoot, options) {
+  const candidates = [
+    options.eventsPath,
+    storedJob?.result?.eventsPath,
+    storedJob?.result?.artifacts?.eventsPath,
+    storedJob?.eventsPath,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  if (!threadId) return null;
+  const eventDirs = [
+    options.sessionDir,
+    storedJob?.result?.eventsDir,
+    storedJob?.result?.artifacts?.eventsDir,
+    storedJob?.eventsDir,
+  ];
+  const configuredEventDir = eventDirs.find((candidate) => typeof candidate === "string" && candidate.trim());
+  const sessionDir = configuredEventDir
+    ? resolveSessionDir(configuredEventDir, workspaceRoot ?? cwd)
+    : defaultSessionDirForCwd(cwd, workspaceRoot);
+  return path.join(sessionDir, `${threadId}.events`);
+}
+
+function readEventTerminalState(eventsPath) {
+  if (!eventsPath || !fs.existsSync(eventsPath)) {
+    return { found: false, eventsPath: eventsPath ?? null, eventsFileExists: false };
+  }
+
+  const events = readEvents(eventsPath);
+  let pipelineFailed = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const rawTag = bracketTagForEventBlock(events[index]);
+    if (rawTag === "PIPELINE:failed") {
+      pipelineFailed = {
+        tag: "INCOMPLETE",
+        rawTag,
+        line: firstEventLine(events[index]),
+      };
+      continue;
+    }
+    if (TERMINAL_TAGS.includes(rawTag)) {
+      if (pipelineFailed && rawTag !== "ERROR") {
+        return {
+          found: true,
+          ...pipelineFailed,
+          eventsPath,
+          source: "pipeline-failed",
+        };
+      }
+      return {
+        found: true,
+        tag: rawTag,
+        rawTag,
+        line: firstEventLine(events[index]),
+        eventsPath,
+        source: "events-terminal",
+      };
+    }
+  }
+
+  if (pipelineFailed) {
+    return {
+      found: true,
+      ...pipelineFailed,
+      eventsPath,
+      source: "pipeline-failed",
+    };
+  }
+
+  return {
+    found: true,
+    tag: "UNKNOWN",
+    rawTag: null,
+    line: null,
+    eventsPath,
+    source: "events-missing-terminal",
+  };
+}
+
+function formatDiscrepancyReason(eventState, terminalTag, workerTerminalTag, workerExitCode) {
+  const eventTag = eventState.rawTag
+    ? `[${eventState.rawTag}]`
+    : "no terminal tag";
+  const classification =
+    eventState.rawTag && eventState.rawTag !== terminalTag
+      ? `, classified as [${terminalTag}]`
+      : "";
+  return `events emitted ${eventTag}${classification} but worker status implied [${workerTerminalTag ?? "UNKNOWN"}] (workerExitCode=${workerExitCode})`;
+}
+
+function storedFinalMessage(storedJob) {
+  const candidates = [
+    storedJob?.result?.rawOutput,
+    storedJob?.result?.raw_output,
+    storedJob?.result?.finalMessage,
+    storedJob?.result?.codex?.stdout,
+    storedJob?.result?.reviewText,
+  ];
+  return candidates.find((value) => typeof value === "string" && value.length > 0) ?? null;
 }
 
 async function dispatch(prompt, options = {}) {
@@ -171,30 +326,37 @@ async function cancel(_jobId, options = {}) {
   };
 }
 
-function storedFinalMessage(storedJob) {
-  const candidates = [
-    storedJob?.result?.rawOutput,
-    storedJob?.result?.raw_output,
-    storedJob?.result?.finalMessage,
-    storedJob?.result?.codex?.stdout,
-    storedJob?.result?.reviewText,
-  ];
-  return candidates.find((value) => typeof value === "string" && value.length > 0) ?? null;
-}
-
 async function getResult(jobId, options = {}) {
   const normalized = normalizeAdapterOptions(options);
   const cwd = normalized.cwd ?? process.cwd();
   const { workspaceRoot, job } = resolveResultJob(cwd, jobId);
   const storedJob = readStoredJob(workspaceRoot, job.id);
-  const exitCode = job.status === "completed" ? 0 : 1;
+  const workerExitCode = workerExitCodeForStatus(job.status);
+  const workerTerminalTag = workerTerminalTagForStatus(job.status);
+  const eventsPath = resolveStoredEventsPath(storedJob, job.threadId ?? storedJob?.threadId ?? null, cwd, workspaceRoot, normalized);
+  const eventState = readEventTerminalState(eventsPath);
+  const eventHasTerminal = eventState.found && eventState.source !== "events-missing-terminal";
+  const terminalTag = eventHasTerminal ? eventState.tag : workerTerminalTag;
+  const consistent = !eventHasTerminal || workerTerminalTag === null || workerTerminalTag === terminalTag;
+  const phase = eventHasTerminal
+    ? phaseForTerminalTag(terminalTag, storedJob?.result?.phase ?? job.phase ?? storedJob?.phase ?? job.status ?? "error")
+    : (job.phase ?? storedJob?.phase ?? job.status ?? "error");
+  const exitCode = exitCodeForTerminalTag(terminalTag, workerExitCode);
   const finalMessage = storedFinalMessage(storedJob);
   return {
     jobId: job.id,
     threadId: job.threadId ?? storedJob?.threadId ?? null,
-    phase: job.phase ?? storedJob?.phase ?? job.status ?? "error",
+    phase,
     exitCode,
-    terminalTag: job.status === "completed" ? "DONE" : job.status === "cancelled" ? "ERROR" : null,
+    terminalTag,
+    workerExitCode,
+    consistent,
+    discrepancyReason: consistent
+      ? null
+      : formatDiscrepancyReason(eventState, terminalTag, workerTerminalTag, workerExitCode),
+    eventsPath: eventState.eventsPath,
+    terminalSource: eventHasTerminal ? eventState.source : "worker-status",
+    eventTerminalLine: eventHasTerminal ? eventState.line ?? null : null,
     summary: finalMessage ?? job.summary ?? storedJob?.summary ?? null,
     finalMessage,
     artifacts: storedJob?.result?.artifacts ?? {},

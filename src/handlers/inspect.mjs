@@ -33,6 +33,7 @@ import {
   logNdjson,
   readNdjson,
   resolveSessionDir,
+  TERMINAL_TAGS,
   TERMINAL_TAG_REGEX,
   writePlan,
 } from "../lib/session-log.mjs";
@@ -94,7 +95,7 @@ import {
 export async function handleStatus(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs"],
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "interval", "watch-timeout-ms", "retention-days", "retention-jobs", "filter", "session", "since"],
     booleanOptions: ["json", "all", "wait", "prune-orphans", "cleanup", "watch", "dry-run"]
   });
 
@@ -113,12 +114,17 @@ export async function handleStatus(argv) {
     if (options["prune-orphans"] || options.cleanup || options.wait) {
       throw usageError("`--watch` is mutually exclusive with `--prune-orphans`/`--cleanup`/`--wait`.");
     }
+    if (options.filter) {
+      throw usageError("`--filter` is mutually exclusive with `--watch`.");
+    }
     const intervalMs = parseDurationOption("--interval", options.interval, { defaultMs: 10_000 });
     const overallTimeoutMs = parseDurationOption("--watch-timeout-ms", options["watch-timeout-ms"], { defaultMs: null });
     await runStatusWatch(cwd, {
       intervalMs,
       overallTimeoutMs,
       all: options.all,
+      session: options.session,
+      since: options.since,
       json: options.json,
       startedAt,
     });
@@ -134,6 +140,9 @@ export async function handleStatus(argv) {
   // does but we can't signal. Either outcome means "pid exists (or did)";
   // only ESRCH is a clear reap signal.
   if (options["prune-orphans"] || options.cleanup) {
+    if (options.filter) {
+      throw usageError("`--filter` is mutually exclusive with `--prune-orphans`/`--cleanup`.");
+    }
     const report = options.cleanup
       ? cleanupTerminalJobs(cwd, {
           dryRun: Boolean(options["dry-run"]),
@@ -150,6 +159,9 @@ export async function handleStatus(argv) {
 
   const reference = positionals[0] ?? "";
   if (reference) {
+    if (options.filter) {
+      throw usageError("`status --filter` does not take a job-id argument.");
+    }
     const snapshot = options.wait
       ? await waitForSingleJobSnapshot(cwd, reference, {
           timeoutMs: options["timeout-ms"],
@@ -167,18 +179,61 @@ export async function handleStatus(argv) {
     throw usageError("`status --wait` requires a job id.");
   }
 
-  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all: options.all }));
-  emitSuccess("status", report, renderStatusReport(report), {
+  const report = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, {
+    all: options.all,
+    session: options.session,
+    since: options.since,
+  }));
+  const filtered = options.filter ? filterStatusReport(report, options.filter) : report;
+  emitSuccess("status", filtered, renderStatusReport(filtered), {
     json: options.json,
     startedAt
   });
+}
+
+const STATUS_FILTERS = new Set([
+  "running",
+  "completed_success",
+  "completed_fail",
+  "completed_incomplete",
+  "cancelled",
+  "needs_attention",
+]);
+
+function filterStatusReport(report, filter) {
+  if (!STATUS_FILTERS.has(filter)) {
+    throw usageError(`Unknown status --filter value: ${filter}`);
+  }
+
+  if (filter === "needs_attention") {
+    return {
+      ...report,
+      filter,
+      filtered_jobs: report.needs_attention ?? [],
+      running: [],
+      latestFinished: null,
+      recent: [],
+    };
+  }
+
+  const jobs = report.by_state?.[filter] ?? [];
+  const attentionJobIds = new Set(jobs.map((job) => job.jobId ?? job.id));
+  return {
+    ...report,
+    filter,
+    filtered_jobs: jobs,
+    running: filter === "running" ? report.running : [],
+    latestFinished: null,
+    recent: [],
+    needs_attention: (report.needs_attention ?? []).filter((entry) => attentionJobIds.has(entry.jobId)),
+  };
 }
 
 // v1.4.1 — live multi-job status view. The sync fan-in primitive for N>1
 // orchestration. Exits when every tracked job is terminal
 // (status !== "queued" && !== "running"), on overall timeout, or on
 // Ctrl-C. Returns a summary envelope via emitSuccess once stable.
-async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json, startedAt }) {
+async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, session, since, json, startedAt }) {
   const deadline = overallTimeoutMs ? Date.now() + overallTimeoutMs : null;
   let ticks = 0;
   let interrupted = false;
@@ -188,19 +243,22 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, json, st
   try {
     while (true) {
       ticks += 1;
-      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all }));
+      const snapshot = applyStopReviewGateSnapshot(buildStatusSnapshot(cwd, { all, session, since }));
       const activeCount = snapshot.running?.length ?? 0;
       const tickEntry = {
         schema_version: "1.0",
         tick: ticks,
         ts: new Date().toISOString(),
         activeCount,
+        summary: snapshot.summary ?? null,
+        needsAttentionCount: snapshot.summary?.awaiting_attention ?? 0,
         running: (snapshot.running ?? []).map((j) => ({
           id: j.id,
           status: j.status,
           phase: j.phase ?? null,
           threadId: j.threadId ?? null,
           kind: j.kindLabel ?? j.kind ?? null,
+          progress: j.progress ?? null,
         })),
       };
       if (json) {
@@ -714,162 +772,61 @@ function renderResultTranscript(payload) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-function waitForTerminalEvent(eventsPath, pattern, timeoutMs) {
-  return new Promise((resolve) => {
-    let resolved = false;
-    let offset = 0;
-    let watcher = null;
-    let pollTimer = null;
-    let timer = null;
+const WAIT_PREDICATE_ALIASES = Object.freeze({
+  terminal: "terminal",
+  interrupt: "interrupt",
+  error: "error",
+  both: "both",
+  "terminal+interrupt": "both",
+  "interrupt+terminal": "both",
+  "terminal|interrupt": "both",
+  "interrupt|terminal": "both",
+});
 
-    const finish = (payload) => {
-      if (resolved) return;
-      resolved = true;
-      if (watcher) {
-        try { watcher.close(); } catch { /* noop */ }
-      }
-      if (pollTimer) clearInterval(pollTimer);
-      if (timer) clearTimeout(timer);
-      resolve(payload);
-    };
+const INTERRUPT_TAGS = Object.freeze(["PLAN", "QUESTION"]);
+const ERROR_TAGS = Object.freeze(["ERROR", "INCOMPLETE"]);
 
-    const scan = () => {
-      try {
-        const data = fs.readFileSync(eventsPath, "utf8");
-        if (data.length < offset) offset = 0; // truncated / rotated
-        const tail = data.slice(offset);
-        offset = data.length;
-        for (const line of tail.split("\n")) {
-          const m = pattern.exec(line);
-          if (m) {
-            finish({ timedOut: false, tag: m[1], line });
-            return;
-          }
-        }
-      } catch (e) {
-        if (e.code !== "ENOENT") throw e;
-      }
-    };
-
-    const attachWatcher = () => {
-      try {
-        watcher = fs.watch(eventsPath, { persistent: false }, scan);
-        // Catch the case where lines landed between existence check and watch attach.
-        scan();
-      } catch (e) {
-        if (e.code === "ENOENT") {
-          if (!pollTimer) {
-            pollTimer = setInterval(() => {
-              if (fs.existsSync(eventsPath)) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-                attachWatcher();
-              }
-            }, 500);
-          }
-        } else {
-          throw e;
-        }
-      }
-    };
-
-    if (fs.existsSync(eventsPath)) {
-      scan();
-      if (!resolved) attachWatcher();
-    } else {
-      pollTimer = setInterval(() => {
-        if (fs.existsSync(eventsPath)) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          attachWatcher();
-        }
-      }, 500);
-    }
-
-    timer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
-  });
-}
-
-export async function handleWait(argv) {
-  const startedAt = Date.now();
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms"],
-    booleanOptions: ["json", "any"]
-  });
-
-  const cwd = resolveCommandCwd(options);
-  if (options.any) {
-    await handleWaitAny(cwd, positionals, options, startedAt);
-    return;
-  }
-  const reference = positionals[0] ?? "";
-  if (!reference) {
-    throw usageError("wait requires <job-id-or-thread-id>");
-  }
-
-  let job;
-  try {
-    job = resolveResultJob(cwd, reference).job;
-  } catch (err) {
-    if (err?.code === "JOB_NOT_FINISHED") {
-      job = buildSingleJobSnapshot(cwd, reference).job;
-    } else {
-      throw err;
-    }
-  }
-  if (!job?.threadId) {
-    throw notFoundError(
-      `Job ${job?.id ?? reference} has no thread id yet.`,
-      "JOB_HAS_NO_THREAD"
+function normalizeWaitPredicate(value) {
+  if (value == null || String(value).trim() === "") return "terminal";
+  const key = String(value).trim().toLowerCase().replaceAll(",", "+").replace(/\s+/g, "");
+  const normalized = WAIT_PREDICATE_ALIASES[key];
+  if (!normalized) {
+    throw usageError(
+      `Unsupported wait predicate "${value}".`,
+      "Use one of: terminal, interrupt, error, both, interrupt+terminal."
     );
   }
-
-  const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
-  const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const eventsPath = path.join(sessionDir, `${job.threadId}.events`);
-  const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
-  const TERMINAL = TERMINAL_TAG_REGEX;
-
-  const result = await waitForTerminalEvent(eventsPath, TERMINAL, timeoutMs);
-  if (result.timedOut) {
-    throw new CliError(
-      `No terminal event in ${eventsPath} within ${Math.round(timeoutMs / 1000)}s.`,
-      {
-        class: "timeout",
-        code: "WAIT_TIMEOUT",
-        retryable: true,
-        suggestion: "Run `status <job-id>` to inspect live state."
-      }
-    );
-  }
-
-  const elapsedMs = Date.now() - startedAt;
-  emitSuccess(
-    "wait",
-    {
-      jobId: job.id,
-      threadId: job.threadId,
-      terminalTag: result.tag,
-      lastEventLine: result.line,
-      eventsPath,
-      elapsedMs
-    },
-    `${result.tag} ${job.threadId} after ${Math.round(elapsedMs / 1000)}s\n`,
-    { json: options.json, startedAt }
-  );
+  return normalized;
 }
 
-export async function handleWaitAny(cwd, references, options, startedAt) {
-  const refs = references.filter(Boolean);
-  if (refs.length < 2) {
-    throw usageError("wait --any requires at least two job ids or thread ids.");
+function waitPredicateTags(predicate) {
+  if (predicate === "terminal") return new Set(TERMINAL_TAGS);
+  if (predicate === "interrupt") return new Set(INTERRUPT_TAGS);
+  if (predicate === "error") return new Set(ERROR_TAGS);
+  return new Set([...TERMINAL_TAGS, ...INTERRUPT_TAGS]);
+}
+
+function collectWaitReferences(positionals, jobsOption) {
+  const raw = [
+    ...(Array.isArray(jobsOption) ? jobsOption : jobsOption == null ? [] : [jobsOption]),
+    ...positionals,
+  ];
+  const refs = [];
+  const seen = new Set();
+  for (const value of raw) {
+    for (const ref of String(value).split(/[\s,]+/)) {
+      if (!ref || seen.has(ref)) continue;
+      seen.add(ref);
+      refs.push(ref);
+    }
   }
-  const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
+  return refs;
+}
+
+function resolveWaitTargets(cwd, references) {
   const config = getBridgeConfig(cwd, resolveWorkspaceRoot(cwd));
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
-  const TERMINAL = TERMINAL_TAG_REGEX;
-
-  const targets = refs.map((reference) => {
+  return references.map((reference) => {
     let job;
     try {
       job = resolveResultJob(cwd, reference).job;
@@ -889,67 +846,278 @@ export async function handleWaitAny(cwd, references, options, startedAt) {
       eventsPath: path.join(sessionDir, `${job.threadId}.events`),
     };
   });
+}
 
-  const deadline = Date.now() + timeoutMs;
-  let winner = null;
-  while (!winner && Date.now() < deadline) {
-    for (const target of targets) {
-      const result = scanTerminalEvent(target.eventsPath, TERMINAL);
-      if (result) {
-        winner = { target, result };
-        break;
+function matchWaitLine(line, tags) {
+  const m = /^\[([^\]]+)\]/.exec(line);
+  if (!m) return null;
+  const rawTag = m[1];
+  const tag = rawTag.split(":")[0].toUpperCase();
+  if (!tags.has(tag)) return null;
+  return { tag, rawTag, line };
+}
+
+function createWaitWatcher(target, tags, onMatch) {
+  let closed = false;
+  let offset = 0;
+  let watcher = null;
+  let pollTimer = null;
+
+  const close = () => {
+    closed = true;
+    if (watcher) {
+      try { watcher.close(); } catch { /* noop */ }
+    }
+    if (pollTimer) clearInterval(pollTimer);
+  };
+
+  const scan = () => {
+    if (closed) return false;
+    try {
+      const data = fs.readFileSync(target.eventsPath, "utf8");
+      if (data.length < offset) offset = 0;
+      const tail = data.slice(offset);
+      offset = data.length;
+      for (const line of tail.split("\n")) {
+        const event = matchWaitLine(line, tags);
+        if (event) {
+          onMatch(target, event);
+          return true;
+        }
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    return false;
+  };
+
+  const attachWatcher = () => {
+    if (closed) return;
+    try {
+      watcher = fs.watch(target.eventsPath, { persistent: false }, scan);
+      scan();
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      if (!pollTimer) {
+        pollTimer = setInterval(() => {
+          if (fs.existsSync(target.eventsPath)) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            attachWatcher();
+          }
+        }, 500);
       }
     }
-    if (!winner) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
-  if (!winner) {
-    throw new CliError(`No terminal event for any target within ${Math.round(timeoutMs / 1000)}s.`, {
-      class: "timeout",
-      code: "WAIT_TIMEOUT",
-      retryable: true,
-      suggestion: "Run `status --watch --all` to inspect live multi-job state.",
-    });
-  }
+  };
 
-  const elapsedMs = Date.now() - startedAt;
-  emitSuccess(
-    "wait",
-    {
-      mode: "any",
-      winner: {
-        reference: winner.target.reference,
-        jobId: winner.target.job.id,
-        threadId: winner.target.job.threadId,
-        terminalTag: winner.result.tag,
-        lastEventLine: winner.result.line,
-        eventsPath: winner.target.eventsPath,
-      },
-      targets: targets.map((target) => ({
+  if (!scan()) attachWatcher();
+  return { close };
+}
+
+function waitForTargetMatches(targets, tags, { mode, timeoutMs }) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const watchers = [];
+    const matches = new Map();
+    let timer = null;
+
+    const closeAll = () => {
+      for (const watcher of watchers) watcher.close();
+      if (timer) clearTimeout(timer);
+    };
+
+    const finish = (payload) => {
+      if (resolved) return;
+      resolved = true;
+      closeAll();
+      resolve(payload);
+    };
+
+    const onMatch = (target, event) => {
+      if (resolved || matches.has(target.job.id)) return;
+      const match = {
         reference: target.reference,
         jobId: target.job.id,
         threadId: target.job.threadId,
+        state: event.tag,
+        rawTag: event.rawTag,
+        terminalTag: TERMINAL_TAGS.includes(event.tag) ? event.tag : null,
+        interruptTag: INTERRUPT_TAGS.includes(event.tag) ? event.tag : null,
+        lastEventLine: event.line,
         eventsPath: target.eventsPath,
-      })),
-      elapsedMs,
-    },
-    `${winner.result.tag} ${winner.target.job.id} after ${Math.round(elapsedMs / 1000)}s\n`,
-    { json: options.json, startedAt }
-  );
+        matchedAtMs: Date.now(),
+      };
+      matches.set(target.job.id, match);
+      if (mode === "any") {
+        finish({ timedOut: false, winner: match, matches: [...matches.values()] });
+      } else if (matches.size === targets.length) {
+        finish({ timedOut: false, matches: [...matches.values()] });
+      }
+    };
+
+    for (const target of targets) {
+      const watcher = createWaitWatcher(target, tags, onMatch);
+      watchers.push(watcher);
+      if (resolved) {
+        watcher.close();
+        return;
+      }
+    }
+
+    timer = setTimeout(() => {
+      finish({ timedOut: true, matches: [...matches.values()] });
+    }, timeoutMs);
+  });
 }
 
-function scanTerminalEvent(eventsPath, pattern) {
-  try {
-    const data = fs.readFileSync(eventsPath, "utf8");
-    for (const line of data.split("\n")) {
-      const m = pattern.exec(line);
-      if (m) return { timedOut: false, tag: m[1], line };
-    }
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+function summarizeWaitMatches(matches, total) {
+  const summary = {
+    total,
+    matched: matches.length,
+    pending: total - matches.length,
+    completed: 0,
+    plan: 0,
+    failed: 0,
+    cancelled: 0,
+    errors: 0,
+    incomplete: 0,
+    questions: 0,
+    interrupts: 0,
+    terminal: 0,
+  };
+  for (const match of matches) {
+    if (match.state === "DONE") summary.completed += 1;
+    if (match.state === "PLAN") summary.plan += 1;
+    if (match.state === "CANCELLED") summary.cancelled += 1;
+    if (match.state === "ERROR") summary.errors += 1;
+    if (match.state === "INCOMPLETE") summary.incomplete += 1;
+    if (match.state === "QUESTION") summary.questions += 1;
+    if (match.terminalTag) summary.terminal += 1;
+    if (match.interruptTag) summary.interrupts += 1;
   }
-  return null;
+  summary.failed = summary.errors + summary.incomplete;
+  return summary;
+}
+
+export async function handleWait(argv) {
+  const startedAt = Date.now();
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "predicate"],
+    repeatableValueOptions: ["jobs"],
+    booleanOptions: ["json", "any", "all"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  if (options.any && options.all) {
+    throw usageError("Pass either --any OR --all, not both.");
+  }
+  const references = collectWaitReferences(positionals, options.jobs);
+  if (references.length === 0) {
+    throw usageError("wait requires at least one job id or thread id.");
+  }
+  const mode = options.any ? "any" : "all";
+  const predicate = normalizeWaitPredicate(options.predicate);
+  const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
+  const targets = resolveWaitTargets(cwd, references);
+  const tags = waitPredicateTags(predicate);
+
+  if (mode === "any" && targets.length < 2) {
+    throw usageError("wait --any requires at least two job ids or thread ids.");
+  }
+  const result = await waitForTargetMatches(targets, tags, { mode, timeoutMs });
+  if (result.timedOut) {
+    const partial = result.matches ?? [];
+    throw new CliError(
+      `No ${predicate} event matched ${mode === "any" ? "any target" : "all targets"} within ${Math.round(timeoutMs / 1000)}s.`,
+      {
+        class: "timeout",
+        code: "WAIT_TIMEOUT",
+        retryable: true,
+        suggestion: mode === "any"
+          ? "Run `status --watch --all` to inspect live multi-job state."
+          : "Run `status <job-id>` for pending jobs, or increase --timeout-ms.",
+        details: {
+          mode,
+          predicate,
+          summary: summarizeWaitMatches(partial, targets.length),
+          jobs: partial,
+          pending: targets
+            .filter((target) => !partial.some((match) => match.jobId === target.job.id))
+            .map((target) => ({
+              reference: target.reference,
+              jobId: target.job.id,
+              threadId: target.job.threadId,
+              eventsPath: target.eventsPath,
+            })),
+        }
+      }
+    );
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  const matches = result.matches ?? [];
+  if (mode === "any") {
+    const winner = result.winner;
+    emitSuccess(
+      "wait",
+      {
+        mode,
+        predicate,
+        jobId: winner.jobId,
+        threadId: winner.threadId,
+        state: winner.state,
+        terminalTag: winner.terminalTag,
+        interruptTag: winner.interruptTag,
+        lastEventLine: winner.lastEventLine,
+        eventsPath: winner.eventsPath,
+        elapsedMs,
+        winner,
+        targets: targets.map((target) => ({
+          reference: target.reference,
+          jobId: target.job.id,
+          threadId: target.job.threadId,
+          eventsPath: target.eventsPath,
+        })),
+      },
+      `${winner.state} ${winner.jobId} after ${Math.round(elapsedMs / 1000)}s\n`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+
+  if (!options.all && targets.length === 1 && predicate === "terminal") {
+    const [match] = matches;
+    emitSuccess(
+      "wait",
+      {
+        jobId: match.jobId,
+        threadId: match.threadId,
+        terminalTag: match.terminalTag,
+        lastEventLine: match.lastEventLine,
+        eventsPath: match.eventsPath,
+        elapsedMs
+      },
+      `${match.terminalTag} ${match.threadId} after ${Math.round(elapsedMs / 1000)}s\n`,
+      { json: options.json, startedAt }
+    );
+    return;
+  }
+
+  const matchedAt = matches.map((match) => match.matchedAtMs);
+  emitSuccess(
+    "wait",
+    {
+      mode,
+      predicate,
+      summary: summarizeWaitMatches(matches, targets.length),
+      jobs: matches,
+      firstMatchedAtMs: matchedAt.length ? Math.min(...matchedAt) - startedAt : null,
+      lastMatchedAtMs: matchedAt.length ? Math.max(...matchedAt) - startedAt : null,
+      elapsedMs
+    },
+    `all ${targets.length} jobs matched ${predicate} after ${Math.round(elapsedMs / 1000)}s\n`,
+    { json: options.json, startedAt }
+  );
 }
 
 export async function handleEvents(argv) {
@@ -1056,28 +1224,42 @@ export async function handleEvents(argv) {
   // present so --follow can short-circuit on already-completed events files.
   let initial = "";
   let alreadyTerminal = false;
+  let initialTerminalTag = null;
+  let initialTerminalLine = null;
   if (fs.existsSync(eventsPath)) {
     initial = fs.readFileSync(eventsPath, "utf8");
     for (const line of initial.split("\n")) {
       if (!line) continue;
       if (passes(line)) writeEventLine(line);
-      if (TERMINAL.test(line)) alreadyTerminal = true;
+      const terminal = TERMINAL.exec(line);
+      if (terminal && !alreadyTerminal) {
+        alreadyTerminal = true;
+        initialTerminalTag = terminal[1];
+        initialTerminalLine = line;
+      }
     }
   }
 
   const timeoutMs = Math.max(1000, Number(options["timeout-ms"]) || 600_000);
 
   if (!options.follow || alreadyTerminal) {
+    const resultPayload = {
+      jobId: job.id,
+      threadId: job.threadId,
+      eventsPath,
+      followed: Boolean(options.follow),
+      filter: options.filter ?? null,
+      exclude: options.exclude ?? null
+    };
+    if (options.follow && alreadyTerminal) {
+      resultPayload.timedOut = false;
+      resultPayload.terminalTag = initialTerminalTag;
+      resultPayload.terminalLine = initialTerminalLine;
+      resultPayload.elapsedMs = 0;
+    }
     emitSuccess(
       "events",
-      {
-        jobId: job.id,
-        threadId: job.threadId,
-        eventsPath,
-        followed: Boolean(options.follow),
-        filter: options.filter ?? null,
-        exclude: options.exclude ?? null
-      },
+      resultPayload,
       "",
       { json: options.json, startedAt }
     );
@@ -1087,7 +1269,7 @@ export async function handleEvents(argv) {
   // Tail mode — follow appends until a terminal tag or the timeout.
   let timedOut = false;
   // Capture the terminal tag line so the end-of-stream envelope can report
-  // which event actually closed the stream (DONE / ERROR / INCOMPLETE / PLAN).
+  // which event actually closed the stream (DONE / ERROR / INCOMPLETE / PLAN / CANCELLED).
   // Pre-1.2.5 the envelope only said `timedOut: true/false`, which
   // under-determined Monitor's "stream ended" signal — callers couldn't
   // tell happy-path [DONE] from an error-closure without re-reading the
@@ -1199,7 +1381,7 @@ export async function handleEvents(argv) {
       timedOut,
       // Final-envelope fields added in 1.2.5 so Monitor / orchestrators can
       // distinguish happy-path closure from timeout without re-reading the
-      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN on success,
+      // file. terminalTag is one of DONE / ERROR / INCOMPLETE / PLAN / CANCELLED on success,
       // or null when the stream ended via timeout. elapsedMs measures
       // follow duration only (not total job elapsed time).
       terminalTag,

@@ -21,7 +21,7 @@ All four layers are honored. Before 1.1.0, only the skill config layer was read 
 |-----|------|---------|-------------|
 | `mode` | string | `"plan"` | Collaboration mode: `"plan"` (plan first) or `"default"` (execute directly) |
 | `model` | string | `"gpt-5.4"` | Default model. Inherited from Codex user config if not set. |
-| `effort` | string | `"xhigh"` | Execution reasoning effort. Plan mode always uses `"xhigh"` regardless. Shipped default raised from `"high"` to `"xhigh"` in 1.3.0 — live delegations consistently benefited from xhigh; set to `"high"` (or lower) or pass `--effort high` for cheaper turns. |
+| `effort` | string | `"xhigh"` | Execution reasoning effort. Plan turns default to `"xhigh"`, but an explicit per-run `--effort` is honored. Shipped default raised from `"high"` to `"xhigh"` in 1.3.0 — live delegations consistently benefited from xhigh; set to `"high"` (or lower) for a cheaper execute default. |
 | `auto_review` | boolean | `true` | Run automatic review after task execution completes |
 | `post_task_prompt` | string | (see below) | Completion check prompt. Empty string disables it. |
 | `prompt_footer` | string | (see below) | Text appended to every prompt. Used to instruct Codex to use `requestUserInput` tool for questions. |
@@ -33,9 +33,12 @@ All four layers are honored. Before 1.1.0, only the skill config layer was read 
 | `idle_timeout_ms` | integer | `300000` | No-event idle watchdog: max wall-clock gap between app-server notifications before a turn is failed with `ClientTimeout`. CLI override: `--idle-timeout-ms`. |
 | `turn_plan_ms` | integer | `1800000` | Per-turn timeout for plan turns. Raised to 30 min in 1.3.0 — matches `turn_default_ms`; pre-1.3.0 the plan budget was 5 min (300 000 ms) and routinely killed live plans mid-reasoning. CLI override: `--turn-plan-ms` (task) / `--turn-timeout-ms` (send when `--mode plan`). |
 | `turn_default_ms` | integer | `1800000` | Per-turn timeout for execute turns (also covers send turns in default mode). Raised to 30 min in 1.3.0 — pre-1.3.0 was 600 000 ms (10 min), and interrupted multi-file ports that were still actively writing. CLI override: `--turn-default-ms` (task) / `--turn-timeout-ms` (send). |
-| `pipeline_stage_ms` | integer | `300000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
-| `pipeline_total_ms` | integer | `900000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
+| `pipeline_stage_ms` | integer | `720000` | Per-stage timeout for auto-pipeline (review / fix / check). CLI override: `--pipeline-stage-timeout-ms`. |
+| `pipeline_total_ms` | integer | `1800000` | Total auto-pipeline timeout across all stages. CLI override: `--pipeline-total-timeout-ms`. |
 | `question_answer_ms` | integer | `300000` | How long `requestUserInput` waits for a response before logging `QUESTION_TIMEOUT` and replying to the upstream server request with `result: { answers: {} }` (an empty-answer success response, not a rejection — see `src/codex-bridge.mjs:2197`). CLI override: `--question-timeout-ms`. |
+| `destructive_diff_mode` | string | `"pause"` | What to do when the auto-pipeline diff exceeds the destructive thresholds: `"pause"`, `"warn"`, or `"ignore"`. |
+| `destructive_diff_lines_deleted` | integer | `1000` | Pause/warn threshold for deleted lines in the task-base diff. |
+| `destructive_diff_files_changed` | integer | `30` | Pause/warn threshold for changed files in the task-base diff. |
 | `default_backend` | string | `"codex"` fallback | Backend selected when no `--backend`, `CODEX_BRIDGE_BACKEND`, task metadata backend, or matching `adapter_routing` entry is set. In this build only `codex` is implemented. |
 | `adapter_routing` | object | unset | Optional map of subagent type to `{ backend }`. Routing entries from all config layers are checked before any `default_backend` layer; cwd routing wins over workspace routing, which wins over skill config routing. |
 
@@ -59,8 +62,8 @@ Several `CODEX_BRIDGE_*` env vars override runtime-only knobs. **When they are r
 | Env var | Default | Read when | Purpose |
 |---|---|---|---|
 | `CODEX_BRIDGE_HEARTBEAT_MS` | `60000` (60 s) | once per `task` / `send` turn (heartbeat-loop init) | Interval for `[HEARTBEAT]` events written to `.events`. Emits unconditionally regardless of Codex activity — proves the observability channel is live even during silent reasoning windows. |
-| `CODEX_BRIDGE_CHECKPOINT_MS` | `300000` (5 min) | once per `task` / `send` turn (checkpoint-loop init) | Interval for `[CHECKPOINT]` digests (last assistant message + tool calls + git delta). Also drives the stall detector (see below). |
-| `CODEX_BRIDGE_STALL_CHECKPOINTS` | `3` | once per `task` / `send` turn (checkpoint-loop init) | Consecutive **barren** checkpoint windows (no commands, no file changes, no plans) before the bridge emits `[ERROR] \| StallDetected` and stops the heartbeat/checkpoint timers. The barren counter only starts after the first actionable item lands (grace period); default stall window = `CHECKPOINT_MS × STALL_CHECKPOINTS` = 15 min once Codex is past that grace. |
+| `CODEX_BRIDGE_CHECKPOINT_MS` | `300000` (5 min) | once per `task` / `send` turn (checkpoint-loop init) | Interval for `[CHECKPOINT_SUMMARY]` and verbose `[CHECKPOINT]` digests. Also drives the stall detector (see below). |
+| `CODEX_BRIDGE_STALL_CHECKPOINTS` | `3` | once per `task` / `send` turn (checkpoint-loop init) | Consecutive **barren** checkpoint windows (no commands, no file changes, no plans) before the bridge emits `[ERROR] \| StallDetected` and stops the heartbeat/checkpoint timers. Earlier barren windows emit non-terminal `[STALL_WARNING]`. The barren counter only starts after the first actionable item lands (grace period); default terminal stall window = `CHECKPOINT_MS × STALL_CHECKPOINTS` = 15 min once Codex is past that grace. |
 | `CODEX_BRIDGE_NO_UPDATE_CHECK` | unset | every bridge invocation (auto-apply hot path) | Set to `"1"` (strict equality) to disable the silent auto-apply that re-installs `yigitkonur/codex-bridge` via `npx -y skills add` on non-`--json`, non-`update` invocations (rate-limited to once/hour/workspace). This is the only opt-out. |
 | `CODEX_BRIDGE_BACKEND` | unset | before `task`, `send`, `review`, `adversarial-review`, and `version` resolve the active adapter | Backend override below `--backend` and above task metadata / config. In this build only `codex` is implemented; other names exit 6 `BACKEND_INCAPABLE`. |
 
@@ -161,11 +164,11 @@ codex_bridge:
 ```yaml
 codex_bridge:
   turn_default_ms: 1800000       # 30 min per execute turn
-  pipeline_stage_ms: 600000      # 10 min per review/fix/check stage
+  pipeline_stage_ms: 1200000     # 20 min per review/fix/check stage
   pipeline_total_ms: 1800000     # 30 min total pipeline cap
 ```
 
-Use for multi-file bootstrap tasks (Xcode/SPM projects, large migrations). Per-invocation alternative: pass `--turn-default-ms 1800000 --pipeline-stage-timeout-ms 600000 --pipeline-total-timeout-ms 1800000` on `task` instead of editing the config.
+Use for multi-file bootstrap tasks (Xcode/SPM projects, large migrations). Per-invocation alternative: pass `--turn-default-ms 1800000 --pipeline-stage-timeout-ms 1200000 --pipeline-total-timeout-ms 1800000` on `task` instead of editing the config.
 
 ### Human-in-the-loop questions (slow answering)
 ```yaml

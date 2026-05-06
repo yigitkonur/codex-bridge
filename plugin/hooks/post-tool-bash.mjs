@@ -433,7 +433,8 @@ function main() {
   const block = [
     "## Codex-Bridge: arm the Monitor for this background job",
     "",
-    `A background codex-bridge task just dispatched (jobId=${monitor.jobId}). Arm the Monitor tool now with the EXACT payload below — do not modify it. The Monitor will surface progress (CHECKPOINT, PLAN, QUESTION) and self-terminate on [DONE]/[ERROR]/[INCOMPLETE]/[PLAN].`,
+    `A background codex-bridge task just dispatched (jobId=${monitor.jobId}). Arm the Monitor tool now with the EXACT payload below — do not modify it. The Monitor will surface progress (CHECKPOINT_SUMMARY, PLAN, QUESTION) and self-terminate on [DONE]/[ERROR]/[INCOMPLETE]/[PLAN]/[CANCELLED].`,
+    "Do not wrap this Monitor call in an Agent subagent; the parent-thread Monitor is the terminal-status source.",
     "",
     "Monitor input:",
     JSON.stringify(monitor.hint, null, 2),

@@ -5,8 +5,8 @@ description: >
   Codex through a hook-driven runtime. Use when the user says "have Codex…",
   "run this by Codex", asks for an adversarial review, or wants a
   plan→execute→review→merge loop. The plugin's hooks intercept native Agent
-  spawns (Explore-class), auto-arm Monitor on background dispatches, isolate
-  write-mode tasks in a per-task git worktree, and surface running-job state
+  spawns (Explore-class), surface Monitor handoffs for background dispatches,
+  isolate write-mode tasks in a per-task git worktree, and surface running-job state
   into context — so the orchestrator rarely has to teach itself how to drive
   the bridge.
 compatibility: Requires Node.js 22+, the Codex CLI on $PATH (`npm i -g @openai/codex && codex login`), and Claude Code v1.0+. macOS or Linux — the JSON-RPC broker uses unix sockets.
@@ -23,7 +23,16 @@ Codex is the executor; you are the orchestrator. Most of the wiring is in the ru
 
 Tasks are read-only unless the command explicitly opts into writes or config
 sets a wider sandbox. For file-changing work, use `--write`; for bridge-managed
-isolation, pair it with `--worktree-auto`.
+isolation, write-mode tasks use a worktree by default. `--worktree-auto`
+remains accepted for explicitness; use `--no-worktree-auto` only when you
+intentionally want in-place edits in the launch checkout. Use repo-relative
+prompt paths; absolute paths inside the launch checkout are rejected because
+they would target the main checkout. Use `--base-ref <ref>` when the isolated
+task should start from a branch or commit other than the current checkout. Use
+`--on-branch <name>` on `task` or `send` when the launch checkout must match a
+specific branch before dispatch. If a `[BRANCH_SWITCHED]` event appears, the
+task cwd's branch changed between bridge samples; inspect the current branch
+and task diff before continuing.
 
 ## When to use codex-bridge
 
@@ -44,12 +53,14 @@ isolation, pair it with `--worktree-auto`.
 
 ## How the runtime helps you
 
-You almost never have to remember the wiring — the hooks do it:
+The runtime keeps the wiring close to the command output:
 
 - **PreToolUse(Agent)** intercepts Explore-class subagents and reroutes them through codex-bridge. Pass-through for Plan, general-purpose, and codex-bridge:* types.
-- **PostToolUse(Bash|Agent)** parses accepted bridge envelopes and emits an `additionalContext` block with the literal Monitor invocation. You arm it on the next turn — no manual derivation.
+- **PostToolUse(Bash|Agent)** attempts to parse accepted bridge envelopes and emit an `additionalContext` block with the literal Monitor invocation. If you see that block, arm Monitor with it. If not, use `result.monitor.tool_hint` from the dispatch envelope. `setup --install-monitor-hook` installs the user-settings mirror that improves this handoff on Claude Code versions where plugin-bundled `additionalContext` is dropped.
 - **SessionStart** injects running-job status into context, so you start every session oriented.
 - **Stop** can run the opt-in stop-time review gate. Pending verdicts are surfaced through `verdicts --pending`; check and resolve them before exiting.
+
+For N > 1 parallel background jobs, do **not** stack one Monitor per job. The Monitor hint is single-job; use `wait --any --predicate both` for the next actionable job, `wait --all` as the wave barrier, or `/codex-bridge:status --watch` when you want a live table. If you poll `status --json`, branch on `summary.completed_fail` and `needs_attention`; `summary.running === 0` is only the terminal-state barrier.
 
 When a hook misbehaves, set `CODEX_BRIDGE_HOOK_DISABLE=<name>` (or `=all`) and re-run.
 
@@ -76,7 +87,7 @@ Minimum useful brief — `goal` and `worker_assignment` are the only required ke
 Pass it to either subcommand:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json --write --background --worktree-auto --brief @brief.json "Implement the task described in the Codex Bridge structured brief."
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json --write --background --base-ref main --brief @brief.json "Implement the task described in the Codex Bridge structured brief."
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" adversarial-review --brief @brief.json
 ```
 
@@ -116,9 +127,11 @@ Write-mode tasks land in `<repo>/../.codex-bridge-worktrees/<task_id>` on a `sub
 Everything below is owned by another canonical surface. Read those when you need the detail; don't expect SKILL.md to mirror them.
 
 - **Per-subcommand reference** — `node …/codex-bridge.mjs <sub> --help`. The `--json` envelope's `error.code`, `error.suggestion`, and `result.next_action.command` are also self-documenting.
+- **Result state truth** — `references/state-machine.md` documents how `result --json` derives `adapterResult.terminalTag` from `.events` and reports worker/event divergence.
 - **Final answer extraction** — `result <job-id> --transcript --final-only --format text` prints Codex's stored final assistant message without raw NDJSON queries.
 - **Event stream** — `events --help` shows the supported filters. Treat unknown tags as forward-compat — pass them through, don't filter on assumed vocabulary.
 - **Config keys** — `config show --json` prints the merged config. Edit `~/.codex-bridge/config.yaml`, `<workspace>/config.yaml`, or the cwd `config.yaml`; the resolution order is documented there.
+- **Pipeline timeouts** — per-stage pipeline default is 12 min; for very large reviews use `task --pipeline-stage-timeout-ms <ms> --pipeline-total-timeout-ms <ms>`.
 - **Error decision tree** — `references/error-recovery.md` (decision tree by `error.code` + `origin`).
 - **Brief composition** — `references/brief-composition.md` (full schema + when to use which field).
 - **One canonical orchestration flow** — `references/orchestration-flows.md`.

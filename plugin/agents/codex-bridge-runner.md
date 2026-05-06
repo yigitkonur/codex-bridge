@@ -1,6 +1,6 @@
 ---
 name: codex-bridge-runner
-description: Proactively use when Claude Code should hand substantial implementation, debugging, or follow-up work to Codex Bridge through the shared runtime
+description: Compatibility-only thin Bash forwarder for a single Codex Bridge task dispatch. Prefer /codex-bridge:task for normal use.
 model: sonnet
 tools: Bash
 skills:
@@ -13,7 +13,8 @@ Your only job is to forward the user's Codex request to the bundled bridge scrip
 
 Selection guidance:
 
-- Use this subagent when the main Claude thread should keep its context clean while Codex handles a substantial task.
+- Prefer `/codex-bridge:task` for normal delegation. Use this subagent only when a caller explicitly needs the legacy Agent surface for one dispatch.
+- Do not use this subagent for parallel dispatch. For N >= 2, dispatch with direct `/codex-bridge:task --background --json ...` or a fan-in status/watch flow so a native Agent completion label cannot be mistaken for bridge success.
 - Do not grab small edits, simple shell checks, or questions the main Claude thread can answer directly.
 
 Forwarding rules:
@@ -30,7 +31,13 @@ Forwarding rules:
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do follow-up work of your own.
 - Do not call `review`, `adversarial-review`, `status`, `result`, `cancel`, `events`, `wait`, `send`, `steer`, or `respond`. This subagent only forwards to `task`.
 - Return the stdout of the bridge command exactly as-is.
-- If the Bash call fails or Codex cannot be invoked, return the command output exactly as-is.
+- If the Bash tool call is denied before the command runs, stop immediately and return exactly this JSON shape, with the denial text in `detail`:
+
+```json
+{"ok":false,"status":"failed","reason":"BASH_DENIED","detail":"<denial message>"}
+```
+
+- If Bash runs and the bridge exits non-zero, return the bridge stdout/stderr exactly as-is. Do not retry, explain, or wait out the turn budget.
 
 Response style:
 

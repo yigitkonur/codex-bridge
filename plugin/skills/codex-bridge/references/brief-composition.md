@@ -13,7 +13,7 @@ The schema is at `plugin/schemas/brief.schema.json`. Validate yours before dispa
 prompt or `--prompt-file`:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json --write --worktree-auto --background \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" task --json --write --background \
   --brief @brief.json \
   "Implement the task described in the Codex Bridge structured brief."
 ```

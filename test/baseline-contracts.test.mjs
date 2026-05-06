@@ -149,6 +149,7 @@ test("baseline contract report verifies static gate, generated surfaces, and com
   assert.ok(Object.hasOwn(report.mutating_command_coverage, "verdict"));
   assert.ok(Object.hasOwn(report.mutating_command_coverage, "merge"));
   assert.ok(Object.hasOwn(report.mutating_command_coverage, "iterate"));
+  assert.match(report.mutating_command_coverage.setup.mutation, /Monitor hook mirror/);
   assert.match(report.mutating_command_coverage.task.mutation, /auto-pipeline stage\/budget\/partial-completion proof/);
   assert.ok(report.mutating_command_coverage.task.failure_tests.includes("test/auto-pipeline-turn-watchdog.test.mjs"));
   assert.match(report.mutating_command_coverage.iterate.mutation, /closed-loop task, adversarial review, verdict persistence/);
@@ -258,6 +259,8 @@ test("required machine-readable CLI envelopes keep the shared schema shape", () 
     assert.equal(typeof setup.result.ready, "boolean");
     assert.equal(typeof setup.result.reviewGateEnabled, "boolean");
     assert.equal(typeof setup.result.reviewGateLockPath, "string");
+    assert.equal(typeof setup.result.monitorHookInstalled, "boolean");
+    assert.equal(typeof setup.result.monitorHookSettingsPath, "string");
     assert.equal(setup.result.active_backend, "codex");
     assert.equal(typeof setup.result.adapter_capabilities, "object");
 

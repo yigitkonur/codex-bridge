@@ -66,6 +66,15 @@ export function parseArgs(argv, config = {}) {
         continue;
       }
 
+      if (rawKey.startsWith("no-")) {
+        const positiveRawKey = rawKey.slice("no-".length);
+        const positiveKey = aliasMap[positiveRawKey] ?? positiveRawKey;
+        if (booleanOptions.has(positiveKey)) {
+          options[positiveKey] = false;
+          continue;
+        }
+      }
+
       if (valueOptions.has(key)) {
         const nextValue = inlineValue ?? argv[index + 1];
         if (nextValue === undefined) {

@@ -143,6 +143,34 @@ test("auto-pipeline caps review withTimeout by remaining total budget", async ()
   }
 });
 
+test("auto-pipeline fallback budgets match calibrated runtime defaults", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-default-budgets",
+      cwd: root,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: false,
+        post_task_prompt: "",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub([]),
+      runAppServerReview: makeReviewStub([]),
+      jobId: "job-default-budgets",
+    });
+
+    assert.equal(result.stageTimeoutMs, 720_000);
+    assert.equal(result.totalTimeoutMs, 1_800_000);
+    assert.deepEqual(result.completedStages, ["diff"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("auto-pipeline treats qualified clean review wording as approved", async () => {
   const { root, session } = makeTempSession();
   try {
@@ -174,6 +202,62 @@ test("auto-pipeline treats qualified clean review wording as approved", async ()
     assert.equal(result.partial, false);
     assert.deepEqual(result.completedStages, ["diff", "review"]);
     assert.equal(turnCalls.length, 0, "clean review wording must not trigger a fix or check turn");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-pipeline DONE reports task diff before dirty workspace diff", async () => {
+  const { root, session } = makeTempSession();
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "bridge@example.test"]);
+  runGit(repo, ["config", "user.name", "Codex Bridge Test"]);
+  fs.writeFileSync(path.join(repo, "existing.txt"), "base\n");
+  runGit(repo, ["add", "existing.txt"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  fs.writeFileSync(path.join(repo, "existing.txt"), "base\npreexisting dirty\n");
+
+  try {
+    const reviewCalls = [];
+    const turnCalls = [];
+
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-watchdog",
+      cwd: repo,
+      config: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub(turnCalls),
+      runAppServerReview: makeReviewStub(reviewCalls),
+      jobId: "job-watchdog",
+      turnTouchedFiles: [],
+      turnStartSnapshot: {
+        headSha: runGit(repo, ["rev-parse", "HEAD"]).trim(),
+        porcelain: " M existing.txt\n",
+      },
+      stageTimeoutMs: 10_000,
+      totalTimeoutMs: 20_000,
+    });
+
+    assert.equal(result.complete, true);
+    assert.equal(result.diff.diffStat, "0 files | +0 -0");
+    assert.equal(result.workspaceDiff.diffStat, "1 files | +1 -0");
+
+    const events = fs.readFileSync(session.eventsPath, "utf8");
+    const doneLine = events.split("\n").find((line) => line.startsWith("[DONE]"));
+    assert.match(doneLine, /task_diff: 0 files \| \+0 -0/);
+    assert.doesNotMatch(doneLine, /1 files \| \+1 -0/);
+    assert.match(events, /workspace_diff: 1 files \| \+1 -0/);
+    assert.match(events, /workspace_was_clean: false/);
+    assert.match(events, /touchedFiles: \[\]/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -401,6 +485,47 @@ test("auto-pipeline plumbs turnTimeoutMs/idleTimeoutMs into runAppServerReview",
       reviewOpts.idleTimeoutMs > 0 && reviewOpts.idleTimeoutMs <= stageMs,
       `review idleTimeoutMs must be a positive value derived from stageMs (got ${reviewOpts.idleTimeoutMs})`
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-pipeline uses the resolved task model for review fix and check", async () => {
+  const { root, session } = makeTempSession();
+  try {
+    const reviewCalls = [];
+    const turnCalls = [];
+    const reviewText = [
+      "Review findings:",
+      "- [P1] Exercise the fix stage -- src/lib/example.mjs:1",
+      "  The fix stage should use the same requested task model.",
+    ].join("\n");
+
+    const result = await runAutoPipeline({
+      session,
+      threadId: "thread-model-propagation",
+      cwd: root,
+      config: {
+        model: "gpt-5.5-codex",
+        effort: "xhigh",
+        auto_review: true,
+        post_task_prompt: "Confirm completion in JSON.",
+      },
+      scriptPath: "/fake/script.mjs",
+      rootDir: REPO_ROOT,
+      runAppServerTurn: makeTurnStub(turnCalls),
+      runAppServerReview: makeReviewStub(reviewCalls, reviewText),
+      jobId: "job-model-propagation",
+      stageTimeoutMs: 10_000,
+      totalTimeoutMs: 30_000,
+    });
+
+    assert.equal(result.complete, true);
+    assert.equal(reviewCalls.length, 1, "review stage should run once");
+    assert.equal(turnCalls.length, 2, "fix and completion-check stages should run");
+    assert.equal(reviewCalls[0].opts.model, "gpt-5.5-codex");
+    assert.equal(turnCalls[0].opts.model, "gpt-5.5-codex");
+    assert.equal(turnCalls[1].opts.model, "gpt-5.5-codex");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -689,6 +814,8 @@ test("auto-pipeline treats failed fix turn status as terminal failure", async ()
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff", "review"]);
     assert.equal(result.partial, true);
+    assert.equal(result.origin, "pipeline:fix");
+    assert.equal(result.lastCompletedStage, "review");
     assert.equal(result.failing_stage, "fix");
     assert.equal(result.stageTimeoutMs, stageMs);
     assert.equal(result.totalTimeoutMs, stageMs * 4);
@@ -712,7 +839,11 @@ test("auto-pipeline treats failed fix turn status as terminal failure", async ()
       .map((line) => JSON.parse(line));
     const errorEntry = entries.find((entry) => entry.tag === "PIPELINE_ERROR");
     assert.deepEqual(errorEntry?.data.completedStages, ["diff", "review"]);
+    assert.equal(errorEntry?.data.origin, "pipeline:fix");
+    assert.equal(errorEntry?.data.lastCompletedStage, "review");
     assert.equal(errorEntry?.data.failing_stage, "fix");
+    assert.equal(errorEntry?.data.reviewVerdict, "must-fix");
+    assert.equal(errorEntry?.data.reviewFindingCount, 1);
     assert.equal(
       entries.some((entry) => entry.tag === "PIPELINE_COMPLETE"),
       false,
@@ -767,11 +898,13 @@ test("auto-pipeline treats failed review status as terminal failure", async () =
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff"]);
     assert.equal(result.partial, true);
+    assert.equal(result.origin, "pipeline:review");
+    assert.equal(result.lastCompletedStage, "diff");
     assert.equal(result.failing_stage, "review");
     assert.equal(result.stageTimeoutMs, stageMs);
     assert.equal(result.totalTimeoutMs, stageMs * 4);
-    assert.equal(result.reviewVerdict, "approved");
-    assert.equal(result.reviewFindingCount, 0);
+    assert.equal(result.reviewVerdict, null);
+    assert.equal(result.reviewFindingCount, null);
     assert.deepEqual(result.fixFilesTouched, []);
     assert.equal(result.completion.complete, false);
     assert.match(result.error, /auto-review failed \(status 1: review auth rejected\)\./);
@@ -779,6 +912,7 @@ test("auto-pipeline treats failed review status as terminal failure", async () =
     const events = fs.readFileSync(session.eventsPath, "utf8");
     assert.match(events, /\[PIPELINE:review\]/);
     assert.match(events, /\[ERROR\].*\| Unauthorized/);
+    assert.match(events, /origin: pipeline:review/);
     assert.match(events, /failing_stage: review/);
     assert.match(events, /\[PIPELINE:failed\]/);
     assert.doesNotMatch(events, /\[PIPELINE:review:failed\]/);
@@ -791,7 +925,11 @@ test("auto-pipeline treats failed review status as terminal failure", async () =
       .map((line) => JSON.parse(line));
     const errorEntry = entries.find((entry) => entry.tag === "PIPELINE_ERROR");
     assert.deepEqual(errorEntry?.data.completedStages, ["diff"]);
+    assert.equal(errorEntry?.data.origin, "pipeline:review");
+    assert.equal(errorEntry?.data.lastCompletedStage, "diff");
     assert.equal(errorEntry?.data.failing_stage, "review");
+    assert.equal(errorEntry?.data.reviewVerdict, null);
+    assert.equal(errorEntry?.data.reviewFindingCount, null);
     assert.match(errorEntry?.data.error, /review auth rejected/);
     assert.equal(
       entries.some((entry) => entry.tag === "PIPELINE_COMPLETE"),
@@ -1178,9 +1316,13 @@ test("auto-pipeline clamps stage timeout to remaining total budget", async () =>
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff"]);
     assert.equal(result.partial, true);
+    assert.equal(result.origin, "pipeline:pipeline-total");
+    assert.equal(result.lastCompletedStage, "diff");
     assert.equal(result.failing_stage, "pipeline-total");
     assert.equal(result.stageTimeoutMs, stageMs);
     assert.equal(result.totalTimeoutMs, totalMs);
+    assert.equal(result.reviewVerdict, null);
+    assert.equal(result.reviewFindingCount, null);
     assert.match(result.error, /Auto-pipeline exceeded/);
     assert.ok(
       Date.now() - startedAt < 2_000,
@@ -1192,7 +1334,18 @@ test("auto-pipeline clamps stage timeout to remaining total budget", async () =>
 
     const events = fs.readFileSync(session.eventsPath, "utf8");
     assert.match(events, /\[ERROR\].*ClientTimeout/s);
+    assert.match(events, /origin: pipeline:pipeline-total/);
     assert.match(events, /failing_stage: pipeline-total/);
+    const entries = fs.readFileSync(session.ndjsonPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const errorEntry = entries.find((entry) => entry.tag === "PIPELINE_ERROR");
+    assert.equal(errorEntry?.data.origin, "pipeline:pipeline-total");
+    assert.equal(errorEntry?.data.lastCompletedStage, "diff");
+    assert.equal(errorEntry?.data.reviewVerdict, null);
+    assert.equal(errorEntry?.data.reviewFindingCount, null);
   } finally {
     if (holdTimer) clearTimeout(holdTimer);
     fs.rmSync(root, { recursive: true, force: true });
@@ -1252,6 +1405,8 @@ test("auto-pipeline surfaces fix-stage nonzero status as fix failure", async () 
     assert.equal(result.complete, false);
     assert.deepEqual(result.completedStages, ["diff", "review"]);
     assert.equal(result.partial, true);
+    assert.equal(result.origin, "pipeline:fix");
+    assert.equal(result.lastCompletedStage, "review");
     assert.equal(result.failing_stage, "fix");
     assert.equal(result.stageTimeoutMs, 5_000);
     assert.equal(result.totalTimeoutMs, 20_000);

@@ -126,8 +126,11 @@ owns schema validation, diagnostics, and layer merging:
 - `idle_timeout_ms: 300000`
 - `turn_plan_ms: 1800000`
 - `turn_default_ms: 1800000`
-- `pipeline_stage_ms: 300000`
-- `pipeline_total_ms: 900000`
+- `pipeline_stage_ms: 720000`
+- `pipeline_total_ms: 1800000`
+- `destructive_diff_mode: "pause"`
+- `destructive_diff_lines_deleted: 1000`
+- `destructive_diff_files_changed: 30`
 - `question_answer_ms: 300000`
 - `artifact_retention_jobs: 50`
 - `artifact_retention_days: 30`
@@ -137,9 +140,10 @@ owns schema validation, diagnostics, and layer merging:
 Config layers merge in this order: defaults, install-root config (`skill/` or
 `plugin/`), workspace-root config, then cwd config. Malformed YAML and invalid
 values are reported through diagnostics; only schema-known, schema-valid keys
-enter the effective runtime config. `buildCollaborationMode("plan", ...)`
-always sets `reasoning_effort: "xhigh"`. `buildSandboxPolicy` accepts only
-`danger-full-access`, `workspace-write`, and `read-only`.
+enter the effective runtime config. Plan mode defaults to
+`reasoning_effort: "xhigh"`, but explicit per-run effort overrides are honored.
+`buildSandboxPolicy` accepts only `danger-full-access`, `workspace-write`, and
+`read-only`.
 
 ## State And Jobs
 
@@ -182,18 +186,22 @@ Only `logEvent` and `logNdjson` append to `.events` and `.ndjson`, and they use
 `redact_secrets` is true, persisted event and NDJSON text is redacted before
 write.
 
-Current terminal tags are `DONE`, `ERROR`, `INCOMPLETE`, and `PLAN`.
+Current terminal tags are `DONE`, `ERROR`, `INCOMPLETE`, `PLAN`, and
+`CANCELLED`.
 `events --follow` and `wait` rely on `TERMINAL_TAG_REGEX`; `QUESTION` is
-interrupt-class but not terminal. `DEFAULT_MONITOR_EXCLUDE` is `["HEARTBEAT"]`,
-so new tags should pass through unless explicitly excluded.
+interrupt-class but not terminal. `DEFAULT_MONITOR_EXCLUDE` is
+`["HEARTBEAT", "DIRECTIVES", "CHECKPOINT"]`; `CHECKPOINT_SUMMARY` is the
+default live progress signal while verbose `CHECKPOINT` and runtime-config
+echoes remain opt-in.
 
 Current event-format helpers include:
 
 - Terminal/result: `formatDoneEvent`, `formatErrorEvent`,
   `formatIncompleteEvent`
 - Interactive: `formatQuestionEvent`, `formatConfirmedEvent`, `formatPlanEvent`
-- Liveness/progress: `formatHeartbeatEvent`, `formatCheckpointEvent`,
-  `formatPipelineEvent`, `formatWarningEvent`, `formatDirectivesEvent`
+- Liveness/progress: `formatHeartbeatEvent`, `formatCheckpointSummaryEvent`,
+  `formatCheckpointEvent`, `formatPipelineEvent`, `formatWarningEvent`,
+  `formatDirectivesEvent`
 - Recovery: `formatPartialEvent`, `formatRetryingEvent`, `formatHandoffEvent`
 - Extra defined helpers: `formatPhaseEvent`, `formatReviewEvent`
 

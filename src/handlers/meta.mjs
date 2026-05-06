@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -55,6 +56,10 @@ import {
 import { ensureCodexRuntimeAdapter, getBridgeConfig, loadDeveloperInstructions, resolveCommandAdapter } from "../lib/bridge-config.mjs";
 import { bridgeCommand, buildMonitorHint, buildRecovery, extractItemText } from "../lib/envelope-helpers.mjs";
 import { COMMANDS, EXIT_CODE_DOC, GLOBAL_FLAGS_DOC } from "../commands-meta.mjs";
+
+const MONITOR_HOOK_EVENT = "PostToolUse";
+const MONITOR_HOOK_MATCHER = "Bash|Agent";
+const MONITOR_HOOK_SCRIPT = "post-tool-bash.mjs";
 import {
   buildReviewJobMetadata,
   buildTaskJob,
@@ -89,6 +94,150 @@ import {
   resolveCommandWorkspace,
   resolvePromptInput,
 } from "../lib/handler-utils.mjs";
+
+function resolveClaudeSettingsPath() {
+  return path.join(os.homedir(), ".claude", "settings.json");
+}
+
+function resolveMonitorHookScriptPath() {
+  const candidates = [
+    path.join(ROOT_DIR, "hooks", MONITOR_HOOK_SCRIPT),
+    path.resolve(ROOT_DIR, "..", "hooks", MONITOR_HOOK_SCRIPT),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
+function monitorHookCommand(hookScriptPath) {
+  return `node ${JSON.stringify(hookScriptPath)}`;
+}
+
+function buildMonitorHookEntry(hookScriptPath) {
+  return {
+    matcher: MONITOR_HOOK_MATCHER,
+    hooks: [
+      {
+        type: "command",
+        command: monitorHookCommand(hookScriptPath),
+        timeout: 5,
+      },
+    ],
+  };
+}
+
+function readClaudeSettings(settingsPath) {
+  if (!fs.existsSync(settingsPath)) {
+    return { exists: false, settings: {}, parseError: null };
+  }
+  try {
+    const raw = fs.readFileSync(settingsPath, "utf8");
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        exists: true,
+        settings: null,
+        parseError: "settings file must contain a JSON object",
+      };
+    }
+    return { exists: true, settings: parsed, parseError: null };
+  } catch (err) {
+    return {
+      exists: true,
+      settings: null,
+      parseError: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function hasMonitorHookMirror(settings, hookScriptPath) {
+  const postToolUse = settings?.hooks?.[MONITOR_HOOK_EVENT];
+  if (!Array.isArray(postToolUse)) return false;
+  const command = monitorHookCommand(hookScriptPath);
+  return postToolUse.some((entry) =>
+    entry?.matcher === MONITOR_HOOK_MATCHER &&
+    Array.isArray(entry.hooks) &&
+    entry.hooks.some((hook) =>
+      hook?.type === "command" &&
+      hook?.command === command
+    )
+  );
+}
+
+function getMonitorHookMirrorStatus() {
+  const settingsPath = resolveClaudeSettingsPath();
+  const hookScriptPath = resolveMonitorHookScriptPath();
+  const read = readClaudeSettings(settingsPath);
+  return {
+    installed: read.settings ? hasMonitorHookMirror(read.settings, hookScriptPath) : false,
+    settingsPath,
+    settingsExists: read.exists,
+    settingsParseError: read.parseError,
+    hookScriptPath,
+    hookScriptExists: fs.existsSync(hookScriptPath),
+    installCommand: "codex-bridge setup --install-monitor-hook",
+  };
+}
+
+function writeClaudeSettings(settingsPath, settings) {
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  const tmpPath = `${settingsPath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpPath, settingsPath);
+}
+
+function installMonitorHookMirror() {
+  const settingsPath = resolveClaudeSettingsPath();
+  const hookScriptPath = resolveMonitorHookScriptPath();
+  if (!fs.existsSync(hookScriptPath)) {
+    throw validationError(
+      `Cannot install Monitor hook mirror because ${MONITOR_HOOK_SCRIPT} was not found at ${hookScriptPath}.`,
+      "MONITOR_HOOK_SCRIPT_MISSING",
+      "Run this from a packaged codex-bridge plugin install, or arm Monitor manually from result.monitor.tool_hint.",
+    );
+  }
+
+  const read = readClaudeSettings(settingsPath);
+  if (read.parseError) {
+    throw validationError(
+      `Cannot update ${settingsPath}: ${read.parseError}.`,
+      "CLAUDE_SETTINGS_PARSE_ERROR",
+      "Fix ~/.claude/settings.json so it is valid JSON, then rerun setup --install-monitor-hook.",
+    );
+  }
+
+  const settings = read.settings ?? {};
+  if (settings.hooks == null) {
+    settings.hooks = {};
+  }
+  if (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks must be a JSON object.`,
+      "CLAUDE_SETTINGS_HOOKS_INVALID",
+      "Fix ~/.claude/settings.json hooks shape, then rerun setup --install-monitor-hook.",
+    );
+  }
+  const existing = settings.hooks[MONITOR_HOOK_EVENT];
+  if (existing == null) {
+    settings.hooks[MONITOR_HOOK_EVENT] = [];
+  } else if (!Array.isArray(existing)) {
+    throw validationError(
+      `Cannot update ${settingsPath}: hooks.${MONITOR_HOOK_EVENT} must be an array.`,
+      "CLAUDE_SETTINGS_POST_TOOL_USE_INVALID",
+      "Fix ~/.claude/settings.json hooks.PostToolUse shape, then rerun setup --install-monitor-hook.",
+    );
+  }
+
+  const alreadyInstalled = hasMonitorHookMirror(settings, hookScriptPath);
+  if (!alreadyInstalled) {
+    settings.hooks[MONITOR_HOOK_EVENT].push(buildMonitorHookEntry(hookScriptPath));
+    writeClaudeSettings(settingsPath, settings);
+  }
+
+  return {
+    alreadyInstalled,
+    status: getMonitorHookMirrorStatus(),
+  };
+}
+
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -98,6 +247,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const officialPlugin = options.officialPlugin ?? detectOfficialOpenAICodexPlugin({ cwd });
   const reviewGate = readStopReviewGate(workspaceRoot, officialPlugin);
   const adapter = await resolveCommandAdapter({ cwd, workspaceRoot });
+  const monitorHook = getMonitorHookMirrorStatus();
 
   const nextSteps = [];
   if (!codexStatus.available) {
@@ -113,6 +263,13 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     nextSteps.push("Codex Bridge could not verify whether the official OpenAI Codex plugin is active, so it will not enable a duplicate stop-time review gate.");
   } else if (!reviewGate.enabled) {
     nextSteps.push("Optional: run `codex-bridge setup --enable-review-gate` to create a project lock file for stop-time review.");
+  }
+  if (monitorHook.settingsParseError) {
+    nextSteps.push(`Monitor hook mirror status could not read ${monitorHook.settingsPath}: ${monitorHook.settingsParseError}.`);
+  } else if (!monitorHook.installed && monitorHook.hookScriptExists) {
+    nextSteps.push("Optional: run `codex-bridge setup --install-monitor-hook` to mirror the Monitor PostToolUse hook into Claude user settings.");
+  } else if (!monitorHook.installed && !monitorHook.hookScriptExists) {
+    nextSteps.push("Monitor hook mirror unavailable in this install; arm Monitor manually from `result.monitor.tool_hint` after background dispatch.");
   }
 
   return {
@@ -133,6 +290,13 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
     reviewGateSuppressedByOfficialPlugin: reviewGate.reviewGateSuppressedByOfficialPlugin,
     reviewGateLockIgnored: reviewGate.reviewGateLockIgnored,
     reviewGateSuppressionReason: reviewGate.reviewGateSuppressionReason,
+    monitorHookInstalled: monitorHook.installed,
+    monitorHookSettingsPath: monitorHook.settingsPath,
+    monitorHookSettingsExists: monitorHook.settingsExists,
+    monitorHookSettingsParseError: monitorHook.settingsParseError,
+    monitorHookScriptPath: monitorHook.hookScriptPath,
+    monitorHookScriptExists: monitorHook.hookScriptExists,
+    monitorHookInstallCommand: monitorHook.installCommand,
     actionsTaken,
     nextSteps
   };
@@ -142,7 +306,7 @@ export async function handleSetup(argv) {
   const startedAt = Date.now();
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "install-monitor-hook"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -183,6 +347,15 @@ export async function handleSetup(argv) {
         `Disabled the project stop-time review gate by removing ${reviewGate.lockPath}.`
       );
     }
+  }
+
+  if (options["install-monitor-hook"]) {
+    const result = installMonitorHookMirror();
+    actionsTaken.push(
+      result.alreadyInstalled
+        ? `Monitor PostToolUse hook mirror already present in ${result.status.settingsPath}.`
+        : `Installed Monitor PostToolUse hook mirror in ${result.status.settingsPath}.`
+    );
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken, { officialPlugin });

@@ -199,6 +199,14 @@ function parseArgs(argv, config = {}) {
         options[key2] = inlineValue === void 0 ? true : inlineValue !== "false";
         continue;
       }
+      if (rawKey.startsWith("no-")) {
+        const positiveRawKey = rawKey.slice("no-".length);
+        const positiveKey = aliasMap[positiveRawKey] ?? positiveRawKey;
+        if (booleanOptions.has(positiveKey)) {
+          options[positiveKey] = false;
+          continue;
+        }
+      }
       if (valueOptions.has(key2)) {
         const nextValue = inlineValue ?? argv[index + 1];
         if (nextValue === void 0) {

@@ -107,7 +107,7 @@ A failed `task --json` **does not** return a success envelope with `phase=error`
 Start a new Codex task. Default: plan mode, configured sandbox, foreground.
 
 ```
-codex-bridge task [--backend <name>] [--write] [--effort <level>] [--mode <plan|default>] [-m <model>]
+codex-bridge task [--backend <name>] [--write] [--worktree-auto | --no-worktree-auto] [--base-ref <ref>] [--on-branch <name>] [--effort <level>] [--mode <plan|default>] [-m <model>]
                   [--prompt-file <path>] [--resume | --resume-last] [--fresh]
                   [--background] [--no-pipeline] [--quiet]
                   [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>]
@@ -118,30 +118,34 @@ codex-bridge task [--backend <name>] [--write] [--effort <level>] [--mode <plan|
 | Flag | Description |
 |------|-------------|
 | `--backend <name>` | Select backend for this run. In this build only `codex` is implemented; other names exit 6 `BACKEND_INCAPABLE`. |
-| `--write` | Request the workspace-write sandbox (used when the turn is in default mode and `config.sandbox_policy` is unset). **Ship default note:** `sandbox_policy` ships as `"danger-full-access"`, which takes precedence over the mode-derived branch — so by default `--write` is redundant because Codex can already write. **Restricted-sandbox caveat:** if you set `sandbox_policy: "read-only"` (or clear the override so plan mode falls back to `readOnly`), the plan turn still uses `readOnly` and `--write` has no effect until `send <thread-id> --mode default …` approves the plan. To skip the plan turn and write on turn 1, pass `--mode default` on `task`. |
-| `--effort <level>` | Reasoning effort: none, minimal, low, medium, high, xhigh |
+| `--write` | Request write-capable execution. Write-mode tasks use per-task worktree isolation by default. **Ship default note:** `sandbox_policy` ships as `"danger-full-access"`, which takes precedence over the mode-derived branch — so Codex can write when the turn enters default mode. |
+| `--worktree-auto` | Explicitly request the default worktree isolation for `--write`. Prompts must use repo-relative paths for files inside the launch checkout; absolute launch-checkout paths are rejected. |
+| `--no-worktree-auto` | Opt out of default worktree isolation and let Codex write in the launch checkout. Use only when in-place edits are intentional. |
+| `--base-ref <ref>` | Base ref for isolated write tasks. Omit to inherit the current branch; pass `main`, `master`, `refs/heads/<branch>`, a commit SHA, or `current`. The dispatch envelope records `worktree.base_ref`, `worktree.base_ref_source`, and `worktree.base_sha`. |
+| `--on-branch <name>` | Assert the launch checkout is on `<name>` before dispatch. Mismatch fails with `BRANCH_MISMATCH`; during task execution, later detected branch movement emits `[BRANCH_SWITCHED]`. |
+| `--effort <level>` | Reasoning effort for this task turn, including plan mode: none, minimal, low, medium, high, xhigh |
 | `--mode <plan\|default>` | Override `config.mode` for this single run. Honored on both foreground and background paths. Rejected with `USAGE_ERROR` (exit 2) for any other value. |
-| `-m, --model <name>` | Upstream model; `spark` resolves to `gpt-5.3-codex-spark` |
+| `-m, --model <name>` | Upstream model for this task turn and its auto-pipeline stages; `spark` resolves to `gpt-5.3-codex-spark` |
 | `--prompt-file <path>` | Read prompt from file instead of argv/stdin |
 | `--resume`, `--resume-last` | Continue the latest tracked thread for this session. Thread-only resume; rejected with `--worktree-auto`. Use `iterate <task_id>` for follow-up work that must preserve task worktree state. |
 | `--fresh` | Start a new thread even if a resumable one exists |
 | `--background` | Detached worker; returns immediately with a job id |
-| `--no-pipeline` | Skip the auto-review/fix/check pipeline for this single run (overrides `auto_review` / `post_task_prompt` from config). Ndjson carries a `PIPELINE_SKIPPED` entry. |
+| `--no-pipeline` | Keep diff capture but skip auto-review/fix/check for this single run (overrides `auto_review` / `post_task_prompt` from config). Ndjson carries a `PIPELINE_SKIPPED` entry naming the skipped validation stages; write-mode runs that touch no files report `[INCOMPLETE] no_files_touched`. |
 | `--quiet` | Suppress the `[codex] …` stderr progress stream so agents don't pattern-match the threadId out of progress lines. **`--json` implies `--quiet`** (v1.4.1) unless `--quiet=false` is passed explicitly: when the envelope is consumed by a machine, the stderr UUID trap would otherwise derail it. |
 | `--idle-timeout-ms <ms>` | Override no-event idle watchdog (default `idle_timeout_ms = 300000`) |
 | `--turn-plan-ms <ms>` | Override per-turn timeout for plan turns (default `turn_plan_ms = 1800000` = 30 min; raised in v1.3.0 from the pre-1.3.0 5 min hard-code) |
 | `--turn-default-ms <ms>` | Override per-turn timeout for execute turns (default `turn_default_ms = 1800000` = 30 min; raised in v1.3.0 from the pre-1.3.0 10 min hard-code) |
-| `--pipeline-stage-timeout-ms <ms>` | Override per-stage pipeline timeout (default `pipeline_stage_ms = 300000`) |
-| `--pipeline-total-timeout-ms <ms>` | Override total pipeline timeout (default `pipeline_total_ms = 900000`) |
+| `--pipeline-stage-timeout-ms <ms>` | Override per-stage pipeline timeout (default `pipeline_stage_ms = 720000`) |
+| `--pipeline-total-timeout-ms <ms>` | Override total pipeline timeout (default `pipeline_total_ms = 1800000`) |
 | `--question-timeout-ms <ms>` | How long `requestUserInput` waits before logging `QUESTION_TIMEOUT` and replying with `result: { answers: {} }` (empty-answer success, not a rejection — `src/codex-bridge.mjs:2197`). Default `question_answer_ms = 300000`. |
 
 All `*-ms` flags require positive integers; malformed values throw `USAGE_ERROR` (exit 2) rather than silent fallback.
 
-Plan mode always forces `effort: xhigh`. Empty prompts fail fast with exit 6 — no billed Codex turn.
+Plan mode defaults to `effort: xhigh`, but an explicit `--effort` is honored. Empty prompts fail fast with exit 6 — no billed Codex turn.
 
 `--mode default` + `--write` skips the plan turn and runs execution directly under `workspaceWrite` (or `danger-full-access` if configured). The override flows through `buildTaskRequest` → stored job record → detached worker, so `task --background --mode default` executes in default mode as expected.
 
-Every `task` launch success envelope includes `result.monitor = { command, shell_fallback, terminal_tags, exclude_tags, timeout_ms, tool_hint }`. `result.monitor.command` is a ready-to-paste `node <scriptPath> events <jobId> --follow --exclude HEARTBEAT --timeout-ms 1800000` invocation (v1.4.0 switched the Monitor default to exclusion-based filtering so future tags pass through — `exclude_tags` names the excluded list); `result.monitor.tool_hint` is the argument object for the `Monitor` tool (`description`, `command`, `timeout_ms`, `persistent`).
+Every `task` launch success envelope includes `result.runtime` with requested/effective mode, model, effort, per-stage models, enabled pipeline stages, and warning strings when a resolved value differs. It also includes `result.monitor = { command, shell_fallback, terminal_tags, exclude_tags, timeout_ms, tool_hint }`. `result.monitor.command` is a ready-to-paste `node <scriptPath> events <jobId> --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000` invocation (v1.4.0 switched the Monitor default to exclusion-based filtering so future tags pass through — `exclude_tags` names the excluded list); `result.monitor.tool_hint` is the argument object for the `Monitor` tool (`description`, `command`, `timeout_ms`, `persistent`).
 
 Thread IDs returned by `task` are UUID v7 strings (e.g. `019d9a86-1c8a-7f41-8032-6c76bbe730a1`). There is no `thr_` prefix; do not build regexes that assume one.
 
@@ -150,7 +154,7 @@ Thread IDs returned by `task` are UUID v7 strings (e.g. `019d9a86-1c8a-7f41-8032
 Resume a thread with a new prompt. Used for plan approval, revisions, and follow-ups.
 
 ```
-codex-bridge send <thread-id> [--backend <name>] [--mode <plan|default>] [--effort <level>] [--quiet]
+codex-bridge send <thread-id> [--backend <name>] [--mode <plan|default>] [--on-branch <name>] [--effort <level>] [--quiet]
                               [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>]
                               [--question-timeout-ms <ms>] [--json] [prompt or file.md]
 ```
@@ -159,6 +163,7 @@ codex-bridge send <thread-id> [--backend <name>] [--mode <plan|default>] [--effo
 |------|-------------|
 | `--backend <name>` | Select backend for this follow-up. In this build only `codex` is implemented; other names exit 6 `BACKEND_INCAPABLE`. |
 | `--mode <plan\|default>` | Switch collaboration mode. Omit to keep current mode. |
+| `--on-branch <name>` | Assert the checkout is on `<name>` before resuming the thread. Mismatch fails with `BRANCH_MISMATCH`; a branch movement detected after the follow-up emits `[BRANCH_SWITCHED]`. |
 | `--effort <level>` | Override reasoning effort for this turn |
 | `--quiet` | Suppress `[codex] …` stderr progress |
 | `--idle-timeout-ms <ms>` | Override no-event idle watchdog |
@@ -242,7 +247,8 @@ codex-bridge summary <thread-id> [--tail <n>] [--json]
 Check job status. The positional accepts either a job id (e.g. `task-mo2n0i8z-cbefzo`) or the thread UUID — the resolver tries id-exact, then thread-id-exact, then id-prefix.
 
 ```
-codex-bridge status [job-id-or-thread-id] [--all] [--wait]
+codex-bridge status [job-id-or-thread-id] [--all] [--session <id>] [--since <iso-ts>] [--wait]
+                    [--filter running|completed_success|completed_fail|completed_incomplete|cancelled|needs_attention]
                     [--watch [--interval <ms|5s>] [--watch-timeout-ms <ms>]]
                     [--prune-orphans | --cleanup]
                     [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]
@@ -250,7 +256,10 @@ codex-bridge status [job-id-or-thread-id] [--all] [--wait]
 
 | Flag | Description |
 |------|-------------|
-| `--all` | Show jobs from all Claude sessions |
+| `--all` | Show jobs from all Claude sessions instead of the current implicit Claude session |
+| `--session <id>` | Filter list/watch status to one recorded `sessionId`. May be combined with `--all` to make the scope explicit. |
+| `--since <iso-ts>` | Filter list/watch status to jobs whose created/started/updated/completed timestamp is at or after the supplied ISO timestamp. |
+| `--filter <state>` | Return a subset for orchestrator scripts. Values: `running`, `completed_success`, `completed_fail`, `completed_incomplete`, `cancelled`, `needs_attention`. `completed_fail` is event-derived and includes jobs whose `.events` stream contains `[ERROR]` or `[PIPELINE:failed]`. |
 | `--wait` | Poll until the single-job reaches a terminal state |
 | `--watch` | Repeatedly render the multi-job table and exit when every tracked job reaches a terminal state (Ctrl-C-safe). Rejects a positional job-id; mutually exclusive with `--wait` / `--prune-orphans` / `--cleanup`. Use for N-job orchestration. Under `--json` emits one NDJSON snapshot per tick. |
 | `--interval <ms>` | Tick cadence for `--watch` (default 10 000 = 10 s). Accepts plain ms or duration strings like `5s`. |
@@ -258,6 +267,28 @@ codex-bridge status [job-id-or-thread-id] [--all] [--wait]
 | `--prune-orphans` / `--cleanup` | Walk state-file jobs with `status:"running"` or `"queued"` and mark any whose PID no longer resolves as `status:"orphaned"`. Idempotent. Returns `{reaped, skipped, reapedCount, skippedCount}`. Mutually exclusive with `--wait`. |
 | `--timeout-ms <ms>` | Max wait time with `--wait` (default 240000) |
 | `--poll-interval-ms <ms>` | Poll cadence with `--wait` (default 2000) |
+
+Without a job id, `status --json` includes `result.jobs` as an array every time (`[]` when no jobs match), `result.summary`, `result.needs_attention`, and `result.as_of`. Single-job JSON uses `result.job` instead and does not include `result.jobs`. `summary.running === 0` only means the wave is terminal; check `summary.completed_fail`, `summary.completed_incomplete`, and `summary.awaiting_attention` before advancing a fan-out wave.
+
+Active job objects include a bounded `progress` digest derived from existing job logs and events:
+
+```json
+{
+  "id": "task-...",
+  "status": "running",
+  "phase": "editing",
+  "progress": {
+    "elapsed_seconds": 312,
+    "artifacts_written": 2,
+    "target_artifacts": null,
+    "shell_commands_run": 19,
+    "last_action": "File changes completed.",
+    "last_action_at_seconds": 308,
+    "tokens_consumed_estimate": null,
+    "events_since_last_status": 4
+  }
+}
+```
 
 ### status --prune-orphans / --cleanup
 
@@ -290,7 +321,7 @@ codex-bridge result [job-id-or-thread-id]
                     [--json]
 ```
 
-In JSON mode, `result.adapterResult.summary` and `result.adapterResult.finalMessage` contain the complete stored final assistant message when available.
+In JSON mode, `result.adapterResult.summary` and `result.adapterResult.finalMessage` contain the complete stored final assistant message when available. `result.adapterResult.terminalTag` is derived from the job's `.events` file when that file exists. The worker process status is exposed separately as `result.adapterResult.workerExitCode`; if the two disagree, `result.adapterResult.consistent` is `false` and `discrepancyReason` explains the split. See [state-machine.md](state-machine.md) for the truth table.
 
 Use `--transcript --final-only --format text` to print only Codex's final assistant answer. Without `--final-only`, `--transcript` prints captured assistant messages from the NDJSON replay log, falling back to the stored final message when no replay log is present.
 
@@ -304,28 +335,36 @@ codex-bridge cancel [job-id-or-thread-id] [--json]
 
 ## wait
 
-Block until the target job's events file emits `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, or `[PLAN]`. Uses `fs.watch` plus a 500 ms poll fallback; cheaper and more reliable than `status --wait` when you only need the terminal signal.
+Block until one or more target job event files match a predicate. Uses `fs.watch` plus a 500 ms poll fallback; cheaper and more reliable than `status --wait` when you only need event-backed fan-in.
 
 ```
-codex-bridge wait <job-id-or-thread-id> [--timeout-ms <ms>] [--json]
+codex-bridge wait [--all | --any] [--jobs <ids>] <job-id-or-thread-id...>
+                  [--predicate terminal|interrupt|error|both]
+                  [--timeout-ms <ms>] [--json]
 ```
 
 | Flag | Description |
 |------|-------------|
+| `--all` | Wait until every listed job matches. This is the default when multiple targets are passed. |
+| `--any` | Return as soon as the first listed job matches. Requires at least two targets. |
+| `--jobs <ids>` | Space- or comma-delimited target list; may be combined with positional ids. |
+| `--predicate <name>` | Match `terminal` (default: `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[CANCELLED]`), `interrupt` (`[PLAN]`, `[QUESTION]`), `error` (`[ERROR]`, `[INCOMPLETE]`), or `both` / `interrupt+terminal`. |
 | `--timeout-ms <ms>` | Overall deadline (default 600000 = 10 min). Exit 7 `WAIT_TIMEOUT` on expiry. |
-| `--json` | Emit the standard success envelope on stdout when a terminal tag appears. |
+| `--json` | Emit the standard success envelope on stdout when the predicate matches. |
 
-Success payload shape:
+Single-target terminal waits keep the legacy payload shape:
 ```json
 {
   "jobId": "task-...",
   "threadId": "019d...",
-  "terminalTag": "DONE" | "ERROR" | "INCOMPLETE" | "PLAN",
+  "terminalTag": "DONE" | "ERROR" | "INCOMPLETE" | "PLAN" | "CANCELLED",
   "lastEventLine": "[DONE] 019d... completed in 4s | 1 files | +2 -0",
   "eventsPath": "/abs/path/to/events",
   "elapsedMs": 3214
 }
 ```
+
+`--any` returns top-level `jobId`, `threadId`, `state`, `terminalTag`, `interruptTag`, `lastEventLine`, and `eventsPath`, plus `winner.{jobId,threadId,state,terminalTag,interruptTag,lastEventLine,eventsPath}` and the target list. `--all` returns `{ summary, jobs }`, where `summary` includes `total`, `matched`, `pending`, `completed`, `failed`, `cancelled`, `questions`, and terminal/interrupt counts. On timeout, the JSON error envelope carries `error.details.summary`, matched `jobs`, and still-pending targets.
 
 When the target thread never writes an events file (e.g. a cancelled-before-start job), `wait` polls every 500 ms for the file to appear and falls through to `WAIT_TIMEOUT` (exit 7) once `--timeout-ms` expires. For threads you suspect will never produce events, pass a smaller `--timeout-ms`; use `status --wait` when you need the deeper lifecycle view across all jobs.
 
@@ -339,7 +378,7 @@ codex-bridge events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclud
 
 | Flag | Description |
 |------|-------------|
-| `--follow` | Keep watching for appended lines; self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`) — even if already present in the initial dump. |
+| `--follow` | Keep watching for appended lines; self-terminates on any terminal tag (`[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, `[CANCELLED]`) — even if already present in the initial dump. |
 | `--filter <tags>` | **Inclusion** list. Only lines whose head tag is in the comma-separated list pass. `PIPELINE` matches `[PIPELINE:review]`, `[PIPELINE:fix:done]`, etc. Case-insensitive. Narrow views only — **not forward-compatible** (any new tag a future bridge version emits is silently dropped). |
 | `--exclude <tags>` | **Exclusion** list (v1.4.0, default for Monitor). Every line passes *except* those whose head tag is in the list. Future tags pass through automatically — forward-compatible. Mutually exclusive with `--filter`. |
 | `--timeout-ms <ms>` | Deadline for `--follow`; default 600 000 (10 min). For long turns, pass a larger value explicitly — e.g. `--timeout-ms 1800000` to match the 30-min turn budget. The `result.monitor.command` emitted on `task --json` launches already carries the 30-min form. |
@@ -362,7 +401,7 @@ Without `--follow`, the command dumps existing lines (filtered/excluded) and exi
     "eventsPath": "/abs/path/to/events",
     "followed": true,
     "filter": null,
-    "exclude": "HEARTBEAT",
+    "exclude": "HEARTBEAT,CHECKPOINT",
     "timedOut": false,
     "terminalTag": "DONE",
     "terminalLine": "[DONE] 019d… completed in 4s | 1 files | +2 -0",
@@ -371,7 +410,7 @@ Without `--follow`, the command dumps existing lines (filtered/excluded) and exi
 }
 ```
 
-Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutual-exclusion CLI rule). `terminalTag` is one of `DONE` / `ERROR` / `INCOMPLETE` / `PLAN` on happy-path close, or `null` when the stream closed via `--timeout-ms`. `elapsedMs` measures follow duration only (not total job elapsed time). This envelope matches `wait`'s return shape so Monitor / orchestrators can switch on the same fields.
+Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutual-exclusion CLI rule). `terminalTag` is one of `DONE` / `ERROR` / `INCOMPLETE` / `PLAN` / `CANCELLED` on happy-path close, or `null` when the stream closed via `--timeout-ms`. `elapsedMs` measures follow duration only (not total job elapsed time). This envelope matches `wait`'s return shape so Monitor / orchestrators can switch on the same fields.
 
 **Early-exit envelope (terminal tag already present in the initial dump, or `--follow` omitted):**
 
@@ -384,21 +423,21 @@ Exactly one of `filter` / `exclude` is non-null per invocation (matches the mutu
     "eventsPath": "/abs/path/to/events",
     "followed": false,
     "filter": null,
-    "exclude": "HEARTBEAT"
+    "exclude": "HEARTBEAT,CHECKPOINT"
   }
 }
 ```
 
 `result.followed` is the boolean coercion of the `--follow` flag (`Boolean(options.follow)`) — `true` when `--follow` was passed and a terminal tag was already in the initial dump; `false` when `--follow` was omitted entirely. The early-exit branch **omits** `timedOut`, `terminalTag`, `terminalLine`, and `elapsedMs` — the watcher never ran, so there is no follow-duration or terminal-tag capture. Orchestrators that switch on `result.terminalTag` must treat it as absent/`undefined` in this case and re-read the events file (or pair with `summary`) to determine which terminal closed the run.
 
-**Recommended shape:** `--exclude HEARTBEAT`. Every tag the bridge emits passes except the 60-s liveness pulse that would flood an LLM orchestrator's context. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE,PLAN` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
+**Recommended shape:** `--exclude HEARTBEAT,CHECKPOINT`. Every tag the bridge emits passes except the 60-s liveness pulse and verbose checkpoint body; `[CHECKPOINT_SUMMARY]` remains visible for live progress. Future tags reach the orchestrator without a code update. Use `--filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED` (terminal-only) for narrow sanity-check stream; avoid long inclusion lists — they're brittle across bridge versions.
 
 ## setup
 
-Health check: Codex installed, authenticated, app-server available.
+Health check: Codex installed, authenticated, app-server available. With `--install-monitor-hook`, mirror the PostToolUse Monitor handoff hook into `~/.claude/settings.json`.
 
 ```
-codex-bridge setup [--json] [--enable-review-gate | --disable-review-gate]
+codex-bridge setup [--json] [--install-monitor-hook] [--enable-review-gate | --disable-review-gate]
 ```
 
 ## version

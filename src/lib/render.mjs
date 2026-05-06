@@ -167,6 +167,45 @@ function appendActiveJobsTable(lines, jobs) {
   }
 }
 
+function appendStatusSummary(lines, summary) {
+  if (!summary) {
+    return;
+  }
+  lines.push(
+    `Summary: total=${summary.total ?? 0} running=${summary.running ?? 0} success=${summary.completed_success ?? 0} failed=${summary.completed_fail ?? 0} incomplete=${summary.completed_incomplete ?? 0} cancelled=${summary.cancelled ?? 0} attention=${summary.awaiting_attention ?? 0}`
+  );
+  lines.push(
+    `Interrupts: plan=${summary.interrupts?.awaiting_plan ?? 0} question=${summary.interrupts?.awaiting_question ?? 0}`
+  );
+  lines.push("");
+}
+
+function appendNeedsAttention(lines, entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return;
+  }
+  lines.push("Needs attention:");
+  for (const entry of entries) {
+    const reason = entry.reason ? ` — ${entry.reason}` : "";
+    lines.push(`- ${entry.jobId} [${entry.state}]${reason}`);
+  }
+  lines.push("");
+}
+
+function appendFilteredJobs(lines, filter, entries) {
+  if (!filter || filter === "needs_attention" || !Array.isArray(entries) || entries.length === 0) {
+    return;
+  }
+  lines.push(`Filtered jobs (${filter}):`);
+  for (const entry of entries) {
+    const label = entry.jobId ?? entry.id;
+    const state = entry.terminalTag ?? entry.status ?? entry.state ?? "unknown";
+    const reason = entry.reason ? ` — ${entry.reason}` : "";
+    lines.push(`- ${label} [${state}]${reason}`);
+  }
+  lines.push("");
+}
+
 function pushJobDetails(lines, job, options = {}) {
   lines.push(`- ${formatJobLine(job)}`);
   if (job.summary) {
@@ -236,11 +275,16 @@ export function renderSetupReport(report) {
     `- official OpenAI Codex plugin: ${report.officialOpenAICodexPluginStatus ?? "unknown"}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     `- review gate lock: ${report.reviewGateLockPath ?? "n/a"}${report.reviewGateLockExists ? " (present)" : ""}${report.reviewGateLockIgnored ? " (ignored)" : ""}`,
+    `- monitor hook mirror: ${report.monitorHookInstalled ? "installed" : "not installed"} (${report.monitorHookSettingsPath ?? "n/a"})`,
     ""
   ];
 
   if (report.reviewGateSuppressionReason) {
     lines.push(`Review gate suppression: ${report.reviewGateSuppressionReason}`, "");
+  }
+
+  if (report.monitorHookSettingsParseError) {
+    lines.push(`Monitor hook settings warning: ${report.monitorHookSettingsParseError}`, "");
   }
 
   if (report.actionsTaken.length > 0) {
@@ -388,6 +432,10 @@ export function renderStatusReport(report) {
     ""
   ];
 
+  appendStatusSummary(lines, report.summary);
+  appendNeedsAttention(lines, report.needs_attention);
+  appendFilteredJobs(lines, report.filter, report.filtered_jobs);
+
   if (report.running.length > 0) {
     appendActiveJobsTable(lines, report.running);
     lines.push("");
@@ -523,6 +571,18 @@ export function renderCancelReport(job) {
   }
   if (job.summary) {
     lines.push(`- Summary: ${job.summary}`);
+  }
+  if (job.cleanup?.worktreePath) {
+    const status = job.cleanup.succeeded
+      ? "removed worktree and branch"
+      : job.cleanup.reason === "preserved-by-user"
+        ? "preserved worktree artifacts"
+        : `cleanup ${job.cleanup.reason}`;
+    lines.push(`- Cleanup: ${status}`);
+    lines.push(`  - Worktree: ${job.cleanup.worktreePath}`);
+    if (job.cleanup.branchName) {
+      lines.push(`  - Branch: ${job.cleanup.branchName}`);
+    }
   }
   lines.push("- Check `codex-bridge status` for the updated queue.");
 

@@ -6,7 +6,7 @@
 // from T10, the future reviewer from T21). If so, it surfaces the last
 // terminal event from the bridge's artifact registry into the parent
 // transcript as additionalContext, so the parent thread sees
-// [DONE: ...] / [ERROR: ...] / [INCOMPLETE: ...] / [PLAN: ...] without having to
+// [DONE: ...] / [ERROR: ...] / [INCOMPLETE: ...] / [PLAN: ...] / [CANCELLED: ...] without having to
 // run /codex-bridge:result.
 //
 // In v2.0.0 the artifact registry lands in T15. Until then, this hook
@@ -39,9 +39,10 @@ const BRIDGE_AGENT_TYPES = new Set([
   "codex-bridge:codex-bridge-runner",
   "codex-bridge:codex-bridge-reviewer",
 ]);
-const TERMINAL_TAG_PATTERN = /\[(?:DONE|ERROR|INCOMPLETE|PLAN)[^\]]*\]/;
+const TERMINAL_TAG_PATTERN = /\[(?:DONE|ERROR|INCOMPLETE|PLAN|CANCELLED)[^\]]*\]/;
 const JOB_ID_PATTERN = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/i;
 const JOB_ID_PATTERN_GLOBAL = /\b(?:task|review)-[a-z0-9]+-[a-z0-9]+\b/gi;
+const BASH_DENIED_PATTERN = /\b(?:bash permission|permission denied|denied|not allowed|requires permission|need bash)\b/i;
 
 function logHookError(err) {
   try {
@@ -125,6 +126,42 @@ function resolveJobId(input) {
   );
 }
 
+function extractSubagentText(input) {
+  const fields = [
+    input.last_assistant_message,
+    input.assistant_message,
+    input.subagent_result,
+    input.output,
+  ];
+  for (const field of fields) {
+    if (typeof field === "string" && field.trim()) return field.trim();
+    if (field && typeof field === "object") {
+      const text = JSON.stringify(field);
+      if (text.trim()) return text;
+    }
+  }
+  return null;
+}
+
+function classifyNoDispatchReason(text) {
+  if (!text) return null;
+  return BASH_DENIED_PATTERN.test(text) ? "BASH_DENIED" : "NO_JOB_ID";
+}
+
+function formatNoDispatchBlock(agentType, reason, text) {
+  const preview = text
+    ? text.replace(/\s+/g, " ").slice(0, 500)
+    : "No bridge job id was present in the subagent result.";
+  return [
+    `## Codex-Bridge subagent did not dispatch (${agentType})`,
+    `reason: ${reason}`,
+    "",
+    "No `task-*` or `review-*` job id was found, so treat this subagent result as failed even if Claude Code labeled the Agent turn completed.",
+    "",
+    `Subagent output: ${preview}`,
+  ].join("\n");
+}
+
 function findTerminalTagForJob(input, jobId) {
   const cwd = resolveHookCwd(input);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
@@ -171,9 +208,15 @@ function main() {
   let block = null;
   try {
     const jobId = resolveJobId(input);
-    const terminal = jobId ? findTerminalTagForJob(input, jobId) : null;
-    if (terminal) {
-      block = `## Codex-Bridge subagent finished (${agentType})\nTask ${terminal.taskId} -> ${terminal.tag}\nFull output: \`/codex-bridge:result ${terminal.taskId}\``;
+    if (!jobId) {
+      const text = extractSubagentText(input);
+      const reason = classifyNoDispatchReason(text);
+      if (reason) block = formatNoDispatchBlock(agentType, reason, text);
+    } else {
+      const terminal = findTerminalTagForJob(input, jobId);
+      if (terminal) {
+        block = `## Codex-Bridge subagent finished (${agentType})\nTask ${terminal.taskId} -> ${terminal.tag}\nFull output: \`/codex-bridge:result ${terminal.taskId}\``;
+      }
     }
   } catch (err) {
     logHookError(err);

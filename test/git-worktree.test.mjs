@@ -17,7 +17,9 @@ import { writeMeta } from "../src/lib/registry.mjs";
 const bridgePath = fileURLToPath(new URL("../src/codex-bridge.mjs", import.meta.url));
 
 function makeTempRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-git-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-git-"));
+  const dir = path.join(root, "repo");
+  fs.mkdirSync(dir, { recursive: true });
   fs.rmSync(defaultWorktreeRootForRepo(dir), { recursive: true, force: true });
   execSync("git init -b main", { cwd: dir });
   execSync('git config user.email "test@example.com"', { cwd: dir });
@@ -46,6 +48,10 @@ function cleanup(repo) {
   fs.rmSync(repo, { recursive: true, force: true });
   // Sibling dir for worktrees.
   fs.rmSync(defaultWorktreeRootForRepo(repo), { recursive: true, force: true });
+  const parent = path.dirname(repo);
+  if (path.basename(parent).startsWith("codex-bridge-git-")) {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
 }
 
 function writeTaskMeta(registry, taskId, meta) {
@@ -90,6 +96,7 @@ test("createSubagentWorktree creates a worktree at the expected path", () => {
     assert.equal(result.branch, "subagent/codex/task-abc");
     assert.match(result.base_sha, /^[a-f0-9]{40}$/);
     assert.equal(result.base_ref, "main");
+    assert.equal(result.base_ref_source, "current-branch");
     assert.match(result.created_at, /^\d{4}-\d{2}-\d{2}T/);
     assert.ok(fs.existsSync(result.path));
     assert.ok(fs.existsSync(path.join(result.path, "README.md")));
@@ -543,6 +550,48 @@ test("createSubagentWorktree uses passed baseRef when provided", () => {
     });
     assert.equal(result.base_ref, "feature");
     assert.equal(result.base_sha, featSha);
+    assert.equal(result.base_ref_source, "cli-flag");
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test("createSubagentWorktree resolves explicit current baseRef to current branch", () => {
+  const repo = makeTempRepo();
+  try {
+    execSync("git checkout -b feature", { cwd: repo });
+    fs.writeFileSync(path.join(repo, "feature.txt"), "feature");
+    execSync("git add feature.txt && git commit -m feature", { cwd: repo });
+    const featureSha = execSync("git rev-parse HEAD", { cwd: repo }).toString().trim();
+
+    const result = createSubagentWorktree({
+      cwd: repo,
+      taskId: "task-current",
+      backend: "codex",
+      baseRef: "current",
+    });
+    assert.equal(result.base_ref, "feature");
+    assert.equal(result.base_ref_source, "cli-flag");
+    assert.equal(result.base_sha, featureSha);
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test("createSubagentWorktree labels implicit current-branch baseRef source", () => {
+  const repo = makeTempRepo();
+  try {
+    execSync("git checkout -b feature", { cwd: repo });
+    fs.writeFileSync(path.join(repo, "feature.txt"), "feature");
+    execSync("git add feature.txt && git commit -m feature", { cwd: repo });
+
+    const result = createSubagentWorktree({
+      cwd: repo,
+      taskId: "task-implicit",
+      backend: "codex",
+    });
+    assert.equal(result.base_ref, "feature");
+    assert.equal(result.base_ref_source, "current-branch");
   } finally {
     cleanup(repo);
   }

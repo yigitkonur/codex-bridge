@@ -147,6 +147,42 @@ export function getCurrentBranch(cwd) {
   return gitChecked(cwd, ["branch", "--show-current"]).stdout.trim() || "HEAD";
 }
 
+export function assertCurrentBranch(cwd, expectedBranch) {
+  const expected = String(expectedBranch ?? "").trim();
+  if (!expected) {
+    throw new CliError("--on-branch requires a non-empty branch name.", {
+      class: "validation",
+      code: "ON_BRANCH_EMPTY",
+      retryable: false,
+    });
+  }
+  ensureGitRepository(cwd);
+  const current = getCurrentBranch(cwd);
+  if (current !== expected) {
+    throw new CliError(
+      `--on-branch=${expected}, current branch=${current}`,
+      {
+        class: "validation",
+        code: "BRANCH_MISMATCH",
+        retryable: false,
+        suggestion:
+          `The working tree branch changed or is not the intended target. ` +
+          `Run \`git checkout ${expected}\` and retry, pass --on-branch=${current} if that branch is intended, or omit --on-branch to accept the current branch.`,
+      }
+    );
+  }
+  return current;
+}
+
+export function tryGetCurrentBranch(cwd) {
+  try {
+    ensureGitRepository(cwd);
+    return getCurrentBranch(cwd);
+  } catch {
+    return null;
+  }
+}
+
 export function getWorkingTreeState(cwd) {
   const staged = gitChecked(cwd, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
   const unstaged = gitChecked(cwd, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
@@ -520,6 +556,27 @@ function currentCheckoutRef(cwd) {
   return runGit(cwd, ["rev-parse", "HEAD"]).trim();
 }
 
+function resolveSubagentBaseRef(cwd, baseRef, currentBranch) {
+  if (baseRef != null) {
+    const normalized = String(baseRef).trim();
+    if (!normalized) {
+      throw new Error("createSubagentWorktree: baseRef must not be empty");
+    }
+    return {
+      ref: normalized.toLowerCase() === "current"
+        ? (currentBranch !== "HEAD" ? currentBranch : "HEAD")
+        : normalized,
+      source: "cli-flag",
+    };
+  }
+
+  if (currentBranch !== "HEAD") {
+    return { ref: currentBranch, source: "current-branch" };
+  }
+
+  return { ref: detectDefaultBranch(cwd), source: "default-branch" };
+}
+
 // createSubagentWorktree({ cwd, taskId, backend, baseRef, branchPrefix, worktreeRoot })
 // Returns one of:
 //   { isolation_mode: "worktree", path, branch, base_ref, base_sha, created_at }
@@ -550,11 +607,8 @@ export function createSubagentWorktree({
   // getCurrentBranch returns "HEAD" when detached (never empty), so the
   // ?? chain previously skipped detectDefaultBranch entirely. Treat
   // detached HEAD explicitly so the default-branch fallback can fire.
-  const resolvedBaseRef =
-    baseRef ??
-    (currentBranch !== "HEAD" ? currentBranch : null) ??
-    detectDefaultBranch(cwd) ??
-    "HEAD";
+  const resolvedBase = resolveSubagentBaseRef(cwd, baseRef, currentBranch);
+  const resolvedBaseRef = resolvedBase.ref;
   const baseSha = runGit(repoRoot, [
     "rev-parse",
     "--verify",
@@ -585,6 +639,7 @@ export function createSubagentWorktree({
       path: wtPath,
       branch,
       base_ref: resolvedBaseRef,
+      base_ref_source: resolvedBase.source,
       base_sha: baseSha,
       created_at: createdAt,
     };
@@ -622,6 +677,7 @@ export function createSubagentWorktree({
       path: cwd,
       branch,
       base_ref: resolvedBaseRef,
+      base_ref_source: resolvedBase.source,
       base_sha: baseSha,
       created_at: createdAt,
       previous_ref: previousRef,
@@ -640,7 +696,7 @@ export function createSubagentWorktree({
 // omitted, the registered worktree path is recovered from
 // `git worktree list --porcelain` by branch (preferred) or by the default
 // `<repoRoot>/../.codex-bridge-worktrees/<taskId>` layout as a fallback.
-export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath }) {
+export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktreeRoot, path: explicitPath, keepBranch = false }) {
   assertSafeTaskId(taskId, "pruneWorktreeOnCancel");
   ensureGitRepository(cwd);
   const repoRoot = getRepoRoot(cwd);
@@ -680,7 +736,7 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
       throw new Error(`pruneWorktreeOnCancel: worktree still exists after remove: ${wtPath}`);
     }
   }
-  if (branch) {
+  if (branch && !keepBranch) {
     assertSafeBranchName(repoRoot, branch, "pruneWorktreeOnCancel");
     // -D not -d: branch may have unmerged commits while we're cancelling.
     if (branchExists(repoRoot, branch)) {
@@ -698,7 +754,10 @@ export function pruneWorktreeOnCancel({ cwd, taskId, branch, previousRef, worktr
       }
     }
   }
-  return { pruned: !fs.existsSync(wtPath), branchDeleted: branch ? !branchExists(repoRoot, branch) : false };
+  return {
+    pruned: !fs.existsSync(wtPath),
+    branchDeleted: branch && !keepBranch ? !branchExists(repoRoot, branch) : false,
+  };
 }
 
 // mergeSubagentBranch({ cwd, taskId, branch, baseRef, expectedBranchSha, worktreePath, runTests })

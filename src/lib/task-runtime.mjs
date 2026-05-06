@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -54,10 +54,13 @@ import { readStdinIfPiped } from "./fs.mjs";
 import {
   captureGitDiff,
   captureGitSnapshot,
+  compactTurnParamsForNdjson,
   diffGitSnapshot,
   findSession,
   formatCheckpointEvent,
+  formatCheckpointSummaryEvent,
   formatConfirmedEvent,
+  formatBranchSwitchedEvent,
   formatDirectivesEvent,
   formatDoneEvent,
   formatErrorEvent,
@@ -71,19 +74,24 @@ import {
   formatQuestionEvent,
   formatRetryingEvent,
   formatReviewEvent,
+  formatStallWarningEvent,
   formatWarningEvent,
   initSession,
   logEvent,
   logNdjson,
   resolveSessionDir,
+  summarizeGitDiff,
+  summarizeTouchedFiles,
   writePlan,
   writeReview as writeSessionReview,
   writeSessionAliases,
 } from "./session-log.mjs";
 import {
+  assertCurrentBranch,
   collectReviewContext,
   ensureGitRepository,
   getWorkingTreeState,
+  tryGetCurrentBranch,
   resolveReviewTarget,
 } from "./git.mjs";
 import { buildSingleJobSnapshot, readStoredJob, sortJobsNewestFirst } from "./job-control.mjs";
@@ -887,7 +895,7 @@ export function requireTaskReviewContext(taskId, options = {}) {
   const meta = readMeta(taskId);
   if (!meta) {
     throw notFoundError(
-      `no meta.json found for ${taskId}; run task --worktree-auto before reviewing with --task`,
+      `no meta.json found for ${taskId}; run task --write before reviewing with --task so the task is registered with an isolated worktree`,
       "TASK_NOT_FOUND",
     );
   }
@@ -972,7 +980,125 @@ export function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 export function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check \`codex-bridge status ${payload.jobId}\` for progress.\n`;
+  const lines = [
+    `${payload.title} started in the background as ${payload.jobId}. Check \`codex-bridge status ${payload.jobId}\` for progress.`,
+  ];
+  if (payload.runtime?.effective) {
+    const effective = payload.runtime.effective;
+    const runtimeParts = [
+      `mode=${effective.mode}`,
+      `effort=${effective.effort}`,
+      `model=${effective.model ?? "default"}`,
+    ];
+    lines.push(`Runtime: ${runtimeParts.join(" ")}.`);
+  }
+  if (Array.isArray(payload.runtime?.warnings) && payload.runtime.warnings.length > 0) {
+    lines.push(`Runtime warnings: ${payload.runtime.warnings.join("; ")}`);
+  }
+  const worktree = payload.worktree;
+  if (worktree?.base_ref) {
+    const source = worktree.base_ref_source ? ` (${worktree.base_ref_source})` : "";
+    lines.push(`Worktree base: ${worktree.base_ref}${source}.`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function resolveTaskMode(request, config) {
+  const configuredMode = request.mode ?? config.mode ?? "plan";
+  const activeMode = configuredMode === "plan" && !request.resumeLast ? "plan" : "default";
+  return {
+    configuredMode,
+    activeMode,
+    isPlanMode: activeMode === "plan",
+  };
+}
+
+function resolveTaskModel(request, config) {
+  return request.model ?? config.model ?? DEFAULT_CONFIG.model;
+}
+
+function resolveTaskEffort(request, config, isPlanMode) {
+  return isPlanMode
+    ? (request.effort ?? DEFAULT_CONFIG.effort)
+    : (request.effort ?? config.effort ?? DEFAULT_CONFIG.effort);
+}
+
+function resolvePipelineStages(request, config, isPlanMode) {
+  if (isPlanMode) return [];
+  if (request.noPipeline) return ["diff"];
+  const stages = [];
+  if (config.auto_review || config.post_task_prompt) {
+    stages.push("diff");
+  }
+  if (config.auto_review) {
+    stages.push("review", "fix");
+  }
+  if (config.post_task_prompt) {
+    stages.push("check");
+  }
+  return stages;
+}
+
+function compactObject(value) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry != null)
+  );
+}
+
+export function buildTaskRuntimeSummary(request, config, options = {}) {
+  const { activeMode, configuredMode, isPlanMode } = resolveTaskMode(request, config);
+  const turnParams = options.turnParams ?? null;
+  const collaborationSettings = turnParams?.collaborationMode?.settings ?? null;
+  const effectiveModel = turnParams?.model ?? options.model ?? resolveTaskModel(request, config);
+  const turnEffort = turnParams?.effort ?? options.effort ?? resolveTaskEffort(request, config, isPlanMode);
+  const effectiveEffort = isPlanMode
+    ? (collaborationSettings?.reasoning_effort ?? turnEffort)
+    : turnEffort;
+  const planModel = isPlanMode
+    ? (collaborationSettings?.model ?? effectiveModel)
+    : null;
+  const planEffort = isPlanMode
+    ? (collaborationSettings?.reasoning_effort ?? effectiveEffort)
+    : null;
+  const pipeline = resolvePipelineStages(request, config, isPlanMode);
+  const pipelineModel = effectiveModel;
+  const models = compactObject({
+    assistant: effectiveModel,
+    plan: planModel,
+    review: pipeline.includes("review") ? pipelineModel : null,
+    fix: pipeline.includes("fix") ? pipelineModel : null,
+    check: pipeline.includes("check") ? pipelineModel : null,
+  });
+  const warnings = [];
+  if (request.model && isPlanMode && planModel && planModel !== request.model) {
+    warnings.push(`--model ${request.model} resolved to ${planModel} for the plan stage`);
+  }
+  if (request.effort && effectiveEffort !== request.effort) {
+    warnings.push(`--effort ${request.effort} resolved to ${effectiveEffort} for the assistant turn`);
+  }
+  if (request.effort && planEffort && planEffort !== request.effort) {
+    warnings.push(`--effort ${request.effort} resolved to ${planEffort} for the plan stage`);
+  }
+
+  return {
+    requested: {
+      mode: request.mode ?? null,
+      model: request.model ?? null,
+      effort: request.effort ?? null,
+    },
+    effective: {
+      mode: activeMode,
+      configuredMode,
+      model: effectiveModel,
+      effort: effectiveEffort,
+      plan: isPlanMode
+        ? { model: planModel, effort: planEffort }
+        : null,
+    },
+    models,
+    pipeline,
+    warnings,
+  };
 }
 
 export function getJobKindLabel(kind, jobClass) {
@@ -1052,6 +1178,7 @@ export function buildTaskRequest({
   idleTimeoutMs, noPipeline,
   turnPlanMs, turnDefaultMs, pipelineStageMs, pipelineTotalMs, questionAnswerMs,
   backend = null,
+  onBranch = null,
 }) {
   const opt = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null);
   return {
@@ -1073,7 +1200,8 @@ export function buildTaskRequest({
     pipelineTotalMs: opt(pipelineTotalMs),
     questionAnswerMs: opt(questionAnswerMs),
     noPipeline: Boolean(noPipeline),
-    backend: backend ?? null
+    backend: backend ?? null,
+    onBranch: onBranch ?? null
   };
 }
 
@@ -1084,6 +1212,75 @@ export function readTaskPrompt(cwd, options, positionals) {
 
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
+}
+
+const ABSOLUTE_PATH_PATTERN = /\/[^\s'"`<>]+/g;
+
+function normalizeAbsolutePathCandidate(candidate) {
+  let text = String(candidate ?? "").trim();
+  while (/[),.;!?]$/.test(text)) {
+    text = text.slice(0, -1);
+  }
+  const lineRef = text.match(/^(.+):\d+(?::\d+)?$/);
+  if (lineRef) {
+    text = lineRef[1];
+  }
+  return text;
+}
+
+function uniquePathRoots(roots) {
+  const out = [];
+  for (const root of roots) {
+    if (typeof root !== "string" || !root.trim()) continue;
+    const resolved = path.resolve(root);
+    if (!out.includes(resolved)) out.push(resolved);
+    try {
+      const real = fs.realpathSync.native(resolved);
+      if (!out.includes(real)) out.push(real);
+    } catch {
+      // The launch root should exist, but aliases are best-effort.
+    }
+  }
+  return out;
+}
+
+function pathIsInsideRoot(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function findWorktreePromptAbsolutePathConflicts(promptText, workspaceRoot, aliases = []) {
+  const text = String(promptText ?? "");
+  const roots = uniquePathRoots([workspaceRoot, ...aliases]);
+  if (!text || roots.length === 0) return [];
+
+  const conflicts = [];
+  for (const match of text.matchAll(ABSOLUTE_PATH_PATTERN)) {
+    const candidate = normalizeAbsolutePathCandidate(match[0]);
+    if (!path.isAbsolute(candidate)) continue;
+    const resolved = path.resolve(candidate);
+    if (!roots.some((root) => pathIsInsideRoot(resolved, root))) continue;
+    if (!conflicts.includes(candidate)) {
+      conflicts.push(candidate);
+    }
+  }
+  return conflicts;
+}
+
+export function formatWorktreePromptAbsolutePathConflict(conflicts, workspaceRoot) {
+  const paths = conflicts.slice(0, 8).map((p) => `  - ${p}`).join("\n");
+  const more = conflicts.length > 8 ? `\n  ...and ${conflicts.length - 8} more` : "";
+  return [
+    "--worktree-auto cannot safely dispatch a prompt that names absolute paths inside the launch workspace.",
+    "",
+    "Those paths resolve to the main checkout, not the isolated task worktree, so Codex could write outside the worktree and defeat isolation.",
+    "",
+    `Workspace: ${workspaceRoot}`,
+    "Conflicting paths:",
+    `${paths}${more}`,
+    "",
+    "Use repo-relative paths in the prompt, or pass --no-worktree-auto if you intentionally want to target the main checkout.",
+  ].join("\n");
 }
 
 export function readPromptFileOrThrow(absPath) {
@@ -1166,6 +1363,50 @@ export function parseDurationOption(flagName, raw, { defaultMs = null } = {}) {
     );
   }
   return ms;
+}
+
+function normalizePorcelain(porcelain) {
+  return String(porcelain ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .sort()
+    .join("\n");
+}
+
+function hasWriteWorkAfterSnapshot(cwd, startSnapshot, touchedFiles = []) {
+  if (Array.isArray(touchedFiles) && touchedFiles.length > 0) {
+    return true;
+  }
+  if (!startSnapshot?.headSha) {
+    return false;
+  }
+  const currentSnapshot = captureGitSnapshot(cwd);
+  if (!currentSnapshot?.headSha) {
+    return false;
+  }
+  if (currentSnapshot.headSha !== startSnapshot.headSha) {
+    return true;
+  }
+  return normalizePorcelain(currentSnapshot.porcelain) !== normalizePorcelain(startSnapshot.porcelain);
+}
+
+function resolveTaskDiffBaseRef(taskId) {
+  if (!taskId) {
+    return null;
+  }
+  try {
+    const taskMeta = readMeta(taskId);
+    if (typeof taskMeta?.base_sha === "string" && taskMeta.base_sha) {
+      return taskMeta.base_sha;
+    }
+    if (typeof taskMeta?.base_ref === "string" && taskMeta.base_ref) {
+      return taskMeta.base_ref;
+    }
+  } catch {
+    // Registry metadata is best-effort; touchedFiles remains a truthful fallback.
+  }
+  return null;
 }
 
 export function persistFailureErrorInPayload(execution, command = null) {
@@ -1344,7 +1585,9 @@ export function enqueueBackgroundTask(cwd, job, request) {
   // exists. The raw `tail -f "$EVENTS_DIR"/<threadId>.events` works without
   // the bridge CLI being alive, which is the last-resort escape hatch when
   // the bridge itself is the thing that's broken.
-  const resolvedSessionDir = resolveSessionDir(getBridgeConfig(cwd ?? null, job.workspaceRoot).session_dir, job.workspaceRoot);
+  const config = getBridgeConfig(cwd ?? null, job.workspaceRoot);
+  const resolvedSessionDir = resolveSessionDir(config.session_dir, job.workspaceRoot);
+  const runtime = buildTaskRuntimeSummary(request, config);
   return {
     payload: {
       jobId: job.id,
@@ -1357,15 +1600,58 @@ export function enqueueBackgroundTask(cwd, job, request) {
       registryTaskId: job.registryTaskId ?? null,
       worktree: job.worktree ?? null,
       logFile,
+      runtime,
       monitor: buildMonitorHint({ eventsPath: null, jobId: job.id, threadId: null, cwd: request.stateCwd ?? job.workspaceRoot })
     },
     logFile
   };
 }
 
+function createBranchSwitchMonitor({ cwd, jobId = null }) {
+  const state = {
+    lastBranch: tryGetCurrentBranch(cwd),
+    switches: [],
+  };
+  return {
+    check(detectedAt, session) {
+      const currentBranch = tryGetCurrentBranch(cwd);
+      if (!currentBranch) return null;
+      if (!state.lastBranch) {
+        state.lastBranch = currentBranch;
+        return null;
+      }
+      if (currentBranch === state.lastBranch) return null;
+      const event = {
+        before: state.lastBranch,
+        after: currentBranch,
+        detectedAt,
+        jobId,
+      };
+      state.lastBranch = currentBranch;
+      state.switches.push(event);
+      if (session) {
+        logEvent(session, formatBranchSwitchedEvent(session, event));
+        logNdjson(session, "BRANCH_SWITCHED", null, {
+          before: event.before,
+          after: event.after,
+          detected_at: event.detectedAt,
+          jobId,
+        });
+      }
+      return event;
+    },
+    switches() {
+      return state.switches.slice();
+    },
+  };
+}
+
 export async function runBridgeTask(request) {
   const stateCwd = request.stateCwd ?? request.cwd;
   const workspaceRoot = resolveWorkspaceRoot(stateCwd);
+  if (request.onBranch) {
+    assertCurrentBranch(stateCwd, request.onBranch);
+  }
   const config = getBridgeConfig(request.cwd ?? null, workspaceRoot);
   const adapter = await resolveCommandAdapter({
     cwd: request.cwd ?? null,
@@ -1379,8 +1665,13 @@ export async function runBridgeTask(request) {
   const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
 
   // Override params based on config. Request-level `mode` (from --mode) wins over config.yaml.
-  const effectiveMode = request.mode ?? config.mode ?? "plan";
-  const isPlanMode = effectiveMode === "plan" && !request.resumeLast;
+  const { isPlanMode } = resolveTaskMode(request, config);
+  const resolvedModel = resolveTaskModel(request, config);
+  const resolvedEffort = resolveTaskEffort(request, config, isPlanMode);
+  let runtimeSummary = buildTaskRuntimeSummary(request, config, {
+    model: resolvedModel,
+    effort: resolvedEffort,
+  });
 
   // When `skip_meta_skills` is on, prepend a directive instructing Codex to
   // bypass any internal planning / ceremony / meta-skill chain it would
@@ -1482,11 +1773,20 @@ export async function runBridgeTask(request) {
     ...request,
     adapter,
     sessionDir,
+    model: resolvedModel,
     prompt: promptWithFooter,
     collaborationMode: isPlanMode
-      ? buildCollaborationMode("plan", config, { developerInstructions })
+      ? buildCollaborationMode("plan", config, {
+          developerInstructions,
+          effort: request.effort,
+          model: resolvedModel,
+        })
       : request.write
-        ? buildCollaborationMode("default", config, { developerInstructions, effort: request.effort })
+        ? buildCollaborationMode("default", config, {
+            developerInstructions,
+            effort: request.effort,
+            model: resolvedModel,
+          })
         : null,
     // Always resolve through buildSandboxPolicy so `config.sandbox_policy`
     // wins regardless of plan/write flags. When no override is set, the
@@ -1505,7 +1805,7 @@ export async function runBridgeTask(request) {
           isPlanMode || !request.write ? "plan" : "default",
           config
         ),
-    effort: isPlanMode ? "xhigh" : (request.effort ?? config.effort ?? "high"),
+    effort: resolvedEffort,
     // Turn timeout resolution (most specific wins): CLI flag → config.yaml
     // key → built-in default. Plan and execute turns use separate budgets
     // because plan is a bounded reasoning exercise while execute spans the
@@ -1548,7 +1848,7 @@ export async function runBridgeTask(request) {
       // across (e.g. a plan turn that tripped then an execute turn).
       breakerState.recent.length = 0;
       breakerState.tripped = false;
-      logNdjson(s, "TURN_PARAMS", "turn/start", {
+      logNdjson(s, "TURN_PARAMS", "turn/start", compactTurnParamsForNdjson(s, {
         model: info.turnParams.model,
         effort: info.turnParams.effort,
         collaborationMode: info.turnParams.collaborationMode,
@@ -1556,26 +1856,29 @@ export async function runBridgeTask(request) {
         hasOutputSchema: Boolean(info.turnParams.outputSchema),
         promptLength: info.promptLength,
         promptPreview: info.promptPreview
-      });
+      }));
       // First-event surface for the *effective* runtime config — lets a
       // reviewer answer "what config did this run actually use?" from the
       // events file alone, without tailing ndjson. Critical for invisible
       // directives like `skip_meta_skills` that shape the prompt but
       // otherwise emit nothing.
       try {
+        runtimeSummary = buildTaskRuntimeSummary(request, config, {
+          turnParams: info.turnParams,
+          model: resolvedModel,
+          effort: resolvedEffort,
+        });
         const sandboxType = info.turnParams.sandboxPolicy?.type ?? "unknown";
-        const pipelineEnabled = [];
-        if (config.auto_review) pipelineEnabled.push("review");
-        if (config.post_task_prompt) pipelineEnabled.push("check");
-        if (request.noPipeline) pipelineEnabled.length = 0;
         logEvent(s, formatDirectivesEvent(s, {
           mode: isPlanMode ? "plan" : "default",
-          effort: info.turnParams.effort ?? "?",
+          effort: runtimeSummary.effective.effort ?? info.turnParams.effort ?? "?",
           sandbox: sandboxType,
           quiet: request.onProgress == null,
           skipMetaSkills: Boolean(config.skip_meta_skills),
-          pipelineEnabled,
+          pipelineEnabled: runtimeSummary.pipeline,
           model: info.turnParams.model ?? null,
+          models: runtimeSummary.models,
+          warnings: runtimeSummary.warnings,
         }));
       } catch {
         // Never let an observability event kill the turn.
@@ -1592,11 +1895,16 @@ export async function runBridgeTask(request) {
         config,
         request.jobId ?? null,
       );
-      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
-        itemId: item?.id ?? null,
-        itemType: item?.type ?? null,
-        text: extractItemText(item)
-      });
+      const itemText = extractItemText(item);
+      if (item?.type === "reasoning" && itemText == null) {
+        reasoningNullItemCounts.set(effectiveThreadId, (reasoningNullItemCounts.get(effectiveThreadId) ?? 0) + 1);
+      } else {
+        logNdjson(s, "ITEM_COMPLETED", "item/completed", {
+          itemId: item?.id ?? null,
+          itemType: item?.type ?? null,
+          text: itemText
+        });
+      }
       // Heartbeat metadata — next pulse will report which item type Codex
       // last finished, and how long ago, so silence on the wire still has
       // useful context.
@@ -1609,8 +1917,9 @@ export async function runBridgeTask(request) {
       // instead of scrolling every item. `actionable` means Codex DID
       // something (ran a command, changed a file, emitted a plan); pure
       // reasoning or empty assistant messages don't count. The stall
-      // detector uses the actionable-count to find runs of 3 consecutive
-      // barren checkpoints = 15 min with no measurable progress.
+      // detector uses the actionable-count to find runs of consecutive
+      // barren checkpoints. Early barren windows emit non-terminal
+      // [STALL_WARNING]; the configured terminal threshold emits [ERROR].
       try {
         const itemType = item?.type ?? null;
         if (itemType === "agentMessage" && typeof item.text === "string" && item.text.trim()) {
@@ -1620,26 +1929,35 @@ export async function runBridgeTask(request) {
         // matches — same slicing + file-change kind derivation, so checkpoint
         // output matches the NDJSON replay log.
         if (itemType === "commandExecution") {
+          const summary = extractItemText(item) ?? "";
           checkpointState.tools.push({
             type: "commandExecution",
-            summary: extractItemText(item) ?? "",
+            summary,
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          checkpointState.lastActionableAt = Date.now();
+          checkpointState.lastActionableSummary = summary ? `commandExecution: ${summary}` : "commandExecution";
         } else if (itemType === "fileChange") {
+          const summary = extractItemText(item) ?? "(unknown)";
           checkpointState.tools.push({
             type: "fileChange",
-            summary: extractItemText(item) ?? "(unknown)",
+            summary,
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          checkpointState.lastActionableAt = Date.now();
+          checkpointState.lastActionableSummary = `fileChange: ${summary}`;
         } else if (itemType === "plan") {
+          const summary = extractItemText(item) ?? "(plan)";
           checkpointState.tools.push({
             type: "plan",
-            summary: extractItemText(item) ?? "(plan)",
+            summary,
           });
           checkpointState.actionableCount += 1;
           checkpointState.seenFirstActionable = true;
+          checkpointState.lastActionableAt = Date.now();
+          checkpointState.lastActionableSummary = `plan: ${summary}`;
         }
       } catch {
         // Accumulator failures must not kill the turn.
@@ -1735,11 +2053,11 @@ export async function runBridgeTask(request) {
   // v1.3.0 — 5-min CHECKPOINT digest and 15-min stall detector.
   // The orchestrator's only channel back is the Monitor tool stream over
   // `.events`. Heartbeat (60 s) proves liveness; checkpoint (5 min) is the
-  // semantic summary an orchestrator needs to stay oriented. Three
-  // consecutive barren checkpoints (15 min with zero "actionable" items —
-  // no commands, no file changes, no plans) fires a terminal
-  // `[ERROR] | StallDetected` so the Monitor self-terminates and the
-  // orchestrator gets the signal.
+  // semantic summary an orchestrator needs to stay oriented. Barren
+  // checkpoints after the first action now emit non-terminal
+  // `[STALL_WARNING]` so the orchestrator gets early visibility before
+  // three consecutive barren checkpoints fire terminal
+  // `[ERROR] | StallDetected`.
   const CHECKPOINT_INTERVAL_MS =
     Number(process.env.CODEX_BRIDGE_CHECKPOINT_MS) > 0
       ? Number(process.env.CODEX_BRIDGE_CHECKPOINT_MS)
@@ -1748,6 +2066,8 @@ export async function runBridgeTask(request) {
     Number(process.env.CODEX_BRIDGE_STALL_CHECKPOINTS) > 0
       ? Number(process.env.CODEX_BRIDGE_STALL_CHECKPOINTS)
       : 3;
+  const STALL_WARNING_THRESHOLD_MS = CHECKPOINT_INTERVAL_MS;
+  const STALL_TERMINAL_THRESHOLD_MS = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
   let checkpointTimer = null;
   let checkpointInFlight = false;
   // `terminalEmitted` is flipped by every explicit terminal-tag write
@@ -1768,6 +2088,8 @@ export async function runBridgeTask(request) {
     actionableCount: 0,       // reset every checkpoint
     barrenCheckpoints: 0,     // consecutive checkpoints with actionableCount == 0
     seenFirstActionable: false, // gate for barren-counter start (prevents false stall on slow-to-start turns)
+    lastActionableAt: null,
+    lastActionableSummary: null,
   };
   // Checkpoint git helpers. Always run in the task's cwd; refuse to run if
   // no cwd was passed (otherwise spawnSync falls back to the bridge's own
@@ -1905,6 +2227,19 @@ export async function runBridgeTask(request) {
           checkpointState.tools = [];
           logEvent(
             heartbeatState.session,
+            formatCheckpointSummaryEvent(heartbeatState.session, {
+              elapsedMs,
+              phase: heartbeatState.phase,
+              intervalMs,
+              pid: process.pid,
+              lastAssistantMessage: checkpointState.lastAssistantMessage,
+              tools: toolsSnapshot,
+              commits,
+              diffStat,
+            })
+          );
+          logEvent(
+            heartbeatState.session,
             formatCheckpointEvent(heartbeatState.session, {
               elapsedMs,
               phase: heartbeatState.phase,
@@ -1920,6 +2255,13 @@ export async function runBridgeTask(request) {
               cwd: stateCwd,
             })
           );
+          logNdjson(heartbeatState.session, "CHECKPOINT_SUMMARY", null, {
+            elapsedMs,
+            intervalMs,
+            actionableCount: checkpointState.actionableCount,
+            toolCount: toolsSnapshot.length,
+            commitsInInterval: commits.length,
+          });
           logNdjson(heartbeatState.session, "CHECKPOINT", null, {
             elapsedMs,
             intervalMs,
@@ -1951,11 +2293,47 @@ export async function runBridgeTask(request) {
         }
       }
       if (
+        checkpointState.barrenCheckpoints > 0 &&
+        checkpointState.barrenCheckpoints < STALL_CHECKPOINT_THRESHOLD &&
+        !terminalEmitted
+      ) {
+        try {
+          const barrenWindowMs = CHECKPOINT_INTERVAL_MS * checkpointState.barrenCheckpoints;
+          const remainingMs = Math.max(0, STALL_TERMINAL_THRESHOLD_MS - barrenWindowMs);
+          logEvent(
+            heartbeatState.session,
+            formatStallWarningEvent(heartbeatState.session, {
+              elapsedMs,
+              phase: heartbeatState.phase ?? "execute",
+              barrenCheckpoints: checkpointState.barrenCheckpoints,
+              warningThresholdMs: STALL_WARNING_THRESHOLD_MS,
+              terminalThresholdMs: STALL_TERMINAL_THRESHOLD_MS,
+              remainingMs,
+              lastActionableSummary: checkpointState.lastActionableSummary,
+              lastActionableAgeMs: checkpointState.lastActionableAt ? now - checkpointState.lastActionableAt : null,
+              scriptPath: SCRIPT_PATH,
+              jobId: request.jobId ?? null,
+              cwd: stateCwd,
+            })
+          );
+          logNdjson(heartbeatState.session, "STALL_WARNING", null, {
+            origin: "bridge",
+            barrenCheckpoints: checkpointState.barrenCheckpoints,
+            warningThresholdMs: STALL_WARNING_THRESHOLD_MS,
+            terminalThresholdMs: STALL_TERMINAL_THRESHOLD_MS,
+            remainingMs,
+            lastActionableSummary: checkpointState.lastActionableSummary,
+          });
+        } catch {
+          // Warning emission is observability-only; never kill the turn.
+        }
+      }
+      if (
         checkpointState.barrenCheckpoints >= STALL_CHECKPOINT_THRESHOLD &&
         !terminalEmitted
       ) {
         try {
-          const stallWindowMs = CHECKPOINT_INTERVAL_MS * STALL_CHECKPOINT_THRESHOLD;
+          const stallWindowMs = STALL_TERMINAL_THRESHOLD_MS;
           logEvent(
             heartbeatState.session,
             formatErrorEvent(heartbeatState.session, {
@@ -2035,6 +2413,10 @@ export async function runBridgeTask(request) {
 
   let result;
   let session;
+  const branchSwitchMonitor = createBranchSwitchMonitor({
+    cwd: request.cwd,
+    jobId: request.jobId ?? null,
+  });
   // v1.5.0 — snapshot HEAD before the turn so the terminal-failure path can
   // report "commits landed before the error" via [PARTIAL]. Cheap (two git
   // spawns, 10s timeouts); silently returns an empty snapshot off a repo.
@@ -2042,6 +2424,7 @@ export async function runBridgeTask(request) {
   // v1.5.0 — retries recorded for the handoff envelope when the retry budget
   // is exhausted. Each entry: { attemptIso, origin, errorCode, backoffMs, outcome }.
   const retryHistory = [];
+  const reasoningNullItemCounts = new Map();
   try {
     // Run the task
     result = await executeTaskRun(bridgeRequest);
@@ -2101,6 +2484,7 @@ export async function runBridgeTask(request) {
 
     // Create session for post-processing
     session = prepareRuntimeSession(initSession(sessionDir, result.threadId), config, request.jobId ?? null);
+    branchSwitchMonitor.check("after-execute", session);
 
   // Ready-to-paste Monitor hint — computed once, attached to every setPhase
   // branch below so synchronous callers never have to assemble one.
@@ -2137,6 +2521,7 @@ export async function runBridgeTask(request) {
     turnId: result.turnId,
     status: result.exitStatus,
     planDetected: result.planDetected,
+    reasoningStepsCount: reasoningNullItemCounts.get(result.threadId) ?? 0,
     touchedFiles: result.payload?.touchedFiles ?? [],
   });
 
@@ -2157,6 +2542,7 @@ export async function runBridgeTask(request) {
       eventsPath: computedEventsPath,
       eventsDir: sessionDir,
       jobId: request.jobId ?? null,
+      runtime: runtimeSummary,
       ...extras
     };
   };
@@ -2370,20 +2756,29 @@ export async function runBridgeTask(request) {
   }
 
   // If execution completed (not plan), run auto-pipeline. `--no-pipeline`
-  // from the caller short-circuits the pipeline entirely — useful when the
-  // orchestrator owns completion checking or simply wants a single-turn
-  // execute with no silent review/fix passes behind it. Equivalent to
-  // setting auto_review:false AND post_task_prompt:"" for this one run,
-  // without requiring a config.yaml edit.
+  // keeps the pipeline's diff/final-reporting stage but disables validation
+  // turns (review/fix/check) for this one run. That preserves the observable
+  // "what changed for this task?" contract without spending another LLM turn.
   if (request.noPipeline) {
-    logNdjson(session, "PIPELINE_SKIPPED", null, { reason: "--no-pipeline flag" });
+    logNdjson(session, "PIPELINE_SKIPPED", null, {
+      reason: "--no-pipeline flag",
+      skippedStages: ["review", "fix", "check"],
+      retainedStages: ["diff"],
+    });
   }
-  if (result.exitStatus === 0 && !request.noPipeline && (config.auto_review || config.post_task_prompt)) {
+  const shouldRunPipeline =
+    result.exitStatus === 0 &&
+    (request.noPipeline || config.auto_review || config.post_task_prompt);
+  if (shouldRunPipeline) {
+    const pipelineBaseConfig = request.noPipeline
+      ? { ...config, auto_review: false, post_task_prompt: "" }
+      : config;
+    const pipelineConfig = { ...pipelineBaseConfig, model: resolvedModel };
     const pipelineResult = await runAutoPipeline({
       session,
       threadId: result.threadId,
       cwd: request.cwd,
-      config,
+      config: pipelineConfig,
       scriptPath: SCRIPT_PATH,
       rootDir: ROOT_DIR,
       runAppServerTurn,
@@ -2398,6 +2793,11 @@ export async function runBridgeTask(request) {
         ?? (Number(config.pipeline_stage_ms) > 0 ? Number(config.pipeline_stage_ms) : null),
       totalTimeoutMs: request.pipelineTotalMs
         ?? (Number(config.pipeline_total_ms) > 0 ? Number(config.pipeline_total_ms) : null),
+      questionAnswerMs: request.questionAnswerMs ?? null,
+      expectedWriteWork: Boolean(request.write),
+      turnStartSnapshot,
+      turnTouchedFiles: result.payload?.touchedFiles ?? [],
+      checkBranchState: (detectedAt) => branchSwitchMonitor.check(detectedAt, session),
     });
     if (pipelineResult?.complete === false) {
       // Branch on whether the pipeline FINISHED incomplete (Codex's check
@@ -2416,7 +2816,7 @@ export async function runBridgeTask(request) {
       const nextAction = pipelineErrored
         ? {
             command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
-            description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, set auto_review: false in config.yaml.`,
+            description: `Pipeline stalled after stage '${failedStage}' (${pipelineResult.error}). Read result for partial state. If this keeps happening, rerun with a larger --pipeline-stage-timeout-ms / --pipeline-total-timeout-ms budget.`,
           }
         : {
             command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
@@ -2436,15 +2836,62 @@ export async function runBridgeTask(request) {
     return { ...result, session, pipeline: pipelineResult };
   }
 
-  // No pipeline — write [DONE] directly
-  const diff = captureGitDiff(request.cwd, session);
+  // No pipeline — write [DONE] directly. The terminal headline is the
+  // current task's contribution, while the workspace diff stays labeled
+  // context for dirty checkouts.
+  const taskDiffBaseRef = resolveTaskDiffBaseRef(request.jobId ?? request.taskId ?? null);
+  const cleanStartDiffBaseRef =
+    !taskDiffBaseRef &&
+    typeof turnStartSnapshot?.headSha === "string" &&
+    typeof turnStartSnapshot?.porcelain === "string" &&
+    turnStartSnapshot.porcelain.trim().length === 0
+      ? turnStartSnapshot.headSha
+      : null;
+  const taskTouchedFiles = result.payload?.touchedFiles ?? [];
+  const taskDiff = taskDiffBaseRef || cleanStartDiffBaseRef
+    ? captureGitDiff(request.cwd, session, { baseRef: taskDiffBaseRef ?? cleanStartDiffBaseRef })
+    : summarizeTouchedFiles(taskTouchedFiles);
+  const workspaceDiff = taskDiffBaseRef || cleanStartDiffBaseRef ? summarizeGitDiff(request.cwd) : captureGitDiff(request.cwd, session);
+  const diff = taskDiff.diffPath ? taskDiff : workspaceDiff;
   mirrorDiffToRegistry(request.jobId ?? request.taskId ?? null, diff.diffPath);
+  if (!hasWriteWorkAfterSnapshot(request.cwd, turnStartSnapshot, taskTouchedFiles) && request.write) {
+    const missingItems = ["no_files_touched: Write-mode task completed without touching files or changing git state."];
+    logEvent(session, formatIncompleteEvent(session, {
+      diffStat: diff.diffStat,
+      diffPath: diff.diffPath,
+      verdict: "no_files_touched",
+      findingCount: 0,
+      failingStage: "diff",
+      missingItems,
+      scriptPath: SCRIPT_PATH,
+      jobId: request.jobId ?? null,
+      cwd: request.cwd,
+      stateCwd,
+    }));
+    logNdjson(session, "NO_WORK", null, {
+      reason: "no_files_touched",
+      expectedWriteWork: true,
+      touchedFiles: taskTouchedFiles,
+    });
+    markTerminalEmitted();
+    setPhase("incomplete", {
+      command: `${bridgeCommand("send", request.cwd)} ${result.threadId} "Complete the missing items"`,
+      description: "Write-mode task finished without touching files or changing git state.",
+    }, { diffPath: diff.diffPath, monitor, missingItems, noWorkReason: "no_files_touched" });
+    return { ...result, session, diff, noWorkReason: "no_files_touched" };
+  }
   logEvent(session, formatDoneEvent(session, {
     duration: 0,
-    diffStat: diff.diffStat,
-    files: diff.files,
+    diffStat: taskDiff.diffStat,
+    files: taskDiff.files,
     config: { model: config.model, effort: config.effort, modeFlow: isPlanMode ? "plan→default" : "default" },
     diffPath: diff.diffPath,
+    taskDiff,
+    workspaceDiff,
+    workspaceWasClean: typeof turnStartSnapshot?.porcelain === "string"
+      ? turnStartSnapshot.porcelain.trim().length === 0
+      : null,
+    touchedFiles: taskTouchedFiles,
     scriptPath: SCRIPT_PATH,
     jobId: request.jobId ?? null,
     cwd: request.cwd,
@@ -2454,9 +2901,9 @@ export async function runBridgeTask(request) {
   setPhase("done", {
     command: `${bridgeCommand("result", stateCwd)} ${request.jobId ?? result.threadId}`,
     description: "Task finished. Inspect full result or send a follow-up."
-  }, { diffPath: diff.diffPath, monitor });
+  }, { diffPath: diff.diffPath, taskDiff, workspaceDiff, touchedFiles: taskTouchedFiles, monitor });
 
-    return { ...result, session, diff };
+    return { ...result, session, diff, taskDiff, workspaceDiff };
   } finally {
     // v1.3.0 — unconditional observability guarantees.
     //   1. The heartbeat pulse stops so we don't leak intervals or race
@@ -2475,7 +2922,7 @@ export async function runBridgeTask(request) {
     // Backstop uses the in-process `terminalEmitted` flag instead of
     // reading the events file — O(1) vs potentially several MB of heartbeat
     // + checkpoint history on long runs. Every terminal-tag write site
-    // (turn error, plan-pending, no-pipeline done, auto-pipeline done/incomplete/error,
+    // (turn error, plan-pending, direct done, auto-pipeline done/incomplete/error,
     // stall-detector emission), plus handled non-error terminal exits such
     // as workspace-dirty, calls `markTerminalEmitted()`. Anything that
     // reaches the `finally` without flipping the flag is, by definition, an

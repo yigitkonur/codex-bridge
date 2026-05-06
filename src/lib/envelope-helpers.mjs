@@ -58,10 +58,13 @@ export function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
   // - HEARTBEAT excluded by default: 60-s liveness pulse is pure signal
   //   for the .events file (and the 90-s liveness heuristic), but
   //   floods an LLM's context in a long run.
-  // - CHECKPOINT stays in the stream: it's the primary LLM-facing
-  //   summary (every ~5 min, content-rich).
-  // - All interrupt tags (DONE/ERROR/INCOMPLETE/PLAN/QUESTION) pass
-  //   through unconditionally.
+  // - DIRECTIVES excluded by default: the effective runtime-config echo is
+  //   useful in `.events` for forensics but redundant in Monitor fan-out.
+  // - CHECKPOINT_SUMMARY stays in the stream: it is the one-line live
+  //   progress signal. Verbose CHECKPOINT is still written for forensics
+  //   and can be opted into explicitly.
+  // - All interrupt/terminal tags (DONE/ERROR/INCOMPLETE/PLAN/CANCELLED/
+  //   QUESTION) pass through unconditionally.
   // Callers who specifically want the old inclusion model can pass
   // `--filter <tags>` explicitly; the two flags are mutually exclusive.
   const cliCommand = formatTailCommand({
@@ -73,7 +76,7 @@ export function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
   });
   const shellFallback = eventsPath
     ? `tail -f ${JSON.stringify(eventsPath)} | while IFS= read -r line; do ` +
-      `echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*) break ;; esac; done`
+      `echo "$line"; case "$line" in "[DONE]"*|"[ERROR]"*|"[INCOMPLETE]"*|"[PLAN]"*|"[CANCELLED]"*) break ;; esac; done`
     : null;
   return {
     command: cliCommand,
@@ -82,7 +85,7 @@ export function buildMonitorHint({ eventsPath, jobId, threadId, cwd = null }) {
     exclude_tags: [...DEFAULT_MONITOR_EXCLUDE],
     timeout_ms: 1800000,
     tool_hint: {
-      description: "codex-bridge task events (excludes heartbeat noise; passes interrupts + checkpoints through)",
+      description: "codex-bridge task events (excludes heartbeat, directives, and verbose checkpoints)",
       command: cliCommand,
       timeout_ms: 3600000,
       persistent: false

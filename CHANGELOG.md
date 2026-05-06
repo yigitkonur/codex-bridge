@@ -9,7 +9,17 @@ see the "Adding an entry" section at the bottom for the workflow.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+
+- Made `task --write` use worktree isolation by default, added
+  `--no-worktree-auto` as the explicit in-place opt-out, and aligned first-use
+  docs plus Bash hook behavior with the safer default.
+- Added `setup --install-monitor-hook` to install an idempotent user-settings
+  PostToolUse mirror for Monitor handoffs, and updated plugin guidance to verify
+  Monitor instead of assuming plugin-bundled hook context arrived.
+- Made `PIPELINE_ERROR` payloads internally consistent: `origin` now matches
+  `failing_stage`, `lastCompletedStage` carries prior progress, and review
+  verdict/count fields are `null` unless review actually completed.
 
 ## [2.2.0] — 2026-05-05
 

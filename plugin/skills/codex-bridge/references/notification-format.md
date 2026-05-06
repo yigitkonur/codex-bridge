@@ -4,8 +4,8 @@ The event command contract lives at `events --help`; this file covers the *judgm
 
 ## Two semantic buckets
 
-- **Interrupts** — act now: `[QUESTION]`, `[PLAN]`, `[DONE]`, `[ERROR]`, `[INCOMPLETE]`. Monitor self-terminates on terminal interrupts ([PLAN]/[DONE]/[ERROR]/[INCOMPLETE]).
-- **Progress** — periodic scan: `[CHECKPOINT]`, `[HEARTBEAT]`, `[PIPELINE:*]`, `[WARNING]`, `[CONFIRMED]`, `[RETRYING]`, `[HANDOFF]`, `[PARTIAL]`. Safe to batch-process; never terminal except `[PIPELINE:done]` which closes the pipeline only.
+- **Interrupts** — act now: `[QUESTION]`, `[PLAN]`, `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[CANCELLED]`, `[PIPELINE:diff:large_change]`. Monitor self-terminates on terminal interrupts ([PLAN]/[DONE]/[ERROR]/[INCOMPLETE]/[CANCELLED]); a large-change pipeline event is non-terminal but usually followed by a `[QUESTION]` approval gate.
+- **Progress** — periodic scan: `[CHECKPOINT_SUMMARY]`, `[CHECKPOINT]`, `[STALL_WARNING]`, `[BRANCH_SWITCHED]`, `[HEARTBEAT]`, `[PIPELINE:*]`, `[WARNING]`, `[CONFIRMED]`, `[RETRYING]`, `[HANDOFF]`, `[PARTIAL]`. Safe to batch-process; never terminal except `[PIPELINE:done]` which closes the pipeline only.
 
 ## Why `[ERROR]` is ambiguous
 
@@ -13,7 +13,11 @@ The events-file `[ERROR]` fires for any turn-level failure, including a sub-stag
 
 ## Forward-compat rule
 
-Default Monitor invocation is `--exclude HEARTBEAT` (not `--filter X,Y,Z`). Reason: any new tag a future bridge version emits passes through automatically. An inclusion-based filter silently drops unknown tags. Keep `--exclude` patterns; don't switch to `--filter` unless you specifically want a closed vocabulary.
+Default Monitor invocation is `--exclude HEARTBEAT,CHECKPOINT` (not `--filter X,Y,Z`). Reason: any new tag a future bridge version emits passes through automatically. An inclusion-based filter silently drops unknown tags. `[CHECKPOINT_SUMMARY]` remains visible while verbose `[CHECKPOINT]` is opt-in. Keep `--exclude` patterns; don't switch to `--filter` unless you specifically want a closed vocabulary.
+
+## Branch movement
+
+`[BRANCH_SWITCHED]` means the task cwd's current branch changed between bridge samples. It is non-terminal: inspect the current branch and task diff before continuing, because earlier operations may have used a different baseline. The matching NDJSON tag is `BRANCH_SWITCHED`.
 
 ## Don't pattern-match stderr
 

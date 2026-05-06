@@ -10,7 +10,7 @@ For a live background job, prefer the Monitor tool when the user wants progress 
 ```json
 {
   "description": "codex-bridge task events",
-  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs\" events <job-id-or-thread-id> --follow --exclude HEARTBEAT --timeout-ms 1800000",
+  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs\" events <job-id-or-thread-id> --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 1800000",
   "timeout_ms": 3600000,
   "persistent": false
 }
@@ -22,4 +22,4 @@ Otherwise run:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-bridge.mjs" events "$ARGUMENTS"
 ```
 
-Do not fabricate completion while the stream is running. Treat `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, and `[PLAN]` as terminal tags.
+Do not fabricate completion while the stream is running. Treat `[DONE]`, `[ERROR]`, `[INCOMPLETE]`, `[PLAN]`, and `[CANCELLED]` as terminal tags.

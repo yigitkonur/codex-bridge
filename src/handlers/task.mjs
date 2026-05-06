@@ -23,7 +23,10 @@ import { resolveWorkspaceRoot } from "../lib/workspace.mjs";
 import { renderCancelReport, renderJobStatusReport, renderSetupReport, renderStatusReport, renderStoredJobResult } from "../lib/render.mjs";
 import {
   captureGitDiff,
+  compactTurnParamsForNdjson,
   findSession,
+  formatBranchSwitchedEvent,
+  formatCancelledEvent,
   formatDoneEvent,
   formatErrorEvent,
   formatIncompleteEvent,
@@ -40,7 +43,7 @@ import { readStdinIfPiped } from "../lib/fs.mjs";
 import { mapReviewVerdictToTaskVerdict } from "../lib/review-result.mjs";
 import { checkForUpdate, formatUpdateNotice } from "../lib/update-check.mjs";
 import { runIterateLoop } from "../lib/iterate-loop.mjs";
-import { createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, resolveReviewTarget } from "../lib/git.mjs";
+import { assertCurrentBranch, createSubagentWorktree, ensureGitRepository, mergeSubagentBranch, pruneWorktreeOnCancel, resolveReviewTarget, tryGetCurrentBranch } from "../lib/git.mjs";
 import { isThreadId } from "../lib/thread-id.mjs";
 import {
   BRIDGE_CAPABILITIES,
@@ -69,6 +72,8 @@ import {
   extractPlanSteps,
   filterJobsForCurrentClaudeSession,
   findLatestResumableTaskJob,
+  findWorktreePromptAbsolutePathConflicts,
+  formatWorktreePromptAbsolutePathConflict,
   getCurrentClaudeSessionId,
   parseDurationOption,
   parsePositiveMsOption,
@@ -91,6 +96,29 @@ import {
   resolvePromptInput,
 } from "../lib/handler-utils.mjs";
 
+function resolveTaskBaseRefOption(baseRef) {
+  if (baseRef == null) return null;
+  const normalized = String(baseRef).trim();
+  if (!normalized) {
+    throw validationError("--base-ref requires a non-empty ref.", "BASE_REF_EMPTY");
+  }
+  return normalized;
+}
+
+function resolveTaskOnBranchOption(onBranch) {
+  if (onBranch == null) return null;
+  const normalized = String(onBranch).trim();
+  if (!normalized) {
+    throw validationError("--on-branch requires a non-empty branch name.", "ON_BRANCH_EMPTY");
+  }
+  return normalized;
+}
+
+function worktreeAutoDefaultDisabled() {
+  const raw = process.env.CODEX_BRIDGE_DISABLE_WORKTREE_AUTO;
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
 export async function handleTask(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
@@ -100,7 +128,7 @@ export async function handleTask(argv) {
       "turn-plan-ms", "turn-default-ms",
       "pipeline-stage-timeout-ms", "pipeline-total-timeout-ms",
       "question-timeout-ms",
-      "brief", "intercepted-from"
+      "brief", "intercepted-from", "base-ref", "on-branch"
     ],
     booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
@@ -124,6 +152,8 @@ export async function handleTask(argv) {
   const pipelineTotalOverride = parsePositiveMsOption("--pipeline-total-timeout-ms", options["pipeline-total-timeout-ms"]);
   const questionTimeoutOverride = parsePositiveMsOption("--question-timeout-ms", options["question-timeout-ms"]);
   const noPipeline = Boolean(options["no-pipeline"]);
+  const baseRefOverride = resolveTaskBaseRefOption(options["base-ref"]);
+  const onBranch = resolveTaskOnBranchOption(options["on-branch"]);
   // `--json` implies `--quiet` unless the caller explicitly passes `--quiet=false`.
   // Rationale: `--json` signals machine consumption; the stderr `[codex] Thread
   // ready (<uuid>)` progress line is a UUID-trap that agents regex-match out
@@ -135,6 +165,41 @@ export async function handleTask(argv) {
   let cwd = resolveCommandCwd(options);
   const stateCwd = cwd;
   const workspaceRoot = resolveCommandWorkspace(options);
+  const resumeLast = Boolean(options["resume-last"] || options.resume);
+  const fresh = Boolean(options.fresh);
+  if (resumeLast && fresh) {
+    throw conflictError(
+      "Choose either --resume/--resume-last or --fresh.",
+      "RESUME_FRESH_CONFLICT"
+    );
+  }
+  const write = Boolean(options.write);
+  // `--read-only` forces sandboxPolicy: { type: "readOnly" } regardless of
+  // `config.sandbox_policy` (including `danger-full-access`). Mutually
+  // exclusive with `--write` — that combination is incoherent. Used by the
+  // stop-time review-gate hook to ensure stop-hook reviews never mutate the
+  // repo even when the user has opted into a wide-open default policy.
+  const readOnly = Boolean(options["read-only"]);
+  if (write && readOnly) {
+    throw conflictError(
+      "Choose either --write or --read-only, not both.",
+      "WRITE_READ_ONLY_CONFLICT"
+    );
+  }
+  const requestedWorktreeAuto = options["worktree-auto"] === true;
+  const disabledWorktreeAuto = options["worktree-auto"] === false || worktreeAutoDefaultDisabled();
+  const effectiveWorktreeAuto =
+    requestedWorktreeAuto ||
+    (write && !readOnly && !resumeLast && !disabledWorktreeAuto);
+  if (requestedWorktreeAuto && !write) {
+    throw conflictError(
+      "--worktree-auto requires --write.",
+      "WORKTREE_WRITE_REQUIRED",
+    );
+  }
+  if (onBranch) {
+    assertCurrentBranch(stateCwd, onBranch);
+  }
 
   // --brief @path.json | <inline-json> loads + validates the structured
   // brief (T16) and persists it verbatim (brief.json + brief.md) into
@@ -142,9 +207,9 @@ export async function handleTask(argv) {
   // brief is the v2 mechanism by which the original intent is recovered
   // by review / iterate even if the prompt template later changes.
   //
-  // Both --brief and --intercepted-from currently require --worktree-auto
+  // Both --brief and --intercepted-from currently require worktree isolation
   // because the registry directory is only created when a worktree is
-  // dispatched (T15 wiring). Passing them without --worktree-auto would
+  // dispatched (T15 wiring). Passing them without worktree isolation would
   // silently discard the value, so we fail loudly instead. The validated
   // brief is also appended to the worker prompt before dispatch, so Codex
   // sees the structured assignment instead of only an on-disk artifact.
@@ -152,12 +217,19 @@ export async function handleTask(argv) {
   let briefHash = null;
   let briefSource = null;
   if (options.brief || options["intercepted-from"]) {
-    if (!options["worktree-auto"]) {
+    if (!effectiveWorktreeAuto) {
       throw conflictError(
-        "--brief and --intercepted-from require --worktree-auto (the registry slot that stores brief.json / intercepted_from is created by the worktree path).",
+        "--brief and --intercepted-from require worktree isolation (pass --write so task uses the default worktree, or pass --worktree-auto explicitly).",
         "BRIEF_REQUIRES_WORKTREE_AUTO",
       );
     }
+  }
+  if (baseRefOverride && !effectiveWorktreeAuto) {
+    throw conflictError(
+      "--base-ref requires worktree isolation.",
+      "BASE_REF_REQUIRES_WORKTREE_AUTO",
+      "Pass `--write --base-ref <ref>` (worktree isolation is the write-mode default), or remove --base-ref for a non-worktree task.",
+    );
   }
   if (options.brief) {
     const result = loadBrief(options.brief, { baseDir: cwd });
@@ -180,17 +252,9 @@ export async function handleTask(argv) {
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
 
-  const resumeLast = Boolean(options["resume-last"] || options.resume);
-  const fresh = Boolean(options.fresh);
-  if (resumeLast && fresh) {
+  if (resumeLast && requestedWorktreeAuto) {
     throw conflictError(
-      "Choose either --resume/--resume-last or --fresh.",
-      "RESUME_FRESH_CONFLICT"
-    );
-  }
-  if (resumeLast && options["worktree-auto"]) {
-    throw conflictError(
-      "--resume/--resume-last resumes a Codex thread only and cannot safely create a fresh worktree. Use `iterate <task_id>` to continue task worktree state, or start a fresh `task --write --worktree-auto` from the current branch.",
+      "--resume/--resume-last resumes a Codex thread only and cannot safely create a fresh worktree. Use `iterate <task_id>` to continue task worktree state, or start a fresh `task --write --base-ref <ref>`.",
       "RESUME_WORKTREE_CONFLICT",
       "Use `codex-bridge iterate <task_id>` for follow-up fixes, or drop --resume-last and dispatch a fresh worktree task."
     );
@@ -198,18 +262,18 @@ export async function handleTask(argv) {
   // Fail fast before `runBridgeTask` can append `prompt_footer` to an empty prompt
   // and spend a billed Codex turn. Mirrors the check the --background path already does.
   requireTaskRequest(prompt, resumeLast);
-  const write = Boolean(options.write);
-  // `--read-only` forces sandboxPolicy: { type: "readOnly" } regardless of
-  // `config.sandbox_policy` (including `danger-full-access`). Mutually
-  // exclusive with `--write` — that combination is incoherent. Used by the
-  // stop-time review-gate hook to ensure stop-hook reviews never mutate the
-  // repo even when the user has opted into a wide-open default policy.
-  const readOnly = Boolean(options["read-only"]);
-  if (write && readOnly) {
-    throw conflictError(
-      "Choose either --write or --read-only, not both.",
-      "WRITE_READ_ONLY_CONFLICT"
-    );
+  if (effectiveWorktreeAuto) {
+    const guardText = brief
+      ? `${prompt}\n\n${renderBriefAsMarkdown(brief)}`
+      : prompt;
+    const pathConflicts = findWorktreePromptAbsolutePathConflicts(guardText, workspaceRoot, [cwd, stateCwd]);
+    if (pathConflicts.length > 0) {
+      throw validationError(
+        formatWorktreePromptAbsolutePathConflict(pathConflicts, workspaceRoot),
+        "WORKTREE_ABSOLUTE_PATH_CONFLICT",
+        "Rewrite those prompt paths relative to the repo root for isolated writes, or pass --no-worktree-auto if in-place edits are intentional.",
+      );
+    }
   }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
@@ -234,19 +298,14 @@ export async function handleTask(argv) {
   // git state; after this point, cwd is execution-only and state stays anchored
   // to stateCwd/workspaceRoot so result/status/events keep finding the job.
   let worktreeInfo = null;
-  if (options["worktree-auto"]) {
-    if (!write) {
-      throw conflictError(
-        "--worktree-auto requires --write.",
-        "WORKTREE_WRITE_REQUIRED",
-      );
-    }
+  if (effectiveWorktreeAuto) {
     ensureCodexAvailable(cwd);
     try {
       worktreeInfo = createSubagentWorktree({
         cwd,
         taskId: job.id,
         backend: adapter.name,
+        baseRef: baseRefOverride,
         allowBranchFallback: false,
       });
       if (worktreeInfo.isolation_mode !== "worktree") {
@@ -262,6 +321,7 @@ export async function handleTask(argv) {
           worktree: worktreeInfo,
           isolation_mode: worktreeInfo.isolation_mode,
           base_ref: worktreeInfo.base_ref,
+          base_ref_source: worktreeInfo.base_ref_source,
           base_sha: worktreeInfo.base_sha,
           phase: "queued",
           brief_hash: briefHash,
@@ -316,7 +376,8 @@ export async function handleTask(argv) {
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
-      backend: adapter.name
+      backend: adapter.name,
+      onBranch
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -349,6 +410,7 @@ export async function handleTask(argv) {
         questionAnswerMs: questionTimeoutOverride,
         noPipeline,
         backend: adapter.name,
+        onBranch,
         // `--quiet` suppresses the stderr `[codex] …` progress stream so
         // agents don't pattern-match a thread UUID out of it. Monitor /
         // `events --follow` remain the canonical in-run observation surface.
@@ -423,11 +485,100 @@ export async function handleTaskWorker(argv) {
   );
 }
 
+function readCancelWorktree(job, existing) {
+  const registryTaskId = existing.registryTaskId ?? job.registryTaskId ?? job.id;
+  try {
+    const meta = readMeta(registryTaskId);
+    return {
+      worktree: meta?.worktree ?? existing.worktree ?? job.worktree ?? null,
+      warning: null,
+    };
+  } catch (error) {
+    return {
+      worktree: existing.worktree ?? job.worktree ?? null,
+      warning: `could not read worktree metadata: ${error?.message ?? error}`,
+    };
+  }
+}
+
+function cleanupCancelledWorktree({ workspaceRoot, job, existing, keepWorktree, keepBranch }) {
+  const { worktree, warning } = readCancelWorktree(job, existing);
+  const cleanup = {
+    attempted: false,
+    succeeded: true,
+    reason: "not-worktree-task",
+    worktreePath: worktree?.path ?? null,
+    branchName: worktree?.branch ?? null,
+    worktreeRemoved: false,
+    branchDeleted: false,
+    preservedWorktree: false,
+    preservedBranch: false,
+    failures: [],
+  };
+  if (warning) {
+    cleanup.failures.push({ step: "metadata", message: warning });
+  }
+  if (worktree?.isolation_mode !== "worktree") {
+    cleanup.succeeded = cleanup.failures.length === 0;
+    return cleanup;
+  }
+
+  const effectiveKeepWorktree = Boolean(keepWorktree);
+  const effectiveKeepBranch = Boolean(keepBranch || effectiveKeepWorktree);
+  cleanup.preservedWorktree = effectiveKeepWorktree;
+  cleanup.preservedBranch = effectiveKeepBranch;
+
+  if (effectiveKeepWorktree && effectiveKeepBranch) {
+    cleanup.succeeded = false;
+    cleanup.reason = "preserved-by-user";
+    return cleanup;
+  }
+
+  const branch = typeof worktree.branch === "string" ? worktree.branch : null;
+  const branchForCleanup =
+    branch && branch.startsWith("subagent/")
+      ? branch
+      : null;
+  if (branch && !branchForCleanup && !effectiveKeepBranch) {
+    cleanup.failures.push({
+      step: "branch_delete",
+      message: `refusing to delete non-bridge branch ${branch}`,
+    });
+  }
+
+  cleanup.attempted = true;
+  try {
+    const result = pruneWorktreeOnCancel({
+      cwd: workspaceRoot,
+      taskId: job.id,
+      branch: branchForCleanup,
+      previousRef: worktree.previous_ref,
+      path: worktree.path,
+      keepBranch: effectiveKeepBranch,
+    });
+    cleanup.reason = cleanup.failures.length > 0 ? "partial" : "cleaned";
+    cleanup.worktreeRemoved = Boolean(result.pruned);
+    cleanup.branchDeleted = Boolean(result.branchDeleted);
+    cleanup.succeeded =
+      cleanup.failures.length === 0 &&
+      (effectiveKeepWorktree || cleanup.worktreeRemoved) &&
+      (effectiveKeepBranch || !branchForCleanup || cleanup.branchDeleted);
+  } catch (error) {
+    cleanup.succeeded = false;
+    cleanup.reason = "failed";
+    cleanup.failures.push({
+      step: "git_cleanup",
+      message: error?.message ?? String(error),
+    });
+  }
+  return cleanup;
+}
+
 export async function handleCancel(argv) {
   const startedAt = Date.now();
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "keep-worktree", "keep-branch", "keep-all"]
   });
 
   const cwd = resolveCommandCwd(options);
@@ -476,14 +627,53 @@ export async function handleCancel(argv) {
   // attempt. Earlier draft included that branch — review-bot Devin and codex
   // exec review both flagged it as dead code; removed for clarity.
 
+  const keepWorktree = Boolean(options["keep-worktree"] || options["keep-all"]);
+  const keepBranch = Boolean(options["keep-branch"] || options["keep-all"]);
+  if (keepWorktree && !keepBranch && !options["keep-all"]) {
+    warnings.push("preserving worktree also preserves its checked-out branch");
+  }
+  const cleanup = cleanupCancelledWorktree({
+    workspaceRoot,
+    job,
+    existing,
+    keepWorktree,
+    keepBranch,
+  });
+  for (const failure of cleanup.failures) {
+    warnings.push(`cleanup ${failure.step} failed: ${failure.message}`);
+  }
+
   const completedAt = nowIso();
+  let cancelledEventsPath = null;
+  if (threadId) {
+    const config = getBridgeConfig(cwd, workspaceRoot);
+    const sessionDir = resolveSessionDir(config.session_dir, workspaceRoot);
+    const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    cancelledEventsPath = session.eventsPath;
+    logEvent(session, formatCancelledEvent(session, {
+      jobId: job.id,
+      reason: "cancelled-by-user",
+      cancelledAt: completedAt,
+      createdAt: existing.createdAt ?? job.createdAt ?? null,
+      cleanup,
+      interrupt,
+      terminate,
+      warnings,
+      scriptPath: SCRIPT_PATH,
+      cwd,
+      stateCwd: workspaceRoot,
+    }));
+  } else {
+    warnings.push("cancelled job has no thread id; no events file was updated");
+  }
   const nextJob = {
     ...job,
     status: "cancelled",
     phase: "cancelled",
     pid: null,
     completedAt,
-    errorMessage: "Cancelled by user."
+    errorMessage: "Cancelled by user.",
+    cleanup,
   };
 
   writeJobFile(workspaceRoot, job.id, {
@@ -497,7 +687,8 @@ export async function handleCancel(argv) {
     phase: "cancelled",
     pid: null,
     errorMessage: "Cancelled by user.",
-    completedAt
+    completedAt,
+    cleanup,
   });
 
   // Resolve a stable display title from the registry kind, not the job's
@@ -525,6 +716,7 @@ export async function handleCancel(argv) {
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted,
     reason: "cancelled-by-user",
+    cleanup,
     warnings,
     title: normalizedTitle,
     dispatchTitle: job.title ?? null,
@@ -538,6 +730,7 @@ export async function handleCancel(argv) {
       ],
       artifacts: {
         logFile: job.logFile ?? null,
+        eventsPath: cancelledEventsPath,
         threadId,
         turnId,
       },
@@ -548,6 +741,7 @@ export async function handleCancel(argv) {
         terminateAttempted: terminate.attempted,
         terminateDelivered: Boolean(terminate.delivered),
         terminateMethod: terminate.method ?? null,
+        cleanup,
       },
     }),
   };
@@ -570,7 +764,8 @@ export async function handleSend(argv) {
       "mode", "effort", "cwd", "backend",
       "idle-timeout-ms",
       "turn-timeout-ms",
-      "question-timeout-ms"
+      "question-timeout-ms",
+      "on-branch"
     ],
     booleanOptions: ["json", "wait", "quiet"],
     aliasMap: { m: "mode" }
@@ -609,6 +804,31 @@ export async function handleSend(argv) {
   }
 
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const onBranch = resolveTaskOnBranchOption(options["on-branch"]);
+  if (onBranch) {
+    assertCurrentBranch(cwd, onBranch);
+  }
+  let lastObservedBranch = tryGetCurrentBranch(cwd);
+  const logSendBranchSwitch = (session, detectedAt) => {
+    const currentBranch = tryGetCurrentBranch(cwd);
+    if (!lastObservedBranch || !currentBranch || currentBranch === lastObservedBranch) {
+      if (currentBranch) lastObservedBranch = currentBranch;
+      return;
+    }
+    const event = {
+      before: lastObservedBranch,
+      after: currentBranch,
+      detectedAt,
+      jobId: null,
+    };
+    lastObservedBranch = currentBranch;
+    logEvent(session, formatBranchSwitchedEvent(session, event));
+    logNdjson(session, "BRANCH_SWITCHED", "send", {
+      before: event.before,
+      after: event.after,
+      detected_at: event.detectedAt,
+    });
+  };
   const config = getBridgeConfig(cwd, workspaceRoot);
   const adapter = await resolveCommandAdapter({
     cwd,
@@ -622,11 +842,16 @@ export async function handleSend(argv) {
   const sessionDir = resolveSessionDir(config.session_dir, resolveWorkspaceRoot(cwd));
 
   const sendIsPlanMode = modeOverride === "plan";
+  const requestedEffort = normalizeReasoningEffort(options.effort);
+  const turnEffort = sendIsPlanMode
+    ? (requestedEffort ?? DEFAULT_CONFIG.effort)
+    : (requestedEffort ?? config.effort ?? DEFAULT_CONFIG.effort);
+  const reasoningNullItemCounts = new Map();
   const turnOptions = {
     resumeThreadId: threadId,
     prompt,
     model: config.model,
-    effort: normalizeReasoningEffort(options.effort ?? config.effort),
+    effort: turnEffort,
     sandbox: modeOverride === "default" ? "workspace-write" : modeOverride === "plan" ? "read-only" : undefined,
     onProgress: null,
     // Resolution order: --idle-timeout-ms flag → config.yaml `idle_timeout_ms`
@@ -644,7 +869,7 @@ export async function handleSend(argv) {
         : (Number(config.turn_default_ms) > 0 ? Number(config.turn_default_ms) : DEFAULT_CONFIG.turn_default_ms)),
     onTurnStart: (info) => {
       const s = findSession(sessionDir, info.threadId) ?? initSession(sessionDir, info.threadId);
-      logNdjson(s, "TURN_PARAMS", "turn/start", {
+      logNdjson(s, "TURN_PARAMS", "turn/start", compactTurnParamsForNdjson(s, {
         model: info.turnParams.model,
         effort: info.turnParams.effort,
         collaborationMode: info.turnParams.collaborationMode,
@@ -652,17 +877,22 @@ export async function handleSend(argv) {
         hasOutputSchema: Boolean(info.turnParams.outputSchema),
         promptLength: info.promptLength,
         promptPreview: info.promptPreview
-      });
+      }));
     },
     onItemCompleted: (item, { threadId: itemThreadId }) => {
       const effectiveThreadId = itemThreadId ?? null;
       if (!effectiveThreadId) return;
       const s = findSession(sessionDir, effectiveThreadId) ?? initSession(sessionDir, effectiveThreadId);
-      logNdjson(s, "ITEM_COMPLETED", "item/completed", {
-        itemId: item?.id ?? null,
-        itemType: item?.type ?? null,
-        text: extractItemText(item)
-      });
+      const itemText = extractItemText(item);
+      if (item?.type === "reasoning" && itemText == null) {
+        reasoningNullItemCounts.set(effectiveThreadId, (reasoningNullItemCounts.get(effectiveThreadId) ?? 0) + 1);
+      } else {
+        logNdjson(s, "ITEM_COMPLETED", "item/completed", {
+          itemId: item?.id ?? null,
+          itemType: item?.type ?? null,
+          text: itemText
+        });
+      }
     },
     onServerRequest: createBridgeServerRequestHandler({
       sessionDir,
@@ -684,7 +914,7 @@ export async function handleSend(argv) {
   turnOptions.sandboxPolicy = buildSandboxPolicy(resolvedSandboxMode, config);
   if (modeOverride) {
     turnOptions.collaborationMode = buildCollaborationMode(modeOverride, config, {
-      effort: options.effort,
+      effort: requestedEffort,
       developerInstructions: loadDeveloperInstructions(modeOverride),
     });
   }
@@ -708,6 +938,7 @@ export async function handleSend(argv) {
   if (result.status !== 0) {
     const errLike = result.error ?? { message: `send failed on thread ${threadId} (status ${result.status}).` };
     const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+    logSendBranchSwitch(session, "send:after");
     const classified = classifyError(errLike);
     logEvent(session, formatErrorEvent(session, {
       errorCode: classified.code,
@@ -717,12 +948,16 @@ export async function handleSend(argv) {
       scriptPath: SCRIPT_PATH,
       cwd
     }));
-    logNdjson(session, "ERROR", "turn/completed", { error: classified });
+    logNdjson(session, "ERROR", "turn/completed", {
+      error: classified,
+      reasoningStepsCount: reasoningNullItemCounts.get(threadId) ?? 0,
+    });
     emitError(errLike, { json: options.json, command: "send" });
     return;
   }
 
   const session = findSession(sessionDir, threadId) ?? initSession(sessionDir, threadId);
+  logSendBranchSwitch(session, "send:after");
   if (result.planDetected && result.planText) {
     const planPath = writePlan(session, result.planText);
     const steps = extractPlanSteps(result.planText);
@@ -737,7 +972,8 @@ export async function handleSend(argv) {
     logNdjson(session, "PLAN", "item/completed", {
       turnId: result.turnId ?? null,
       planPath,
-      planDetected: true
+      planDetected: true,
+      reasoningStepsCount: reasoningNullItemCounts.get(threadId) ?? 0,
     });
     const eventsPath = session?.eventsPath ?? null;
     const renderedLines = [`Plan updated for ${threadId}.`];
@@ -774,7 +1010,8 @@ export async function handleSend(argv) {
   }));
   logNdjson(session, "DONE", "turn/completed", {
     turnId: result.turnId ?? null,
-    status: result.status
+    status: result.status,
+    reasoningStepsCount: reasoningNullItemCounts.get(threadId) ?? 0,
   });
   const eventsPath = session?.eventsPath ?? null;
   const renderedLines = [`Sent to ${threadId}. Status: ${result.status}`];

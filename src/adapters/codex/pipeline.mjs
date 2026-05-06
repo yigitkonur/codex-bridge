@@ -4,27 +4,36 @@ import {
   logNdjson,
   logEvent,
   captureGitDiff,
+  captureGitSnapshot,
+  summarizeGitDiff,
+  summarizeTouchedFiles,
   writePlan,
   writeReview,
   formatDoneEvent,
   formatErrorEvent,
   formatIncompleteEvent,
   formatPipelineEvent,
+  formatQuestionEvent,
+  formatConfirmedEvent,
   fmtSeconds,
 } from "../../lib/session-log.mjs";
-import { COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "../../lib/config.mjs";
+import { DEFAULT_CONFIG, COMPLETION_CHECK_SCHEMA, buildCollaborationMode, buildSandboxPolicy } from "../../lib/config.mjs";
 import { extractUpstreamRequestId } from "../../lib/cli-errors.mjs";
 import { parseNativeReviewText } from "../../lib/review-result.mjs";
 import { readMeta } from "../../lib/registry.mjs";
+import { clearPendingRequest, waitForResponse, writePendingRequest } from "../../lib/pending-requests.mjs";
 
 // Default budgets. Runtime callers may override via `stageTimeoutMs` /
 // `totalTimeoutMs` on runAutoPipeline options, which in turn resolve from
 // CLI flag → config.yaml → these defaults. Pre-1.2.5 both were constants
-// with no escape hatch; large diffs that legitimately needed >5 min review
+// with no escape hatch; large diffs that legitimately needed more review
 // time had no recourse short of editing the source. See config.mjs
 // DEFAULT_CONFIG `pipeline_stage_ms` / `pipeline_total_ms`.
-const PIPELINE_TIMEOUT_MS_DEFAULT = 900_000; // 15 minutes total
-const STAGE_TIMEOUT_MS_DEFAULT = 300_000;    // 5 minutes per stage
+const PIPELINE_TIMEOUT_MS_DEFAULT = 1_800_000; // 30 minutes total
+const STAGE_TIMEOUT_MS_DEFAULT = 720_000;      // 12 minutes per stage
+const DIFF_APPROVAL_QUESTION_ID = "destructive_diff";
+const DIFF_APPROVAL_APPROVE = "Approve";
+const DIFF_APPROVAL_REJECT = "Reject";
 
 function loadExecuteInstructions(rootDir) {
   const p = path.join(rootDir, "templates", "execute-instructions.md");
@@ -49,6 +58,11 @@ export async function runAutoPipeline(options) {
     stateCwd = cwd,
     stageTimeoutMs = null,
     totalTimeoutMs = null,
+    questionAnswerMs = null,
+    expectedWriteWork = false,
+    turnStartSnapshot = null,
+    turnTouchedFiles = [],
+    checkBranchState = null,
   } = options;
 
   // Resolve per-stage and total budgets: caller override → built-in default.
@@ -64,12 +78,37 @@ export async function runAutoPipeline(options) {
     typeof taskMeta?.base_sha === "string" && taskMeta.base_sha
       ? taskMeta.base_sha
       : (typeof taskMeta?.base_ref === "string" && taskMeta.base_ref ? taskMeta.base_ref : null);
-  const captureTaskDiff = () =>
-    taskDiffBaseRef
-      ? captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef })
+  const cleanStartDiffBaseRef =
+    !taskDiffBaseRef &&
+    typeof turnStartSnapshot?.headSha === "string" &&
+    typeof turnStartSnapshot?.porcelain === "string" &&
+    turnStartSnapshot.porcelain.trim().length === 0
+      ? turnStartSnapshot.headSha
+      : null;
+  const captureTaskDiff = (extraTouchedFiles = []) =>
+    taskDiffBaseRef || cleanStartDiffBaseRef
+      ? captureGitDiff(cwd, session, { baseRef: taskDiffBaseRef ?? cleanStartDiffBaseRef })
+      : summarizeTouchedFiles([...turnTouchedFiles, ...extraTouchedFiles]);
+  const diffRiskBaseRef =
+    taskDiffBaseRef ??
+    (typeof turnStartSnapshot?.headSha === "string" && turnStartSnapshot.headSha
+      ? turnStartSnapshot.headSha
+      : null);
+  const captureDiffForRisk = () =>
+    diffRiskBaseRef
+      ? captureGitDiff(cwd, session, { baseRef: diffRiskBaseRef })
       : captureGitDiff(cwd, session);
+  const captureWorkspaceDiff = () => summarizeGitDiff(cwd);
 
   const remainingPipelineMs = () => totalMs - (Date.now() - startTime);
+  const sampleBranch = (detectedAt) => {
+    if (typeof checkBranchState !== "function") return;
+    try {
+      checkBranchState(detectedAt);
+    } catch {
+      // Branch telemetry must not change task outcome.
+    }
+  };
 
   const checkPipelineTimeout = () => {
     if (remainingPipelineMs() <= 0) {
@@ -107,20 +146,82 @@ export async function runAutoPipeline(options) {
   let reviewFindings = [];
   let reviewFindingCount = 0;
   let incompleteStage = null;
+  let completionResult = { complete: true, missing_items: [], summary: "Complete" };
+  let skipValidationStages = false;
 
   try {
     // Stage 1: Capture initial git diff
+    sampleBranch("pipeline:diff:before");
     logEvent(session, formatPipelineEvent(session, { stage: "diff" }));
     logNdjson(session, "PIPELINE_STAGE", null, { stage: "diff" });
-    const diff1 = captureGitDiff(cwd, session);
+    const diff1 = captureDiffForRisk();
+    sampleBranch("pipeline:diff:after");
     completedStages.push("diff");
     logEvent(session, formatPipelineEvent(session, { stage: "diff", suffix: "done", detail: diff1.diffStat }));
+    const diffRisk = classifyPipelineDiffRisk(diff1, config);
+    if (diffRisk.class !== "low_risk") {
+      const riskDetail = formatDiffRiskDetail(diffRisk);
+      if (diffRisk.mode === "ignore") {
+        logNdjson(session, "PIPELINE_DIFF_RISK_IGNORED", null, diffRisk);
+      } else {
+        const paused = diffRisk.mode === "pause";
+        logEvent(session, formatPipelineEvent(session, {
+          stage: "diff",
+          suffix: "large_change",
+          detail: `${riskDetail} paused=${paused ? "true" : "false"}`,
+        }));
+        logNdjson(session, "PIPELINE_DIFF_RISK", null, { ...diffRisk, paused });
+      }
+
+      if (diffRisk.mode === "pause") {
+        const decision = await waitForDiffRiskApproval({
+          session,
+          cwd,
+          scriptPath,
+          config,
+          questionAnswerMs,
+          diffRisk,
+        });
+
+        if (decision.approved) {
+          logEvent(session, formatPipelineEvent(session, {
+            stage: "diff",
+            suffix: "approved",
+            detail: riskDetail,
+          }));
+          logNdjson(session, "PIPELINE_DIFF_APPROVED", null, { ...diffRisk, requestId: decision.requestId });
+        } else {
+          reviewVerdict = "needs-attention";
+          incompleteStage = "diff";
+          skipValidationStages = true;
+          const reason = decision.timedOut
+            ? `Destructive diff requires approval before review/fix/check; no response within ${decision.timeoutMs}ms.`
+            : `Destructive diff rejected by user: ${diffRisk.reason}.`;
+          completionResult = {
+            complete: false,
+            missing_items: [reason],
+            summary: "destructive diff approval required",
+          };
+          logEvent(session, formatPipelineEvent(session, {
+            stage: "diff",
+            suffix: "rejected",
+            detail: decision.timedOut ? `${riskDetail} timeout_ms=${decision.timeoutMs}` : riskDetail,
+          }));
+          logNdjson(session, "PIPELINE_DIFF_REJECTED", null, {
+            ...diffRisk,
+            requestId: decision.requestId,
+            timedOut: decision.timedOut,
+          });
+        }
+      }
+    }
     checkPipelineTimeout();
 
     // Stage 2: Auto-review (if configured)
     let unstructuredReviewAttention = false;
 
-    if (config.auto_review) {
+    if (!skipValidationStages && config.auto_review) {
+      sampleBranch("pipeline:review:before");
       logEvent(session, formatPipelineEvent(session, { stage: "review" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "review" });
 
@@ -177,6 +278,7 @@ export async function runAutoPipeline(options) {
         }
 
         completedStages.push("review");
+        sampleBranch("pipeline:review:after");
         checkPipelineTimeout();
 
         // Parse review findings from the shared native review parser so the
@@ -194,6 +296,7 @@ export async function runAutoPipeline(options) {
 
         // Stage 2b: Fix findings (if any)
         if (reviewFindings.length > 0) {
+          sampleBranch("pipeline:fix:before");
           logEvent(session, formatPipelineEvent(session, { stage: "fix" }));
           logNdjson(session, "PIPELINE_STAGE", null, { stage: "fix", findingCount: reviewFindings.length });
 
@@ -262,6 +365,7 @@ export async function runAutoPipeline(options) {
           }
 
           completedStages.push("fix");
+          sampleBranch("pipeline:fix:after");
           checkPipelineTimeout();
 
           // Capture diff after fix; derive the exact file list the fix
@@ -302,9 +406,8 @@ export async function runAutoPipeline(options) {
     }
 
     // Stage 3: Completion check (if configured)
-    let completionResult = { complete: true, missing_items: [], summary: "Complete" };
-
-    if (config.post_task_prompt && config.post_task_prompt.trim()) {
+    if (!skipValidationStages && config.post_task_prompt && config.post_task_prompt.trim()) {
+      sampleBranch("pipeline:check:before");
       logEvent(session, formatPipelineEvent(session, { stage: "check" }));
       logNdjson(session, "PIPELINE_STAGE", null, { stage: "check" });
 
@@ -330,6 +433,7 @@ export async function runAutoPipeline(options) {
         );
 
         completedStages.push("check");
+        sampleBranch("pipeline:check:after");
         // Completion check result tag is emitted below after completionResult
         // is finalized (line ~204 in the pre-1.2.5 file), since the complete
         // bit depends on parsing checkResult.finalMessage.
@@ -419,18 +523,38 @@ export async function runAutoPipeline(options) {
     }
 
     // Stage 4: Final git diff and notification
-    const finalDiff = captureTaskDiff();
+    sampleBranch("pipeline:final:before");
+    const finalDiff = captureTaskDiff(fixFilesTouched);
+    const workspaceDiff = taskDiffBaseRef || cleanStartDiffBaseRef ? captureWorkspaceDiff() : captureGitDiff(cwd, session);
+    const finalDiffPath = finalDiff.diffPath ?? workspaceDiff.diffPath ?? "";
+    const taskFilesTouched = [
+      ...new Set([...turnTouchedFiles, ...fixFilesTouched].map((file) => String(file ?? "").trim()).filter(Boolean)),
+    ];
     const duration = Math.round((Date.now() - startTime) / 1000);
-    const missingItems = Array.isArray(completionResult.missing_items)
+    const noFilesTouched = Boolean(expectedWriteWork) && !hasWriteWorkAfterSnapshot({
+      cwd,
+      startSnapshot: turnStartSnapshot,
+      touchedFiles: turnTouchedFiles,
+    });
+    const completionMissingItems = Array.isArray(completionResult.missing_items)
       ? completionResult.missing_items
       : [];
-    const completionSummary = typeof completionResult.summary === "string"
+    const missingItems = noFilesTouched
+      ? [
+          "no_files_touched: Write-mode task completed without touching files or changing git state.",
+          ...completionMissingItems,
+        ]
+      : completionMissingItems;
+    const completionSummary = noFilesTouched
+      ? "no-files-touched"
+      : typeof completionResult.summary === "string"
       ? completionResult.summary
       : null;
-    const complete = Boolean(completionResult.complete);
+    const complete = Boolean(completionResult.complete) && !noFilesTouched;
     const partial = !complete;
-    const failingStage = partial ? incompleteStage : null;
+    const failingStage = noFilesTouched ? "diff" : (partial ? incompleteStage : null);
     const completion = normalizeCompletionResult(completionResult, missingItems, completionSummary, complete);
+    const finalVerdict = noFilesTouched ? "no_files_touched" : reviewVerdict;
 
     if (complete) {
       logEvent(session, formatDoneEvent(session, {
@@ -438,7 +562,13 @@ export async function runAutoPipeline(options) {
         diffStat: finalDiff.diffStat,
         files: finalDiff.files,
         config: { model: config.model, effort: config.effort, modeFlow: "plan→default" },
-        diffPath: finalDiff.diffPath,
+        diffPath: finalDiffPath,
+        taskDiff: finalDiff,
+        workspaceDiff,
+        workspaceWasClean: typeof turnStartSnapshot?.porcelain === "string"
+          ? turnStartSnapshot.porcelain.trim().length === 0
+          : null,
+        touchedFiles: taskFilesTouched,
         scriptPath,
         jobId,
         cwd,
@@ -447,8 +577,8 @@ export async function runAutoPipeline(options) {
     } else {
       logEvent(session, formatIncompleteEvent(session, {
         diffStat: finalDiff.diffStat,
-        diffPath: finalDiff.diffPath,
-        verdict: reviewVerdict,
+        diffPath: finalDiffPath,
+        verdict: finalVerdict,
         findingCount: reviewFindingCount,
         failingStage,
         missingItems,
@@ -470,9 +600,11 @@ export async function runAutoPipeline(options) {
       reviewVerdict,
       reviewFindingCount,
       fixFilesTouched,
+      noWorkReason: noFilesTouched ? "no_files_touched" : null,
       missingItems,
       completionSummary,
       completion,
+      taskTouchedFiles: taskFilesTouched,
       touchedFiles: fixFilesTouched,
     });
 
@@ -496,15 +628,18 @@ export async function runAutoPipeline(options) {
       completedStages,
       duration,
       diff: finalDiff,
+      workspaceDiff,
       failing_stage: failingStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
       reviewVerdict,
       reviewFindingCount,
       fixFilesTouched,
+      noWorkReason: noFilesTouched ? "no_files_touched" : null,
       completion,
       missingItems,
       completionSummary,
+      taskTouchedFiles: taskFilesTouched,
       touchedFiles: fixFilesTouched,
     };
 
@@ -528,25 +663,26 @@ export async function runAutoPipeline(options) {
     // Capture whatever diff exists
     let finalDiff;
     try {
-      finalDiff = captureTaskDiff();
+      finalDiff = captureTaskDiff(fixFilesTouched);
     } catch {
       finalDiff = { diffStat: "0 files | +0 -0", files: [], diffPath: "" };
     }
 
-    const lastStage = completedStages[completedStages.length - 1] ?? "pipeline";
-    const origin = `pipeline:${lastStage}`;
-    // `failing_stage` names the stage that *actually* stalled/errored — a
-    // separate field from `origin` (which keeps its "last-completed" semantics
-    // for backward compatibility with tooling that already filters on it).
-    // Pre-1.4.1 readers had to guess whether `origin: pipeline:diff` meant
-    // "diff failed" or "diff completed and review failed". TimeoutError's
-    // `label` and PipelineStageError's `stage` both carry the authoritative
-    // source; map them to the canonical stage token used in `completedStages`.
+    const lastCompletedStage = completedStages[completedStages.length - 1] ?? null;
+    // `failing_stage` names the stage that *actually* stalled/errored.
+    // TimeoutError's `label` and PipelineStageError's `stage` both carry the
+    // authoritative source; map them to the canonical stage token used in
+    // `completedStages`.
     const failingStage = error instanceof TimeoutError
       ? mapStageLabel(error.label)
       : error instanceof PipelineStageError
         ? error.stage
         : null;
+    const origin = `pipeline:${failingStage ?? "pipeline"}`;
+    const reviewPayload = buildReviewPayload(completedStages, {
+      reviewVerdict,
+      reviewFindingCount,
+    });
     const upstreamRequestId = extractUpstreamRequestId(errorMessage);
     logEvent(session, formatErrorEvent(session, {
       errorCode,
@@ -566,12 +702,12 @@ export async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       origin,
+      lastCompletedStage,
       failing_stage: failingStage,
       partial: true,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       touchedFiles: fixFilesTouched,
     });
@@ -580,7 +716,7 @@ export async function runAutoPipeline(options) {
     // to render as [PIPELINE:failed] instead of the stale [PIPELINE:pipeline:failed].
     logEvent(session, formatPipelineEvent(session, {
       stage: "failed",
-      detail: `failing_stage=${failingStage ?? "unknown"} at=${lastStage} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
+      detail: `failing_stage=${failingStage ?? "unknown"} last_completed=${lastCompletedStage ?? "none"} stages=${completedStages.join(",")} touched=${fixFilesTouched.length}`
     }));
 
     const completion = normalizeCompletionResult(
@@ -596,11 +732,12 @@ export async function runAutoPipeline(options) {
       duration,
       error: errorMessage,
       diff: finalDiff,
+      origin,
+      lastCompletedStage,
       failing_stage: failingStage,
       stageTimeoutMs: stageMs,
       totalTimeoutMs: totalMs,
-      reviewVerdict,
-      reviewFindingCount,
+      ...reviewPayload,
       fixFilesTouched,
       completion,
       missingItems: [],
@@ -608,6 +745,16 @@ export async function runAutoPipeline(options) {
       touchedFiles: fixFilesTouched,
     };
   }
+}
+
+function buildReviewPayload(completedStages, { reviewVerdict, reviewFindingCount }) {
+  if (!completedStages.includes("review")) {
+    return {
+      reviewVerdict: null,
+      reviewFindingCount: null,
+    };
+  }
+  return { reviewVerdict, reviewFindingCount };
 }
 
 function normalizeCompletionResult(completionResult, missingItems, completionSummary, complete) {
@@ -620,6 +767,204 @@ function normalizeCompletionResult(completionResult, missingItems, completionSum
     missing_items: missingItems,
     summary: completionSummary,
   };
+}
+
+function normalizePorcelain(porcelain) {
+  return String(porcelain ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .sort()
+    .join("\n");
+}
+
+function hasWriteWorkAfterSnapshot({ cwd, startSnapshot, touchedFiles }) {
+  if (Array.isArray(touchedFiles) && touchedFiles.length > 0) {
+    return true;
+  }
+  if (!startSnapshot?.headSha) {
+    return false;
+  }
+  const currentSnapshot = captureGitSnapshot(cwd);
+  if (!currentSnapshot?.headSha) {
+    return false;
+  }
+  if (currentSnapshot.headSha !== startSnapshot.headSha) {
+    return true;
+  }
+  return normalizePorcelain(currentSnapshot.porcelain) !== normalizePorcelain(startSnapshot.porcelain);
+}
+
+export function classifyPipelineDiffRisk(diff, config = {}) {
+  const stats = normalizeDiffStats(diff);
+  const totals = stats.reduce((acc, file) => {
+    acc.additions += file.additions;
+    acc.deletions += file.deletions;
+    return acc;
+  }, { additions: 0, deletions: 0 });
+  const filesChanged = stats.length;
+  const mode = normalizeDestructiveDiffMode(config.destructive_diff_mode);
+  const deletionThreshold = positiveNumberOrDefault(
+    config.destructive_diff_lines_deleted,
+    DEFAULT_CONFIG.destructive_diff_lines_deleted
+  );
+  const filesThreshold = positiveNumberOrDefault(
+    config.destructive_diff_files_changed,
+    DEFAULT_CONFIG.destructive_diff_files_changed
+  );
+  const summary = {
+    additions: totals.additions,
+    deletions: totals.deletions,
+    filesChanged,
+    thresholds: {
+      linesDeleted: deletionThreshold,
+      filesChanged: filesThreshold,
+    },
+    mode,
+  };
+
+  if (totals.deletions > deletionThreshold) {
+    return {
+      class: "destructive",
+      reason: `${totals.deletions} lines deleted (threshold ${deletionThreshold})`,
+      ...summary,
+    };
+  }
+
+  if (filesChanged > filesThreshold) {
+    return {
+      class: "wide_blast",
+      reason: `${filesChanged} files changed (threshold ${filesThreshold})`,
+      ...summary,
+    };
+  }
+
+  return { class: "low_risk", reason: null, ...summary };
+}
+
+function normalizeDiffStats(diff) {
+  if (Array.isArray(diff?.fileStats)) {
+    return diff.fileStats
+      .map((file) => ({
+        path: typeof file.path === "string" ? file.path : "",
+        additions: nonNegativeInteger(file.additions),
+        deletions: nonNegativeInteger(file.deletions),
+      }))
+      .filter((file) => file.path);
+  }
+
+  return (Array.isArray(diff?.files) ? diff.files : [])
+    .map(parseFormattedDiffStat)
+    .filter(Boolean);
+}
+
+function parseFormattedDiffStat(value) {
+  const match = String(value).match(/^[A-Z]\s+(.+?)\s+\(\+(\d+)\s+-(\d+)\)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    path: match[1],
+    additions: nonNegativeInteger(match[2]),
+    deletions: nonNegativeInteger(match[3]),
+  };
+}
+
+function nonNegativeInteger(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+function positiveNumberOrDefault(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function normalizeDestructiveDiffMode(value) {
+  return ["pause", "warn", "ignore"].includes(value) ? value : DEFAULT_CONFIG.destructive_diff_mode;
+}
+
+function formatDiffRiskDetail(diffRisk) {
+  return [
+    `class=${diffRisk.class}`,
+    `reason=${JSON.stringify(diffRisk.reason)}`,
+    `files=${diffRisk.filesChanged}`,
+    `additions=${diffRisk.additions}`,
+    `deletions=${diffRisk.deletions}`,
+  ].join(" ");
+}
+
+async function waitForDiffRiskApproval({ session, cwd, scriptPath, config, questionAnswerMs, diffRisk }) {
+  const threadId = session.threadId;
+  const requestId = `req-${String(threadId).slice(-6)}-${Date.now().toString(36)}`;
+  const question = {
+    id: DIFF_APPROVAL_QUESTION_ID,
+    question: `This task produced a ${diffRisk.class} diff (${diffRisk.reason}). Continue to review/fix/check?`,
+    options: [
+      {
+        label: DIFF_APPROVAL_APPROVE,
+        description: "Continue the auto-pipeline for this diff.",
+      },
+      {
+        label: DIFF_APPROVAL_REJECT,
+        description: "Stop the auto-pipeline and mark the task incomplete.",
+      },
+    ],
+  };
+  const entry = {
+    internalId: requestId,
+    rpcRequestId: null,
+    method: "item/tool/requestUserInput",
+    threadId,
+    firstQuestionId: DIFF_APPROVAL_QUESTION_ID,
+    params: {
+      threadId,
+      source: "pipeline-diff-risk",
+      questions: [question],
+    },
+    createdAt: Date.now(),
+  };
+  const timeoutMs = positiveNumberOrDefault(
+    questionAnswerMs,
+    positiveNumberOrDefault(config.question_answer_ms, DEFAULT_CONFIG.question_answer_ms)
+  );
+
+  writePendingRequest(session.sessionDir, threadId, entry);
+  logEvent(session, formatQuestionEvent(session, {
+    requestId,
+    questions: [question],
+    scriptPath,
+    cwd,
+  }));
+  logNdjson(session, "QUESTION", "pipeline/diff-risk", { requestId, questions: [question], diffRisk });
+
+  try {
+    const response = await waitForResponse(session.sessionDir, threadId, timeoutMs, requestId);
+    if (response?.payload) {
+      const answer = extractDiffApprovalAnswer(response.payload);
+      if (answer === DIFF_APPROVAL_APPROVE) {
+        logEvent(session, formatConfirmedEvent(session, { requestId }));
+        logNdjson(session, "CONFIRMED", "pipeline/diff-risk", { requestId, answer });
+        return { approved: true, timedOut: false, requestId, timeoutMs };
+      }
+      logNdjson(session, "CONFIRMED", "pipeline/diff-risk", {
+        requestId,
+        answer: answer ?? null,
+        approved: false,
+      });
+      return { approved: false, timedOut: false, requestId, timeoutMs };
+    }
+
+    logNdjson(session, "QUESTION_TIMEOUT", "pipeline/diff-risk", { requestId, timeoutMs });
+    return { approved: false, timedOut: true, requestId, timeoutMs };
+  } finally {
+    clearPendingRequest(session.sessionDir, threadId);
+  }
+}
+
+function extractDiffApprovalAnswer(payload) {
+  const answer = payload?.answers?.[DIFF_APPROVAL_QUESTION_ID]?.answers?.[0];
+  return typeof answer === "string" ? answer : null;
 }
 
 function buildFixPrompt(findings) {

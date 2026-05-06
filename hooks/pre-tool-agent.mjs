@@ -326,8 +326,9 @@ function formatTrackerContext(envelope) {
   lines.push("");
   if (monitorHint) {
     lines.push(
-      "Next step (REQUIRED): immediately arm the Monitor tool with the EXACT payload below. The Monitor will surface progress (CHECKPOINT, PLAN, QUESTION) and self-terminate on [DONE]/[ERROR]/[INCOMPLETE]/[PLAN]:",
+      "Next step (REQUIRED): immediately arm the Monitor tool with the EXACT payload below. The Monitor will surface progress (CHECKPOINT_SUMMARY, PLAN, QUESTION) and self-terminate on [DONE]/[ERROR]/[INCOMPLETE]/[PLAN]/[CANCELLED]:",
     );
+    lines.push("Do not wrap this Monitor call in an Agent subagent; the parent-thread Monitor is the terminal-status source.");
     lines.push("");
     lines.push("Monitor input:");
     lines.push(JSON.stringify(monitorHint, null, 2));

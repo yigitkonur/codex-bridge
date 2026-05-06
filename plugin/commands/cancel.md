@@ -1,6 +1,6 @@
 ---
 description: Cancel an active background Codex Bridge job
-argument-hint: "[job-id] [--json]"
+argument-hint: "[job-id] [--keep-worktree] [--keep-branch] [--keep-all] [--json]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---

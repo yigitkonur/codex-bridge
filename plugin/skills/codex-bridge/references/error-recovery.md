@@ -39,7 +39,7 @@ The `[ERROR]` block on the events file carries an `origin:` line. Same field sho
 |---|---|
 | `idle` | Increase `--idle-timeout-ms`; relaunch. |
 | `turn` | Increase `--turn-default-ms` / `--turn-plan-ms`. |
-| `pipeline:<stage>` | Read `failing_stage:`; rerun review from the task worktree with `--cwd <worktree.path> --base <worktree.base_ref>`. |
+| `pipeline:<stage>` | Same stage as `failing_stage:`; inspect result. `PIPELINE_ERROR.lastCompletedStage` shows prior progress. Rerun review from the task worktree; if it repeats, relaunch with larger pipeline timeouts. |
 | `upstream:transport` | Bridge auto-retries 3×; on exhaust, send the same prompt fresh. |
 | `upstream:compact-proxy` | Tighten the brief; required-reads is too wide. |
 | `upstream:response-chain-lost` | New task. The resp_id is dead. Pair with `[HANDOFF]` block in events. |
@@ -53,6 +53,14 @@ The `[ERROR]` block on the events file carries an `origin:` line. Same field sho
 
 1. **You wanted that write** → loosen `sandbox_policy` in `~/.codex-bridge/config.yaml` (or per-call `--write` to flip the mode-derived default). Default is `danger-full-access`; `workspace-write` restricts to cwd; `read-only` forbids writes.
 2. **You didn't want it** → the brief is wrong. Re-brief explicitly forbidding the path Codex tried, and rerun.
+
+## No files touched
+
+`[INCOMPLETE] no_files_touched` means a write-mode task finished without Codex
+reporting touched files or changing git state relative to task start. Do not
+treat pre-existing dirty `workspace_diff` stats as proof that this task produced
+work. Send a follow-up on the same thread or relaunch with `--mode default
+--write` if edits were expected.
 
 ## Review path
 

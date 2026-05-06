@@ -19,10 +19,10 @@ codex_bridge:
   #     backend: "codex"
 
   # Execution reasoning effort: none | minimal | low | medium | high | xhigh
-  # Plan mode always uses xhigh regardless of this setting. Shipped default
-  # is xhigh (changed in 1.3.0) — live delegations on non-trivial work
-  # consistently benefited from xhigh; callers who want a cheaper turn can
-  # set this to high or lower, or pass --effort high at the CLI.
+  # Plan turns default to xhigh, but an explicit per-run --effort is honored.
+  # Shipped default is xhigh (changed in 1.3.0) — live delegations on
+  # non-trivial work consistently benefited from xhigh; callers who want a
+  # cheaper execute default can set this to high or lower.
   effort: "xhigh"
 
   # Run automatic review after task completion
@@ -92,9 +92,19 @@ codex_bridge:
   # idle_timeout_ms: 300000       # No-event watchdog — max gap between app-server notifications (5 min)
   # turn_plan_ms: 1800000         # Per-turn ceiling for plan turns (30 min)
   # turn_default_ms: 1800000      # Per-turn ceiling for execute turns (30 min)
-  # pipeline_stage_ms: 300000     # Auto-pipeline per-stage cap — review / fix / check (5 min)
-  # pipeline_total_ms: 900000     # Auto-pipeline total cap across all stages (15 min)
+  # pipeline_stage_ms: 720000     # Auto-pipeline per-stage cap — review / fix / check (12 min)
+  # pipeline_total_ms: 1800000    # Auto-pipeline total cap across all stages (30 min)
   # question_answer_ms: 300000    # requestUserInput wait before rejecting unanswered request (5 min)
+
+  # Destructive diff guardrail. After the pipeline captures the task diff,
+  # unusually destructive or wide changes pause before review/fix/check.
+  # Modes:
+  #   pause  — ask for explicit approval through respond (SHIPPED DEFAULT)
+  #   warn   — emit [PIPELINE:diff:large_change] but continue
+  #   ignore — no diff-size gate
+  destructive_diff_mode: "pause"
+  # destructive_diff_lines_deleted: 1000
+  # destructive_diff_files_changed: 30
 
   # Cleanup/redaction controls. Cleanup only runs when explicitly requested
   # through status --cleanup; these values define the default retention window.

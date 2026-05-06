@@ -1,16 +1,15 @@
 const DEFAULT_CONFIG = {
   mode: "plan",
   model: "gpt-5.4",
-  // Default reasoning effort for execute turns. Plan turns are always forced
-  // to "xhigh" regardless (plan is a bounded reasoning exercise; more effort
-  // is always worth it there). For execute turns the historical default was
-  // "high", but live delegations on non-trivial scaffolding (multi-file
-  // ports, cross-module refactors) consistently benefited from "xhigh" —
-  // the wall-clock tax is modest relative to the turn budget and the quality
-  // uplift is large. "xhigh" is the new default; callers who want a cheaper
-  // turn set `effort: "high"` (or lower) in config.yaml or pass
-  // `--effort high` at the CLI. Accepted values: none | minimal | low |
-  // medium | high | xhigh.
+  // Default reasoning effort for execute turns. Plan turns default to xhigh,
+  // but an explicit per-run `--effort` must still be honored. The historical
+  // execute default was "high", but live delegations on non-trivial
+  // scaffolding (multi-file ports, cross-module refactors) consistently
+  // benefited from "xhigh" — the wall-clock tax is modest relative to the
+  // turn budget and the quality uplift is large. "xhigh" is the new default;
+  // callers who want a cheaper turn set `effort: "high"` (or lower) in
+  // config.yaml or pass `--effort high` at the CLI. Accepted values: none |
+  // minimal | low | medium | high | xhigh.
   effort: "xhigh",
   auto_review: true,
   post_task_prompt: [
@@ -80,8 +79,18 @@ const DEFAULT_CONFIG = {
   // Auto-pipeline budgets — per-stage (review / fix / check) and total.
   // Pre-1.2.5 both were hard-coded in auto-pipeline.mjs; long native reviews
   // on ~60-file diffs could blow the stage ceiling without any escape hatch.
-  pipeline_stage_ms: 300_000,
-  pipeline_total_ms: 900_000,
+  // v2.2.1 raises the default stage budget from the old 5-minute floor to
+  // a 12-minute median-task budget; pipeline total follows at 30 minutes so
+  // review + fix + check can all complete without making runaway calls
+  // unbounded. Small tasks still finish as soon as their model calls return.
+  pipeline_stage_ms: 720_000,
+  pipeline_total_ms: 1_800_000,
+  // Deterministic auto-pipeline guardrail. Native review is probabilistic;
+  // these thresholds make destructive or unusually wide diffs pause before
+  // review/fix/check can normalize the change as successful.
+  destructive_diff_mode: "pause",
+  destructive_diff_lines_deleted: 1_000,
+  destructive_diff_files_changed: 30,
   // How long `requestUserInput` waits for a human/orchestrator to answer
   // before rejecting the server request. Five minutes is tight for thoughtful
   // decisions; make it configurable so a slow loop can widen the window
@@ -94,7 +103,15 @@ const DEFAULT_CONFIG = {
 };
 
 export function resolveEffort(config, options = {}) {
-  return options.effort ?? config.effort ?? "high";
+  return options.effort ?? config.effort ?? DEFAULT_CONFIG.effort;
+}
+
+export function resolvePlanEffort(_config, options = {}) {
+  return options.effort ?? DEFAULT_CONFIG.effort;
+}
+
+export function resolveCollaborationEffort(mode, config, options = {}) {
+  return mode === "plan" ? resolvePlanEffort(config, options) : resolveEffort(config, options);
 }
 
 export function resolveModel(config, options = {}) {
@@ -106,7 +123,7 @@ export function buildCollaborationMode(mode, config, options = {}) {
     return null;
   }
 
-  const effort = mode === "plan" ? "xhigh" : resolveEffort(config, options);
+  const effort = resolveCollaborationEffort(mode, config, options);
 
   return {
     mode,

@@ -1,8 +1,11 @@
 import fs from "node:fs";
+import path from "node:path";
 
 import { CliError } from "./cli-errors.mjs";
 import { getSessionRuntimeStatus } from "../adapters/codex/codex.mjs";
-import { getConfig, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
+import { getBridgeConfig } from "./bridge-config.mjs";
+import { getConfig as getStateConfig, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
+import { readEvents, resolveSessionDir, TERMINAL_TAGS } from "./session-log.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
@@ -80,6 +83,23 @@ export function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_
     .filter((line) => line && !isProgressBlockTitle(line));
 
   return lines.slice(-maxLines);
+}
+
+function readJobProgressEvents(logFile) {
+  if (!logFile || !fs.existsSync(logFile)) {
+    return [];
+  }
+
+  return fs
+    .readFileSync(logFile, "utf8")
+    .split(/\r?\n/)
+    .map((line) => /^\[([^\]]+)\]\s*(.*)$/.exec(line.trimEnd()))
+    .filter(Boolean)
+    .map((match) => ({
+      timestampMs: Date.parse(match[1]),
+      message: String(match[2] ?? "").trim(),
+    }))
+    .filter((entry) => entry.message && !isProgressBlockTitle(entry.message));
 }
 
 function formatElapsedDuration(startValue, endValue = null) {
@@ -165,8 +185,53 @@ function inferLegacyJobPhase(job, progressPreview = []) {
   return job.jobClass === "review" ? "reviewing" : "running";
 }
 
+function secondsBetween(startMs, endMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return null;
+  }
+  return Math.max(0, Math.round((endMs - startMs) / 1000));
+}
+
+function countArtifactsFromProgress(events) {
+  let total = 0;
+  for (const event of events) {
+    const match = /^Applying (\d+) file change\(s\)\.$/.exec(event.message);
+    if (match) {
+      total += Number(match[1]);
+    }
+  }
+  return total;
+}
+
+function countEvents(eventsPath) {
+  if (!eventsPath || !fs.existsSync(eventsPath)) {
+    return 0;
+  }
+  return readEvents(eventsPath).length;
+}
+
+function buildJobProgress(job, storedJob, options = {}) {
+  const asOfMs = options.asOfMs ?? Date.now();
+  const startMs = Date.parse(job.startedAt ?? storedJob?.startedAt ?? job.createdAt ?? storedJob?.createdAt ?? "");
+  const progressEvents = readJobProgressEvents(job.logFile ?? storedJob?.logFile ?? null);
+  const lastEvent = progressEvents.at(-1) ?? null;
+  const eventsPath = resolveStatusEventsPath(job, storedJob, options.workspaceRoot, options.config);
+
+  return {
+    elapsed_seconds: secondsBetween(startMs, asOfMs),
+    artifacts_written: countArtifactsFromProgress(progressEvents),
+    target_artifacts: null,
+    shell_commands_run: progressEvents.filter((event) => event.message.startsWith("Running command:")).length,
+    last_action: lastEvent?.message ?? null,
+    last_action_at_seconds: lastEvent ? secondsBetween(startMs, lastEvent.timestampMs) : null,
+    tokens_consumed_estimate: null,
+    events_since_last_status: countEvents(eventsPath),
+  };
+}
+
 export function enrichJob(job, options = {}) {
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const storedJob = options.storedJob ?? (options.workspaceRoot ? readStoredJobForStatus(options.workspaceRoot, job.id) : null);
   const enriched = {
     ...job,
     kindLabel: getJobTypeLabel(job),
@@ -181,9 +246,18 @@ export function enrichJob(job, options = {}) {
         : null
   };
 
-  return {
+  const withPhase = {
     ...enriched,
     phase: enriched.phase ?? inferLegacyJobPhase(enriched, enriched.progressPreview)
+  };
+
+  if (!isActiveStatus(withPhase.status)) {
+    return withPhase;
+  }
+
+  return {
+    ...withPhase,
+    progress: buildJobProgress(withPhase, storedJob, options)
   };
 }
 
@@ -265,40 +339,400 @@ function isResultTerminalJob(job) {
   );
 }
 
+function isActiveStatus(status) {
+  return status === "queued" || status === "running";
+}
+
+function firstEventLine(block) {
+  return String(block ?? "").split(/\r?\n/, 1)[0] ?? "";
+}
+
+function eventTagForBlock(block) {
+  return /^\[([^\]]+)\]/.exec(firstEventLine(block))?.[1] ?? null;
+}
+
+function readStoredJobForStatus(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs.existsSync(jobFile)) {
+    return null;
+  }
+  try {
+    return readJobFile(jobFile);
+  } catch {
+    return null;
+  }
+}
+
+function resolveStatusEventsPath(job, storedJob, workspaceRoot, config = {}) {
+  const candidates = [
+    storedJob?.result?.eventsPath,
+    storedJob?.result?.artifacts?.eventsPath,
+    storedJob?.eventsPath,
+    job.eventsPath,
+    job.result?.eventsPath,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+
+  const threadId = job.threadId ?? storedJob?.threadId ?? null;
+  if (!threadId) {
+    return null;
+  }
+  const eventsDir = [
+    storedJob?.result?.eventsDir,
+    storedJob?.result?.artifacts?.eventsDir,
+    storedJob?.eventsDir,
+    job.eventsDir,
+    job.result?.eventsDir,
+  ].find((candidate) => typeof candidate === "string" && candidate.trim());
+  const sessionDir = eventsDir || config.session_dir;
+  return sessionDir ? path.join(resolveSessionDir(sessionDir, workspaceRoot), `${threadId}.events`) : null;
+}
+
+function readStatusEventState(eventsPath) {
+  if (!eventsPath || !fs.existsSync(eventsPath)) {
+    return { eventsPath: eventsPath ?? null, terminal: null, attention: null };
+  }
+
+  const events = readEvents(eventsPath);
+  let pipelineFailed = null;
+  let attention = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const block = events[index];
+    const tag = eventTagForBlock(block);
+    if (!tag) {
+      continue;
+    }
+    if (!attention && (tag === "QUESTION" || tag === "PLAN")) {
+      attention = { tag, line: firstEventLine(block), eventsPath };
+    }
+    if (tag === "PIPELINE:failed") {
+      pipelineFailed = { tag, line: firstEventLine(block), eventsPath };
+      continue;
+    }
+    if (TERMINAL_TAGS.includes(tag)) {
+      if (pipelineFailed && tag !== "ERROR") {
+        return { eventsPath, terminal: pipelineFailed, attention };
+      }
+      return { eventsPath, terminal: { tag, line: firstEventLine(block), eventsPath }, attention };
+    }
+  }
+
+  return { eventsPath, terminal: pipelineFailed, attention };
+}
+
+function msSince(job, asOfMs) {
+  const since = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? "");
+  return Number.isFinite(since) ? Math.max(0, asOfMs - since) : null;
+}
+
+function reasonForAttention(job, terminal) {
+  return terminal?.line || job.errorMessage || job.summary || `${job.status ?? "unknown"} job needs attention`;
+}
+
+function classifyStatusJob(job, { storedJob, workspaceRoot, config, asOfMs }) {
+  const eventsPath = resolveStatusEventsPath(job, storedJob, workspaceRoot, config);
+  const eventState = readStatusEventState(eventsPath);
+  const terminalTag = eventState.terminal?.tag ?? null;
+  const base = {
+    terminalTag,
+    eventsPath: eventState.eventsPath ?? eventsPath,
+    reason: eventState.terminal?.line ?? null,
+  };
+  const active = isActiveStatus(job.status);
+  const attention = [];
+
+  if (eventState.attention?.tag === "QUESTION") {
+    attention.push({
+      jobId: job.id,
+      state: "QUESTION",
+      reason: eventState.attention.line,
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath: eventState.attention.eventsPath,
+    });
+  }
+  if (eventState.attention?.tag === "PLAN" || (!active && terminalTag === "PLAN")) {
+    attention.push({
+      jobId: job.id,
+      state: "PLAN",
+      reason: eventState.attention?.line ?? eventState.terminal?.line ?? "Plan awaiting approval",
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath: eventState.attention?.eventsPath ?? eventState.terminal?.eventsPath ?? eventsPath,
+    });
+  }
+
+  if (active) {
+    return { ...base, bucket: "running", attention };
+  }
+
+  if (job.status === "cancelled") {
+    return { ...base, bucket: "cancelled", attention };
+  }
+
+  if (terminalTag === "PIPELINE:failed" || terminalTag === "ERROR") {
+    attention.push({
+      jobId: job.id,
+      state: terminalTag === "PIPELINE:failed" ? "PIPELINE_FAILED" : "ERROR",
+      reason: reasonForAttention(job, eventState.terminal),
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath: eventState.terminal?.eventsPath ?? eventsPath,
+    });
+    return { ...base, bucket: "completed_fail", attention };
+  }
+
+  if (terminalTag === "INCOMPLETE") {
+    attention.push({
+      jobId: job.id,
+      state: "INCOMPLETE",
+      reason: reasonForAttention(job, eventState.terminal),
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath: eventState.terminal?.eventsPath ?? eventsPath,
+    });
+    return { ...base, bucket: "completed_incomplete", attention };
+  }
+
+  if (terminalTag === "PLAN") {
+    return { ...base, bucket: "awaiting_plan", attention };
+  }
+
+  if (terminalTag === "DONE") {
+    return { ...base, bucket: "completed_success", attention };
+  }
+
+  if (job.status === "failed" || job.status === "orphaned") {
+    attention.push({
+      jobId: job.id,
+      state: job.status === "orphaned" ? "ORPHANED" : "FAILED",
+      reason: reasonForAttention(job, eventState.terminal),
+      since_ms: msSince(job, asOfMs),
+      threadId: job.threadId ?? storedJob?.threadId ?? null,
+      eventsPath,
+    });
+    return { ...base, bucket: "completed_fail", attention };
+  }
+
+  if (job.status === "completed") {
+    return { ...base, bucket: "completed_success", attention };
+  }
+
+  return { ...base, bucket: "other_terminal", attention };
+}
+
+function statusStateEntry(job, storedJob, classification) {
+  return {
+    id: job.id,
+    jobId: job.id,
+    state: classification.bucket,
+    status: job.status ?? null,
+    phase: job.phase ?? null,
+    terminalTag: classification.terminalTag ?? null,
+    reason: classification.reason ?? job.errorMessage ?? null,
+    threadId: job.threadId ?? storedJob?.threadId ?? null,
+    summary: job.summary ?? storedJob?.summary ?? null,
+    updatedAt: job.updatedAt ?? null,
+    completedAt: job.completedAt ?? null,
+    eventsPath: classification.eventsPath ?? null,
+  };
+}
+
+function normalizeSessionFilter(value) {
+  if (value == null) {
+    return null;
+  }
+  const sessionId = String(value).trim();
+  return sessionId || null;
+}
+
+function parseSinceFilter(value) {
+  if (value == null) {
+    return null;
+  }
+  const sinceMs = Date.parse(String(value));
+  if (!Number.isFinite(sinceMs)) {
+    throw new CliError(`Invalid --since timestamp: ${value}`, {
+      class: "validation",
+      code: "INVALID_STATUS_SINCE",
+      retryable: false,
+      suggestion: "Pass an ISO timestamp, for example `--since 2026-05-06T12:00:00.000Z`.",
+    });
+  }
+  return sinceMs;
+}
+
+function jobWatermarkMs(job) {
+  const values = [job.createdAt, job.startedAt, job.updatedAt, job.completedAt]
+    .map((value) => Date.parse(value ?? ""))
+    .filter(Number.isFinite);
+  return values.length > 0 ? Math.max(...values) : null;
+}
+
+function selectStatusJobs(allJobs, options = {}) {
+  const explicitSession = normalizeSessionFilter(options.session);
+  const sinceMs = parseSinceFilter(options.since);
+  let jobs = allJobs;
+
+  if (explicitSession) {
+    jobs = jobs.filter((job) => job.sessionId === explicitSession);
+  } else if (!options.all) {
+    jobs = filterJobsForCurrentSession(jobs, options);
+  }
+
+  if (sinceMs != null) {
+    jobs = jobs.filter((job) => {
+      const watermarkMs = jobWatermarkMs(job);
+      return watermarkMs != null && watermarkMs >= sinceMs;
+    });
+  }
+
+  return jobs;
+}
+
+function buildStatusSummary(jobs, workspaceRoot, config = {}, asOf = new Date()) {
+  const asOfMs = asOf.getTime();
+  const summary = {
+    total: jobs.length,
+    running: 0,
+    completed_success: 0,
+    completed_fail: 0,
+    completed_incomplete: 0,
+    cancelled: 0,
+    other_terminal: 0,
+    interrupts: {
+      awaiting_plan: 0,
+      awaiting_question: 0,
+    },
+    by_state: {
+      running: 0,
+      completed_success: 0,
+      completed_fail: 0,
+      completed_incomplete: 0,
+      cancelled: 0,
+      other_terminal: 0,
+    },
+    awaiting_attention: 0,
+    as_of: asOf.toISOString(),
+  };
+  const byState = {
+    running: [],
+    completed_success: [],
+    completed_fail: [],
+    completed_incomplete: [],
+    cancelled: [],
+    other_terminal: [],
+    awaiting_plan: [],
+  };
+  const needsAttention = [];
+
+  for (const job of jobs) {
+    const storedJob = readStoredJobForStatus(workspaceRoot, job.id);
+    const classification = classifyStatusJob(job, { storedJob, workspaceRoot, config, asOfMs });
+    const entry = statusStateEntry(job, storedJob, classification);
+    if (byState[classification.bucket]) {
+      byState[classification.bucket].push(entry);
+    }
+    switch (classification.bucket) {
+      case "running":
+        summary.running += 1;
+        summary.by_state.running += 1;
+        break;
+      case "completed_success":
+        summary.completed_success += 1;
+        summary.by_state.completed_success += 1;
+        break;
+      case "completed_fail":
+        summary.completed_fail += 1;
+        summary.by_state.completed_fail += 1;
+        break;
+      case "completed_incomplete":
+        summary.completed_incomplete += 1;
+        summary.by_state.completed_incomplete += 1;
+        break;
+      case "cancelled":
+        summary.cancelled += 1;
+        summary.by_state.cancelled += 1;
+        break;
+      case "awaiting_plan":
+        summary.interrupts.awaiting_plan += 1;
+        break;
+      default:
+        summary.other_terminal += 1;
+        summary.by_state.other_terminal += 1;
+        break;
+    }
+
+    for (const entry of classification.attention) {
+      if (entry.state === "PLAN") {
+        summary.interrupts.awaiting_plan += classification.bucket === "awaiting_plan" ? 0 : 1;
+      } else if (entry.state === "QUESTION") {
+        summary.interrupts.awaiting_question += 1;
+      }
+      needsAttention.push(entry);
+    }
+  }
+
+  summary.awaiting_attention = needsAttention.length;
+  return { summary, needsAttention, byState };
+}
+
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const config = getConfig(workspaceRoot);
+  const config = getStateConfig(workspaceRoot);
+  const runtimeConfig = getBridgeConfig(cwd, workspaceRoot);
   const allJobs = listJobs(workspaceRoot);
-  const jobs = sortJobsNewestFirst(options.all ? allJobs : filterJobsForCurrentSession(allJobs, options));
+  const jobs = sortJobsNewestFirst(selectStatusJobs(allJobs, options));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const asOf = new Date();
+  const asOfMs = asOf.getTime();
+  const enrichedJobs = jobs.map((job) =>
+    enrichJob(job, {
+      maxProgressLines,
+      workspaceRoot,
+      config: runtimeConfig,
+      asOfMs,
+    })
+  );
 
-  const running = jobs
+  const running = enrichedJobs
     .filter((job) => job.status === "queued" || job.status === "running")
-    .map((job) => enrichJob(job, { maxProgressLines }));
+    .map((job) => job);
 
-  const latestFinishedRaw = jobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
-  const latestFinished = latestFinishedRaw ? enrichJob(latestFinishedRaw, { maxProgressLines }) : null;
+  const latestFinished = enrichedJobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
 
-  const recent = (options.all ? jobs : jobs.slice(0, maxJobs))
+  const recent = (options.all ? enrichedJobs : enrichedJobs.slice(0, maxJobs))
     .filter((job) => job.status !== "queued" && job.status !== "running" && job.id !== latestFinished?.id)
-    .map((job) => enrichJob(job, { maxProgressLines }));
+    .map((job) => job);
+  const statusSummary = buildStatusSummary(jobs, workspaceRoot, runtimeConfig, asOf);
 
   return {
     workspaceRoot,
     config,
     sessionRuntime: getSessionRuntimeStatus(options.env, workspaceRoot),
+    as_of: statusSummary.summary.as_of,
+    jobs: enrichedJobs,
+    summary: statusSummary.summary,
     running,
     latestFinished,
     recent,
+    needs_attention: statusSummary.needsAttention,
+    by_state: statusSummary.byState,
     needsReview: Boolean(config.stopReviewGate)
   };
 }
 
 export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const runtimeConfig = getBridgeConfig(cwd, workspaceRoot);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const selected = matchJobReference(jobs, reference);
+  const asOf = new Date();
   if (!selected) {
     throw new CliError(`No job found for "${reference}".`, {
       class: "not_found",
@@ -310,7 +744,13 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 
   return {
     workspaceRoot,
-    job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
+    as_of: asOf.toISOString(),
+    job: enrichJob(selected, {
+      maxProgressLines: options.maxProgressLines,
+      workspaceRoot,
+      config: runtimeConfig,
+      asOfMs: asOf.getTime(),
+    })
   };
 }
 

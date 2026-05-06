@@ -8,20 +8,20 @@
 
 export const COMMANDS = Object.freeze({
   task: {
-    synopsis: "task [--write] [--read-only] [--worktree-auto] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
-    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. --worktree-auto isolates write-mode work in a per-task git worktree. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry.",
+    synopsis: "task [--write] [--read-only] [--worktree-auto|--no-worktree-auto] [--base-ref <ref>] [--on-branch <name>] [--brief @<path>.json|<inline-json>] [--mode plan|default] [--effort <level>] [-m <model>] [--prompt-file <path>] [--resume|--resume-last] [--fresh] [--background] [--no-pipeline] [--quiet] [--idle-timeout-ms <ms>] [--turn-plan-ms <ms>] [--turn-default-ms <ms>] [--pipeline-stage-timeout-ms <ms>] [--pipeline-total-timeout-ms <ms>] [--question-timeout-ms <ms>] [--legacy-envelope] [--json] [prompt or file.md]",
+    summary: "Start a new Codex task. Defaults: plan mode, configured sandbox, foreground. Use --mode default to skip planning and execute directly. Write-mode tasks use per-task worktree isolation by default; --worktree-auto remains accepted for explicitness, and --no-worktree-auto opts into in-place edits. Prompts for isolated work must use repo-relative paths, not absolute paths inside the launch checkout. Base ref can be set with --base-ref <ref> (branch, ref, SHA, or current); omit it to inherit the current branch. Use --on-branch <name> to fail before dispatch if the launch checkout is not on the expected branch. --brief @path.json appends a structured brief to the worker prompt and persists it under the artifact registry. Background Monitor hints are single-job; for N > 1 parallel jobs, use wait --any --predicate both for the next actionable job, wait --all for the wave barrier, or status --watch for a live table.",
     examples: [
       'codex-bridge task --write "Fix the auth bug in src/auth.ts"',
       'codex-bridge task --mode default --write "Trivial typo fix"',
       "codex-bridge task --prompt-file prompt.md --effort high --write",
       'codex-bridge task --resume-last "Continue the previous thread"',
       'codex-bridge task --background --write "Rewrite tests" --json',
-      'codex-bridge task --background --write --worktree-auto --brief @brief.json --json "Implement the task described in the structured brief"'
+      'codex-bridge task --background --write --base-ref main --brief @brief.json --json "Implement the task described in the structured brief"'
     ]
   },
   send: {
-    synopsis: "send <thread-id> [--backend <name>] [--mode plan|default] [--effort <level>] [--quiet] [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
-    summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task.",
+    synopsis: "send <thread-id> [--backend <name>] [--mode plan|default] [--on-branch <name>] [--effort <level>] [--quiet] [--idle-timeout-ms <ms>] [--turn-timeout-ms <ms>] [--question-timeout-ms <ms>] [--json] [prompt or file.md]",
+    summary: "Resume a thread with a new prompt. Use for plan approval, revisions, and follow-ups. <thread-id> is a UUID returned by task. Use --on-branch <name> to fail before dispatch if the checkout is not on the expected branch.",
     examples: [
       'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --mode default "Implement the plan."',
       'codex-bridge send 019d9a86-1c8a-7f41-8032-6c76bbe730a1 "Revise step 2: use token bucket instead"'
@@ -74,12 +74,16 @@ export const COMMANDS = Object.freeze({
     examples: ["codex-bridge summary 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --tail 400"]
   },
   status: {
-    synopsis: "status [job-id] [--all] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
-    summary: "List jobs, or inspect one by id. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
+    synopsis: "status [job-id] [--all] [--session <id>] [--since <iso-ts>] [--filter running|completed_success|completed_fail|completed_incomplete|cancelled|needs_attention] [--wait] [--watch [--interval 10s] [--watch-timeout-ms <ms>]] [--prune-orphans|--cleanup [--dry-run] [--retention-days <n>] [--retention-jobs <n>]] [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
+    summary: "List jobs, or inspect one by id. List JSON includes result.jobs (always an array), result.summary, result.as_of, and active-job progress digests. Multi-job status includes event-derived summary counts and needs_attention for failed/incomplete/interrupted jobs. With --wait, poll one job to terminal. With --watch, repeatedly render the multi-job table and exit when all tracked jobs reach terminal state (Ctrl-C-safe). Use --watch for N-job orchestration.",
     examples: [
       "codex-bridge status",
       "codex-bridge status task-abc --wait --timeout-ms 600000",
       "codex-bridge status --all --json",
+      "codex-bridge status --all --session claude-session-id --json",
+      "codex-bridge status --since 2026-05-06T12:00:00.000Z --json",
+      "codex-bridge status --filter completed_fail --json",
+      "codex-bridge status --filter needs_attention --json",
       "codex-bridge status --watch --interval 5s",
       "codex-bridge status --watch --all --json"
     ]
@@ -93,11 +97,12 @@ export const COMMANDS = Object.freeze({
     ]
   },
   wait: {
-    synopsis: "wait [--any] <job-id-or-thread-id...> [--timeout-ms <ms>] [--json]",
-    summary: "Block until target job events emit [DONE], [ERROR], [INCOMPLETE], or [PLAN]. With --any, return the first terminal job from N targets.",
+    synopsis: "wait [--all|--any] [--jobs <ids>] <job-id-or-thread-id...> [--predicate terminal|interrupt|error|both] [--timeout-ms <ms>] [--json]",
+    summary: "Block until all targets match a predicate (default: terminal) or, with --any, return the first matching job. Predicates are event-backed: terminal=[DONE]/[ERROR]/[INCOMPLETE]/[PLAN]/[CANCELLED], interrupt=[PLAN]/[QUESTION], error=[ERROR]/[INCOMPLETE], both=terminal+interrupt.",
     examples: [
       "codex-bridge wait task-abc --timeout-ms 600000 --json",
-      "codex-bridge wait --any task-a task-b task-c --json",
+      "codex-bridge wait --all --jobs \"task-a task-b task-c\" --json",
+      "codex-bridge wait --any --predicate both task-a task-b task-c --json",
       "codex-bridge wait 019d9a86-1c8a-7f41-8032-6c76bbe730a1"
     ]
   },
@@ -105,15 +110,18 @@ export const COMMANDS = Object.freeze({
     synopsis: "events <job-id-or-thread-id> [--follow] [--filter <tags> | --exclude <tags>] [--timeout-ms <ms>] [--json]",
     summary: "Stream the target's events file. `--filter` keeps only listed tags (inclusion); `--exclude` drops listed tags and shows everything else (exclusion — forward-compatible default for Monitor). Flags are mutually exclusive.",
     examples: [
-      "codex-bridge events task-abc --follow --exclude HEARTBEAT  # default Monitor shape",
-      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN  # narrow inclusion view",
-      "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT,CHECKPOINT --timeout-ms 600000"
+      "codex-bridge events task-abc --follow --exclude HEARTBEAT,CHECKPOINT  # default Monitor shape",
+      "codex-bridge events task-abc --filter DONE,ERROR,INCOMPLETE,PLAN,CANCELLED  # narrow inclusion view",
+      "codex-bridge events 019d9a86-1c8a-7f41-8032-6c76bbe730a1 --follow --exclude HEARTBEAT --timeout-ms 600000  # include verbose checkpoints"
     ]
   },
   cancel: {
-    synopsis: "cancel [job-id] [--json]",
-    summary: "Cancel a running job. Attempts `turn/interrupt` before terminating the worker tree.",
-    examples: ["codex-bridge cancel task-abc"]
+    synopsis: "cancel [job-id] [--keep-worktree] [--keep-branch] [--keep-all] [--json]",
+    summary: "Cancel a running job. Attempts `turn/interrupt`, terminates the worker tree, and removes bridge-created worktree artifacts unless preserved.",
+    examples: [
+      "codex-bridge cancel task-abc",
+      "codex-bridge cancel task-abc --keep-all"
+    ]
   },
   merge: {
     synopsis: "merge <task_id> [--no-tests] [--pr] [--json]",
@@ -132,9 +140,9 @@ export const COMMANDS = Object.freeze({
     ]
   },
   setup: {
-    synopsis: "setup [--json] [--enable-review-gate | --disable-review-gate]",
-    summary: "Health check: Node/npm/Codex install, auth, broker runtime; toggle stop-gate review.",
-    examples: ["codex-bridge setup --json"]
+    synopsis: "setup [--json] [--install-monitor-hook] [--enable-review-gate | --disable-review-gate]",
+    summary: "Health check: Node/npm/Codex install, auth, broker runtime; install the Monitor hook mirror; toggle stop-gate review.",
+    examples: ["codex-bridge setup --json", "codex-bridge setup --install-monitor-hook --json"]
   },
   version: {
     synopsis: "version [--backend <name>] [--check-update] [--json]",

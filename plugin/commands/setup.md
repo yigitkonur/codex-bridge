@@ -1,11 +1,12 @@
 ---
 description: Check whether local Codex Bridge requirements are ready
-argument-hint: "[--enable-review-gate|--disable-review-gate] [--json]"
+argument-hint: "[--install-monitor-hook] [--enable-review-gate|--disable-review-gate] [--json]"
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
 Plugin stop-review gate activation is visible and project-scoped:
 
+- `--install-monitor-hook` mirrors the PostToolUse Monitor handoff hook into `~/.claude/settings.json`. Use it when plugin-bundled hook context is not reaching the parent thread.
 - `--enable-review-gate` creates `.codex-bridge-stop-review-gate.lock` in the git project root.
 - `--disable-review-gate` removes `.codex-bridge-stop-review-gate.lock` from the git project root.
 - Without that lock file, the Stop hook exits without running Codex, even though the hook file is installed.

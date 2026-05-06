@@ -4,15 +4,15 @@
 
 ## Scope
 
-NDJSON captures a curated slice of the run — **not every wire-level notification.** Per-item deltas (`item/agentMessage/delta`, `item/reasoning/*Delta`, etc.) and the bare `thread/started` / `turn/started` events are not persisted. Finalized `item/completed` events **are** persisted (as `ITEM_COMPLETED`). Assistant-message text is preserved in full for transcript replay; tool and plan previews stay compact. NDJSON is for retrospective queries on turn outcomes, per-item completions, questions, pipeline stages, steers, and errors.
+NDJSON captures a curated slice of the run — **not every wire-level notification.** Per-item deltas (`item/agentMessage/delta`, `item/reasoning/*Delta`, etc.) and the bare `thread/started` / `turn/started` events are not persisted. Finalized `item/completed` events are persisted as `ITEM_COMPLETED` when they carry replay value; empty reasoning completions are aggregated into the turn summary instead. Assistant-message text is preserved in full for transcript replay; tool and plan previews stay compact. NDJSON is for retrospective queries on turn outcomes, per-item completions, questions, pipeline stages, steers, and errors.
 
 ## Persisted tags
 
 | Tag | When | Typical `data` fields | Writer |
 |-----|------|------------------------|--------|
-| `TURN_PARAMS` | Start of every Codex turn | `model`, `effort`, `collaborationMode`, `sandboxPolicy`, `hasOutputSchema`, `promptLength`, `promptPreview` | `src/codex-bridge.mjs::onTurnStart` |
-| `TURN_COMPLETED` | End of every Codex turn | `turnId`, `status` (0/non-zero), `planDetected`, `touchedFiles` | `src/codex-bridge.mjs` |
-| `ITEM_COMPLETED` | Every finalized item on the root thread | `itemId`, `itemType` (`agentMessage` \| `commandExecution` \| `fileChange` \| `plan` \| `reasoning` \| …), `text` (agentMessage full text; commandExecution ≤ 200 chars; fileChange = `"<op> <path>"`; plan = title / first line; otherwise `null`) | `runBridgeTask::onItemCompleted`, `handleSend::onItemCompleted` |
+| `TURN_PARAMS` | Start of every Codex turn | `model`, `effort`, compacted `collaborationMode`, `sandboxPolicy`, `hasOutputSchema`, `promptLength`, `promptPreview`. Large `developer_instructions` are stored once under `developer-instructions/{sha}.txt`; NDJSON keeps `developer_instructions_hash`, `developer_instructions_length`, and `developer_instructions_ref`. | `runBridgeTask::onTurnStart`, `handleSend::onTurnStart` |
+| `TURN_COMPLETED` | End of every Codex turn | `turnId`, `status` (0/non-zero), `planDetected`, `reasoningStepsCount`, `touchedFiles` | `runBridgeTask` |
+| `ITEM_COMPLETED` | Finalized items with replay value on the root thread | `itemId`, `itemType` (`agentMessage` \| `commandExecution` \| `fileChange` \| `plan` \| `reasoning` \| …), `text` (agentMessage full text; commandExecution ≤ 200 chars; fileChange = `"<op> <path>"`; plan = title / first line; reasoning summaries only when text exists). Empty `reasoning` items are counted on `TURN_COMPLETED.reasoningStepsCount`, not written as standalone records. | `runBridgeTask::onItemCompleted`, `handleSend::onItemCompleted` |
 | `QUESTION` | `item/tool/requestUserInput` arrived | `requestId`, `questions` | `runBridgeTask::onServerRequest` |
 | `CONFIRMED` | A pending question was answered via `respond` | `requestId` | `runBridgeTask::onServerRequest` |
 | `QUESTION_TIMEOUT` | Question timed out (default 5 min); bridge replied to the upstream server request with `result: { answers: {} }` (empty-answer success — `src/codex-bridge.mjs:2197`) | `requestId` | `runBridgeTask::onServerRequest` |
@@ -21,15 +21,16 @@ NDJSON captures a curated slice of the run — **not every wire-level notificati
 | `ERROR` | Turn failed with a Codex-reported error (`will_retry: false`) | `errorCode`, `message`, `origin` (`turn` or `pipeline:<stage>`) | `src/codex-bridge.mjs` |
 | `PIPELINE_STAGE` | Auto-pipeline entered a stage | `stage` ∈ `{diff, review, fix, check}`, optionally `findingCount` | `src/adapters/codex/pipeline.mjs` |
 | `PIPELINE_COMPLETE` | Auto-pipeline finished cleanly (on-disk counterpart to `[PIPELINE:done]`) | `completedStages`, `duration`, `complete`, `touchedFiles` (files the fix stage wrote) | `src/adapters/codex/pipeline.mjs` |
-| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `duration`, `error`, `origin` (`pipeline:<stage>`), `touchedFiles` | `src/adapters/codex/pipeline.mjs` |
-| `PIPELINE_SKIPPED` | Run launched with `--no-pipeline` (pipeline stages never ran) | `reason` (`"--no-pipeline flag"`) | `runBridgeTask` |
+| `PIPELINE_ERROR` | Auto-pipeline aborted (timeout / crash) | `completedStages`, `lastCompletedStage`, `duration`, `error`, `origin` (`pipeline:<failing_stage>`), `failing_stage`, conditional `reviewVerdict` / `reviewFindingCount`, `touchedFiles` | `src/adapters/codex/pipeline.mjs` |
+| `PIPELINE_SKIPPED` | Run launched with `--no-pipeline`; review/fix/check were skipped while diff capture was retained | `reason`, `skippedStages`, `retainedStages` | `runBridgeTask` |
+| `STALL_WARNING` | Barren checkpoint window before terminal stall detection | `barrenCheckpoints`, `warningThresholdMs`, `terminalThresholdMs`, `remainingMs`, `lastActionableSummary` | `runBridgeTask::runCheckpoint` |
 | `CIRCUIT_BREAKER` | Command-family circuit breaker tripped (on-disk counterpart to `[WARNING]`) | `family`, `threshold`, `windowSize`, `failsInWindow`, `wrapperDetected`, `turnInterrupted` | `runBridgeTask::onItemCompleted` |
 
-`ITEM_COMPLETED` is emitted for `task` and `send` turns. The `runAppServerReview` path (standalone `review` / `adversarial-review`) does **not** emit it — review output goes to stdout and the rendered markdown instead.
+`ITEM_COMPLETED` is emitted for `task` and `send` turns when the completed item has useful replay text. The `runAppServerReview` path (standalone `review` / `adversarial-review`) does **not** emit it — review output goes to stdout and the rendered markdown instead.
 
 Tags not listed above (`THREAD_STARTED`, `TURN_STARTED`, `ITEM_STARTED`, `PLAN`, `REVIEW_START`, `REVIEW_END`, `DIFF`, `TIMEOUT`, `NOTIFICATION`) are **not** written by the current bridge. Don't grep for them.
 
-In practice, a completed non-interactive task often has `TURN_PARAMS` + several `ITEM_COMPLETED` + `TURN_COMPLETED` + `PIPELINE_STAGE*` + `PIPELINE_COMPLETE` (or `PIPELINE_ERROR`). Questions, steers, errors, and circuit-breaker trips are optional.
+In practice, a completed non-interactive task often has `TURN_PARAMS` + several useful `ITEM_COMPLETED` records + `TURN_COMPLETED` + `PIPELINE_STAGE*` + `PIPELINE_COMPLETE` (or `PIPELINE_ERROR`). Questions, steers, errors, and circuit-breaker trips are optional.
 
 ### Finding a `<turn-id>` for `steer`
 
@@ -109,7 +110,7 @@ less ~/.codex-bridge/sessions/<thread-id>.events
 
 | | `.ndjson` | `.events` |
 |--|---------|---------|
-| Content | Turn params + turn-end + questions + steers + errors + pipeline stages + circuit-breaker trips (see table above) | Actionable tags: `[DONE]` `[ERROR]` `[INCOMPLETE]` `[QUESTION]` `[PLAN]` `[CONFIRMED]` `[WARNING]` `[PIPELINE:diff\|review\|fix\|check]` plus `:done` pairs, terminal `[PIPELINE:done]` / `[PIPELINE:failed]`. (`[REVIEW]` and `[PHASE]` have helpers in `session-log.mjs` but no caller.) |
+| Content | Turn params + turn-end + questions + steers + errors + pipeline stages + stall/circuit-breaker warnings (see table above) | Actionable tags: `[DONE]` `[ERROR]` `[INCOMPLETE]` `[CANCELLED]` `[QUESTION]` `[PLAN]` `[CONFIRMED]` `[STALL_WARNING]` `[WARNING]` `[PIPELINE:diff\|review\|fix\|check]` plus `:done` pairs, terminal `[PIPELINE:done]` / `[PIPELINE:failed]`. (`[REVIEW]` and `[PHASE]` have helpers in `session-log.mjs` but no caller.) |
 | Format | JSON objects, one per line | Human-readable text blocks |
 | Use | Retrospective query (jq) | Monitor (`tail -f`) |
 | Size | Small–medium (one per turn + one per question/steer/stage) | Small (4–12 blocks per task with 1.2.5 pipeline `:done` pairs) |

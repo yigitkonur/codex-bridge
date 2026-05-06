@@ -843,14 +843,14 @@ export async function handleMerge(argv) {
   const meta = readMeta(taskId);
   if (!meta) {
     throw notFoundError(
-      `no meta.json found for ${taskId}; the task was not dispatched via --worktree-auto`,
+      `no meta.json found for ${taskId}; the task was not dispatched as an isolated worktree task`,
     );
   }
   const branch = meta.worktree?.branch;
   const baseRef = meta.worktree?.base_ref ?? "main";
   if (!branch) {
     throw new CliError(
-      `meta.json for ${taskId} missing worktree.branch — task may not have been dispatched via --worktree-auto`,
+      `meta.json for ${taskId} missing worktree.branch — task may not have been dispatched as an isolated worktree task`,
       { code: "MERGE_META_INVALID", class: "internal" },
     );
   }
