@@ -1,6 +1,6 @@
 ---
 description: Delegate implementation, debugging, or follow-up work to Codex Bridge with Monitor-ready events
-argument-hint: "[--background|--wait] [--backend <name>] [--write] [--mode plan|default] [--resume|--resume-last|--fresh] [--model <model|spark>] [--effort <low|medium|high|xhigh>] [task prompt]"
+argument-hint: "[--background|--wait] [--backend <name>] [--write] [--group <name>] [--mode plan|default] [--resume|--resume-last|--fresh] [--model <model|spark>] [--effort <low|medium|high|xhigh>] [task prompt]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent, Monitor
 ---
 
@@ -16,6 +16,7 @@ Execution mode:
 - If the request includes `--wait`, route to the subagent in foreground mode and do not forward `--wait`.
 - If neither flag is present, default to foreground for a short bounded task and background for a broad or multi-step task.
 - If the request includes `--resume`, `--resume-last`, or `--fresh`, preserve that routing choice.
+- If the request includes `--group <name>`, preserve it; use `/codex-bridge:status --group <name>` for that wave.
 - Otherwise, before starting Codex, check for a resumable task thread from this Claude session by running:
 
 ```bash

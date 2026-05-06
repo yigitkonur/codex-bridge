@@ -9642,15 +9642,15 @@ function formatCodexResumeCommand(job) {
 }
 function appendActiveJobsTable(lines, jobs) {
   lines.push("Active jobs:");
-  lines.push("| Job | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Job | Group | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const job of jobs) {
     const actions = [`codex-bridge status ${job.id}`];
     if (job.status === "queued" || job.status === "running") {
       actions.push(`codex-bridge cancel ${job.id}`);
     }
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.group ?? "")} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
     );
   }
 }
@@ -9661,6 +9661,9 @@ function pushJobDetails(lines, job, options = {}) {
   }
   if (job.phase) {
     lines.push(`  Phase: ${job.phase}`);
+  }
+  if (job.group) {
+    lines.push(`  Group: ${job.group}`);
   }
   if (options.showElapsed && job.elapsed) {
     lines.push(`  Elapsed: ${job.elapsed}`);
@@ -13951,6 +13954,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, options = {}) {
     kindLabel: taskMetadata.kindLabel ?? "task",
     summary: taskMetadata.summary,
     write,
+    group: options.group ?? null,
     backend: options.backend ?? null,
     group: options.group ?? null,
     adapter_capabilities: options.adapterCapabilities ?? null,
@@ -13980,7 +13984,8 @@ function buildTaskRequest({
   pipelineStageMs,
   pipelineTotalMs,
   questionAnswerMs,
-  backend = null
+  backend = null,
+  group = null
 }) {
   const opt = (n) => Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null;
   return {
@@ -13995,6 +14000,7 @@ function buildTaskRequest({
     resumeLast,
     jobId,
     mode: mode ?? null,
+    group: group ?? null,
     idleTimeoutMs: opt(idleTimeoutMs),
     turnPlanMs: opt(turnPlanMs),
     turnDefaultMs: opt(turnDefaultMs),
@@ -14224,6 +14230,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       status: "queued",
       title: job.title,
       summary: job.summary,
+      group: job.group ?? null,
       registryTaskId: job.registryTaskId ?? null,
       worktree: job.worktree ?? null,
       logFile,
@@ -15219,7 +15226,8 @@ async function handleTask(argv) {
       "pipeline-total-timeout-ms",
       "question-timeout-ms",
       "brief",
-      "intercepted-from"
+      "intercepted-from",
+      "group"
     ],
     booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background", "no-pipeline", "quiet", "worktree-auto", "rewake-on-terminal", "legacy-envelope"],
     aliasMap: {
@@ -15393,7 +15401,8 @@ async function handleTask(argv) {
       pipelineTotalMs: pipelineTotalOverride,
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
-      backend: adapter2.name
+      backend: adapter2.name,
+      group
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     emitSuccess("task", payload, renderQueuedTaskLaunch(payload), {
@@ -15424,6 +15433,7 @@ async function handleTask(argv) {
       questionAnswerMs: questionTimeoutOverride,
       noPipeline,
       backend: adapter2.name,
+      group,
       // `--quiet` suppresses the stderr `[codex] …` progress stream so
       // agents don't pattern-match a thread UUID out of it. Monitor /
       // `events --follow` remain the canonical in-run observation surface.
@@ -15580,7 +15590,8 @@ async function runStatusWatch(cwd, { intervalMs, overallTimeoutMs, all, group, j
           status: j.status,
           phase: j.phase ?? null,
           threadId: j.threadId ?? null,
-          kind: j.kindLabel ?? j.kind ?? null
+          kind: j.kindLabel ?? j.kind ?? null,
+          group: j.group ?? null
         }))
       };
       if (json2) {

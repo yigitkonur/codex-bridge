@@ -361,6 +361,26 @@ Monitor is bound specifically to codex-bridge `.events` files and their tag voca
 
 Rule: if the thing you're watching doesn't write to `~/.codex-bridge/sessions/<threadId>.events` with one of the listed tags, Monitor is the wrong tool.
 
+## Group-based multi-job orchestration
+
+For fan-out workflows, label related dispatches with `--group <name>` and use group-aware read commands:
+
+```bash
+# Dispatch a wave with a group label
+for prompt in prompts/*.md; do
+  node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs task --write --mode default --background --json \
+    --group audit-2026-05 --prompt-file "$prompt"
+done
+
+# Filter status to only the group
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs status --group audit-2026-05 --json
+
+# Watch only the group until all jobs terminate
+node ${CLAUDE_SKILL_DIR}/scripts/codex-bridge.mjs status --watch --group audit-2026-05
+```
+
+Group names are alphanumeric + hyphens, max 64 chars. Dispatches without `--group` work exactly as before.
+
 ## Running N jobs in parallel
 
 When the orchestrator is fanning out more than one Codex job at a time, Monitor is the wrong primitive (it self-terminates on the first terminal tag of one stream). The right pattern is **async-first: launch N background tasks, then block on either `status --watch` for a live table or `await-artifact` for a specific file per job**.

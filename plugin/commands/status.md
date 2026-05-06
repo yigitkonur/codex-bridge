@@ -10,7 +10,7 @@ allowed-tools: Bash(node:*)
 If the user did not pass a job ID:
 
 - Render the command output compactly.
-- Preserve job ID, kind, status, phase, elapsed or duration, summary, and follow-up commands.
+- Preserve job ID, group, kind, status, phase, elapsed or duration, summary, and follow-up commands.
 
 If the user did pass a job ID:
 

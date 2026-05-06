@@ -201,3 +201,88 @@ test("buildStatusSnapshot includes all Claude sessions when options.all is true"
     );
   });
 });
+
+test("buildStatusSnapshot filters by group and exposes group in snapshot", () => {
+  withIsolatedState(({ workspace }) => {
+    for (const job of [
+      {
+        id: "wave-one-running",
+        group: "wave-1",
+        sessionId: "current-session",
+        status: "running",
+        phase: "running",
+        pid: process.pid,
+        updatedAt: "2026-04-29T12:05:00.000Z"
+      },
+      {
+        id: "wave-two-running",
+        group: "wave-2",
+        sessionId: "current-session",
+        status: "running",
+        phase: "running",
+        pid: process.pid,
+        updatedAt: "2026-04-29T12:04:00.000Z"
+      },
+      {
+        id: "ungrouped-running",
+        sessionId: "current-session",
+        status: "running",
+        phase: "running",
+        pid: process.pid,
+        updatedAt: "2026-04-29T12:03:00.000Z"
+      }
+    ]) {
+      upsertJob(workspace, {
+        createdAt: "2026-04-29T12:00:00.000Z",
+        ...job
+      });
+    }
+
+    const snapshot = buildStatusSnapshot(workspace, {
+      group: "wave-1",
+      env: { [SESSION_ID_ENV]: "current-session" }
+    });
+
+    assert.equal(snapshot.group, "wave-1");
+    assert.equal(snapshot.running.length, 1);
+    assert.equal(snapshot.running[0].id, "wave-one-running");
+    assert.equal(snapshot.running[0].group, "wave-1");
+  });
+});
+
+test("buildStatusSnapshot without group returns all jobs unfiltered", () => {
+  withIsolatedState(({ workspace }) => {
+    for (const job of [
+      {
+        id: "wave-one-running",
+        group: "wave-1",
+        sessionId: "current-session",
+        status: "running",
+        phase: "running",
+        pid: process.pid,
+        updatedAt: "2026-04-29T12:05:00.000Z"
+      },
+      {
+        id: "wave-two-running",
+        group: "wave-2",
+        sessionId: "current-session",
+        status: "running",
+        phase: "running",
+        pid: process.pid,
+        updatedAt: "2026-04-29T12:04:00.000Z"
+      }
+    ]) {
+      upsertJob(workspace, {
+        createdAt: "2026-04-29T12:00:00.000Z",
+        ...job
+      });
+    }
+
+    const snapshot = buildStatusSnapshot(workspace, {
+      env: { [SESSION_ID_ENV]: "current-session" }
+    });
+
+    assert.equal(snapshot.group, null);
+    assert.equal(snapshot.running.length, 2);
+  });
+});
